@@ -14,7 +14,7 @@
 // the panel epic (writes it). Add fields; never repurpose one.
 //
 //   State {
-//     version:    3                 // the schema generation. A file at an
+//     version:    4                 // the schema generation. A file at an
 //                                   // OLDER version is UPGRADED in place on the
 //                                   // read (see "Migration" below); a file from
 //                                   // the FUTURE keeps its own number and is
@@ -57,6 +57,20 @@
 //                         // `class` and `initialClass`. A malformed pattern is
 //                         // dropped by engine.compilePattern rather than
 //                         // throwing — a typo in the UI must not brick restore.
+//     titlePatterns:      // v4. The same kind of list: regex SOURCE strings,
+//       string[]          // the same repair semantics as `patterns`, matched
+//                         // against a client's `initialTitle` and NOTHING
+//                         // ELSE. Not the live `title`, which changes as the
+//                         // user works — an identity whose membership moved
+//                         // under a window would record one desk and restore
+//                         // another. `initialTitle` is set once, when the
+//                         // window maps, and survives the app renaming itself.
+//                         // It exists because a terminal launched to host one
+//                         // app (`foot --title herdr`) cannot be told from a
+//                         // plain terminal by class alone — both read `foot`.
+//                         // [] means "this identity does not look at titles",
+//                         // which is what every identity written before v4
+//                         // means, and it is ALWAYS PRESENT (see Migration).
 //     launch:   string    // shell command run to bring the app back when no
 //                         // window matches. "" means "never launch this one" —
 //                         // a legitimate choice for apps that must not be
@@ -122,10 +136,28 @@
 //
 //   v2 -> v3 is the same kind of step and is applied by the same single pass:
 //   every entry that does not carry an `occurrence` gains `occurrence: 0`, and
-//   `version` becomes 3. Nothing else moves. A v1 file therefore CHAINS —
-//   v1 -> v2 -> v3 in one read — because normalizeLayout writes the v2 fields
-//   and the v3 field unconditionally, so there are no intermediate states to
-//   sequence. A v3 file read and written back is byte-identical to itself.
+//   `version` becomes 3. Nothing else moves.
+//
+//   v3 -> v4 is the same kind of step again, one field further out: every
+//   identity that does not carry `titlePatterns` gains `titlePatterns: []`, and
+//   `version` becomes 4. No layout entry moves at all — this generation touches
+//   identities only.
+//
+//   THE DELIBERATE CHOICE, v4: the empty list IS MATERIALIZED. normalizeIdentity
+//   writes `titlePatterns` on every identity it returns, so a v3 file read and
+//   written back gains a `"titlePatterns": []` line per identity rather than
+//   keeping the key absent. That costs one line per identity in the file and
+//   buys the thing every other field here already has: ONE shape. Consumers
+//   (engine.matchClient, the panel's editor) never have to distinguish "absent"
+//   from "empty", exactly as they never have to for `patterns: []` or
+//   `launch: ""`, both of which have always been written whether the file said
+//   so or not. Everything an identity DID say is carried through untouched: the
+//   upgrade is purely additive, and pinned as such by tests/state.test.js.
+//
+//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 in one read — because
+//   normalizeLayout writes the v2 and v3 fields and normalizeIdentity writes the
+//   v4 field unconditionally, so there are no intermediate states to sequence.
+//   A v4 file read and written back is byte-identical to itself.
 //
 // Quirks the UI must know:
 //   - layouts is a MAP keyed by topologyKey, and Layout.topologyKey repeats that
@@ -236,7 +268,7 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 3;
+var STATE_VERSION = 4;
 
 // ES5, no Array.isArray assumptions about the QML JS engine's vintage: this is
 // the one array test that behaves the same in node and in Qt's V4.
@@ -271,6 +303,11 @@ function normalizeIdentity(value) {
   return {
     id: id,
     patterns: normalizePatterns(value.patterns),
+    // v4. Same coercion as `patterns` — same repair semantics, same "a typo
+    // costs you the pattern, never the identity" — and always written, even
+    // when empty, so nothing downstream has to tell absent from empty. An
+    // identity from a v3 file gains it here; that IS the v3 -> v4 migration.
+    titlePatterns: normalizePatterns(value.titlePatterns),
     launch: typeof value.launch === "string" ? value.launch : ""
   };
 }
@@ -462,9 +499,10 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> v2). Not an error and not a recovery: nothing
-//               was lost and nothing was invented. The service logs it once and
-//               the next write persists the upgraded shape.
+//               upgraded (v1 -> v2 -> v3 -> v4, as far as it has to go, in the
+//               one pass). Not an error and not a recovery: nothing was lost
+//               and nothing was invented. The service logs it once and the next
+//               write persists the upgraded shape.
 function parseState(raw) {
   var text = typeof raw === "string" ? raw : "";
   if (!text.replace(/^\s+|\s+$/g, "")) {
