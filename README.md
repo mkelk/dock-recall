@@ -247,15 +247,8 @@ intersection-over-union across recorded rounds — for when a change to the
 placement planner needs a number rather than an opinion.
 
 The repository root **is** the plugin folder, because `omarchy plugin add` clones
-the repository and installs the clone root. Tests, scripts and docs ride along;
-the shell loads only the three entry points the manifest declares.
-
-## History
-
-Released as **Monitor Watch** through v0.1.x, renamed to Dock Recall in 0.2.0.
-The service migrates the old `monitor-watch.*` state files to the new names on
-first start, so upgrades keep their recordings. Historical documents, evidence
-and retros keep the old name on purpose — they record what happened under it.
+the repository and installs the clone root. Tests and scripts ride along; the shell
+loads only the three entry points the manifest declares.
 
 ## License
 
