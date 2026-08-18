@@ -127,9 +127,30 @@ function monitorByDescription(monitorsJson, desc) {
 //     window's identity time-varying, which is the exact failure mode this
 //     design exists to avoid. Never against `class`/`initialClass` either.
 //
-// Both lists may be present; either one matching is a match. Identity order
-// stays priority order, so a title identity must sit BEFORE the catch-all
-// terminal identity that would otherwise claim its window first.
+// WHEN BOTH LISTS ARE PRESENT THE RULE IS AND. An EMPTY list means "no
+// constraint on this axis"; a NON-EMPTY one is a constraint that has to be
+// satisfied:
+//
+//   patterns    titlePatterns   matches when
+//   ---------   -------------   ---------------------------------------------
+//   non-empty   non-empty       BOTH sides match — the class side against
+//                               `class`/`initialClass`, the title side against
+//                               `initialTitle`
+//   non-empty   empty           the class side alone
+//   empty       non-empty       the title side alone
+//   empty       empty           never
+//
+// AND rather than OR because `{patterns: ["^foot$"], titlePatterns: ["^herdr$"]}`
+// is what a person writes to mean "the foot window titled herdr", and under OR
+// that identity would claim EVERY foot window instead. A list of nothing but
+// broken patterns is still a constraint (it is not empty), so it can never be
+// satisfied. One consequence is worth saying out loud, and is pinned by a test
+// in tests/identity.test.js: when `titlePatterns` is non-empty and the client
+// has no usable `initialTitle`, the title side fails and the identity does not
+// match at all — a satisfied class side cannot rescue it.
+//
+// Identity order stays priority order, so a title identity must sit BEFORE the
+// catch-all terminal identity that would otherwise claim its window first.
 
 // Compile a pattern string. A user-editable list can contain a typo; a bad
 // regex must not take the whole engine down, so it simply never matches.
@@ -142,13 +163,20 @@ function compilePattern(pattern) {
   }
 }
 
-// Does this client belong to this identity?
-function clientMatchesIdentity(client, identity) {
-  if (!client || !identity) return false;
+// A pattern list, or an empty one. ES5, and no assumption about the QML JS
+// engine's Array.isArray — the same test StateModel and PanelModel use. The
+// guard matters: `identity.patterns || []` hands a bare STRING to the loop
+// below, which then iterates it by characters, so `"zzh"` would match "herdr"
+// through /h/i. normalizeIdentity coerces a bare string into a one-element list
+// before it can get here, but a hand-built identity does not go through it, and
+// a list that is not a list is no constraint rather than a nonsense one.
+function patternList(value) {
+  return Object.prototype.toString.call(value) === "[object Array]" ? value : [];
+}
 
-  var patterns = identity.patterns || [];
-  var fields = [client.class, client.initialClass];
-
+// Does any pattern in the list match any of these fields? An empty or
+// all-broken list is a no.
+function anyPatternMatches(patterns, fields) {
   for (var p = 0; p < patterns.length; p++) {
     var re = compilePattern(patterns[p]);
     if (!re) continue;
@@ -157,22 +185,31 @@ function clientMatchesIdentity(client, identity) {
       if (typeof value === "string" && value && re.test(value)) return true;
     }
   }
-
-  // Opt-in, and deliberately a separate loop over a single field: `initialTitle`
-  // only — never `title` (a live title makes identity time-varying), never
-  // `class`/`initialClass` (that is what `patterns` is for).
-  var titlePatterns = identity.titlePatterns || [];
-  var initialTitle = client.initialTitle;
-
-  if (typeof initialTitle === "string" && initialTitle) {
-    for (var t = 0; t < titlePatterns.length; t++) {
-      var titleRe = compilePattern(titlePatterns[t]);
-      if (!titleRe) continue;
-      if (titleRe.test(initialTitle)) return true;
-    }
-  }
-
   return false;
+}
+
+// Does this client belong to this identity? See the rule table above: a
+// non-empty list is a constraint, an empty one is not, and every constraint
+// present has to be satisfied.
+function clientMatchesIdentity(client, identity) {
+  if (!client || !identity) return false;
+
+  var patterns = patternList(identity.patterns);
+  // Opt-in, and deliberately a separate axis over a single field:
+  // `initialTitle` only — never `title` (a live title makes identity
+  // time-varying), never `class`/`initialClass` (that is what `patterns` is
+  // for).
+  var titlePatterns = patternList(identity.titlePatterns);
+
+  // An identity that constrains nothing claims nothing.
+  if (patterns.length === 0 && titlePatterns.length === 0) return false;
+
+  if (patterns.length > 0 &&
+      !anyPatternMatches(patterns, [client.class, client.initialClass])) return false;
+  if (titlePatterns.length > 0 &&
+      !anyPatternMatches(titlePatterns, [client.initialTitle])) return false;
+
+  return true;
 }
 
 // The id of the first identity this client belongs to, or null when the client
@@ -844,14 +881,18 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 // recorded windows); tests/record.test.js asserts it over every fixture.
 //
 // MULTI-WINDOW, schema v3 (epic 69b): the schema no longer says "one entry per
-// identity". `occurrence` is the field that lifts that limitation, and it ships
-// here — STATE_VERSION is 4 and every read migrates v2 entries to
-// `occurrence: 0` — while the machinery that PRODUCES more than one entry per
-// identity (the placement comparator, the occurrence-aware record, the restore
-// matcher) lands in the ticks that follow this one. Until it does, buildLayout
-// still emits exactly one entry per identity, and that entry is occurrence 0,
-// so a v3 file written today is byte-identical to the v2 file it replaces apart
-// from the two new numbers.
+// identity". `occurrence` is the field that lifted that limitation and it
+// shipped WITH v3 — every read migrates a v2 entry to `occurrence: 0` — and the
+// machinery that PRODUCES more than one entry per identity (the placement
+// comparator, the occurrence-aware record, the restore matcher) landed in the
+// ticks that followed. It is all here now: buildLayout emits one entry per
+// recorded WINDOW, so a second window of one identity is recorded at
+// occurrence 1 (pinned in tests/record.test.js).
+//
+// STATE_VERSION has since moved on to 4, which is a generation about
+// IDENTITIES rather than entries — it adds `titlePatterns` — so a file written
+// today carries that line per identity too. No layout entry changed shape for
+// it.
 
 // The tab order to believe for `client`'s group.
 //

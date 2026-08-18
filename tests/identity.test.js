@@ -1,6 +1,9 @@
 // App identity matching.
-// Source of truth: docs/thoughts/2026-08-15-inspiration-and-design-sketch.md
-// ("What to record").
+// Source of truth: the identity-contract comment block in engine.js — the one
+// above compilePattern / clientMatchesIdentity, which states the two-list rule.
+// Its class-matching half goes back to
+// docs/thoughts/2026-08-15-inspiration-and-design-sketch.md ("What to record"),
+// which predates title matching and never mentions it.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -237,13 +240,99 @@ test("a broken titlePattern never matches and never throws", () => {
 
   const mixed = { id: "mixed", titlePatterns: ["([unclosed", "^herdr$"] };
   assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), mixed));
+
+  // A list of nothing but broken patterns is still a CONSTRAINT — it is not
+  // empty — so it can never be satisfied and the identity never matches, even
+  // when the other side would.
+  const brokenTitleSide = { id: "andy", patterns: ["^foot$"], titlePatterns: ["([unclosed"] };
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), brokenTitleSide), false);
 });
 
-test("an identity may carry both patterns and titlePatterns", () => {
-  const both = { id: "either", patterns: ["^md\\.obsidian\\."], titlePatterns: ["^herdr$"] };
-  assert.ok(engine.clientMatchesIdentity(clientWithClass("md.obsidian.Obsidian"), both));
-  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), both));
-  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "foot"), both), false);
+// ---------------------------------------------------------------------------
+// The two lists together: AND when both are present
+// ---------------------------------------------------------------------------
+//
+// An EMPTY list means "no constraint on this axis"; a NON-EMPTY one is a
+// constraint that has to be satisfied. Four rows, one test each. AND rather
+// than OR because `{patterns: ["^foot$"], titlePatterns: ["^herdr$"]}` is what
+// a person writes to mean "the foot window titled herdr" — under OR it would
+// claim EVERY foot window instead.
+
+test("both lists non-empty: BOTH sides must match", () => {
+  const titledFoot = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+
+  // Class and title both satisfied — the window the identity was written for.
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), titledFoot));
+  assert.strictEqual(engine.matchClient(clientWithTitle("foot", "herdr"), [titledFoot]), "herdr");
+
+  // Class matches, title does not: a plain foot terminal is NOT claimed. This
+  // is the whole point of the rule; under OR every terminal would be herdr.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "foot"), titledFoot), false);
+  assert.strictEqual(engine.matchClient(clientWithTitle("foot", "foot"), [titledFoot]), null);
+
+  // Title matches, class does not: herdr in some other terminal is not this one.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("Alacritty", "herdr"), titledFoot), false);
+
+  // Neither side.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("Alacritty", "top"), titledFoot), false);
+
+  // The consequence worth stating out loud: no usable initialTitle means the
+  // title side fails, so the identity does not match at all — a satisfied class
+  // side cannot rescue it.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", ""), titledFoot), false);
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithClass("foot"), titledFoot), false);
+});
+
+test("patterns non-empty, titlePatterns empty: the class side decides alone", () => {
+  const byClass = { id: "terminal", patterns: ["^foot$"], titlePatterns: [] };
+
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), byClass));
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "anything at all"), byClass));
+  // Including a client with no initialTitle at all: an empty title list is no
+  // constraint, so there is nothing to fail.
+  assert.ok(engine.clientMatchesIdentity(clientWithClass("foot"), byClass));
+
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("Alacritty", "herdr"), byClass), false);
+
+  // An absent key reads exactly like an empty list — every pre-v4 identity.
+  assert.ok(engine.clientMatchesIdentity(clientWithClass("foot"), { id: "terminal", patterns: ["^foot$"] }));
+});
+
+test("patterns empty, titlePatterns non-empty: the title side decides alone", () => {
+  const byTitle = { id: "herdr", patterns: [], titlePatterns: ["^herdr$"] };
+
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), byTitle));
+  // Any class will do — an empty class list is no constraint.
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("Alacritty", "herdr"), byTitle));
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "foot"), byTitle), false);
+
+  // An absent `patterns` key reads the same way; HERDR above is that shape.
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("Alacritty", "herdr"), HERDR));
+});
+
+test("both lists empty: the identity matches nothing, ever", () => {
+  const empty = { id: "nothing", patterns: [], titlePatterns: [] };
+
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), empty), false);
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithClass("foot"), empty), false);
+  assert.strictEqual(engine.matchClient(clientWithTitle("foot", "herdr"), [empty]), null);
+
+  // Both keys absent, which is what a half-written identity looks like.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), { id: "bare" }), false);
+});
+
+test("a list that is not a list is no constraint, never a string of characters", () => {
+  // normalizeIdentity coerces a bare string into a one-element list, so this
+  // shape cannot reach the matcher off the state file — but a hand-built
+  // identity can, and iterating a string by CHARACTERS would make `"zzh"` match
+  // "herdr" through /h/i. Both lists are guarded the same way.
+  const bareStrings = { id: "junk", patterns: "zzf", titlePatterns: "zzh" };
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), bareStrings), false);
+
+  // And a non-list on ONE axis does not silently become a constraint on it.
+  const halfJunk = { id: "half", patterns: ["^foot$"], titlePatterns: { 0: "^herdr$" } };
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), halfJunk));
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "anything"), halfJunk));
 });
 
 test("identity order decides between a class identity and a title identity", () => {

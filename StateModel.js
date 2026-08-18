@@ -148,8 +148,10 @@
 //   written back gains a `"titlePatterns": []` line per identity rather than
 //   keeping the key absent. That costs one line per identity in the file and
 //   buys the thing every other field here already has: ONE shape. Consumers
-//   (engine.matchClient, the panel's editor) never have to distinguish "absent"
-//   from "empty", exactly as they never have to for `patterns: []` or
+//   (engine.matchClient today; any pattern editor the panel grows later — there
+//   is no such editor yet, in Panel.qml or PanelModel.js) never have to
+//   distinguish "absent" from "empty", exactly as they never have to for
+//   `patterns: []` or
 //   `launch: ""`, both of which have always been written whether the file said
 //   so or not. Everything an identity DID say is carried through untouched: the
 //   upgrade is purely additive, and pinned as such by tests/state.test.js.

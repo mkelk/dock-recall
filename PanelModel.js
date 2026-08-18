@@ -1416,6 +1416,12 @@ function launchRepairIndex(identities, launchMap) {
 //
 // A fresh object either way — never an in-place edit — because QML bindings
 // only notice a reassignment, and writeState drops a byte-identical text.
+//
+// The copy is SHALLOW, so the returned identity's `patterns` and
+// `titlePatterns` arrays are the input's, not clones. That holds only while
+// nothing mutates a pattern list in place — nothing does; serializeState
+// rebuilds both lists on every write — and a future in-place editor has to
+// deep-copy here first.
 function identityWithLaunch(identity, command) {
   var out = {};
   for (var key in identity) {
@@ -3625,7 +3631,12 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
   // The TICK is still per identity: both rows carry the same `identityId`, and
   // Panel.qml toggles by that, so clicking either one watches or unwatches the
   // app as a whole. There is no such thing as watching one window of an app —
-  // patterns match classes, and both windows have the same class.
+  // watching is a property of the IDENTITY, and an identity is a matching rule;
+  // the rows are the live windows that rule claims, and a rule cannot be turned
+  // on for one of them. (A rule CAN be written narrowly enough to claim a
+  // single specifically-titled window of a shared class — that is what
+  // `titlePatterns` is for — but that is a second identity with its own tick,
+  // not a per-window toggle on this one.)
   var identityIds = [];
   for (var known in index.byIdentity) {
     if (Object.prototype.hasOwnProperty.call(index.byIdentity, known)) identityIds.push(known);
