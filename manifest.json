@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "author": "Morten Elk",
   "license": "MIT",
-  "description": "You use Omarchy differently with or without a monitor. Record how you like each arranged, and your windows auto-arrange when you dock and undock.",
+  "description": "You use Omarchy differently with or without a monitor. Record how you like each set up, and your windows auto-arrange when you dock and undock.",
   "kinds": [
     "service",
     "bar-widget",
