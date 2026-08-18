@@ -4,6 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const engine = require("../engine.js");
@@ -529,6 +530,190 @@ test("a version from the FUTURE keeps its number; an older one does not", () => 
   assert.strictEqual(future.state.version, 99);
   assert.strictEqual(future.migrated, false);
   assert.ok(future.error && future.error.indexOf("99") !== -1);
+});
+
+// ------------------------------------ a file from the FUTURE is READ-ONLY
+//
+// Tick 291. The read of a newer-schema file is sound; the ROUND TRIP is not.
+// normalizeIdentity is a whitelist (that is the junk repair a hand-editable file
+// needs) so it drops every identity field a newer version added, and
+// migrateVersion keeps the newer number — so a write persists stripped content
+// still stamped with the version that says nothing was stripped. The next
+// binary that understands that version finds nothing to migrate and the data is
+// gone. `titlePatterns` is the field that made this urgent: hand-authored, and
+// unrecoverable once dropped.
+//
+// StateModel.writeRefusal is the single rule. The tests below pin the rule, pin
+// that the three write paths a user can reach leave the file byte-identical, and
+// pin that every writer in the repository actually consults it.
+
+// A v5 file: everything this build knows, plus one identity field it does not.
+// Hand-shaped rather than fixtured, because there is no v5 and the point is what
+// an unknown field does on the way through.
+const FUTURE_TEXT = JSON.stringify({
+  version: 5,
+  paused: false,
+  identities: [
+    { id: "terminal", patterns: ["^foot$"], titlePatterns: ["^scratch$"], launch: "foot",
+      workspacePreference: "the v5 field this build has never heard of" }
+  ],
+  layouts: {}
+}, null, 2) + "\n";
+
+// The write path every writer of the state file shares, reduced to what it does
+// to the DISK: ask writeRefusal, and only then serialize and replace the file.
+// Panel.qml's writeState, Service.qml's writeState and scripts/record-current
+// are each this with a FileView or an fs.renameSync doing the last line — and
+// the test below the byte checks pins that they really are.
+function guardedWrite(file, next) {
+  const refusal = state.writeRefusal(next);
+  if (refusal) return refusal;
+  fs.writeFileSync(file, state.serializeState(next));
+  return null;
+}
+
+function freshStateFile(text) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dock-recall-readonly-"));
+  const file = path.join(dir, "dock-recall.json");
+  fs.writeFileSync(file, text);
+  return file;
+}
+
+test("writeRefusal names the future version and the one this build writes", () => {
+  assert.strictEqual(state.writeRefusal(state.defaultState()), null);
+  assert.strictEqual(state.writeRefusal(sampleState()), null, "a v1 file, upgraded on read");
+  assert.strictEqual(state.writeRefusal({}), null,
+    "a version-less object is as old as they come, and old is writable");
+  assert.strictEqual(state.writeRefusal(null), null, "nothing to refuse about nothing");
+
+  const refusal = state.writeRefusal(state.parseState(FUTURE_TEXT).state);
+  assert.ok(refusal, "a v5 state cannot be written by a v4 build");
+  assert.ok(refusal.indexOf("v5") !== -1, "says which version the file is");
+  assert.ok(refusal.indexOf("v" + state.STATE_VERSION) !== -1, "and which one this build writes");
+  assert.ok(refusal.indexOf("READ-ONLY") !== -1, "and what that means for the file");
+
+  // The refusal survives every update helper, because they all carry the
+  // version through — which is exactly why the writers can ask about the state
+  // they are ABOUT to write rather than about the one they read.
+  const future = state.parseState(FUTURE_TEXT).state;
+  assert.ok(state.writeRefusal(state.setPaused(future, true)));
+  assert.ok(state.writeRefusal(state.setIdentities(future, [])));
+  assert.ok(state.writeRefusal(state.upsertLayout(future, sampleLayout())));
+  assert.ok(state.writeRefusal(state.removeLayout(future, LAPTOP_KEY)));
+});
+
+test("this is what a write would destroy: the v5 field is gone by the time it is in memory", () => {
+  const identity = state.parseState(FUTURE_TEXT).state.identities[0];
+  assert.strictEqual(identity.workspacePreference, undefined,
+    "normalizeIdentity is a whitelist — the unknown field never reaches memory");
+  assert.strictEqual(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("workspacePreference"), -1,
+    "so serializing would write the file back without it");
+  assert.ok(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("\"version\": 5") !== -1,
+    "and still stamped v5, which is the lie that loses the data");
+});
+
+test("a Record, a panel edit and a pause toggle each leave a v5 file byte-identical", () => {
+  const file = freshStateFile(FUTURE_TEXT);
+  const before = fs.readFileSync(file);
+  const loaded = state.parseState(fs.readFileSync(file, "utf8")).state;
+
+  // Record: the layout for this topology, filed on top of what is there.
+  const record = guardedWrite(file, state.upsertLayout(loaded, sampleLayout()));
+  assert.ok(record, "Record is refused");
+  assert.deepStrictEqual(fs.readFileSync(file), before, "and the file is untouched");
+
+  // A panel edit: ticking a chip (or learning a launch command) — both are a
+  // whole-identity-list write.
+  const edit = guardedWrite(file, state.setIdentities(loaded,
+    state.identities(loaded).concat([{ id: "browser", patterns: ["^chromium$"], launch: "" }])));
+  assert.ok(edit, "the panel edit is refused");
+  assert.deepStrictEqual(fs.readFileSync(file), before, "and the file is untouched");
+
+  // The pause toggle: the one write that rebuilds the whole file from a fresh
+  // read, and so the one with the most to lose.
+  const pause = guardedWrite(file, state.setPaused(loaded, true));
+  assert.ok(pause, "the pause toggle is refused");
+  assert.deepStrictEqual(fs.readFileSync(file), before, "and the file is untouched");
+
+  // Forget/undo travel the same road.
+  assert.ok(guardedWrite(file, state.removeLayout(loaded, LAPTOP_KEY)), "Forget is refused");
+  assert.deepStrictEqual(fs.readFileSync(file), before);
+
+  // Each refusal says why — a silent no-op would be the worse bug.
+  for (const reason of [record, edit, pause]) {
+    assert.ok(reason.indexOf("v5") !== -1 && reason.indexOf("READ-ONLY") !== -1, reason);
+  }
+
+  // And the file still WORKS: read-only is not disabled. The identity it names
+  // is live and a restore plans from it.
+  assert.strictEqual(state.identities(loaded).length, 1);
+  assert.deepStrictEqual(state.identities(loaded)[0].titlePatterns, ["^scratch$"]);
+});
+
+test("the same three writes against a v4 file go through (the guard is not a blanket no)", () => {
+  const file = freshStateFile(state.serializeState(sampleState()));
+  const before = fs.readFileSync(file, "utf8");
+  const loaded = state.parseState(before).state;
+
+  assert.strictEqual(guardedWrite(file, state.upsertLayout(loaded, sampleLayout(monitorsLaptop))), null);
+  assert.strictEqual(guardedWrite(file, state.setIdentities(loaded, [])), null);
+  const after = fs.readFileSync(file, "utf8");
+  assert.strictEqual(guardedWrite(file, state.setPaused(state.parseState(after).state, true)), null);
+  assert.ok(fs.readFileSync(file, "utf8").indexOf("\"paused\": true") !== -1,
+    "the pause toggle landed, so the byte-identical result above is the refusal and not the harness");
+});
+
+// The rule is pure and tested above; these are the call sites. Node cannot run
+// QML, so the pin is on the source — the same tactic tests/migration.test.js
+// uses for the bash snippet inside Service.qml, and for the same reason: there
+// is no second copy of the logic, only the question of who asks.
+function balancedBody(source, header, what) {
+  const start = source.indexOf(header);
+  assert.ok(start !== -1, what + " has no " + header);
+  let depth = 0;
+  for (let i = start + header.length - 1; i < source.length; i++) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  assert.fail(what + ": unbalanced braces after " + header);
+}
+
+function occurrences(source, needle) {
+  return source.split(needle).length - 1;
+}
+
+test("every writer of the state file consults writeRefusal before touching the disk", () => {
+  const root = path.join(__dirname, "..");
+
+  for (const name of ["Panel.qml", "Service.qml"]) {
+    const source = fs.readFileSync(path.join(root, name), "utf8");
+    // One choke point per file: if a new action ever calls setText directly,
+    // this is the assertion that catches it.
+    assert.strictEqual(occurrences(source, "stateFile.setText("), 1,
+      name + " writes the state file somewhere other than writeState");
+    const body = balancedBody(source, "function writeState(next) {", name);
+    assert.ok(body.indexOf("StateModel.writeRefusal(") !== -1,
+      name + "'s writeState does not ask StateModel.writeRefusal");
+    assert.ok(body.indexOf("StateModel.writeRefusal(") < body.indexOf("stateFile.setText("),
+      name + " asks writeRefusal after it has already written the file");
+    assert.ok(body.indexOf("root.warn(") !== -1,
+      name + "'s writeState refuses silently — a refusal must say why");
+  }
+
+  const record = fs.readFileSync(path.join(root, "scripts", "record-current"), "utf8");
+  assert.ok(record.indexOf("StateModel.writeRefusal(") !== -1,
+    "scripts/record-current writes the state file without asking writeRefusal");
+  assert.ok(record.indexOf("StateModel.writeRefusal(") < record.indexOf("fs.renameSync("),
+    "scripts/record-current asks writeRefusal after it has already replaced the file");
+
+  // And the service says it out loud on the READ too, not only when a write is
+  // attempted: the user who downgraded needs to know before they try.
+  const service = fs.readFileSync(path.join(root, "Service.qml"), "utf8");
+  assert.ok(/READ-ONLY/.test(service),
+    "Service.qml never tells the user the file is read-only");
 });
 
 // --------------------------------------- schema v3: the occurrence index
