@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "author": "Morten Elk",
   "license": "MIT",
-  "description": "Records where your windows live for each monitor setup — monitor, workspace, group order and geometry — and puts them back when you dock or undock.",
+  "description": "Docked and undocked are two different desks. Record how you like each arranged, and your windows automatically rearrange how you like it on dock and undock.",
   "kinds": [
     "service",
     "bar-widget",
