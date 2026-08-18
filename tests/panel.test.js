@@ -721,7 +721,7 @@ test("a runnable command is never called broken", () => {
   assert.strictEqual(panel.launchLooksBroken("/usr/bin/obsidian"), false);
   assert.strictEqual(panel.launchLooksBroken('omarchy-launch-webapp "https://web.whatsapp.com/"'), false);
   assert.strictEqual(panel.launchLooksBroken("foot --title 'My Notes'"), false);
-  assert.strictEqual(panel.launchLooksBroken("/usr/bin/foot --app-id=herdr herdr"), false);
+  assert.strictEqual(panel.launchLooksBroken("/usr/bin/foot --title=herdr herdr"), false);
   // ONE word with a space in it can be an honest path, and this one is: no
   // fragment after the space looks like a flag or a second path.
   assert.strictEqual(panel.launchLooksBroken("'/opt/My App/bin/app'"), false);
@@ -2982,10 +2982,17 @@ test("the panel's occurrence coercion is the engine's and the file's", () => {
 
 // ---- terminal-hosted apps: deriving from the CHILD process (tick dwv) -------
 //
-// The other side of the README's app-id rule. `herdr` typed into `foot` owns no
-// window: the window is class `foot` and its cmdline is `foot`. The app is the
-// terminal's child process, and reading it turns that into the very command the
-// README asks the user to bind by hand.
+// The other side of the README's terminal-title rule. `herdr` typed into `foot`
+// owns no window: the window is class `foot` and its cmdline is `foot`. The app
+// is the terminal's child process, and reading it turns that into the very
+// command the README asks the user to bind by hand.
+//
+// The command names a TITLE, not a private window class (tick hqa, measured
+// 2026-08-18): `foot --title=herdr herdr` fixes `initialTitle` at `herdr` while
+// the window keeps `class: foot`, so every Omarchy class-matched rule still
+// applies; an app that renames itself on start moves `title` only; and
+// Hyprland full-matches an unanchored window-rule regex, so a compound class
+// like `foot.herdr` could never have been matched alongside plain `foot`.
 
 // The bytes the panel's one Process really prints, for a terminal whose child
 // tree is `pids` — [{ pid, argv, children: [...] }].
@@ -3035,36 +3042,36 @@ test("the proc dump rebuilds the child tree the header path describes", () => {
     ["900"]);
 });
 
-test("one unambiguous child derives the app-id command the README asks for", () => {
+test("one unambiguous child derives the --title command the README asks for", () => {
   const derived = footDerivation([{ pid: 901, argv: ["herdr"] }]);
-  assert.deepStrictEqual(derived.commands, { terminal: "foot --app-id=herdr herdr" });
+  assert.deepStrictEqual(derived.commands, { terminal: "foot --title=herdr herdr" });
   assert.deepStrictEqual(derived.refusals, {});
 
   // The child's own arguments travel with it, quoted.
   assert.deepStrictEqual(
     footDerivation([{ pid: 901, argv: ["/usr/bin/herdr", "--watch", "/home/u/My Notes"] }]).commands,
-    { terminal: "foot --app-id=herdr /usr/bin/herdr --watch '/home/u/My Notes'" });
+    { terminal: "foot --title=herdr /usr/bin/herdr --watch '/home/u/My Notes'" });
 });
 
 test("a bare shell between the terminal and the app is looked THROUGH", () => {
   const derived = footDerivation([
     { pid: 901, argv: ["-bash"], children: [{ pid: 902, argv: ["herdr"] }] }
   ]);
-  assert.deepStrictEqual(derived.commands, { terminal: "foot --app-id=herdr herdr" });
+  assert.deepStrictEqual(derived.commands, { terminal: "foot --title=herdr herdr" });
   assert.deepStrictEqual(derived.refusals, {});
 
   // Every shell spelling, login form included.
   for (const shell of ["sh", "/bin/bash", "zsh", "-zsh", "/usr/bin/fish"]) {
     assert.deepStrictEqual(
       footDerivation([{ pid: 901, argv: [shell], children: [{ pid: 902, argv: ["btop"] }] }]).commands,
-      { terminal: "foot --app-id=btop btop" }, shell);
+      { terminal: "foot --title=btop btop" }, shell);
   }
 
   // A shell WITH a command of its own is not a bare wrapper: it names what to
   // run, and deriving through it would throw that away.
   assert.deepStrictEqual(
     footDerivation([{ pid: 901, argv: ["bash", "-c", "herdr --watch"] }]).commands,
-    { terminal: "foot --app-id=bash bash -c 'herdr --watch'" });
+    { terminal: "foot --title=bash bash -c 'herdr --watch'" });
 });
 
 test("two children REFUSE loudly rather than guessing which app is meant", () => {
@@ -3089,21 +3096,21 @@ test("two children REFUSE loudly rather than guessing which app is meant", () =>
     { terminal: "shell-chain" });
 });
 
-test("a refusal says 'ambiguous' and points at the app-id convention", () => {
+test("a refusal says 'ambiguous' and points at the --title convention", () => {
   const identities = [{ id: "terminal", patterns: ["^foot$"], launch: "" }];
   const refused = footDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
 
   const states = panel.launchStateIndex(identities, refused.commands, refused.refusals);
   assert.strictEqual(states.terminal, "ambiguous");
   assert.strictEqual(panel.launchHintFor("ambiguous"),
-    "runs in a terminal — give it its own --app-id");
+    "runs in a terminal — give it its own --title");
 
   // It reaches the row, through the plumbing the other launch states use.
   const rows = panel.appRows(ONE_FOOT_WINDOW.map((c) => makeClient({ address: c.address, class: c.class, workspace: 1 })),
     ONE_MONITOR, resolver(identities), null, null, identities, refused.commands, null, null, refused.refusals);
   assert.strictEqual(rows.length, 1);
   assert.strictEqual(rows[0].launchState, "ambiguous");
-  assert.strictEqual(rows[0].launchHint, "runs in a terminal — give it its own --app-id");
+  assert.strictEqual(rows[0].launchHint, "runs in a terminal — give it its own --title");
   assert.strictEqual(rows[0].launchRepairable, false, "there is nothing to learn, so nothing is offered");
 
   // And nothing is watched by any of this: derivation only feeds the hint.
@@ -3140,29 +3147,56 @@ test("the browser-family and shared-pid guards still win over the child read", (
 });
 
 test("a terminal that already carries its own command is left alone", () => {
-  // `foot --app-id=herdr herdr` derives the ordinary way — the cmdline IS the
-  // answer — and the child read must not second-guess it.
+  // `foot --title=herdr herdr` derives the ordinary way — the cmdline IS the
+  // answer — and the child read must not second-guess it. The window this
+  // cmdline produces is the one in clients-titled-terminal.json.
   const tree = panel.procTreeFromDump(procDump([
-    { pid: 900, argv: ["foot", "--app-id=herdr", "herdr"], children: [{ pid: 901, argv: ["herdr"] }] }
+    { pid: 900, argv: ["foot", "--title=herdr", "herdr"], children: [{ pid: 901, argv: ["herdr"] }] }
   ]));
   const derived = panel.launchDerivation([{
-    identityId: "herdr", patterns: ["^herdr$"], className: "herdr",
-    pid: "900", argv: ["foot", "--app-id=herdr", "herdr"]
+    identityId: "herdr", patterns: ["^foot$"], className: "foot",
+    pid: "900", argv: ["foot", "--title=herdr", "herdr"]
   }], DESKTOP_FILES, { "900": 1 }, tree);
-  assert.deepStrictEqual(derived.commands, { herdr: "foot --app-id=herdr herdr" });
+  assert.deepStrictEqual(derived.commands, { herdr: "foot --title=herdr herdr" });
   assert.deepStrictEqual(derived.refusals, {});
 });
 
-test("each terminal derives with the flag it actually understands", () => {
-  assert.strictEqual(panel.terminalClassFlag("foot"), "--app-id");
-  assert.strictEqual(panel.terminalClassFlag("footclient"), "--app-id");
-  // Alacritty has NO --app-id. Verified against Alacritty 0.17.0: the flag is
-  // --class, and this pin used to claim the opposite.
-  assert.strictEqual(panel.terminalClassFlag("Alacritty"), "--class");
-  assert.strictEqual(panel.terminalClassFlag("kitty"), "--class");
-  assert.strictEqual(panel.terminalClassFlag("com.mitchellh.ghostty"), "--class");
+// The window a derived `--title` command actually produces, as hyprctl reports
+// it. No captured fixture had one — every foot client in clients-laptop.json
+// carries `initialTitle: "foot"` — so this synthesized one closes the loop
+// between the command this file derives and the window an identity matches.
+test("the titled-terminal fixture is a foot window whose initialTitle is NOT foot", () => {
+  const clients = loadFixture("clients-titled-terminal.json");
+  const titled = clients.find((c) => c.initialTitle === "herdr");
+  assert.ok(titled, "the fixture must carry the titled foot window");
 
-  // The other half of the shape: who needs `-e` before the hosted command.
+  // The whole point of the convention: the CLASS is untouched, so every
+  // class-matched Omarchy window rule still applies to it.
+  assert.strictEqual(titled.class, "foot");
+  assert.strictEqual(titled.initialClass, "foot");
+
+  // And the app renamed itself the instant it started — `title` moved,
+  // `initialTitle` did not. That is why matching reads initialTitle only.
+  assert.notStrictEqual(titled.title, titled.initialTitle);
+
+  // A plain `foot` window sits beside it with the same class, so title is the
+  // only thing that can tell the two apart.
+  const plain = clients.find((c) => c.initialTitle === "foot");
+  assert.ok(plain && plain.class === "foot");
+
+  const identities = [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] },
+    { id: "terminal", patterns: ["^foot$"] }
+  ];
+  assert.strictEqual(engine.matchClient(titled, identities), "herdr");
+  assert.strictEqual(engine.matchClient(plain, identities), "terminal");
+});
+
+test("every terminal spells the title the same way, and only the exec word differs", () => {
+  // The flag column that used to live in TERMINAL_FAMILY is gone: it existed
+  // only because terminals disagree about `--app-id` vs `--class`, and they all
+  // agree about `--title`. What still differs is who needs `-e` before the
+  // hosted command.
   assert.strictEqual(panel.terminalExecFlag("foot"), "");
   assert.strictEqual(panel.terminalExecFlag("footclient"), "");
   assert.strictEqual(panel.terminalExecFlag("kitty"), "");
@@ -3184,25 +3218,25 @@ test("each terminal derives with the flag it actually understands", () => {
     panel.launchDerivation([{
       identityId: "terminal", patterns: ["^kitty$"], className: "kitty", pid: "900", argv: ["kitty"]
     }], DESKTOP_FILES, { "900": 1 }, tree).commands,
-    { terminal: "kitty --class=herdr herdr" });
+    { terminal: "kitty --title=herdr herdr" });
 });
 
 test("every terminal derives a command shaped the way that terminal can run", () => {
   // The blocker this test exists for: the derived command is written into
   // state and re-run, unread, at the next restore. `alacritty --app-id=top top`
-  // is not merely the wrong flag — Alacritty has no such flag AND rejects a
+  // was not merely the wrong flag — Alacritty has no such flag AND rejects a
   // bare trailing command, so the line could never have started anything.
   //
   // One exact string per terminal, with a sample child argv that carries an
   // argument of its own so the tail placement is visible.
   const shapes = [
-    ["foot", "foot", "foot --app-id=top top -d 2"],
-    ["footclient", "footclient", "footclient --app-id=top top -d 2"],
-    ["kitty", "kitty", "kitty --class=top top -d 2"],
+    ["foot", "foot", "foot --title=top top -d 2"],
+    ["footclient", "footclient", "footclient --title=top top -d 2"],
+    ["kitty", "kitty", "kitty --title=top top -d 2"],
     // Verified locally against Alacritty 0.17.0.
-    ["Alacritty", "alacritty", "alacritty --class=top -e top -d 2"],
+    ["Alacritty", "alacritty", "alacritty --title=top -e top -d 2"],
     // Per upstream docs; unverified locally.
-    ["com.mitchellh.ghostty", "ghostty", "ghostty --class=top -e top -d 2"]
+    ["com.mitchellh.ghostty", "ghostty", "ghostty --title=top -e top -d 2"]
   ];
 
   for (const [className, binary, expected] of shapes) {
