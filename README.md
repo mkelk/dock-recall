@@ -151,50 +151,79 @@ the panel with its reason:
 - **A locked session** — group joins and split flips are deferred and replayed at
   unlock instead of being dispatched into a lock screen.
 
-## Terminal-hosted apps need their own window class
+## Terminal-hosted apps are known by their title
 
-Matching and launch derivation are keyed on the window **class**. A TUI app
-running inside a plain terminal (say `herdr` typed into `foot`) is invisible: the
-window is just class `foot`, indistinguishable from every other terminal, and its
-`/proc` cmdline is the terminal's, not the app's. Give such apps a dedicated
-class **at launch**:
+**A terminal-hosted app is identified by the title it was launched with.** A TUI
+app running inside a plain terminal (say `herdr` typed into `foot`) is otherwise
+invisible: the window is just class `foot`, indistinguishable from every other
+terminal, and its `/proc` cmdline is the terminal's, not the app's. Launch it
+with a title of its own and it becomes addressable:
 
 ```bash
-foot --app-id=herdr herdr
+foot --title=herdr herdr
 ```
 
-That means remapping whatever keystroke launches it, and shipping a `.desktop`
-file with a matching `StartupWMClass`. With the app-id in place the panel sees a
-distinct chip, learns the exact launch command from `/proc`, and restores the app
+The title rather than a window class of its own, because this way the **class
+stays plain**. That command sets the window's `initialTitle` to `herdr` while its
+`class` remains `foot`, so every window rule you already have for terminals keeps
+applying to it — Omarchy's own
+`o.window("(Alacritty|kitty|foot)", { scroll_touchpad = 1.5 })` included. Rename
+the class instead and that rule stops matching: Hyprland full-matches an
+unanchored window-rule regex, so neither `herdr` nor a compound `foot.herdr`
+matches `(Alacritty|kitty|foot)`, and the window scrolls slower than a plain
+terminal for no reason you can see from the outside.
+
+`initialTitle` is fixed at the moment the window maps, so an app that renames
+itself the instant it starts moves only its live `title`. A window's identity
+never becomes time-varying.
+
+The command **shape** differs per terminal, not just the title flag: foot and
+kitty take a bare trailing command, Alacritty and Ghostty reject one and need
+`-e`.
+
+```bash
+foot --title=herdr herdr          # foot, footclient
+kitty --title=herdr herdr         # kitty
+alacritty --title=herdr -e herdr  # Alacritty
+ghostty --title=herdr -e herdr    # Ghostty
+```
+
+That means remapping whatever keystroke launches it. With the title in place the
+panel sees a distinct chip, learns the exact launch command, and restores the app
 like any other.
 
 ### The panel can usually write that command for you
 
 If you tick a terminal window whose own command line is nothing but the terminal,
 the panel looks at the terminal's **child process** — the thing actually running
-inside it — and offers the launch command to learn. A plain interactive shell in
-between is looked through, so `foot` → `bash` → `herdr` derives just as well.
-
-The command **shape** differs per terminal, not just the flag, and the panel
-writes the one that actually runs:
-
-```bash
-foot --app-id=herdr herdr         # foot, footclient
-kitty --class=herdr herdr         # kitty
-alacritty --class=herdr -e herdr  # Alacritty, Ghostty
-```
+inside it — and offers the launch command to learn, with the title flag and the
+`-e` that terminal needs already in it. A plain interactive shell in between is
+looked through, so `foot` → `bash` → `herdr` derives just as well.
 
 It only does this when the answer is **unambiguous — exactly one child**. A
-terminal running two things, a shell with two jobs, or a terminal sitting at an
-empty prompt is refused out loud: the row reads *runs in a terminal — give it its
-own `--app-id`*, no command is offered, and nothing is guessed. Deriving one of
-two candidates would write a launch command that silently reopens the wrong app,
-and you would only find out at the next restore.
+terminal running two things, a shell with two jobs, a shell inside a shell, or a
+terminal sitting at an empty prompt is refused out loud: the row says the app
+runs in a terminal and points at the title rule, no command is offered, and
+nothing is guessed. Deriving one of two candidates would write a launch command
+that silently reopens the wrong app, and you would only find out at the next
+restore.
+
+In the recording, such a window is claimed by an identity that carries
+`titlePatterns` — regex strings matched against `initialTitle` — beside the usual
+`patterns`, which are matched against `class` and `initialClass`. An empty list
+is no constraint on that axis; when **both are non-empty both must match**, so
+`{"patterns":["^foot$"],"titlePatterns":["^herdr$"]}` means exactly "the foot
+window titled herdr".
+
+**Class matching still works**, and nothing about it changed. If you already
+launch an app with a window class of its own, it keeps being matched and restored
+exactly as before — a dedicated class simply stops being the documented answer
+for terminal-hosted apps.
 
 A launch command belongs to the **app**, not to one of its windows: if a recording
 holds two windows of the same app and neither is running, the tool runs that one
 command twice, waiting for each window to appear before starting the next. Apps
-that need different arguments per window need a class per window — the app-id rule
+that need different arguments per window need a title per window — the same rule
 again.
 
 ## What it touches
