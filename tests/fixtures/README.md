@@ -67,7 +67,7 @@ older schema.
 | **Obsidian's Quattro class rename** | `class: "md.obsidian.Obsidian"` | The literal `obsidian` no longer matches; one identity has to carry both spellings as patterns. |
 | **Chromium webapp synthesized classes** | `chrome-app.slack.com__client_T0EXAMPLE01_C0EXAMPLE02-Profile_1`, `chrome-web.whatsapp.com__-Profile_1`, `chrome-mail.google.com__mail_u_0_-Profile_1`, `chrome-calendar.google.com__calendar_u_0_r-Profile_1`, `chrome-www.rememberthemilk.com__app_-Profile_1` | Long, per-profile, per-URL classes. Only prefix/substring patterns survive them. |
 | **A real 4-window group, with tab order** | the four clients on workspace 10 | Every member's `grouped` array is identical, and its order **is** the tab order: `md.obsidian.Obsidian` → `org.telegram.desktop` → Slack webapp → WhatsApp webapp. Recording a group means preserving that sequence. |
-| **Duplicate windows for one identity** | two `foot` clients (ws 1) and two `chrome-mail.google.com__…` clients (ws 9) | A layout stores one entry per identity, so "first matching window wins" has to be deterministic. |
+| **Duplicate windows for one identity** | two `foot` clients (ws 1) and two `chrome-mail.google.com__…` clients (ws 9) | A layout stores one entry per window (schema v3), each carrying an `occurrence` index, so the placement order that assigns those indices has to be deterministic. |
 | **Plain unqualified classes** | `chromium`, `code`, `foot` | Not everything is a reverse-DNS or webapp class; patterns must handle bare names too. |
 
 ## Recapturing

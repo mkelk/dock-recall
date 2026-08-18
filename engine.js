@@ -838,11 +838,17 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //
 // GEOMETRY (schema v2) — what it is and, just as importantly, what it is not.
 //
-// `at`/`size` are RECORDED and MEASURED; nothing in planRestore reads them and
-// no op moves or resizes a window because of them. They exist so the verdict
-// layer can score how closely a restored desktop matches the recording — the
-// tiled-layout question the state matrix's out-of-scope table raised, which
-// could not even be asked while the record threw the numbers away.
+// `at`/`size` are RECORDED and MEASURED, and for entries recorded
+// `floating: true`, planRestore also ACTS on them (since tick qkv): a float
+// outside GEOMETRY_TOLERANCE_PX of its recorded rect is drift and plans a
+// `geometry` op that resizes and moves it back — see the "Floating geometry"
+// block below and geometryPlanSkip for the one thing that can veto it. For
+// entries recorded tiled they remain measurement only; no op moves or resizes
+// a tiled window because of them. Scoring is the other reason they exist: the
+// verdict layer uses them to judge how closely a restored desktop matches the
+// recording — the tiled-layout question the state matrix's out-of-scope table
+// raised, which could not even be asked while the record threw the numbers
+// away.
 //
 // null means "not known", and it is permanent and legal:
 //   - every entry of a v1 record, upgraded (StateModel migrates to null, never
