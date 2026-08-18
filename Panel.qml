@@ -983,9 +983,21 @@ Item {
   // write is observable (see the state-file rule in .tick/learnings.md), and
   // round-tripped through StateModel so what the panel shows after a click is
   // literally what the file now says — normalization included.
+  //
+  // THE ONE PLACE THE PANEL TOUCHES THE STATE FILE. Every action above and below
+  // — tick a chip, learn a launch, Record, undo, Forget, pause — arrives here,
+  // which is why the read-only check for a newer-schema file sits here and
+  // nowhere else (tick 291). Such a file is read and shown, but writing it would
+  // strip whatever a later version added and stamp the newer number back on the
+  // remains; StateModel.writeRefusal owns that rule and the service asks it too.
   function writeState(next) {
     if (!root.stateLoaded) {
       root.warn("refusing to write the state file before it has been read")
+      return
+    }
+    var refusal = StateModel.writeRefusal(next)
+    if (refusal) {
+      root.warn("not writing the state file: " + refusal)
       return
     }
     var text = StateModel.serializeState(next)

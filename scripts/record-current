@@ -81,6 +81,16 @@ function main() {
     return;
   }
 
+  // The third writer of the state file, bound by the same read-only rule as the
+  // panel and the service (tick 291): a file from a newer schema would come back
+  // stripped of everything this build does not know, still stamped with the
+  // newer version. `--print` above is unaffected — reading is always allowed.
+  const refusal = StateModel.writeRefusal(state);
+  if (refusal) {
+    process.stderr.write("record-current: " + refusal + "\n");
+    process.exit(1);
+  }
+
   // Write-then-rename, never in place: the service watches this file, and a
   // truncating write shows it an empty file mid-flight.
   const temp = args.state + ".record";
