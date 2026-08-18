@@ -1,35 +1,38 @@
 # Dock Recall
 
-Put your windows back where they belong when you dock.
+You use Omarchy differently with or without a monitor. Record how you like each
+set up, and your windows auto-arrange when you dock and undock.
 
-**Dock Recall** records where every app lives for a given monitor setup — which
-monitor, which workspace, which tab group, in what order — and restores that
-layout the moment you attach or detach a display. Omarchy already recovers
+Undock, and Hyprland re-homes your windows onto the laptop panel. Dock again and
+they stay there — piled onto one screen, on the wrong workspaces — and you spend
+the first minute of the session dragging them back. Omarchy recovers
 *whether* a display is on, and the monitor plugins remember *where the monitors
-go*. This one remembers *where the windows go*.
+go*. Neither remembers *where the windows go*.
 
 ![The Dock Recall panel: the topology name and its in-sync state, the workspace map with each app drawn at its true proportions, the watched app list, and Record / Restore now](preview.png)
 
 ## Why you will want it
 
-- **One recording per monitor setup.** Docked and undocked are different
-  topologies with different layouts. Dock Recall keys everything on the join of
-  your monitors' EDID names, so the right layout comes back for the setup you
-  are actually in.
-- **It restores more than the monitor.** Workspace, tab-group membership *in the
-  recorded order*, floating geometry to the pixel, and tiled shape and ratio.
-- **Apps that died come back.** An app in the recording that is no longer running
-  is relaunched — from a launch command the panel derived from the running
-  process, not from a guess — and lands in its recorded place rather than on
-  whatever workspace happens to be focused.
-- **It tells you when it will not act.** Ambiguity is refused out loud, in the
-  panel, with the reason. Nothing is silently approximated.
-- **You can undo it.** A recording can be undone right after you make it, a
-  failed restore lists exactly which apps failed and offers Retry, and every
-  recorded topology stays reachable from the panel's overflow menu.
+- **A layout per monitor setup.** Docked and undocked are recorded separately,
+  keyed on your monitors' own EDID names, so the layout that comes back is the
+  one you recorded for the setup you are actually in.
+- **You choose what is watched.** Tick the apps you care about; everything else
+  is left exactly where it is. A scratch terminal never gets moved because a
+  restore ran.
+- **It puts back more than the monitor.** Workspace, tab-group membership *in the
+  recorded order*, floating geometry to the pixel, tiled shape and ratio.
+- **It says so when it will not act.** Where the desktop cannot be read without
+  guessing, the plugin refuses and the panel says why. Nothing is silently
+  approximated into place.
+- **Nothing is one-way.** Undo a recording right after you make it; a restore
+  that could not place something lists the app and offers Retry; every recorded
+  setup stays reachable from the panel.
+- **Apps you closed come back too** — relaunched from a command derived from the
+  process that was running, not from a guess, and landed in their recorded place
+  rather than on whatever workspace has focus.
 - **It stays out of the way.** No network access, no elevated privileges, no
   extra packages, no second Quickshell process. It reads `hyprctl`, writes one
-  state file, and shows a toast when it actually did something.
+  state file, and shows a toast only when it actually did something.
 
 ## Requirements
 
