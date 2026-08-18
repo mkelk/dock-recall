@@ -412,6 +412,66 @@ function toggleWatchedIdentities(identities, className, identityId, derivation) 
 }
 
 // ---------------------------------------------------------------------------
+// Saying that an identity can never win
+// ---------------------------------------------------------------------------
+//
+// engine.shadowedIdentities does the finding — it is a question about the
+// matcher, so it lives beside the matcher, and the report is passed IN here the
+// way the drift report and the verdicts are. This half is the sentence.
+//
+// It has to name BOTH identities. The user's only fixes are to move one above
+// the other in the state file or to untick the one in front, and neither is
+// possible from a message that says only "something is wrong". Naming the ids —
+// not the display names — is deliberate: the id is what they will read in the
+// file and what the chip's tick removes.
+//
+// Why this is a panel-level line rather than a row hint: a shadowed identity
+// usually has NO row. Its windows all resolved to the identity in front, so
+// appRows lists them under that one; the shadowed identity appears only as a
+// recorded ghost, if it happens to be in the layout, saying "not running" about
+// an app that is on screen. There is nothing to hang the reason on.
+
+// `"a"`, `"a" and "b"`, `"a", "b" and "c"` — ids, quoted, in the order given.
+function quotedIdList(ids) {
+  var list = isArray(ids) ? ids : [];
+  var quoted = [];
+  for (var i = 0; i < list.length; i++) {
+    var id = trim(list[i]);
+    if (id) quoted.push('"' + id + '"');
+  }
+  if (quoted.length === 0) return "";
+  if (quoted.length === 1) return quoted[0];
+  return quoted.slice(0, quoted.length - 1).join(", ") + " and " + quoted[quoted.length - 1];
+}
+
+// One entry of engine.shadowedIdentities -> one sentence, or "" when the entry
+// says nothing usable (which is the caller's single truthy test — a hint that
+// renders as an empty line looks like a bug in the panel).
+function shadowNoticeFor(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  var id = trim(entry.id);
+  var names = quotedIdList(entry.claimedBy);
+  if (!id || !names) return "";
+
+  var count = Number(entry.windows) || 0;
+  var windows = count > 1 ? "all " + count + " windows it matches" : "the only window it matches";
+  var one = isArray(entry.claimedBy) && entry.claimedBy.length === 1;
+
+  return '"' + id + '" never wins a window: ' + names + (one ? " is" : " are")
+    + " earlier in the list and " + (one ? "claims " : "claim ") + windows
+    + '. Put "' + id + '" above ' + (one ? names : "them") + " in the state file, or untick "
+    + (one ? names : "them") + ".";
+}
+
+// Every such sentence, one per line, or "" when the list is healthy.
+function shadowedIdentityHint(report) {
+  var list = isArray(report) ? report : [];
+  var lines = [];
+  for (var i = 0; i < list.length; i++) lines.push(shadowNoticeFor(list[i]));
+  return joinLines(lines);
+}
+
+// ---------------------------------------------------------------------------
 // Deriving a launch command
 // ---------------------------------------------------------------------------
 //
@@ -4524,6 +4584,8 @@ if (typeof module !== "undefined") {
     displayNameFor: displayNameFor,
     suggestIdentity: suggestIdentity,
     toggleWatchedIdentities: toggleWatchedIdentities,
+    shadowNoticeFor: shadowNoticeFor,
+    shadowedIdentityHint: shadowedIdentityHint,
     shellQuoteArg: shellQuoteArg,
     dispatchableCommand: dispatchableCommand,
     parseProcCmdline: parseProcCmdline,

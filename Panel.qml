@@ -321,6 +321,14 @@ Item {
   // Why Record is unavailable, when it is. Separate from emptyHint because they
   // are different sentences about different problems and can be true at once.
   readonly property string recordHint: PanelModel.recordBlockedHint(root.statusModel.restoring)
+  // An identity that matches windows on this desk and wins none of them —
+  // every one taken by an identity earlier in the list. It has no row of its
+  // own to say so on (its windows are listed under the identity that took
+  // them), so the reason goes here, next to the other two hints. Empty on a
+  // healthy list. See engine.shadowedIdentities for what counts as shadowed
+  // and, just as importantly, what does not.
+  readonly property string shadowHint: PanelModel.shadowedIdentityHint(
+    Engine.shadowedIdentities(root.liveClients, root.identities))
 
   // ------------------------------------------------------ launch derivation
   //
@@ -2673,6 +2681,20 @@ Item {
               visible: root.recordHint !== ""
               text: root.recordHint
               color: root.dimForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // A watched app that can never be recognized while the list is in
+            // this order. Urgent rather than dim: unlike the two hints above it,
+            // this one says something is already wrong — the app is being
+            // recorded under the wrong name right now.
+            Text {
+              width: parent.width
+              visible: root.shadowHint !== ""
+              text: root.shadowHint
+              color: Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap

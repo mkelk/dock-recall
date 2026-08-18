@@ -346,3 +346,125 @@ test("identity order decides between a class identity and a title identity", () 
   // Terminal first: the terminal swallows it. matchClient is first-match-wins.
   assert.strictEqual(engine.matchClient(herdrWindow, [terminal, HERDR]), "terminal");
 });
+
+// ---------------------------------------------------------------------------
+// Shadowed identities — an identity that can never win says so (tick 1vq)
+// ---------------------------------------------------------------------------
+//
+// matchClient is first-match-wins across the whole list, and toggleWatchedIdentities
+// PREPENDS. So ticking a plain foot terminal after a working `herdr` title identity
+// puts `^foot$` in FRONT of it, and every herdr window silently becomes "terminal".
+// The ordering is not changed here — the loss of the answer is DETECTED and named.
+
+test("an identity whose every live match is claimed earlier is reported, with its shadower", () => {
+  const terminal = { id: "terminal", patterns: ["^foot$"] };
+  const herdr = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+  const clients = [
+    clientWithTitle("foot", "herdr"),
+    clientWithTitle("foot", "foot")
+  ];
+
+  // The hazard order: the catch-all was prepended in front of the title identity.
+  const report = engine.shadowedIdentities(clients, [terminal, herdr]);
+  assert.deepStrictEqual(report, [{ id: "herdr", windows: 1, claimedBy: ["terminal"] }]);
+
+  // The order the panel writes when it prepends the SPECIFIC identity: nothing is
+  // shadowed, because herdr wins its own window and terminal still wins the other.
+  assert.deepStrictEqual(engine.shadowedIdentities(clients, [herdr, terminal]), []);
+});
+
+test("an identity that wins even one live window is not shadowed", () => {
+  const browser = { id: "browser", patterns: ["^chromium$"] };
+  const slack = { id: "slack", patterns: ["^chrome-app\\.slack\\.com", "^chromium$"] };
+  const clients = [
+    clientWithClass("chromium"),
+    clientWithClass("chrome-app.slack.com__client-Profile_1")
+  ];
+
+  // `browser` takes the plain chromium window first, but slack still owns the
+  // webapp window — a partial loss is not a shadow, and saying it was would be
+  // a false alarm about a rule that works.
+  assert.deepStrictEqual(engine.shadowedIdentities(clients, [browser, slack]), []);
+});
+
+test("an identity with no live window at all is never called shadowed", () => {
+  // The app is simply not running. There is no evidence either way, and a
+  // refusal without evidence is a guess.
+  const terminal = { id: "terminal", patterns: ["^foot$"] };
+  const herdr = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+  assert.deepStrictEqual(engine.shadowedIdentities([clientWithTitle("foot", "foot")], [terminal, herdr]), []);
+  assert.deepStrictEqual(engine.shadowedIdentities([], [terminal, herdr]), []);
+
+  // Neither is the FIRST identity, ever: nothing sits in front of it.
+  assert.deepStrictEqual(engine.shadowedIdentities([clientWithTitle("foot", "herdr")], [herdr]), []);
+});
+
+test("a shadow report names every earlier identity that took a window, in list order", () => {
+  const editor = { id: "editor", patterns: ["^code$"] };
+  const terminal = { id: "terminal", patterns: ["^foot$"] };
+  const both = { id: "workbench", patterns: ["^code$", "^foot$"] };
+  const clients = [clientWithClass("foot"), clientWithClass("code")];
+
+  assert.deepStrictEqual(engine.shadowedIdentities(clients, [editor, terminal, both]), [
+    { id: "workbench", windows: 2, claimedBy: ["editor", "terminal"] }
+  ]);
+
+  // LIST order, not hyprctl order: the same desktop read with the windows the
+  // other way round produces the same report.
+  assert.deepStrictEqual(engine.shadowedIdentities(clients.slice().reverse(), [editor, terminal, both]), [
+    { id: "workbench", windows: 2, claimedBy: ["editor", "terminal"] }
+  ]);
+});
+
+test("a NARROWER identity in front is never a shadow, even when it takes every window on screen", () => {
+  // The correct desk: the title identity properly ahead of the catch-all, herdr
+  // running and no plain terminal open. `terminal` matches that one window and
+  // wins nothing — but it is idle, not broken, and it starts working the moment
+  // a plain terminal opens. Calling it dead would be the same class of wrong
+  // answer this detector exists to remove.
+  const herdr = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+  const terminal = { id: "terminal", patterns: ["^foot$"] };
+  assert.deepStrictEqual(engine.shadowedIdentities([clientWithTitle("foot", "herdr")], [herdr, terminal]), []);
+
+  // The same on the other axis: a class-only rule cannot swallow a title-only
+  // one, so it is never named as its shadower.
+  const editor = { id: "editor", patterns: ["^code$"] };
+  const anyTitle = { id: "everything", patterns: [], titlePatterns: ["^main$"] };
+  assert.deepStrictEqual(engine.shadowedIdentities([clientWithTitle("code", "main")], [editor, anyTitle]), []);
+});
+
+test("shadow detection uses the same matcher as matchClient, AND semantics included", () => {
+  // A class-only identity in front of a class+title one shadows it completely;
+  // the reverse does not, because the narrower rule claims strictly less.
+  const wide = { id: "terminal", patterns: ["^foot$"] };
+  const narrow = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+  const window = clientWithTitle("foot", "herdr");
+
+  assert.strictEqual(engine.matchClient(window, [wide, narrow]), "terminal");
+  assert.strictEqual(engine.shadowedIdentities([window], [wide, narrow]).length, 1);
+
+  assert.strictEqual(engine.matchClient(window, [narrow, wide]), "herdr");
+  assert.strictEqual(engine.shadowedIdentities([window], [narrow, wide]).length, 0);
+});
+
+test("shadow detection survives junk in the list and never throws", () => {
+  const terminal = { id: "terminal", patterns: ["^foot$"] };
+  const window = clientWithTitle("foot", "herdr");
+
+  // Nulls, missing ids, an identity that constrains nothing, a broken regex.
+  const junk = [terminal, null, { patterns: ["^foot$"] }, { id: "" },
+    { id: "nothing", patterns: [], titlePatterns: [] },
+    { id: "broken", patterns: ["([unclosed"] }];
+  assert.deepStrictEqual(engine.shadowedIdentities([window], junk), []);
+
+  assert.deepStrictEqual(engine.shadowedIdentities(null, null), []);
+  assert.deepStrictEqual(engine.shadowedIdentities([window], undefined), []);
+});
+
+test("two identities sharing one id do not shadow each other", () => {
+  // A duplicate id is StateModel's problem, not a matching one: matchClient still
+  // answers with that id, so the second copy has lost nothing a user can see.
+  const first = { id: "terminal", patterns: ["^foot$"] };
+  const second = { id: "terminal", patterns: ["^foot$"] };
+  assert.deepStrictEqual(engine.shadowedIdentities([clientWithClass("foot")], [first, second]), []);
+});

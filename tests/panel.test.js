@@ -4200,3 +4200,74 @@ test("a request with no window at all is still a request the derivation can read
     ["obsidian"]);
   assert.strictEqual(panel.launchRequestFor(null, null, null), null);
 });
+
+// ------------------------------------------- an identity that can never win
+//
+// engine.shadowedIdentities finds them (tests/identity.test.js pins the
+// detection itself); this is the sentence the panel puts on screen. It has to
+// NAME the identity that is losing and the one taking its windows, because the
+// only fix is to reorder or untick one of them and the user cannot do either
+// without both names.
+
+test("the shadow notice names the losing identity, its shadower and the fix", () => {
+  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] });
+
+  assert.ok(line.indexOf('"herdr"') >= 0, line);
+  assert.ok(line.indexOf('"terminal"') >= 0, line);
+  assert.ok(line.indexOf("earlier in the list") >= 0, line);
+  assert.ok(line.indexOf("untick") >= 0, line);
+  assert.strictEqual(line.indexOf("undefined"), -1, line);
+});
+
+test("the shadow notice counts the windows, and says two shadowers as two", () => {
+  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] });
+  assert.ok(one.indexOf("the only window it matches") >= 0, one);
+  assert.ok(one.indexOf(" is earlier") >= 0, one);
+
+  const many = panel.shadowNoticeFor({ id: "workbench", windows: 3, claimedBy: ["editor", "terminal"] });
+  assert.ok(many.indexOf("all 3 windows it matches") >= 0, many);
+  assert.ok(many.indexOf('"editor" and "terminal"') >= 0, many);
+  assert.ok(many.indexOf(" are earlier") >= 0, many);
+});
+
+test("a junk shadow entry produces no sentence at all", () => {
+  assert.strictEqual(panel.shadowNoticeFor(null), "");
+  assert.strictEqual(panel.shadowNoticeFor({}), "");
+  assert.strictEqual(panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: [] }), "");
+});
+
+test("the panel hint is empty on a healthy list and one line per shadowed identity", () => {
+  assert.strictEqual(panel.shadowedIdentityHint([]), "");
+  assert.strictEqual(panel.shadowedIdentityHint(null), "");
+
+  const hint = panel.shadowedIdentityHint([
+    { id: "herdr", windows: 1, claimedBy: ["terminal"] },
+    { id: "gmail", windows: 2, claimedBy: ["browser"] }
+  ]);
+  assert.strictEqual(hint.split("\n").length, 2);
+  assert.ok(hint.indexOf('"herdr"') >= 0, hint);
+  assert.ok(hint.indexOf('"gmail"') >= 0, hint);
+});
+
+test("the whole path: a prepended catch-all is detected and explained", () => {
+  // The reachable sequence from the tick: a working herdr title identity, then
+  // the user ticks a plain foot terminal — which PREPENDS `^foot$` in front of
+  // it — and every herdr window silently becomes "terminal".
+  const herdrWindow = makeClient({ class: "foot", initialClass: "foot", initialTitle: "herdr", title: "herdr" });
+  const plainTerminal = makeClient({ class: "foot", initialClass: "foot", initialTitle: "foot", title: "foot" });
+  const clients = [herdrWindow, plainTerminal];
+
+  const before = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
+  assert.strictEqual(engine.matchClient(herdrWindow, before), "herdr");
+  assert.strictEqual(panel.shadowedIdentityHint(engine.shadowedIdentities(clients, before)), "");
+
+  const after = panel.toggleWatchedIdentities(before, "foot", "");
+  // Insertion order is UNCHANGED by this tick: the new identity still goes in
+  // front, and matching still answers first-match-wins.
+  assert.strictEqual(after[0].patterns[0], "^foot$");
+  assert.strictEqual(engine.matchClient(herdrWindow, after), after[0].id);
+
+  const hint = panel.shadowedIdentityHint(engine.shadowedIdentities(clients, after));
+  assert.ok(hint.indexOf('"herdr"') >= 0, hint);
+  assert.ok(hint.indexOf('"' + after[0].id + '"') >= 0, hint);
+});

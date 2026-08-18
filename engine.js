@@ -223,6 +223,146 @@ function matchClient(client, identities) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// SHADOWED IDENTITIES — an identity that can never win, said out loud
+// ---------------------------------------------------------------------------
+//
+// matchClient is first-match-wins across the WHOLE list, and the panel's
+// toggleWatchedIdentities PREPENDS. Put together, that is a reachable way to
+// lose an answer silently: a user with a working
+// `{patterns:["^foot$"], titlePatterns:["^herdr$"]}` identity later ticks a
+// plain foot terminal, a fresh `^foot$` identity goes in FRONT of it, and every
+// herdr window quietly becomes "terminal". The record binds it wrong, a restore
+// launches the wrong command, and the chip shows the wrong name — so even
+// unticking removes the wrong identity. Nothing anywhere says so.
+//
+// This does NOT change the priority rule and does not reorder anything: list
+// order stays the contract. It only NAMES the state, because a silent wrong
+// answer is the thing this project refuses to ship.
+//
+// WHY IT ASKS THE DESKTOP RATHER THAN THE PATTERNS. Whether one regex claims a
+// superset of another's windows is not a question a regex engine can answer, so
+// a static "does `^foot$` subsume `^foot$` + `^herdr$`?" analysis would be a
+// guess wearing a proof. The live window list is evidence: an identity that
+// matches windows and wins none of them has demonstrably lost, right now, on
+// this desktop. It is also the only version of the question the user can act
+// on — the windows are on screen in front of them.
+//
+// Note what this is NOT: PanelModel's identityClaimsSame is the DUPLICATE
+// guard, and it decides whether two rules are the SAME rule (an exact match on
+// both axes) so a proposal can be refused before it is written. Shadowing is
+// the asymmetric relation that guard deliberately lets through — `^foot$`
+// already watched does not stop `^foot$` + `^herdr$` being proposed, and must
+// not, since the narrow one is prepended in front of it. This function catches
+// the case where the list ended up the other way round.
+//
+// WHICH DIRECTION IS THE BAD ONE, re-derived from the v4 AND rule. An identity
+// that constrains BOTH axes is strictly narrower than one constraining only the
+// class, because every constraint present has to be satisfied (see the rule
+// table above). So:
+//
+//   in front           behind                      can the front one shadow it?
+//   -----------------  --------------------------  ----------------------------
+//   ^foot$             ^foot$ + title ^herdr$      YES — it claims every foot
+//                                                  window, titled or not. This
+//                                                  is the hazard.
+//   ^foot$ + ^herdr$   ^foot$                      NO — it only ever takes the
+//                                                  ONE titled window; plain
+//                                                  terminals still fall through.
+//
+// That asymmetry is decidable WITHOUT deciding regex subsumption, from which
+// AXES each side constrains: an identity that constrains an axis its rival
+// leaves free is asking for something strictly narrower on that axis and can
+// never claim everything the rival does. So a claimant counts only when its
+// constrained axes are a SUBSET of the shadowed identity's.
+//
+// Without that test the detector would cry wolf on the ordinary correct desk: a
+// user whose herdr identity sits properly in front of `terminal`, with herdr
+// running and no plain terminal open, would be told `terminal` never matches —
+// true this second, false the moment they open a terminal, and a panel that
+// says a working rule is broken is the same class of wrong answer this is
+// supposed to remove.
+//
+// The rest of the rules, all earned:
+//   - an identity that wins even ONE live window is not shadowed. A partial
+//     loss is an ordering the user may well have meant; only a total one is a
+//     rule that cannot fire.
+//   - an identity with NO live match is never called shadowed. Its app is not
+//     running, there is no evidence either way, and a refusal without evidence
+//     is the guess this exists to avoid.
+//   - an earlier identity carrying the SAME id is not a shadower. matchClient
+//     still answers with that id, so nothing observable was lost (a duplicate
+//     id is StateModel's dedupe problem, not a matching one).
+//
+// Returns [ { id, windows, claimedBy } ] in list order, where `windows` is how
+// many live windows the identity matches and `claimedBy` names the earlier
+// identities that took them AND could shadow it — also in LIST order, not in
+// the order hyprctl happened to list the windows, so two reads of one unchanged
+// desktop agree.
+
+// Which axes an identity constrains. An empty list is no constraint; see the
+// rule table above.
+function constrainedAxes(identity) {
+  return {
+    cls: patternList(identity.patterns).length > 0,
+    title: patternList(identity.titlePatterns).length > 0
+  };
+}
+
+// Could `earlier` claim everything `later` claims? Only if it constrains no
+// axis that `later` leaves free.
+function couldShadow(earlier, later) {
+  var a = constrainedAxes(earlier);
+  var b = constrainedAxes(later);
+  return (!a.cls || b.cls) && (!a.title || b.title);
+}
+
+function shadowedIdentities(clientsJson, identities) {
+  var clients = clientsJson || [];
+  var list = identities || [];
+  var out = [];
+
+  // From 1: the first identity has nothing in front of it to lose to.
+  for (var i = 1; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+
+    var matched = 0;
+    var wins = false;
+    var claimedAt = [];
+
+    for (var c = 0; c < clients.length; c++) {
+      var client = clients[c];
+      if (!clientMatchesIdentity(client, identity)) continue;
+      matched += 1;
+
+      var winner = -1;
+      for (var e = 0; e < i; e++) {
+        if (clientMatchesIdentity(client, list[e])) { winner = e; break; }
+      }
+      // No earlier claimant, or one wearing this very id: the identity's id is
+      // what matchClient answers for this window, so it has lost nothing.
+      if (winner < 0 || list[winner].id === identity.id) { wins = true; break; }
+      if (couldShadow(list[winner], identity) && claimedAt.indexOf(winner) < 0) claimedAt.push(winner);
+    }
+
+    // Every window gone, and at least one of the identities that took them is
+    // wide enough to keep taking them.
+    if (wins || matched === 0 || claimedAt.length === 0) continue;
+
+    claimedAt.sort(function (a, b) { return a - b; });
+    var claimedBy = [];
+    for (var k = 0; k < claimedAt.length; k++) {
+      var id = list[claimedAt[k]].id;
+      if (typeof id === "string" && id && claimedBy.indexOf(id) < 0) claimedBy.push(id);
+    }
+    if (claimedBy.length === 0) continue;
+    out.push({ id: identity.id, windows: matched, claimedBy: claimedBy });
+  }
+
+  return out;
+}
+
 // The first client belonging to an identity, in the order hyprctl listed them,
 // or null when the app is not running.
 //
@@ -4748,6 +4888,7 @@ if (typeof module !== "undefined") {
     monitorByDescription: monitorByDescription,
     clientMatchesIdentity: clientMatchesIdentity,
     matchClient: matchClient,
+    shadowedIdentities: shadowedIdentities,
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
     liveWindowCount: liveWindowCount,
