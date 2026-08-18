@@ -1,0 +1,47 @@
+#!/bin/bash
+# dev-install — copy the plugin into the live Omarchy plugin dir and make the
+# running shell pick it up.
+#
+# The shell hot-reloads QML from ~/.config/omarchy/plugins/<id>/, so the whole
+# edit loop is: edit in the repo, run this, watch `qs log -p "$OMARCHY_PATH/shell"`.
+# --delete keeps the installed copy an exact mirror (a file renamed in the repo
+# must not linger and get loaded).
+#
+# --restart also restarts the whole shell, and A SERVICE PLUGIN NEEDS IT.
+# Measured on Hyprland 0.56 / Quickshell: a hot-reloaded service is built with
+# Qt.createComponent + createObject AFTER the shell's reload cycle has finished,
+# and Quickshell gates `Process.running` and `FileView` loads behind the
+# post-reload hook that cycle fires. In a hot-reloaded service instance those
+# never start — QML runs, console.log works, Hyprland events arrive, and every
+# subprocess and file read silently does nothing. Only a shell restart puts the
+# service back inside a real reload cycle.
+
+set -euo pipefail
+
+restart=false
+if [[ ${1:-} == "--restart" ]]; then restart=true; fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+target="$HOME/.config/omarchy/plugins/mkelk.dock-recall"
+
+# The repo root IS the plugin folder: manifest.json and the QML entry points sit
+# at the top level because `omarchy plugin add <git-url>` clones the repository
+# and installs the clone root as the plugin directory. Mirroring the whole repo
+# (minus .git) therefore installs exactly the shape a user gets from a clone —
+# tests, docs and scripts ride along, and the shell loads only what the manifest
+# declares.
+mkdir -p "$target"
+rsync -a --delete --exclude='.git/' "$repo_root/" "$target/"
+
+# rescanPlugins is only needed when the plugin SET changed (a new plugin, a
+# manifest edit); plain QML edits hot-reload on their own. Running it always is
+# cheap and removes one class of "why is my change not showing" confusion.
+omarchy-shell shell rescanPlugins
+
+note=""
+if [[ $restart == true ]]; then
+  omarchy-restart-shell
+  note=" (shell restarted)"
+fi
+
+echo "dev-install: $repo_root -> $target$note"

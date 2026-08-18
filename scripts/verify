@@ -1,0 +1,423 @@
+#!/usr/bin/env node
+// verify — the measurement tool.
+//
+// Prints the recorded-vs-live diff for the topology that is on this desk RIGHT
+// NOW, one row per recorded app, one word per dimension, and exits 0 only when
+// every one of those words is "ok".
+//
+// It exists because the user was the measurement instrument. "Windows are out
+// of sync" was the entire bug report available, because verification lived
+// inside a restore cycle and the only thing it published was a count. This
+// prints the same verdict table the service publishes, from the same engine
+// functions, so what this says and what the panel says cannot come apart —
+// there is no second idea of "correct" in here to disagree with the first.
+//
+// It is also the future acceptance gate: `scripts/verify && echo clean` is a
+// truthful pass/fail for a desktop, which is what a live round has never had.
+//
+// GEOMETRY (schema v2, tick 5sc) is PRINTED, and since tick qkv exactly ONE of
+// its four answers moves the exit code: `off-by` on a FLOATING window. That is
+// the answer that now has an op behind it (epic yyz added the resize+move pair),
+// so a float off its recorded pixels is a restore that has not finished, and a
+// gate that stayed green over it would be the gate lying. The other three
+// answers cannot move the exit code and are not allowed to:
+//
+//   ok           a FLOATING window is back within ±2 px on every axis
+//   off-by …     a FLOATING window is outside that tolerance, with the deltas.
+//                THE ONE GEOMETRY ANSWER THAT FAILS THE GATE — including when
+//                it carries "(skipped: …)", which says the planner would not
+//                dispatch pixels at that rect (its coordinates are not on any
+//                monitor as they are arranged now, or its recorded size is not
+//                a usable rect). Still a red gate, because the desktop still
+//                does not match the recording; the parenthesis says why no
+//                restore is going to fix it and re-recording is the answer.
+//   0.000–1.000  a TILED window's intersection-over-union against its recorded
+//                rect. No pass/fail, and no effect on the exit code: Hyprland
+//                exposes no way to read or write the dwindle split tree, so a
+//                tiled rect is an OUTCOME, not an input, and there is no
+//                tolerance it is obliged to meet. Marking a desktop down for
+//                one would be failing the tool for a promise nothing can make.
+//   not-scored   nothing to compare. A v1 recording (permanent and legal for
+//                any file written before schema v2), an app that is not
+//                running, or one whose recorded monitor is not in this
+//                topology. NEVER a mismatch, never an agreement, never a
+//                failure.
+//
+// So `scripts/verify && echo clean` got STRICTER for floats and did not move at
+// all for anything else. Checked rather than assumed at the top of tick qkv:
+// the user's own state file is v2 and does carry rects, but all 18 of its
+// entries across both layouts are recorded TILED, so not one of them can
+// produce a geometry failure here.
+//
+// The per-workspace mean-IoU lines under the table are the tiled-similarity
+// baseline epic b9m has to move; --json carries the numbers as data.
+//
+// Usage:
+//   scripts/verify                         # the live desktop, human table
+//   scripts/verify --json                  # the same verdicts as JSON, plus
+//                                          # the geometry roll-up
+//   scripts/verify --state /tmp/foo.json   # against another state file
+//   scripts/verify --clients c.json --monitors m.json
+//                                          # against captured reads (a
+//                                          # forensics dump's clients/monitors
+//                                          # pasted into files replays it)
+//
+// Exit codes: 0 every verdict ok · 1 something is not · 2 it could not tell
+// (no reads, no recording for this topology, a broken state file). "Every
+// verdict ok" means the four placement dimensions plus a float's geometry;
+// a tiled window's similarity score never moves this number.
+
+"use strict";
+
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const engine = require(path.join(__dirname, "..", "engine.js"));
+const StateModel = require(path.join(__dirname, "..", "StateModel.js"));
+const PanelModel = require(path.join(__dirname, "..", "PanelModel.js"));
+
+const DEFAULT_STATE = path.join(
+  process.env.HOME || "",
+  ".local/state/omarchy/dock-recall.json"
+);
+const DEFAULT_STATUS = path.join(
+  process.env.HOME || "",
+  ".local/state/omarchy/dock-recall.status.json"
+);
+
+const EXIT_OK = 0;
+const EXIT_MISMATCH = 1;
+const EXIT_CANNOT_TELL = 2;
+
+function die(message) {
+  process.stderr.write("verify: " + message + "\n");
+  process.exit(EXIT_CANNOT_TELL);
+}
+
+function parseArgs(argv) {
+  const args = {
+    state: DEFAULT_STATE,
+    status: DEFAULT_STATUS,
+    clients: null,
+    monitors: null,
+    json: false
+  };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--state") args.state = argv[++i];
+    else if (argv[i] === "--status") args.status = argv[++i];
+    else if (argv[i] === "--clients") args.clients = argv[++i];
+    else if (argv[i] === "--monitors") args.monitors = argv[++i];
+    else if (argv[i] === "--json") args.json = true;
+    else die("unknown argument " + argv[i]);
+  }
+  return args;
+}
+
+function readJsonFile(file, what) {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    die("could not read the " + what + " file " + file + " (" + e.message + ")");
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (e) {
+    die("the " + what + " file " + file + " is not JSON (" + e.message + ")");
+  }
+  return null;
+}
+
+function hyprctlJson(hyprArgs, what) {
+  let raw = "";
+  try {
+    raw = execFileSync("hyprctl", hyprArgs, { encoding: "utf8" });
+  } catch (e) {
+    die("hyprctl " + hyprArgs.join(" ") + " failed (" + e.message + ")");
+  }
+  // The same read discipline the service uses: an empty answer is a FAILED
+  // read, not an empty desktop, and planning or judging against it would be a
+  // confident lie.
+  const read = StateModel.parseHyprctlArray(raw, 0, "");
+  if (!read.ok) die("could not read the " + what + " (" + read.error + ")");
+  return read.value;
+}
+
+// The last cycle's blockedBy reasons, recovered from the status file the
+// service publishes. Optional by design: a desktop that has never run a cycle
+// still has a truthful verdict table, it just cannot say WHY anything is out
+// of place.
+function outcomesFromStatus(file, topologyKey) {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    return [];
+  }
+  const status = StateModel.parseStatus(raw).status;
+  if (status.topologyKey !== topologyKey) return [];
+  const out = [];
+  for (const verdict of status.verdicts) {
+    if (!verdict.blockedBy) continue;
+    out.push({
+      kind: verdict.blockedBy.kind,
+      reason: verdict.blockedBy.reason,
+      ok: false,
+      identityIds: [verdict.identityId]
+    });
+  }
+  return out;
+}
+
+function pad(text, width) {
+  const value = String(text === null || text === undefined ? "" : text);
+  return value.length >= width ? value : value + " ".repeat(width - value.length);
+}
+
+// "DP-2 · ws 10 · tab 2 of 4", or "not running". What a human would say when
+// asked where a window is.
+function whereRecorded(app, monitors) {
+  const parts = [PanelModel.placementLabel(app.monitorDescription, app.workspaceId, monitors)];
+  if (app.floating) parts.push("floating");
+  if (app.group) parts.push("tab " + (app.group.index + 1) + " of " + app.group.groupId.replace(/^group:/, "").split("+").length);
+  return parts.join(" · ");
+}
+
+// The GEOMETRY cell for one verdict — one of four shapes, never a fifth.
+//
+// A tiled score is printed to three decimals rather than as a percentage: 0.982
+// and 0.974 are two different desktops, and "98%" and "97%" round them into the
+// same one. The whole point of the column is to be a baseline that can be seen
+// to move.
+function geometryCell(verdict) {
+  const word = verdict.geometry;
+  const detail = verdict.geometryDetail;
+  if (word === "not-scored") return "not-scored";
+  if (word === "ok") return "ok";
+  if (word === "scored") {
+    // A tiled score with the refinement's answer beside it, when there is one.
+    // The number alone says how far off the window is; the word says whether
+    // anything is ever going to be done about it, which is the difference
+    // between a baseline and an unactionable complaint. Same shape, same
+    // reason, as the `(skipped: …)` a float carries below — and the word is
+    // engine's own (engine.tilingRefusalOf), printed rather than paraphrased,
+    // so the column stays greppable.
+    const refused = detail && detail.refinement ? " (refinement: " + detail.refinement + ")" : "";
+    return (detail && typeof detail.iou === "number" ? detail.iou.toFixed(3) : "not-scored") + refused;
+  }
+  // geometry-off: the deltas ARE the message. A cell that only said "off" would
+  // send the reader to hyprctl to find out by how much.
+  //
+  // …and when the PLANNER refused to act on it, the cell says that too. A row
+  // reading "off-by +900,+0" that no restore will ever fix is a bug report
+  // waiting to be filed; "off-by +900,+0 (skipped: off-region)" is the tool
+  // telling the truth about both halves — what it measured, and why it did not
+  // act on it. The word is engine.geometryPlanSkip's own, printed rather than
+  // paraphrased, so the column stays greppable.
+  const d = detail && detail.delta;
+  const skip = detail && detail.skip ? " (skipped: " + detail.skip + ")" : "";
+  if (!d) return "off-by ?" + skip;
+  const sign = (n) => (n > 0 ? "+" : "") + n;
+  return "off-by " + sign(d.dx) + "," + sign(d.dy) + " "
+    + sign(d.dw) + "," + sign(d.dh) + skip;
+}
+
+function whereLive(entry, monitors, clients) {
+  if (entry.status === "missing") return "not running";
+  if (!entry.current) return "—";
+  const parts = [PanelModel.placementLabel(entry.current.monitorDescription, entry.current.workspaceId, monitors)];
+  if (entry.current.floating) parts.push("floating");
+  if (entry.current.group) {
+    parts.push("tab " + (entry.current.group.index + 1) + " of " + entry.current.group.memberIds.length);
+  } else {
+    // "alone" is not the whole truth for a window sitting in a group of
+    // ITSELF: `hl.dsp.group.toggle` on a lone window makes exactly that, and it
+    // is the visible residue of a rebuild whose joins were refused. The engine
+    // is right to call it ungrouped (one window is not a tab group), and this
+    // tool is the one place that ought to say what the read actually contains.
+    const client = clients.find((c) => c && c.address === entry.current.address);
+    const grouped = (client && client.grouped) || [];
+    parts.push(grouped.length ? "in a group of its own" : "alone");
+  }
+  return parts.join(" · ");
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  const parsed = StateModel.parseState(
+    (() => {
+      try {
+        return fs.readFileSync(args.state, "utf8");
+      } catch (e) {
+        die("could not read the state file " + args.state + " (" + e.message + ")");
+      }
+      return "";
+    })()
+  );
+  if (parsed.recovered) die("the state file " + args.state + " is unusable (" + parsed.error + ")");
+  if (parsed.error) process.stderr.write("verify: " + parsed.error + "\n");
+  const state = parsed.state;
+
+  const clients = args.clients
+    ? readJsonFile(args.clients, "clients")
+    : hyprctlJson(["clients", "-j"], "clients");
+  const monitors = args.monitors
+    ? readJsonFile(args.monitors, "monitors")
+    : hyprctlJson(["monitors", "all", "-j"], "monitors");
+
+  const topologyKey = engine.topologyKey(monitors);
+  if (!topologyKey) die("this monitor list resolves to no topology at all (" + monitors.length + " monitors)");
+
+  const layout = StateModel.layoutFor(state, topologyKey);
+  if (!layout) {
+    process.stdout.write("topology  " + topologyKey + "\n");
+    process.stdout.write("recorded  nothing for this topology — press Record, or verify elsewhere\n");
+    process.exit(EXIT_CANNOT_TELL);
+  }
+
+  const identities = StateModel.identities(state);
+  const report = engine.driftOf(clients, monitors, layout, identities);
+  const verdicts = engine.verdictsFor(report, outcomesFromStatus(args.status, topologyKey));
+  const summary = engine.verdictSummary(verdicts);
+
+  if (args.json) {
+    process.stdout.write(JSON.stringify({
+      topologyKey: topologyKey,
+      recordedAt: layout.recordedAt,
+      summary: summary,
+      // The roll-up as data: float pass/fail counts, tiled mean IoU, and the
+      // per-workspace breakdown. Beside `summary`, never inside it.
+      geometry: report.geometry,
+      verdicts: verdicts
+    }, null, 2) + "\n");
+    process.exit(summary.ok ? EXIT_OK : EXIT_MISMATCH);
+  }
+
+  // Keyed by (identityId, occurrence), not by identity: schema v3 gives an app
+  // with two windows two recorded entries and two verdicts, and keying by the
+  // name alone would print the same cells on both rows.
+  const rowKey = (identityId, occurrence) => identityId + "\u0000" + (occurrence || 0);
+  const byKey = {};
+  for (const app of layout.apps) byKey[rowKey(app.identityId, app.occurrence)] = app;
+  const entryByKey = {};
+  for (const entry of report.apps) entryByKey[rowKey(entry.identityId, entry.occurrence)] = entry;
+
+  const rows = verdicts.map((verdict) => ({
+    // "gmail" for the one-window case, exactly as before; "gmail (2/2)" only
+    // when there is a second row that would otherwise be indistinguishable.
+    app: verdict.instances > 1
+      ? verdict.identityId + " (" + verdict.instance + "/" + verdict.instances + ")"
+      : verdict.identityId,
+    monitor: verdict.monitor,
+    workspace: verdict.workspace,
+    floating: verdict.floating,
+    group: verdict.group,
+    geometry: geometryCell(verdict),
+    recorded: whereRecorded(byKey[rowKey(verdict.identityId, verdict.occurrence)] || {}, monitors),
+    live: whereLive(entryByKey[rowKey(verdict.identityId, verdict.occurrence)]
+      || { status: verdict.status }, monitors, clients),
+    why: (verdict.blockedBy && verdict.blockedBy.reason) || ""
+  }));
+
+  const width = (key, heading) =>
+    Math.max(heading.length, ...rows.map((r) => String(r[key]).length));
+  const widths = {
+    app: width("app", "APP"),
+    monitor: width("monitor", "MONITOR"),
+    workspace: width("workspace", "WORKSPACE"),
+    floating: width("floating", "FLOATING"),
+    group: width("group", "GROUP"),
+    geometry: width("geometry", "GEOMETRY"),
+    recorded: width("recorded", "RECORDED"),
+    live: width("live", "LIVE")
+  };
+
+  process.stdout.write("topology  " + topologyKey + "\n");
+  process.stdout.write("recorded  " + layout.recordedAt + " · " + layout.apps.length + " apps\n");
+  process.stdout.write("read      " + clients.length + " windows, " + monitors.length + " monitors"
+    + (args.clients || args.monitors ? " (from files)" : "") + "\n\n");
+
+  const line = (r) => [
+    pad(r.app, widths.app),
+    pad(r.monitor, widths.monitor),
+    pad(r.workspace, widths.workspace),
+    pad(r.floating, widths.floating),
+    pad(r.group, widths.group),
+    // GEOMETRY sits after the four placement dimensions and before the
+    // where-columns. Since tick qkv it is not purely informational: `off-by`
+    // on a FLOAT moves the exit code. A tiled window's score still cannot, so
+    // the column is read by its word and never by its position.
+    pad(r.geometry, widths.geometry),
+    pad(r.recorded, widths.recorded),
+    pad(r.live, widths.live)
+  ].join("  ").replace(/\s+$/, "");
+
+  process.stdout.write(line({
+    app: "APP", monitor: "MONITOR", workspace: "WORKSPACE", floating: "FLOATING",
+    group: "GROUP", geometry: "GEOMETRY", recorded: "RECORDED", live: "LIVE"
+  }) + "\n");
+
+  for (const row of rows) {
+    process.stdout.write(line(row) + "\n");
+    // The blocked reason gets its own indented line rather than an eighth
+    // column: it is a sentence, and a sentence in a column makes every other
+    // column unreadable.
+    if (row.why) process.stdout.write(pad("", widths.app) + "  ↳ " + row.why + "\n");
+  }
+
+  writeGeometrySection(report.geometry, monitors);
+
+  process.stdout.write("\n" + summary.text + "\n");
+  process.exit(summary.ok ? EXIT_OK : EXIT_MISMATCH);
+}
+
+// The tiled-similarity roll-up, under the table and clearly separate from it.
+//
+// It prints even when nothing could be scored, and says so in words. A section
+// that vanished on an all-null recording would leave the reader unable to tell
+// "this desktop matches perfectly" from "this build does not measure anything"
+// — which is the exact confusion the not-scored word exists to prevent.
+function writeGeometrySection(geometry, monitors) {
+  if (!geometry) return;
+  const floats = geometry.floats;
+  const tiled = geometry.tiled;
+
+  process.stdout.write("\ngeometry  ±" + geometry.tolerance + " px tolerance on floats"
+    + " · a float outside it fails the exit code; a tiled score never does\n");
+
+  process.stdout.write("  floats    " + floats.total + " recorded — "
+    + floats.ok + " within tolerance, " + floats.off + " off, "
+    + floats.notScored + " not scored\n");
+
+  if (tiled.scored === 0) {
+    process.stdout.write("  tiled     " + tiled.total + " recorded — none scored"
+      + (tiled.notScored > 0
+        ? " (nothing scored — apps without recorded geometry need a re-record; not-running or skipped apps cannot be scored either way)"
+        : "") + "\n");
+    return;
+  }
+
+  process.stdout.write("  tiled     " + tiled.scored + " of " + tiled.total
+    + " scored · mean IoU " + tiled.meanIou.toFixed(3)
+    + (tiled.notScored > 0 ? " (" + tiled.notScored + " not scored)" : "") + "\n");
+
+  for (const row of geometry.workspaces) {
+    const label = PanelModel.placementLabel(row.monitorDescription, row.workspaceId, monitors);
+    process.stdout.write("    " + pad(label, 28) + "  "
+      + row.meanIou.toFixed(3) + "  (" + row.count
+      + (row.count === 1 ? " window)" : " windows)") + "\n");
+    // …and, when the tiled refinement will not touch this workspace, the
+    // sentence saying why. It is a property of the WORKSPACE — one split tree,
+    // one answer — so it belongs on the workspace line and not repeated on
+    // every window in it. The per-app column carries the word; this carries
+    // the explanation.
+    if (row.refinement) {
+      process.stdout.write("      ↳ refinement refused (" + row.refinement + "): "
+        + engine.tilingRefusalPhrase(row.refinement) + "\n");
+    }
+  }
+}
+
+main();

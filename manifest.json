@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "mkelk.dock-recall",
+  "name": "Dock Recall",
+  "version": "0.2.0",
+  "author": "Morten Elk",
+  "license": "MIT",
+  "description": "Records where your windows live for each monitor setup — monitor, workspace, group order and geometry — and puts them back when you dock or undock.",
+  "kinds": [
+    "service",
+    "bar-widget",
+    "panel"
+  ],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml",
+    "panel": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Dock Recall",
+    "description": "Layout status for the current monitor topology",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

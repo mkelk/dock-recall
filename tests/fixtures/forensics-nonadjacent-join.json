@@ -1,0 +1,1109 @@
+{
+  "at": "2026-08-16T06:34:51.393Z",
+  "reason": "trigger file",
+  "topologyKey": "AOC CU34V5C 1UJQ2HA000683 | Samsung Display Corp. ATNA60HR07-0",
+  "ok": false,
+  "failures": 6,
+  "summary": "7/9 arranged — whatsapp: not in its recorded group; slack: group join refused by compositor (wanted 0x55c6f731db30+0x55c6f658f640, got 0x55c6f731db30)",
+  "recording": {
+    "topologyKey": "AOC CU34V5C 1UJQ2HA000683 | Samsung Display Corp. ATNA60HR07-0",
+    "recordedAt": "2026-08-16T06:05:19.500Z",
+    "apps": [
+      {
+        "identityId": "whatsapp",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 10,
+        "floating": false,
+        "group": {
+          "groupId": "group:whatsapp+slack",
+          "index": 0
+        }
+      },
+      {
+        "identityId": "slack",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 10,
+        "floating": false,
+        "group": {
+          "groupId": "group:whatsapp+slack",
+          "index": 1
+        }
+      },
+      {
+        "identityId": "telegram",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 10,
+        "floating": false,
+        "group": null
+      },
+      {
+        "identityId": "obsidian",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 10,
+        "floating": false,
+        "group": null
+      },
+      {
+        "identityId": "herdr",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 1,
+        "floating": false,
+        "group": null
+      },
+      {
+        "identityId": "chromium",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 2,
+        "floating": false,
+        "group": null
+      },
+      {
+        "identityId": "mail-google",
+        "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+        "workspaceId": 9,
+        "floating": false,
+        "group": null
+      },
+      {
+        "identityId": "rememberthemilk",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 8,
+        "floating": false,
+        "group": null
+      },
+      {
+        "identityId": "calendar-google",
+        "monitorDescription": "AOC CU34V5C 1UJQ2HA000683",
+        "workspaceId": 8,
+        "floating": false,
+        "group": null
+      }
+    ]
+  },
+  "identities": [
+    {
+      "id": "whatsapp",
+      "patterns": [
+        "^chrome-web\\.whatsapp\\.com"
+      ],
+      "launch": "omarchy-launch-webapp https://web.whatsapp.com/"
+    },
+    {
+      "id": "slack",
+      "patterns": [
+        "^chrome-app\\.slack\\.com"
+      ],
+      "launch": "omarchy-launch-webapp \"https://app.slack.com/client/T0EXAMPLE01/C0EXAMPLE02\""
+    },
+    {
+      "id": "telegram",
+      "patterns": [
+        "^org\\.telegram\\.desktop$"
+      ],
+      "launch": "/usr/bin/Telegram"
+    },
+    {
+      "id": "obsidian",
+      "patterns": [
+        "^md\\.obsidian\\.Obsidian$"
+      ],
+      "launch": "obsidian"
+    },
+    {
+      "id": "herdr",
+      "patterns": [
+        "^herdr$"
+      ],
+      "launch": "/usr/bin/foot --app-id=herdr herdr"
+    },
+    {
+      "id": "chromium",
+      "patterns": [
+        "^chromium$"
+      ],
+      "launch": "chromium"
+    },
+    {
+      "id": "mail-google",
+      "patterns": [
+        "^chrome-mail\\.google\\.com"
+      ],
+      "launch": "omarchy-launch-webapp \"https://mail.google.com/mail/u/0/#inbox\""
+    },
+    {
+      "id": "rememberthemilk",
+      "patterns": [
+        "^chrome-www\\.rememberthemilk\\.com"
+      ],
+      "launch": "omarchy-launch-webapp \"https://www.rememberthemilk.com/app/#list/41300145\""
+    },
+    {
+      "id": "calendar-google",
+      "patterns": [
+        "^chrome-calendar\\.google\\.com"
+      ],
+      "launch": "omarchy-launch-webapp \"https://calendar.google.com/calendar/u/0/r\""
+    }
+  ],
+  "clients": [
+    {
+      "address": "0x55c6f6568910",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3583,
+        38
+      ],
+      "size": [
+        1435,
+        850
+      ],
+      "workspace": {
+        "id": 8,
+        "name": "8"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "chrome-calendar.google.com__calendar_u_0_r-Profile_1",
+      "title": "Calendar - Week of August 24, 2026",
+      "initialClass": "chrome-calendar.google.com__calendar_u_0_r-Profile_1",
+      "initialTitle": "calendar.google.com_/calendar/u/0/r",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 12,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "1800008c"
+    },
+    {
+      "address": "0x55c6f65ee040",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        2892,
+        38
+      ],
+      "size": [
+        677,
+        850
+      ],
+      "workspace": {
+        "id": 8,
+        "name": "8"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "chrome-www.rememberthemilk.com__app_-Profile_1",
+      "title": "1 FOCUS (12) - Remember The Milk",
+      "initialClass": "chrome-www.rememberthemilk.com__app_-Profile_1",
+      "initialTitle": "www.rememberthemilk.com_/app/",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 9,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "180000e5"
+    },
+    {
+      "address": "0x55c6f656e840",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        2892,
+        38
+      ],
+      "size": [
+        2126,
+        850
+      ],
+      "workspace": {
+        "id": 2,
+        "name": "2"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "chromium",
+      "title": "Omarchy Display Manager | Omarchy Plugins - Chromium",
+      "initialClass": "chromium",
+      "initialTitle": "Untitled - Chromium",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "chromium-based-browser*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 11,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "180000ff"
+    },
+    {
+      "address": "0x55c6f6632e80",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        12,
+        38
+      ],
+      "size": [
+        2856,
+        1750
+      ],
+      "workspace": {
+        "id": 5,
+        "name": "5"
+      },
+      "floating": false,
+      "monitor": 0,
+      "class": "foot",
+      "title": "user@host:~",
+      "initialClass": "foot",
+      "initialTitle": "foot",
+      "pid": 977489,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*",
+        "terminal*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 10,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "1800010b"
+    },
+    {
+      "address": "0x55c6f731db30",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3962,
+        498
+      ],
+      "size": [
+        1056,
+        390
+      ],
+      "workspace": {
+        "id": 10,
+        "name": "10"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "chrome-web.whatsapp.com__-Profile_1",
+      "title": "web.whatsapp.com",
+      "initialClass": "chrome-web.whatsapp.com__-Profile_1",
+      "initialTitle": "web.whatsapp.com_/",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [
+        "0x55c6f731db30"
+      ],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 1,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "18000115"
+    },
+    {
+      "address": "0x55c6f658f640",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        2892,
+        38
+      ],
+      "size": [
+        524,
+        850
+      ],
+      "workspace": {
+        "id": 10,
+        "name": "10"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "chrome-app.slack.com__client_T0EXAMPLE01_C0EXAMPLE02-Profile_1",
+      "title": "general (Channel) - Acme Corp - Slack",
+      "initialClass": "chrome-app.slack.com__client_T0EXAMPLE01_C0EXAMPLE02-Profile_1",
+      "initialTitle": "app.slack.com_/client/T0EXAMPLE01/C0EXAMPLE02",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 0,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "18000116"
+    },
+    {
+      "address": "0x55c6f66415a0",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3430,
+        38
+      ],
+      "size": [
+        518,
+        850
+      ],
+      "workspace": {
+        "id": 10,
+        "name": "10"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "md.obsidian.Obsidian",
+      "title": "Index of resources - personal notes - Obsidian 1.13.7",
+      "initialClass": "md.obsidian.Obsidian",
+      "initialTitle": "personal notes - Obsidian 1.13.7",
+      "pid": 1007365,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 8,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "18000118"
+    },
+    {
+      "address": "0x55c6f72d3ea0",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3962,
+        38
+      ],
+      "size": [
+        1056,
+        418
+      ],
+      "workspace": {
+        "id": 10,
+        "name": "10"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "org.telegram.desktop",
+      "title": "Telegram (3)",
+      "initialClass": "org.telegram.desktop",
+      "initialTitle": "Telegram (2)",
+      "pid": 212592,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 2,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "18000117"
+    },
+    {
+      "address": "0x55c6f834d780",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3962,
+        38
+      ],
+      "size": [
+        1056,
+        850
+      ],
+      "workspace": {
+        "id": 1,
+        "name": "1"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "org.omarchy.nvim",
+      "title": "foot",
+      "initialClass": "org.omarchy.nvim",
+      "initialTitle": "foot",
+      "pid": 1019897,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*",
+        "terminal*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 7,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "1800011a"
+    },
+    {
+      "address": "0x55c6f7726260",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        12,
+        38
+      ],
+      "size": [
+        2856,
+        1750
+      ],
+      "workspace": {
+        "id": 9,
+        "name": "9"
+      },
+      "floating": false,
+      "monitor": 0,
+      "class": "chrome-mail.google.com__mail_u_0_-Profile_1",
+      "title": "Inbox (3) - user@example.com - Personal Mail",
+      "initialClass": "chrome-mail.google.com__mail_u_0_-Profile_1",
+      "initialTitle": "mail.google.com_/mail/u/0/",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 6,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "180000e4"
+    },
+    {
+      "address": "0x55c6f6620e50",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3494,
+        324
+      ],
+      "size": [
+        922,
+        279
+      ],
+      "workspace": {
+        "id": 1,
+        "name": "1"
+      },
+      "floating": true,
+      "monitor": 1,
+      "class": "org.quickshell",
+      "title": "quickshell",
+      "initialClass": "org.quickshell",
+      "initialTitle": "quickshell",
+      "pid": 1081480,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 5,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "1800011e"
+    },
+    {
+      "address": "0x55c6f65ebf80",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        3430,
+        38
+      ],
+      "size": [
+        518,
+        850
+      ],
+      "workspace": {
+        "id": 1,
+        "name": "1"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "chromium",
+      "title": "New issue - Chromium",
+      "initialClass": "chromium",
+      "initialTitle": "Untitled - Chromium",
+      "pid": 508104,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "chromium-based-browser*",
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 4,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "1800011f"
+    },
+    {
+      "address": "0x55c6f7858860",
+      "mapped": true,
+      "hidden": false,
+      "visible": true,
+      "acceptsInput": true,
+      "at": [
+        2892,
+        38
+      ],
+      "size": [
+        524,
+        850
+      ],
+      "workspace": {
+        "id": 1,
+        "name": "1"
+      },
+      "floating": false,
+      "monitor": 1,
+      "class": "herdr",
+      "title": "omarchy-host: omarchy-fast",
+      "initialClass": "herdr",
+      "initialTitle": "foot",
+      "pid": 789875,
+      "xwayland": false,
+      "pinned": false,
+      "pinFullscreened": false,
+      "fullscreen": 0,
+      "fullscreenClient": 0,
+      "fullscreenHandler": "default",
+      "allowedOverFullscreen": true,
+      "grouped": [],
+      "tags": [
+        "default-opacity*"
+      ],
+      "swallowing": "0x0",
+      "focusHistoryID": 3,
+      "inhibitingIdle": false,
+      "xdgTag": "",
+      "xdgDescription": "",
+      "contentType": "none",
+      "tearingHint": false,
+      "stableId": "180000e2"
+    }
+  ],
+  "monitors": [
+    {
+      "id": 0,
+      "name": "eDP-1",
+      "description": "Samsung Display Corp. ATNA60HR07-0",
+      "make": "Samsung Display Corp.",
+      "model": "ATNA60HR07-0 ",
+      "serial": "",
+      "width": 2880,
+      "height": 1800,
+      "physicalWidth": 340,
+      "physicalHeight": 220,
+      "refreshRate": 120,
+      "x": 0,
+      "y": 0,
+      "activeWorkspace": {
+        "id": 9,
+        "name": "9"
+      },
+      "specialWorkspace": {
+        "id": 0,
+        "name": ""
+      },
+      "reserved": [
+        0,
+        26,
+        0,
+        0
+      ],
+      "scale": 1,
+      "transform": 0,
+      "focused": false,
+      "dpmsStatus": true,
+      "vrr": false,
+      "solitary": "0",
+      "solitaryBlockedBy": [
+        "WINDOWED",
+        "CANDIDATE"
+      ],
+      "activelyTearing": false,
+      "tearingBlockedBy": [
+        "NOT_TORN",
+        "USER",
+        "CANDIDATE"
+      ],
+      "directScanoutTo": "0",
+      "directScanoutBlockedBy": [
+        "USER",
+        "SW",
+        "CANDIDATE"
+      ],
+      "disabled": false,
+      "currentFormat": "XRGB8888",
+      "mirrorOf": "none",
+      "availableModes": [
+        "2880x1800@120.00Hz",
+        "2880x1800@60.00Hz",
+        "1920x1200@120.00Hz",
+        "1920x1080@120.00Hz",
+        "1600x1200@120.00Hz",
+        "1680x1050@120.00Hz",
+        "1280x1024@120.00Hz",
+        "1440x900@120.00Hz",
+        "1280x800@120.00Hz",
+        "1280x720@120.00Hz",
+        "1024x768@120.00Hz",
+        "800x600@120.00Hz",
+        "640x480@120.00Hz"
+      ],
+      "colorManagementPreset": "srgb",
+      "sdrBrightness": 1,
+      "sdrSaturation": 1,
+      "sdrMinLuminance": 0.2,
+      "sdrMaxLuminance": 80,
+      "hardwareCursorsInUse": false
+    },
+    {
+      "id": 1,
+      "name": "DP-2",
+      "description": "AOC CU34V5C 1UJQ2HA000683",
+      "make": "AOC",
+      "model": "CU34V5C",
+      "serial": "1UJQ2HA000683",
+      "width": 3440,
+      "height": 1440,
+      "physicalWidth": 800,
+      "physicalHeight": 330,
+      "refreshRate": 100,
+      "x": 2880,
+      "y": 0,
+      "activeWorkspace": {
+        "id": 10,
+        "name": "10"
+      },
+      "specialWorkspace": {
+        "id": 0,
+        "name": ""
+      },
+      "reserved": [
+        0,
+        26,
+        0,
+        0
+      ],
+      "scale": 1.6,
+      "transform": 0,
+      "focused": true,
+      "dpmsStatus": true,
+      "vrr": false,
+      "solitary": "0",
+      "solitaryBlockedBy": [
+        "WINDOWED",
+        "CANDIDATE"
+      ],
+      "activelyTearing": false,
+      "tearingBlockedBy": [
+        "NOT_TORN",
+        "USER",
+        "CANDIDATE"
+      ],
+      "directScanoutTo": "0",
+      "directScanoutBlockedBy": [
+        "USER",
+        "SW",
+        "CANDIDATE"
+      ],
+      "disabled": false,
+      "currentFormat": "XRGB8888",
+      "mirrorOf": "none",
+      "availableModes": [
+        "3440x1440@59.97Hz",
+        "3440x1440@100.00Hz",
+        "3440x1440@74.98Hz",
+        "3440x1440@29.98Hz",
+        "2560x1080@60.00Hz",
+        "2560x1080@59.94Hz",
+        "2560x1080@50.00Hz",
+        "1720x1440@59.94Hz",
+        "1920x1080@60.00Hz",
+        "1920x1080@60.00Hz",
+        "1920x1080@60.00Hz",
+        "1920x1080@59.94Hz",
+        "1920x1080@59.94Hz",
+        "1920x1080@50.00Hz",
+        "1920x1080@50.00Hz",
+        "1680x1050@59.95Hz",
+        "1280x1024@75.03Hz",
+        "1280x1024@60.02Hz",
+        "1440x900@59.89Hz",
+        "1280x720@60.00Hz",
+        "1280x720@60.00Hz",
+        "1280x720@59.94Hz",
+        "1280x720@50.00Hz",
+        "1024x768@99.99Hz",
+        "1024x768@75.03Hz",
+        "1024x768@70.07Hz",
+        "1024x768@60.00Hz",
+        "832x624@74.55Hz",
+        "800x600@99.86Hz",
+        "800x600@75.00Hz",
+        "800x600@72.19Hz",
+        "800x600@60.32Hz",
+        "800x600@56.25Hz",
+        "720x576@50.00Hz",
+        "720x576@50.00Hz",
+        "720x480@60.00Hz",
+        "720x480@60.00Hz",
+        "720x480@59.94Hz",
+        "720x480@59.94Hz",
+        "640x480@99.83Hz",
+        "640x480@75.00Hz",
+        "640x480@72.81Hz",
+        "640x480@66.67Hz",
+        "640x480@60.00Hz",
+        "640x480@59.94Hz",
+        "640x480@59.94Hz",
+        "720x400@70.08Hz"
+      ],
+      "colorManagementPreset": "srgb",
+      "sdrBrightness": 1,
+      "sdrSaturation": 1,
+      "sdrMinLuminance": 0.2,
+      "sdrMaxLuminance": 80,
+      "hardwareCursorsInUse": false
+    }
+  ],
+  "plans": [
+    {
+      "pass": 1,
+      "iteration": 1,
+      "ops": [
+        {
+          "kind": "group",
+          "addresses": [
+            "0x55c6f731db30",
+            "0x55c6f658f640"
+          ],
+          "missing": []
+        }
+      ]
+    },
+    {
+      "pass": 2,
+      "iteration": 1,
+      "ops": [
+        {
+          "kind": "group",
+          "addresses": [
+            "0x55c6f731db30",
+            "0x55c6f658f640"
+          ],
+          "missing": []
+        }
+      ]
+    },
+    {
+      "pass": 3,
+      "iteration": 1,
+      "ops": [
+        {
+          "kind": "group",
+          "addresses": [
+            "0x55c6f731db30",
+            "0x55c6f658f640"
+          ],
+          "missing": []
+        }
+      ]
+    }
+  ],
+  "outcomes": [
+    {
+      "seq": 1,
+      "kind": "group",
+      "subject": "0x55c6f731db30+0x55c6f658f640",
+      "identityIds": [
+        "slack"
+      ],
+      "ok": false,
+      "reason": "group join refused by compositor (wanted 0x55c6f731db30+0x55c6f658f640, got 0x55c6f731db30)",
+      "at": "2026-08-16T06:34:43.013Z"
+    },
+    {
+      "seq": 2,
+      "kind": "group",
+      "subject": "0x55c6f731db30+0x55c6f658f640",
+      "identityIds": [
+        "slack"
+      ],
+      "ok": false,
+      "reason": "group join refused by compositor (wanted 0x55c6f731db30+0x55c6f658f640, got 0x55c6f731db30)",
+      "at": "2026-08-16T06:34:45.836Z"
+    },
+    {
+      "seq": 3,
+      "kind": "group",
+      "subject": "0x55c6f731db30+0x55c6f658f640",
+      "identityIds": [
+        "slack"
+      ],
+      "ok": false,
+      "reason": "group join refused by compositor (wanted 0x55c6f731db30+0x55c6f658f640, got 0x55c6f731db30)",
+      "at": "2026-08-16T06:34:50.532Z"
+    }
+  ],
+  "verdicts": [
+    {
+      "identityId": "whatsapp",
+      "status": "drifted",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "not-joined",
+      "ok": false,
+      "text": "not in its recorded group",
+      "blockedBy": null
+    },
+    {
+      "identityId": "slack",
+      "status": "drifted",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "not-joined",
+      "ok": false,
+      "text": "not in its recorded group",
+      "blockedBy": {
+        "kind": "group",
+        "reason": "group join refused by compositor (wanted 0x55c6f731db30+0x55c6f658f640, got 0x55c6f731db30)"
+      }
+    },
+    {
+      "identityId": "telegram",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    },
+    {
+      "identityId": "obsidian",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    },
+    {
+      "identityId": "herdr",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    },
+    {
+      "identityId": "chromium",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    },
+    {
+      "identityId": "mail-google",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    },
+    {
+      "identityId": "rememberthemilk",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    },
+    {
+      "identityId": "calendar-google",
+      "status": "ok",
+      "monitor": "ok",
+      "workspace": "ok",
+      "floating": "ok",
+      "group": "ok",
+      "ok": true,
+      "text": "",
+      "blockedBy": null
+    }
+  ]
+}

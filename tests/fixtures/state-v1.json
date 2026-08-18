@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "identities": [
+    {
+      "id": "whatsapp",
+      "patterns": ["^chrome-web\\.whatsapp\\.com"],
+      "launch": "omarchy-launch-webapp https://web.whatsapp.com/"
+    },
+    {
+      "id": "slack",
+      "patterns": ["^chrome-app\\.slack\\.com"],
+      "launch": "omarchy-launch-webapp \"https://app.slack.com/client/EXAMPLE\""
+    },
+    {
+      "id": "telegram",
+      "patterns": ["^org\\.telegram\\.desktop$"],
+      "launch": "/usr/bin/Telegram"
+    },
+    {
+      "id": "obsidian",
+      "patterns": ["^md\\.obsidian\\.Obsidian$"],
+      "launch": "obsidian"
+    },
+    {
+      "id": "scratchpad",
+      "patterns": ["^scratchpad$"],
+      "launch": "/usr/bin/foot --app-id=scratchpad"
+    },
+    {
+      "id": "chromium",
+      "patterns": ["^chromium$"],
+      "launch": "chromium"
+    },
+    {
+      "id": "mail-example",
+      "patterns": ["^chrome-mail\\.example\\.com"],
+      "launch": "omarchy-launch-webapp \"https://mail.example.com/\""
+    },
+    {
+      "id": "tasks-example",
+      "patterns": ["^chrome-www\\.tasks\\.example\\.com"],
+      "launch": "omarchy-launch-webapp \"https://www.tasks.example.com/app\""
+    },
+    {
+      "id": "calendar-example",
+      "patterns": ["^chrome-calendar\\.example\\.com"],
+      "launch": "omarchy-launch-webapp \"https://calendar.example.com/\""
+    },
+    {
+      "id": "never-launch-me",
+      "patterns": ["^vpn-client$"],
+      "launch": ""
+    }
+  ],
+  "layouts": {
+    "Example Panel Co. EX-1234": {
+      "topologyKey": "Example Panel Co. EX-1234",
+      "recordedAt": "2026-08-15T20:50:21.657Z",
+      "apps": [
+        {
+          "identityId": "whatsapp",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:obsidian+telegram+slack+whatsapp", "index": 3 }
+        },
+        {
+          "identityId": "slack",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:obsidian+telegram+slack+whatsapp", "index": 2 }
+        },
+        {
+          "identityId": "telegram",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:obsidian+telegram+slack+whatsapp", "index": 1 }
+        },
+        {
+          "identityId": "obsidian",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:obsidian+telegram+slack+whatsapp", "index": 0 }
+        },
+        {
+          "identityId": "scratchpad",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 1,
+          "floating": true,
+          "group": null
+        },
+        {
+          "identityId": "chromium",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 2,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "mail-example",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 9,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "tasks-example",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 8,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "calendar-example",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 8,
+          "floating": false,
+          "group": null
+        }
+      ]
+    },
+    "Example Ultrawide Ltd EU-9000 SN0001 | Example Panel Co. EX-1234": {
+      "topologyKey": "Example Ultrawide Ltd EU-9000 SN0001 | Example Panel Co. EX-1234",
+      "recordedAt": "2026-08-16T07:09:59.540Z",
+      "apps": [
+        {
+          "identityId": "whatsapp",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:slack+telegram+whatsapp", "index": 2 }
+        },
+        {
+          "identityId": "slack",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:slack+telegram+whatsapp", "index": 0 }
+        },
+        {
+          "identityId": "telegram",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 10,
+          "floating": false,
+          "group": { "groupId": "group:slack+telegram+whatsapp", "index": 1 }
+        },
+        {
+          "identityId": "obsidian",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 10,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "scratchpad",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 1,
+          "floating": true,
+          "group": null
+        },
+        {
+          "identityId": "chromium",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 2,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "mail-example",
+          "monitorDescription": "Example Panel Co. EX-1234",
+          "workspaceId": 9,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "tasks-example",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 8,
+          "floating": false,
+          "group": null
+        },
+        {
+          "identityId": "calendar-example",
+          "monitorDescription": "Example Ultrawide Ltd EU-9000 SN0001",
+          "workspaceId": 8,
+          "floating": false,
+          "group": null
+        }
+      ]
+    }
+  }
+}

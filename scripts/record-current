@@ -1,0 +1,113 @@
+#!/usr/bin/env node
+// record-current — snapshot the live desktop into the state file.
+//
+// Test tooling, not the product: the panel epic will own recording from the UI.
+// Until then this is how a layout gets into
+// ~/.local/state/omarchy/dock-recall.json so the service has something to
+// restore, and it is what tests/sim-dock.sh seeds with.
+//
+// It records THROUGH the engine — engine.buildLayout over live `hyprctl
+// clients -j` / `monitors all -j` — so a layout recorded here is byte-identical
+// to one the service would plan against. A hand-written layout would be a
+// second, silently diverging idea of the schema.
+//
+// Usage:
+//   scripts/record-current                       # record into the default state file
+//   scripts/record-current --state /tmp/foo.json # …into another file
+//   scripts/record-current --print               # print the layout, write nothing
+
+"use strict";
+
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const engine = require(path.join(__dirname, "..", "engine.js"));
+const StateModel = require(path.join(__dirname, "..", "StateModel.js"));
+
+const DEFAULT_STATE = path.join(
+  process.env.HOME || "",
+  ".local/state/omarchy/dock-recall.json"
+);
+
+function parseArgs(argv) {
+  const args = { state: DEFAULT_STATE, print: false };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--state") args.state = argv[++i];
+    else if (argv[i] === "--print") args.print = true;
+    else {
+      process.stderr.write("record-current: unknown argument " + argv[i] + "\n");
+      process.exit(2);
+    }
+  }
+  return args;
+}
+
+function hyprctlJson(args) {
+  return JSON.parse(execFileSync("hyprctl", args, { encoding: "utf8" }));
+}
+
+function readState(file) {
+  let raw = "";
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    raw = "";
+  }
+  const result = StateModel.parseState(raw);
+  if (result.error) process.stderr.write("record-current: " + result.error + "\n");
+  return result.state;
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const state = readState(args.state);
+  const identities = StateModel.identities(state);
+
+  if (identities.length === 0) {
+    process.stderr.write(
+      "record-current: no identities in " + args.state + " — nothing to record.\n" +
+      "Seed the identities list first; only watched apps are ever recorded.\n"
+    );
+    process.exit(1);
+  }
+
+  const clients = hyprctlJson(["clients", "-j"]);
+  const monitors = hyprctlJson(["monitors", "all", "-j"]);
+  const layout = engine.buildLayout(clients, monitors, identities, new Date().toISOString());
+
+  if (args.print) {
+    process.stdout.write(JSON.stringify(layout, null, 2) + "\n");
+    return;
+  }
+
+  // Write-then-rename, never in place: the service watches this file, and a
+  // truncating write shows it an empty file mid-flight.
+  const temp = args.state + ".record";
+  fs.writeFileSync(temp, StateModel.serializeState(StateModel.upsertLayout(state, layout)));
+  fs.renameSync(temp, args.state);
+  // Windows, not apps: schema v3 records every window of a watched identity, so
+  // a desktop with two terminals open records two placements for one app and
+  // "12/10" is the honest pair of numbers rather than a bug.
+  const recordedApps = {};
+  for (const app of layout.apps) recordedApps[app.identityId] = true;
+  process.stdout.write(
+    "recorded \"" + layout.topologyKey + "\": " + layout.apps.length + " windows of " +
+    Object.keys(recordedApps).length + "/" + identities.length +
+    " watched apps -> " + args.state + "\n"
+  );
+  // Same note the panel logs (tick pqv): the count above is short by these, and
+  // this is why. A scratchpad's negative workspace id is not dispatchable, so
+  // the app is left out of the layout rather than recorded unrestorably.
+  for (const skipped of layout.excluded || []) {
+    process.stderr.write(
+      "not recorded: \"" + skipped.identityId +
+      (skipped.occurrence ? "\" (window " + (skipped.occurrence + 1) + ")" : "\"") +
+      " is on special workspace " +
+      (skipped.workspaceName || skipped.workspaceId) +
+      " — a scratchpad placement cannot be restored\n"
+    );
+  }
+}
+
+main();

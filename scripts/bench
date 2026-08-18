@@ -1,0 +1,695 @@
+#!/usr/bin/env node
+// bench — how close does a restore put TILED windows back?
+//
+// The number this epic is judged on is an IoU (docs/state-matrix.md
+// § Geometry scoring), and until this script existed the only two measurements
+// of it were the user's own desktop — ws-8 at 0.782 after a redock window swap,
+// `herdr` at 0.497 — taken by hand, once, on windows nobody may perturb twice.
+// A ceiling claim needs a number that can be re-taken after every change, so
+// this takes it: scratch windows, scratch workspaces, scratch state file,
+// several rounds per scenario, mean and min printed.
+//
+// WHAT IT MEASURES, precisely: plan → execute → re-plan, driven from THIS
+// working tree's engine.js, and then engine.driftOf + engine.geometrySummaryOf
+// over the live read. It is the engine's decision plus the compositor's real
+// answer, and nothing simulated.
+//
+// WHAT IT DOES NOT MEASURE: Service.qml. The service is QML and cannot be
+// imported here, so `runRestore` below is a MIRROR of its pass loop — the same
+// engine calls in the same order, the same iteration cap, the same
+// no-progress check (engine.samePlan). It is deliberately thin, and every op
+// kind it can be handed is executed through engine.opToCommand so the dispatch
+// STRINGS are the product's, not the bench's. An op kind it does not know is a
+// loud failure rather than a silent skip, because a bench that quietly does
+// less than the product would report a ceiling that is really a hole. The
+// executor's fidelity is stated per tick in the report it writes.
+//
+// SAFETY. Everything it touches is its own and nothing of the user's is even
+// read for writing:
+//   - windows are `foot --app-id=dr-bench-N`, spawned onto a scratch workspace
+//     with an exec rule so they never appear on the user's screen, and killed
+//     on the way out (trap-equivalent: a process-level cleanup handler);
+//   - workspaces are picked from the 60s, above anything Omarchy binds;
+//   - the state file is a TEMP file. The user's
+//     ~/.local/state/omarchy/dock-recall.json is never opened. That is a
+//     stronger promise than backing it up, and it is why this script does not
+//     need the backup dance sim-dock.sh does;
+//   - the keyboard focus is read at the start and put back at the end, and
+//     every step that has to take focus (see the choreography note in
+//     runRestore) puts it back immediately.
+//
+// Usage:
+//   scripts/bench                                  # 5 rounds, scenarios 2,3,4
+//   scripts/bench --rounds 8 --scenarios 2,4
+//   scripts/bench --out docs/bench/baseline.md --json docs/bench/baseline.json
+//   scripts/bench --label "tick or5 · current code"
+
+"use strict";
+
+const { execFileSync } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const engine = require(path.join(__dirname, "..", "engine.js"));
+const StateModel = require(path.join(__dirname, "..", "StateModel.js"));
+
+// --------------------------------------------------------------------- config
+
+const APP_PREFIX = "dr-bench-";
+// Two scratch workspaces, both well clear of anything a keybind reaches.
+// PARK is where windows live between rounds and where "scattered away" leaves
+// them; TARGET is the workspace whose tiling is being measured.
+const PARK_WS = 61;
+const TARGET_WS = 62;
+const MAX_WINDOWS = 8;
+// The service's own numbers, so the mirror is a mirror (Service.qml
+// maxIterations, and its settle between a move and the read that follows it).
+const MAX_ITERATIONS = 5;
+// The scatter shapes a round runs, in report order. See runRound.
+const SHAPES = ["reorder", "ratio", "away", "away+jitter"];
+const SETTLE_MS = 150;
+
+function parseArgs(argv) {
+  const args = {
+    rounds: 5,
+    scenarios: [2, 3, 4],
+    out: "",
+    json: "",
+    label: "",
+    seed: 20260816,
+    keep: false
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--rounds") args.rounds = Number(argv[++i]);
+    else if (a === "--scenarios") args.scenarios = String(argv[++i]).split(",").map(Number);
+    else if (a === "--out") args.out = argv[++i];
+    else if (a === "--json") args.json = argv[++i];
+    else if (a === "--label") args.label = argv[++i];
+    else if (a === "--seed") args.seed = Number(argv[++i]);
+    else if (a === "--keep") args.keep = true;
+    else {
+      process.stderr.write("bench: unknown argument " + a + "\n");
+      process.exit(2);
+    }
+  }
+  for (const n of args.scenarios) {
+    if (!(n >= 2 && n <= MAX_WINDOWS)) {
+      process.stderr.write("bench: scenario " + n + " is outside 2.." + MAX_WINDOWS + "\n");
+      process.exit(2);
+    }
+  }
+  if (!(args.rounds >= 1)) {
+    process.stderr.write("bench: --rounds must be at least 1\n");
+    process.exit(2);
+  }
+  return args;
+}
+
+// ------------------------------------------------------------ live primitives
+
+function hyprctlJson(argv) {
+  return JSON.parse(execFileSync("hyprctl", argv, { encoding: "utf8" }));
+}
+function clients() { return hyprctlJson(["clients", "-j"]); }
+function monitors() { return hyprctlJson(["monitors", "all", "-j"]); }
+function dispatch(lua) {
+  // Never throws: a refused dispatch is DATA here (the executor counts it), the
+  // same way Service.qml treats a VERB-ERROR as an outcome rather than a crash.
+  try {
+    return { ok: true, text: String(execFileSync("hyprctl", ["dispatch", lua], { encoding: "utf8" })).trim() };
+  } catch (e) {
+    return { ok: false, text: String((e && e.stdout) || (e && e.message) || "").trim().split("\n")[0] };
+  }
+}
+// `hyprctl dispatch` is a synchronous round trip (tick y29 row 12), but a tiled
+// re-layout is applied on the next frame, so a READ that immediately follows a
+// move can still see the old rect. Everything here that reads after a dispatch
+// waits this long first; the probe measured the tree to be stable well inside
+// it (docs/state-matrix.md § Tiled placement).
+function sleep(ms) { execFileSync("bash", ["-c", "sleep " + (ms / 1000)]); }
+function focusedAddress() {
+  try { return hyprctlJson(["activewindow", "-j"]).address || ""; } catch (e) { return ""; }
+}
+function cursorPos() {
+  try {
+    const parts = String(execFileSync("hyprctl", ["cursorpos"], { encoding: "utf8" })).split(",");
+    return [Number(parts[0]), Number(parts[1])];
+  } catch (e) { return null; }
+}
+function warpCursor(x, y) { dispatch("hl.dsp.cursor.move({ x = " + Math.round(x) + ", y = " + Math.round(y) + " })"); }
+function appIdOf(client) {
+  return String((client && (client.initialClass || client.class)) || "");
+}
+function benchClients(list) {
+  return (list || []).filter((c) => appIdOf(c).indexOf(APP_PREFIX) === 0);
+}
+
+// ---------------------------------------------------------- the scratch world
+
+function identitiesFor(count) {
+  const out = [];
+  for (let i = 1; i <= count; i++) {
+    out.push({
+      id: APP_PREFIX + i,
+      patterns: ["^" + APP_PREFIX + i + "$"],
+      launch: "foot --app-id=" + APP_PREFIX + i + " -e sleep 7200"
+    });
+  }
+  return out;
+}
+
+function addressFor(list, i) {
+  const c = (list || []).find((x) => appIdOf(x) === APP_PREFIX + i);
+  return c ? c.address : "";
+}
+
+function spawnWindows(count) {
+  for (let i = 1; i <= count; i++) {
+    if (addressFor(clients(), i)) continue;
+    // The `workspace = "<id> silent"` exec rule is what keeps this off the
+    // user's screen — the window is born on the scratch workspace and the
+    // visible workspace never changes. Live-verified in the or5 probe.
+    dispatch('hl.dsp.exec_cmd([[foot --app-id=' + APP_PREFIX + i + ' -e sleep 7200]], ' +
+      '{ workspace = "' + PARK_WS + ' silent" })');
+  }
+  const deadline = Date.now() + 15000;
+  for (;;) {
+    const list = clients();
+    let missing = 0;
+    for (let i = 1; i <= count; i++) if (!addressFor(list, i)) missing++;
+    if (!missing) return list;
+    if (Date.now() > deadline) throw new Error("bench: " + missing + " scratch window(s) never appeared");
+    sleep(200);
+  }
+}
+
+function closeWindows() {
+  for (const c of benchClients(clients())) {
+    dispatch('hl.dsp.window.close({ window = "address:' + c.address + '" })');
+  }
+}
+
+function moveToWorkspace(address, workspaceId) {
+  // The product's own move op, produced by the product's own formatter, so the
+  // bench cannot drift from the dispatch the service sends.
+  const commands = engine.opToCommand({ kind: "move", address: address, workspaceId: workspaceId });
+  for (const c of commands) dispatch(c.replace(/^hyprctl dispatch '/, "").replace(/'$/, ""));
+}
+
+function parkAll(count) {
+  const list = clients();
+  for (let i = 1; i <= count; i++) {
+    const address = addressFor(list, i);
+    if (address) moveToWorkspace(address, PARK_WS);
+  }
+  sleep(SETTLE_MS);
+}
+
+// A deterministic shuffle, so a round number names the same permutation on
+// every run and a regression is reproducible rather than "sometimes".
+function rng(seed) {
+  let s = (seed >>> 0) || 1;
+  return function () {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5; s >>>= 0;
+    return s / 4294967296;
+  };
+}
+function shuffled(list, next) {
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    const t = out[i]; out[i] = out[j]; out[j] = t;
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------- restore
+//
+// The mirror of Service.qml's pass loop, and the one place this script is
+// allowed to know anything the service knows. Read, plan, execute, re-read,
+// re-plan; stop on an empty plan, on the iteration cap, or when a plan repeats
+// (engine.samePlan — the service's no-progress diagnosis, which exists so a
+// window that refuses to move stops the pass instead of being dispatched at
+// for ever).
+//
+// Op kinds it executes, and how faithfully:
+//   move / workspace-monitor / geometry — through engine.opToCommand verbatim.
+//   floating                            — read-gated toggle, like executeFloating.
+//   launch / group / ungroup            — NOT executed. They need live-state
+//                                         choreography that only the service
+//                                         has, and no bench scenario can
+//                                         produce one (the windows are always
+//                                         alive, never grouped). Counted as
+//                                         "unsupported" and reported, never
+//                                         silently skipped.
+function runRestore(layout, identities, restoreFocusTo) {
+  const trace = { iterations: 0, ops: 0, dispatches: 0, refused: 0, unsupported: 0, kinds: {}, noProgress: false };
+  let previous = null;
+
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    const live = clients();
+    const mons = monitors();
+    const plan = engine.planRestore(live, mons, layout, identities);
+    if (!plan.length) break;
+    if (previous && engine.samePlan(previous, plan)) { trace.noProgress = true; break; }
+    previous = plan;
+    trace.iterations += 1;
+
+    for (let op of plan) {
+      trace.ops += 1;
+      trace.kinds[op.kind] = (trace.kinds[op.kind] || 0) + 1;
+
+      if (op.kind === "launch" || op.kind === "group" || op.kind === "ungroup") {
+        trace.unsupported += 1;
+        continue;
+      }
+      if (op.kind === "floating") {
+        const before = clients().find((c) => c.address === op.address);
+        if (!before || !!before.floating === !!op.value) continue;
+      }
+      if (op.kind === "divider") {
+        // The service rebuilds the pair from a FRESH read before dispatching,
+        // because `resize` takes both axes and the axis this op is not moving
+        // may have changed since the plan (Service.executeDivider). Mirrored
+        // here, or the bench would dispatch a stale number the product never
+        // would and measure a worse desktop than the product produces.
+        const now = clients().find((c) => c.address === op.address);
+        if (!now || now.floating) { trace.refused += 1; continue; }
+        const axis = op.axis === 1 ? 1 : 0;
+        const size = [now.size[0], now.size[1]];
+        size[axis] = op.size[axis];
+        if (Math.abs(now.size[axis] - size[axis]) <= engine.GEOMETRY_TOLERANCE_PX) continue;
+        op = { kind: "divider", address: op.address, axis: axis, size: size };
+      }
+      for (const command of engine.opToCommand(op)) {
+        const lua = command.replace(/^hyprctl dispatch '/, "").replace(/'$/, "");
+        const answer = dispatch(lua);
+        trace.dispatches += 1;
+        if (!answer.ok || /^error/.test(answer.text)) trace.refused += 1;
+      }
+      // A move that names a split parent borrowed the keyboard (engine
+      // opToCommand puts one focus dispatch in front of it). Hand it straight
+      // back, which is exactly what Service.stepsForOp does and for the same
+      // reason: the borrow shows the destination workspace on the monitor.
+      if (op.kind === "move" && op.splitParent && restoreFocusTo) {
+        dispatch('hl.dsp.focus({ window = "address:' + restoreFocusTo + '" })');
+        trace.dispatches += 1;
+      }
+    }
+    sleep(SETTLE_MS);
+  }
+  return trace;
+}
+
+// --------------------------------------------------------------------- score
+
+function scoreNow(layout, identities) {
+  const report = engine.driftOf(clients(), monitors(), layout, identities);
+  const summary = engine.geometrySummaryOf(report.apps);
+  const rows = [];
+  for (let i = 0; i < report.apps.length; i++) {
+    const entry = report.apps[i];
+    const recorded = layout.apps[i];
+    rows.push({
+      identityId: recorded.identityId,
+      status: entry.status,
+      workspaceId: recorded.workspaceId,
+      recorded: { at: recorded.at, size: recorded.size },
+      current: entry.current ? { at: entry.current.at, size: entry.current.size, workspaceId: entry.current.workspaceId } : null,
+      iou: entry.geometry ? entry.geometry.iou : null,
+      verdict: entry.geometry ? entry.geometry.verdict : "not-scored"
+    });
+  }
+  return { summary: summary, rows: rows };
+}
+
+// ----------------------------------------------------------------- one round
+//
+// A round is one honest cycle of the thing this epic is about:
+//
+//   build   a tiled layout on the scratch workspace, windows arriving in index
+//           order — the desktop the user is taken to have had;
+//   record  it through engine.buildLayout, which is what scripts/record-current
+//           and the panel both use, so the recording is the product's;
+//   scatter it, in one of two shapes (below);
+//   restore from the recording, through planRestore;
+//   score   the result against the recording.
+//
+// The two scatter shapes are the two real cases, and they are NOT the same
+// measurement:
+//
+//   reorder  every window leaves the workspace and comes back in a shuffled
+//            order. Nothing is on the wrong workspace afterwards, so a plan
+//            over it is EMPTY and the restore is a no-op — this is the user's
+//            ws-8 case, where a redock re-added two windows the other way round
+//            and the tool had nothing to say about it. It measures the tiling
+//            gap with the planner held out of the way.
+//   away     every window is left on another workspace. planRestore has real
+//            work (a move op each), so this measures what the restore path
+//            actually produces when it puts a workspace back together.
+//   ratio    nobody moves and nobody changes places: the DIVIDERS are dragged
+//            somewhere else, which is the `herdr` case — composition-dependent
+//            sizing is a split ratio, and a window that comes back the right
+//            window in the right slot at the wrong width is a window that
+//            scored 0.497. Like `reorder` this plans no move ops at all, and
+//            unlike `reorder` a swap cannot touch it.
+//   away+jitter
+//            the same, with the MOUSE POINTER moved between the recording and
+//            the restore. That is not a stress test, it is the honest one:
+//            dwindle picks the tile a new arrival splits from the pointer when
+//            no window on the target workspace holds the focus
+//            (docs/state-matrix.md § Tiled placement, § 3), so a bench that
+//            records and restores inside the same second silently holds that
+//            variable still and reports a 1.000 the user's desktop — recorded
+//            yesterday, restored after a dock, mouse somewhere else entirely —
+//            will never see. `away` and `away+jitter` are printed side by side
+//            so the difference between them IS the measurement of that
+//            sensitivity.
+//
+// The pointer is put back at the end of the round and again on the way out.
+function runRound(scenario, roundIndex, seed, identities, focusHome, cursorHome) {
+  const count = scenario;
+  const next = rng(seed + roundIndex * 7919 + scenario * 104729);
+
+  // ---- build the reference desktop
+  parkAll(count);
+  const order = [];
+  for (let i = 1; i <= count; i++) order.push(i);
+  let list = clients();
+  for (const i of order) {
+    moveToWorkspace(addressFor(list, i), TARGET_WS);
+    sleep(SETTLE_MS);
+  }
+  sleep(SETTLE_MS);
+
+  // ---- record it, exactly as the product records
+  const layout = engine.buildLayout(clients(), monitors(), identities, new Date().toISOString());
+  if (layout.apps.length !== count) {
+    throw new Error("bench: recorded " + layout.apps.length + " apps, wanted " + count);
+  }
+
+  const results = {};
+  for (const shape of SHAPES) {
+    // ---- scatter
+    parkAll(count);
+    if (shape === "ratio") {
+      // Put the reference tiling back EXACTLY before dragging its dividers,
+      // and do it through the restore path rather than by rebuilding by hand:
+      // this shape is about ratios, and a setup that got the tree even slightly
+      // wrong would quietly turn it into a second placement test. If the setup
+      // restore does not land, the round says so through its `before` score.
+      runRestore(layout, identities, focusHome);
+      sleep(SETTLE_MS);
+    }
+    if (shape === "reorder") {
+      list = clients();
+      for (const i of shuffled(order, next)) {
+        moveToWorkspace(addressFor(list, i), TARGET_WS);
+        sleep(SETTLE_MS);
+      }
+      sleep(SETTLE_MS);
+    }
+    if (shape === "ratio") {
+      // Drag the dividers with the very actuator the refinement uses, so the
+      // scramble is reachable by construction and the round is measuring
+      // convergence rather than the compositor's clamps. Reading order picks
+      // the near side of the outer cut first and of the next cut second, which
+      // are the two lines a three- or four-window tree has.
+      //
+      // ON A TWO-WINDOW SCENARIO THE SECOND DRAG IS INERT, and the reports have
+      // to be read knowing it: a two-window tree has exactly ONE divider, the
+      // vertical one the first drag moves, and the second drag asks the
+      // right-hand window for a HEIGHT it already fills. There is no horizontal
+      // cut for that ask to move, so the compositor answers "ok" and nothing
+      // happens (or5 § 8's clamping, at the outer edge of the workspace). The
+      // 2-window `ratio` rows are therefore a one-divider scramble measured by a
+      // two-drag setup — `before` 0.673 in every round of every report, which is
+      // the constant that gives it away.
+      const drags = [[0, 0, 0.62], [1, 1, 0.55]];
+      for (const [which, axis, factor] of drags) {
+        // Re-read before EVERY drag. `resize` takes both axes, so a stale
+        // width sent along with a new height would drag a second divider back
+        // — the same staleness Service.executeDivider re-reads to avoid, and
+        // the reason a scramble built from one read is not the scramble it
+        // looks like.
+        const onWs = clients().filter((c) => appIdOf(c).indexOf(APP_PREFIX) === 0 &&
+          c.workspace && c.workspace.id === TARGET_WS && !c.floating);
+        onWs.sort((a, b) => (a.at[0] - b.at[0]) || (a.at[1] - b.at[1]));
+        const subject = onWs[which];
+        if (!subject) continue;
+        const size = [subject.size[0], subject.size[1]];
+        size[axis] = Math.max(80, Math.round(size[axis] * factor));
+        dispatch('hl.dsp.window.resize({ window = "address:' + subject.address + '"' +
+          ", x = " + size[0] + ", y = " + size[1] + " })");
+        sleep(SETTLE_MS);
+      }
+      sleep(SETTLE_MS);
+    }
+    if (shape === "away+jitter") {
+      // Deterministic from the seed, and deliberately in the OTHER half of the
+      // monitor from wherever the reference tree was built, because § 3 of the
+      // state matrix measured the split flipping on exactly that boundary.
+      const mon = monitors()[0];
+      const w = Math.round(mon.width / mon.scale), h = Math.round(mon.height / mon.scale);
+      const home = cursorHome || [Math.round(w / 2), Math.round(h / 2)];
+      const x = home[0] < w / 2 ? Math.round(w * 0.75) : Math.round(w * 0.25);
+      warpCursor(x, Math.round(h * (0.25 + 0.5 * next())));
+      sleep(SETTLE_MS);
+    }
+    const before = scoreNow(layout, identities);
+
+    // ---- restore
+    const trace = runRestore(layout, identities, focusHome);
+    sleep(SETTLE_MS);
+    const after = scoreNow(layout, identities);
+    if (shape === "away+jitter" && cursorHome) warpCursor(cursorHome[0], cursorHome[1]);
+
+    results[shape] = { before: before, after: after, trace: trace };
+  }
+  return { scenario: scenario, round: roundIndex + 1, layout: layout, shapes: results };
+}
+
+// --------------------------------------------------------------------- report
+
+function fmt(value) {
+  return value === null || value === undefined ? "  —  " : Number(value).toFixed(3);
+}
+function mean(list) {
+  const nums = list.filter((v) => typeof v === "number");
+  if (!nums.length) return null;
+  return nums.reduce((a, b) => a + b, 0) / nums.length;
+}
+function tiledIou(score) { return score.summary.tiled.meanIou; }
+
+function report(args, rounds, meta) {
+  const lines = [];
+  const label = args.label || "unlabelled run";
+  lines.push("# Tiled restore benchmark — " + label);
+  lines.push("");
+  lines.push("Produced by `scripts/bench` on " + meta.stamp + ".");
+  lines.push("");
+  lines.push("| | |");
+  lines.push("|---|---|");
+  lines.push("| commit | `" + meta.commit + "` |");
+  lines.push("| rounds per scenario | " + args.rounds + " |");
+  lines.push("| scenarios | " + args.scenarios.join(", ") + " windows |");
+  lines.push("| seed | " + args.seed + " |");
+  lines.push("| monitor | " + meta.monitor + " |");
+  lines.push("| workspaces | park " + PARK_WS + ", target " + TARGET_WS + " (scratch, invisible) |");
+  lines.push("| state file | temp, never the user's |");
+  lines.push("");
+
+  // ---- what the instrument can and cannot see, printed WITH the numbers
+  // rather than in a README, because a number that travels without its caveat
+  // is how a bench starts lying.
+  lines.push("## How to read this");
+  lines.push("");
+  lines.push("Three scatter shapes per round, and they are three different questions:");
+  lines.push("");
+  lines.push("| shape | the desktop it makes | what a restore can do about it |");
+  lines.push("|---|---|---|");
+  lines.push("| `reorder` | every window back on its recorded workspace, in a shuffled arrival order | nothing, in the code as it stands: no window is on the wrong workspace, so `planRestore` returns an EMPTY plan. This is the user's ws-8 case |");
+  lines.push("| `away` | every window left on another workspace | a `move` op each — the redock case |");
+  lines.push("| `away+jitter` | the same, plus the mouse pointer moved between recording and restore | the same ops. The pointer picks the tile a new arrival splits when no window on the target workspace holds focus (state-matrix § Tiled placement § 3), so this is the `away` case with the variable a same-second bench would otherwise hold still |");
+  lines.push("");
+  lines.push("**The `before` column is not a desktop score on the `away` shapes.** Engine IoU");
+  lines.push("compares two rects and is blind to which workspace they are on, so windows");
+  lines.push("parked together on the scratch workspace tile the same way and can read a");
+  lines.push("perfect 1.000 while being on entirely the wrong workspace. Only `after` — taken");
+  lines.push("with every window back where the recording puts it — is a score of a desktop.");
+  lines.push("On `reorder`, where nothing ever leaves the workspace, `before` is honest.");
+  lines.push("");
+  lines.push("**The executor is a mirror, not the service.** `runRestore` in `scripts/bench`");
+  lines.push("repeats Service.qml's pass loop against this working tree's `engine.js`, using");
+  lines.push("`engine.opToCommand` for every dispatch string. It does not execute `launch`,");
+  lines.push("`group` or `ungroup` (no scenario produces one; they are counted, not skipped");
+  lines.push("silently). Anything the service does that the mirror does not is invisible here.");
+  lines.push("");
+
+  // ---- the headline
+  lines.push("## Per-scenario mean IoU");
+  lines.push("");
+  lines.push("`before` is the scattered desktop, `after` is the same desktop once the restore");
+  lines.push("path has had its say. Per-workspace mean IoU over the scenario's tiled windows");
+  lines.push("(engine.geometrySummaryOf), then mean and min over the rounds.");
+  lines.push("");
+  lines.push("| scenario | scatter | before mean | after mean | after min | after max | rounds at 1.000 |");
+  lines.push("|---|---|---|---|---|---|---|");
+  for (const scenario of args.scenarios) {
+    for (const shape of SHAPES) {
+      const mine = rounds.filter((r) => r.scenario === scenario);
+      const befores = mine.map((r) => tiledIou(r.shapes[shape].before));
+      const afters = mine.map((r) => tiledIou(r.shapes[shape].after));
+      const clean = afters.filter((v) => typeof v === "number" && v >= 0.9995).length;
+      lines.push("| " + scenario + "-window | " + shape + " | " + fmt(mean(befores)) + " | " +
+        fmt(mean(afters)) + " | " + fmt(Math.min.apply(null, afters.filter((v) => v !== null))) + " | " +
+        fmt(Math.max.apply(null, afters.filter((v) => v !== null))) + " | " + clean + "/" + mine.length + " |");
+    }
+  }
+  lines.push("");
+
+  // ---- every round, so a mean can be checked
+  lines.push("## Per-round rows");
+  lines.push("");
+  lines.push("| scenario | round | scatter | before | after | plan ops | iterations | dispatches | refused | no-progress |");
+  lines.push("|---|---|---|---|---|---|---|---|---|---|");
+  for (const r of rounds) {
+    for (const shape of SHAPES) {
+      const s = r.shapes[shape];
+      const kinds = Object.keys(s.trace.kinds).map((k) => k + "×" + s.trace.kinds[k]).join(" ") || "none";
+      lines.push("| " + r.scenario + " | " + r.round + " | " + shape + " | " +
+        fmt(tiledIou(s.before)) + " | " + fmt(tiledIou(s.after)) + " | " + kinds + " | " +
+        s.trace.iterations + " | " + s.trace.dispatches + " | " + s.trace.refused + " | " +
+        (s.trace.noProgress ? "yes" : "no") + " |");
+    }
+  }
+  lines.push("");
+
+  // ---- one round spelled out per scenario, because a mean hides the shape
+  lines.push("## Per-window detail (round 1 of each scenario, `reorder`)");
+  lines.push("");
+  lines.push("| scenario | app | recorded rect | live rect after restore | IoU |");
+  lines.push("|---|---|---|---|---|");
+  for (const scenario of args.scenarios) {
+    const r = rounds.find((x) => x.scenario === scenario && x.round === 1);
+    if (!r) continue;
+    for (const row of r.shapes.reorder.after.rows) {
+      const rect = (g) => g && g.at && g.size ? "[" + g.at.join(",") + "] " + g.size.join("x") : "—";
+      lines.push("| " + scenario + " | " + row.identityId + " | " + rect(row.recorded) + " | " +
+        rect(row.current) + " | " + fmt(row.iou) + " |");
+    }
+  }
+  lines.push("");
+  return lines.join("\n") + "\n";
+}
+
+// ----------------------------------------------------------------------- main
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const focusHome = focusedAddress();
+  const cursorHome = cursorPos();
+  const stateFile = path.join(os.tmpdir(), "dr-bench-state-" + process.pid + ".json");
+  let cleaned = false;
+
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { if (!args.keep) closeWindows(); } catch (e) { /* best effort */ }
+    try { if (focusHome) dispatch('hl.dsp.focus({ window = "address:' + focusHome + '" })'); } catch (e) {}
+    try { if (cursorHome) warpCursor(cursorHome[0], cursorHome[1]); } catch (e) {}
+    try { fs.unlinkSync(stateFile); } catch (e) {}
+  };
+  process.on("exit", cleanup);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+    process.on(sig, () => { cleanup(); process.exit(130); });
+  }
+
+  const maxCount = Math.max.apply(null, args.scenarios);
+  const identities = identitiesFor(maxCount);
+  // Written so the run leaves the same artefact scripts/record-current would,
+  // and so a failed run can be inspected. It is a temp path; the user's file is
+  // never opened.
+  fs.writeFileSync(stateFile, StateModel.serializeState(
+    StateModel.setIdentities(StateModel.defaultState(), identities)));
+
+  spawnWindows(maxCount);
+
+  const mons = monitors();
+  const meta = {
+    stamp: new Date().toISOString(),
+    // The commit, and whether the tree it was measured from was actually THAT
+    // commit. A bench is nearly always run on a working tree that is a few
+    // edits ahead of HEAD — that is the point of running it — and a report
+    // whose header says `dc470e8` when the numbers came from `dc470e8` plus the
+    // tick's uncommitted work names the wrong code as the thing measured. The
+    // `-dirty` suffix is `git describe`'s own convention and says exactly what
+    // is true: this is HEAD, plus changes that are not in it.
+    commit: (() => {
+      const repo = path.join(__dirname, "..");
+      try {
+        const head = execFileSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+        const status = execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }).trim();
+        return status ? head + "-dirty" : head;
+      } catch (e) { return "unknown"; }
+    })(),
+    monitor: mons.map((m) => m.name + " " + Math.round(m.width / m.scale) + "x" + Math.round(m.height / m.scale) +
+      " @" + m.scale).join(", ")
+  };
+
+  const rounds = [];
+  for (const scenario of args.scenarios) {
+    const scenarioIdentities = identitiesFor(scenario);
+    for (let i = 0; i < args.rounds; i++) {
+      process.stderr.write("bench: scenario " + scenario + " round " + (i + 1) + "/" + args.rounds + "\n");
+      rounds.push(runRound(scenario, i, args.seed, scenarioIdentities, focusHome, cursorHome));
+    }
+  }
+  parkAll(maxCount);
+
+  const text = report(args, rounds, meta);
+  if (args.out) {
+    fs.mkdirSync(path.dirname(args.out), { recursive: true });
+    const temp = args.out + ".bench";
+    fs.writeFileSync(temp, text);
+    fs.renameSync(temp, args.out);
+    process.stderr.write("bench: wrote " + args.out + "\n");
+  } else {
+    process.stdout.write(text);
+  }
+  if (args.json) {
+    fs.mkdirSync(path.dirname(args.json), { recursive: true });
+    const payload = {
+      label: args.label, meta: meta, rounds: args.rounds, scenarios: args.scenarios, seed: args.seed,
+      results: rounds.map((r) => ({
+        scenario: r.scenario,
+        round: r.round,
+        recorded: r.layout.apps.map((a) => ({ identityId: a.identityId, at: a.at, size: a.size, workspaceId: a.workspaceId })),
+        shapes: Object.keys(r.shapes).reduce((acc, shape) => {
+          const s = r.shapes[shape];
+          acc[shape] = {
+            beforeIou: tiledIou(s.before),
+            afterIou: tiledIou(s.after),
+            beforeRows: s.before.rows,
+            beforeWorkspaces: s.before.summary.workspaces,
+            afterWorkspaces: s.after.summary.workspaces,
+            afterRows: s.after.rows,
+            trace: s.trace
+          };
+          return acc;
+        }, {})
+      }))
+    };
+    const temp = args.json + ".bench";
+    fs.writeFileSync(temp, JSON.stringify(payload, null, 2) + "\n");
+    fs.renameSync(temp, args.json);
+    process.stderr.write("bench: wrote " + args.json + "\n");
+  }
+  cleanup();
+}
+
+main();
