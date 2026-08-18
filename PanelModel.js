@@ -573,16 +573,28 @@ function argvLooksNulLess(argv) {
 // Terminal-hosted apps: deriving a launch from the CHILD process
 // ---------------------------------------------------------------------------
 //
-// The blind spot the README's app-id section describes, closed from the other
-// side. A TUI app typed into a plain terminal (`herdr` in `foot`) owns no
+// The blind spot the README's terminal-title section describes, closed from the
+// other side. A TUI app typed into a plain terminal (`herdr` in `foot`) owns no
 // window of its own: the window is class `foot`, and /proc/<pid>/cmdline is
 // `foot` — the terminal, not the app. Nothing in the derivation above can see
 // past that, so the identity gets no launch command and Restore can never bring
 // the app back.
 //
 // The terminal's CHILD process is the app. Reading it turns `foot` into
-// `foot --app-id=herdr herdr`, which is exactly the command the README asks the
+// `foot --title=herdr herdr`, which is exactly the command the README asks the
 // user to bind by hand — so the panel can offer it instead of asking.
+//
+// Why the TITLE, and not a window class of its own (measured 2026-08-18):
+//
+//   - `foot --title=herdr herdr` fixes `initialTitle` at `herdr` and leaves
+//     `class` as `foot`, so every Omarchy class-matched window rule still
+//     applies. A private class would silently lose all of them.
+//   - `initialTitle` is set once, at map time. An app that renames itself the
+//     instant it starts moves `title` only, never `initialTitle` — which is
+//     why identity matching reads `initialTitle` and nothing else.
+//   - Hyprland FULL-matches an unanchored window-rule regex, so a compound
+//     class like `foot.herdr` cannot be made to match alongside plain `foot`.
+//     The title is the only route.
 //
 // The window classes of the terminals this is attempted for. A named list, like
 // BROWSER_FAMILY, so adding a terminal is a one-line edit:
@@ -592,33 +604,34 @@ function argvLooksNulLess(argv) {
 //   kitty              kitty (class kitty)
 //   ghostty            Ghostty (class ghostty, com.mitchellh.ghostty)
 //
-// The whole COMMAND SHAPE differs between them, not just the flag, and the
-// derived command has to run — so both halves are carried per entry rather
-// than assumed. A derived command that is merely plausible would fail at the
-// one moment it matters: a restore after a reboot, with nobody watching.
+// They all spell the title the same way, so THAT is a constant rather than a
+// per-entry column: the flag column existed only because the terminals disagree
+// about `--app-id` versus `--class`, and no terminal here disagrees about
+// `--title`. What still differs per terminal is the COMMAND SHAPE, and the
+// derived command has to run — a command that is merely plausible would fail at
+// the one moment it matters: a restore after a reboot, with nobody watching.
 //
-//   flag  how the terminal spells the window class
-//           foot, footclient   --app-id
-//           kitty, alacritty, ghostty   --class
 //   exec  what has to come between the flags and the hosted command
 //           foot, kitty        "" — a bare trailing command is the command
 //           alacritty, ghostty "-e" — a bare trailing command is REJECTED
 //
 // So the two shapes are:
 //
-//   foot --app-id=herdr herdr
-//   alacritty --class=herdr -e herdr
+//   foot --title=herdr herdr
+//   alacritty --title=herdr -e herdr
 //
 // Alacritty is the one that used to be wrong here. Verified against Alacritty
-// 0.17.0: there is no `--app-id` (it is `--class`), and `alacritty --class=x x`
-// exits with a usage error — `-e` is not optional.
+// 0.17.0: `alacritty --title=x x` exits with a usage error — `-e` is not
+// optional.
+var TERMINAL_TITLE_FLAG = "--title";
+
 var TERMINAL_FAMILY = [
-  { test: /^foot(client)?$/i, flag: "--app-id", exec: "" },
-  { test: /^kitty$/i, flag: "--class", exec: "" },
-  { test: /^alacritty$/i, flag: "--class", exec: "-e" },
-  // Ghostty's shape is taken from upstream docs (`--class`, `-e`) and is
-  // unverified locally — no Ghostty on the machine this was written on.
-  { test: /^(com\.mitchellh\.)?ghostty$/i, flag: "--class", exec: "-e" }
+  { test: /^foot(client)?$/i, exec: "" },
+  { test: /^kitty$/i, exec: "" },
+  { test: /^alacritty$/i, exec: "-e" },
+  // Ghostty's `-e` is taken from upstream docs and is unverified locally — no
+  // Ghostty on the machine this was written on.
+  { test: /^(com\.mitchellh\.)?ghostty$/i, exec: "-e" }
 ];
 
 function isTerminalClass(className) {
@@ -628,15 +641,6 @@ function isTerminalClass(className) {
     if (TERMINAL_FAMILY[i].test.test(text)) return true;
   }
   return false;
-}
-
-// The app-id flag this terminal spells its window class with.
-function terminalClassFlag(className) {
-  var text = trim(className);
-  for (var i = 0; i < TERMINAL_FAMILY.length; i++) {
-    if (TERMINAL_FAMILY[i].test.test(text)) return TERMINAL_FAMILY[i].flag;
-  }
-  return "--app-id";
 }
 
 // The word that has to sit between the flags and the hosted command, or "" for
@@ -691,23 +695,25 @@ function childNodesOf(node) {
   return out;
 }
 
-// The window class to give a terminal-hosted app, derived from the binary it
-// runs. Lower-cased and reduced to the characters a class may safely carry —
-// the same shape deriveIdentityId produces, for the same reason.
-function appIdFromArgv0(argv0) {
+// The window TITLE to give a terminal-hosted app, derived from the binary it
+// runs. Lower-cased and reduced to the characters a title pattern may safely
+// carry — the same shape deriveIdentityId produces, for the same reason: the
+// derived word ends up inside an anchored regex, and Hyprland full-matches an
+// unanchored one.
+function titleFromArgv0(argv0) {
   var name = basenameOf(argv0).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return name;
 }
 
 // The whole terminal-child rule, as one answer:
 //
-//   { command: "<terminal> <class flag>=<derived> [-e] <child argv>", reason: "" }
+//   { command: "<terminal> --title=<derived> [-e] <child argv>", reason: "" }
 //   { command: "", reason: "no-child" | "several-children" | "shell-chain"
 //                        | "unreadable-child" }
 //   { command: "", reason: "" }   — not a terminal question at all
 //
 // ONLY an unambiguous single child derives. Anything else REFUSES, loudly and
-// on purpose: the panel says "ambiguous" and points at the app-id convention
+// on purpose: the panel says "ambiguous" and points at the --title convention
 // rather than guessing. A terminal with two children is a terminal running two
 // things (or a shell job plus a pager), and picking one of them would write a
 // launch command that reopens the wrong app — silently, and only discovered at
@@ -721,7 +727,7 @@ function terminalChildDerivation(className, ownArgv, node) {
   if (!isTerminalClass(className)) return out;
 
   // Only when the terminal's own cmdline says nothing but the terminal. A
-  // `foot --app-id=herdr herdr` cmdline already IS the answer and goes through
+  // `foot --title=herdr herdr` cmdline already IS the answer and goes through
   // the ordinary derivation; so does `foot -e something`.
   var own = isArray(ownArgv) ? ownArgv : [];
   if (own.length !== 1 || !trim(own[0])) return out;
@@ -760,13 +766,13 @@ function terminalChildDerivation(className, ownArgv, node) {
     return out;
   }
 
-  var appId = appIdFromArgv0(argv[0]);
-  if (!appId) {
+  var title = titleFromArgv0(argv[0]);
+  if (!title) {
     out.reason = "unreadable-child";
     return out;
   }
 
-  var words = [shellQuoteArg(trim(own[0])), terminalClassFlag(className) + "=" + appId];
+  var words = [shellQuoteArg(trim(own[0])), TERMINAL_TITLE_FLAG + "=" + title];
   // Alacritty and Ghostty reject a bare trailing command; foot and kitty take
   // one. See TERMINAL_FAMILY.
   var execFlag = terminalExecFlag(className);
@@ -1318,7 +1324,7 @@ function identitiesNeedingLaunch(identities) {
 // yields no command AND no desktop-file fallback, because the fallback for a
 // terminal is the terminal — `foot` launches an empty prompt, not the app the
 // user recorded, and offering it would be a repair that quietly does nothing.
-// The identity gets launchState "ambiguous" and a hint pointing at the app-id
+// The identity gets launchState "ambiguous" and a hint pointing at the --title
 // convention instead. Nothing here ever WATCHES anything: derivation feeds the
 // existing suggest/learn flows and no other.
 function launchDerivation(requests, desktopFiles, windowsByPid, procTree) {
@@ -1611,10 +1617,9 @@ function launchHintFor(launchState) {
   if (launchState === "missing") return "no launch cmd";
   if (launchState === "broken") return "launch cmd looks broken";
   // The sentence that points at the convention rather than at the failure: the
-  // app is invisible because it shares its terminal's window class, and the fix
-  // is to give it one of its own (README, "Terminal-hosted apps need their own
-  // window class").
-  if (launchState === "ambiguous") return "runs in a terminal — give it its own --app-id";
+  // app is invisible because it shares its terminal's window title, and the fix
+  // is to give it one of its own (README, the terminal-hosted apps section).
+  if (launchState === "ambiguous") return "runs in a terminal — give it its own --title";
   return "";
 }
 
@@ -4365,10 +4370,9 @@ if (typeof module !== "undefined") {
     launchRefusalIndex: launchRefusalIndex,
     procTreeFromDump: procTreeFromDump,
     isTerminalClass: isTerminalClass,
-    terminalClassFlag: terminalClassFlag,
     terminalExecFlag: terminalExecFlag,
     isShellArgv: isShellArgv,
-    appIdFromArgv0: appIdFromArgv0,
+    titleFromArgv0: titleFromArgv0,
     terminalChildDerivation: terminalChildDerivation,
     backfillLaunchCommands: backfillLaunchCommands,
     learnableCount: learnableCount,
