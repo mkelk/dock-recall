@@ -8,7 +8,7 @@ layout the moment you attach or detach a display. Omarchy already recovers
 *whether* a display is on, and the monitor plugins remember *where the monitors
 go*. This one remembers *where the windows go*.
 
-![Dock Recall panel showing the workspace map, the watched app list, and the bar glyph](preview.png)
+![The Dock Recall panel: the topology name and its in-sync state, the workspace map with each app drawn at its true proportions, the watched app list, and Record / Restore now](preview.png)
 
 ## Why you will want it
 
