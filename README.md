@@ -196,9 +196,21 @@ like any other.
 
 If you tick a terminal window whose own command line is nothing but the terminal,
 the panel looks at the terminal's **child process** — the thing actually running
-inside it — and offers the launch command to learn, with the title flag and the
-`-e` that terminal needs already in it. A plain interactive shell in between is
-looked through, so `foot` → `bash` → `herdr` derives just as well.
+inside it — and watches the app rather than the terminal. The identity it creates
+is named after the child, matches the terminal class **and** the child's title,
+and arrives with the launch command already filled in — title flag and the `-e`
+that terminal needs included:
+
+```json
+{ "id": "herdr", "patterns": ["^foot$"], "titlePatterns": ["^herdr$"],
+  "launch": "foot --title=herdr herdr" }
+```
+
+That is the point of the pair: a bare `^foot$` would claim every terminal on the
+desktop, so the next window you opened would be "herdr" too. A plain interactive
+shell in between is looked through, so `foot` → `bash` → `herdr` derives just as
+well. Ticking a terminal you use as a terminal still gives the plain class
+identity, and the two coexist — the specific one is matched first.
 
 It only does this when the answer is **unambiguous — exactly one child**. A
 terminal running two things, a shell with two jobs, a shell inside a shell, or a

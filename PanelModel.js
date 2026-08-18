@@ -169,6 +169,19 @@ function derivePattern(className) {
   return "^" + escapeRegex(text) + "$";
 }
 
+// The regex the state file stores for a window TITLE (schema v4
+// `titlePatterns`). Always anchored on BOTH ends, with no prefix case: a title
+// put there by the `--title` convention is a whole word chosen on purpose, not
+// a packaging string with a varying tail like a Chromium class. derivePattern
+// is deliberately not reused — its chrome- branch would turn a binary honestly
+// named `chrome-something` into an open-ended prefix that claims titles nobody
+// asked for.
+function deriveTitlePattern(title) {
+  var text = trim(title);
+  if (!text) return "";
+  return "^" + escapeRegex(text) + "$";
+}
+
 // A readable, stable id for a window class — the handle a recorded placement
 // refers to, so it has to survive being looked at in a text editor.
 //
@@ -219,24 +232,106 @@ function deriveIdentityId(className) {
   return chosen.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+// The id a TITLE identity carries: the name of the app inside the terminal,
+// not the terminal's. `foot` hosting `herdr` is "herdr" — an id of "foot"
+// would name the wrong thing, and the user would have no way to tell two
+// terminal identities apart in their own state file.
+//
+// deriveIdentityId is the wrong tool for this: it reads a class, so it splits
+// on dots and keeps the LAST token, which would turn the title "python3.11"
+// into the id "11". A title is already one word — titleFromArgv0 reduced a
+// binary path to one — so all it needs is the same final reduction to the
+// characters an id may carry.
+function identityIdFromTitle(title) {
+  return trim(title).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 // The display name for a chip and a list row.
 function displayNameFor(className) {
   var id = deriveIdentityId(className);
   return id ? titleCase(id) : trim(className);
 }
 
-// Build the Identity a freshly ticked class needs.
+// Does this pattern list already carry this exact pattern string?
+function patternListHas(value, pattern) {
+  var list = isArray(value) ? value : [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] === pattern) return true;
+  }
+  return false;
+}
+
+// THE DUPLICATE GUARD, and what it compares now that an identity has two axes.
 //
-// Returns null when an identity with this exact pattern is ALREADY on the list
-// — the class is watched, and adding a second identity for it would record the
-// same window twice and make matchClient's answer depend on list order.
+// It used to compare `patterns` alone, which was complete while `patterns` was
+// the only axis: same class pattern meant same rule. Schema v4 added
+// `titlePatterns`, the two are ANDed (see the rule table in engine.js), and a
+// class pattern on its own no longer says what an identity claims. So the guard
+// compares BOTH AXES, and an empty title list counts as "no title constraint"
+// rather than "any title" — because that is exactly what it means to
+// matchClient:
+//
+//   proposal           existing on the list         verdict
+//   -----------------  ---------------------------  -------------------------
+//   ^foot$             ^foot$                       duplicate — same rule
+//   ^foot$ + ^herdr$   ^foot$ + ^herdr$             duplicate — same rule
+//   ^foot$ + ^herdr$   ^foot$, no title             NOT a duplicate. The
+//                                                   existing rule claims EVERY
+//                                                   foot window; the proposal
+//                                                   claims the one titled
+//                                                   herdr. Two different rules,
+//                                                   and the specific one is
+//                                                   prepended so first-match
+//                                                   reaches it first.
+//   ^foot$             ^foot$ + ^herdr$             NOT a duplicate — the same
+//                                                   thing the other way round:
+//                                                   watching plain foot is
+//                                                   still possible once one
+//                                                   titled foot window is
+//                                                   watched.
+//
+// Comparing `patterns` alone would have refused to propose the herdr identity
+// on any desktop that already watches plain foot — which is the ordinary case
+// and the whole point of a title identity.
+function identityClaimsSame(identity, pattern, titlePattern) {
+  if (!patternListHas(identity.patterns, pattern)) return false;
+  var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+  if (!titlePattern) return titles.length === 0;
+  return patternListHas(titles, titlePattern);
+}
+
+// Build the Identity a freshly ticked window needs.
+//
+// Returns null when an identity claiming the same thing is ALREADY on the list
+// — see identityClaimsSame above for what "the same thing" means — because
+// adding a second identity for it would record the same window twice and make
+// matchClient's answer depend on list order.
 //
 // A colliding id (Chromium's second webapp on a domain already claimed) gets a
 // numeric suffix rather than being merged: two ids that look alike are a
 // cosmetic problem, one id meaning two apps is a data-loss one.
-function suggestIdentity(className, identities) {
+//
+// `derivation` is OPTIONAL and is what terminalChildDerivation answered about
+// the window being ticked. It is passed IN rather than computed here because
+// naming the app inside a terminal takes a /proc read, and this function is
+// pure. When it carries a title — meaning the ticked window is a terminal
+// hosting exactly one unambiguous child — the proposal is a TITLE identity:
+//
+//   { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+//     launch: "foot --title=herdr herdr" }
+//
+// which under the v4 AND semantics means "the foot window titled herdr" and
+// nothing else. Without one — no derivation, a refusal, a window that is not a
+// terminal at all — the proposal is the class-only one it has always been. A
+// bare `^foot$` for a terminal is useless: it claims every terminal on the
+// desktop, which is why the title case exists.
+function suggestIdentity(className, identities, derivation) {
   var pattern = derivePattern(className);
   if (!pattern) return null;
+
+  var answer = (derivation && typeof derivation === "object") ? derivation : {};
+  var title = typeof answer.title === "string" ? trim(answer.title) : "";
+  var titlePattern = title ? deriveTitlePattern(title) : "";
 
   var list = isArray(identities) ? identities : [];
   var taken = {};
@@ -244,13 +339,10 @@ function suggestIdentity(className, identities) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string") continue;
     taken[identity.id] = true;
-    var patterns = isArray(identity.patterns) ? identity.patterns : [];
-    for (var p = 0; p < patterns.length; p++) {
-      if (patterns[p] === pattern) return null;
-    }
+    if (identityClaimsSame(identity, pattern, titlePattern)) return null;
   }
 
-  var base = deriveIdentityId(className) || "app";
+  var base = (titlePattern ? identityIdFromTitle(title) : deriveIdentityId(className)) || "app";
   var id = base;
   var suffix = 2;
   while (taken[id]) {
@@ -258,16 +350,28 @@ function suggestIdentity(className, identities) {
     suffix += 1;
   }
 
-  // launch: "" still, because THIS function is pure and synchronous and a
-  // truthful launch command can only be read off the running process or a
-  // desktop file — I/O the caller has to do. The field is filled in a moment
-  // later by the panel's derivation pass (deriveLaunchMap /
+  // launch: "" for the class case, because THIS function is pure and
+  // synchronous and a truthful launch command can only be read off the running
+  // process or a desktop file — I/O the caller has to do. The field is filled
+  // in a moment later by the panel's derivation pass (deriveLaunchMap /
   // backfillLaunchCommands below), never guessed from the class here.
   //
   // The user-found bug this comment used to describe as a feature: an identity
   // that stays at "" can never be restored when its app is closed, which is
   // exactly the case Restore exists for.
-  return { id: id, patterns: [pattern], launch: "" };
+  //
+  // The TITLE case is not a guess and not an exception to that rule: the
+  // caller already did the read, and `derivation.command` is the very command
+  // terminalChildDerivation built from it. Writing it here rather than leaving
+  // the autofill pass to derive the identical string a moment later means the
+  // identity is complete in the first write.
+  if (!titlePattern) return { id: id, patterns: [pattern], launch: "" };
+  return {
+    id: id,
+    patterns: [pattern],
+    titlePatterns: [titlePattern],
+    launch: dispatchableCommand(answer.command)
+  };
 }
 
 // Tick or untick a class. Returns a NEW identity list for the caller to hand
@@ -282,7 +386,14 @@ function suggestIdentity(className, identities) {
 // New identities go to the FRONT: the list is priority order and
 // engine.matchClient returns the first match, so the specific thing the user
 // just pointed at must not end up behind a catch-all that was added earlier.
-function toggleWatchedIdentities(identities, className, identityId) {
+// That is exactly what a title identity needs — `{^foot$ + ^herdr$}` has to sit
+// in front of a plain `{^foot$}` or the catch-all answers first and the title
+// axis never gets asked.
+//
+// `derivation` is passed straight through to suggestIdentity: it is the
+// terminalChildDerivation answer for the window being ticked, which only the
+// caller can obtain (it takes a /proc read). Untick ignores it.
+function toggleWatchedIdentities(identities, className, identityId, derivation) {
   var list = isArray(identities) ? identities : [];
   var wanted = trim(identityId);
 
@@ -295,7 +406,7 @@ function toggleWatchedIdentities(identities, className, identityId) {
     return out;
   }
 
-  var addition = suggestIdentity(className, list);
+  var addition = suggestIdentity(className, list, derivation);
   if (!addition) return list.slice();
   return [addition].concat(list);
 }
@@ -707,10 +818,17 @@ function titleFromArgv0(argv0) {
 
 // The whole terminal-child rule, as one answer:
 //
-//   { command: "<terminal> --title=<derived> [-e] <child argv>", reason: "" }
-//   { command: "", reason: "no-child" | "several-children" | "shell-chain"
-//                        | "unreadable-child" }
-//   { command: "", reason: "" }   — not a terminal question at all
+//   { command: "<terminal> --title=<derived> [-e] <child argv>", title: "<derived>",
+//     reason: "" }
+//   { command: "", title: "", reason: "no-child" | "several-children"
+//                                   | "shell-chain" | "unreadable-child" }
+//   { command: "", title: "", reason: "" }  — not a terminal question at all
+//
+// `title` is the same word the command's `--title=` carries, said separately
+// because two different callers want two different halves of one answer: the
+// launch derivation wants the command, and suggestIdentity wants the title —
+// it is both the new identity's id and its `titlePatterns` entry. Deriving it
+// twice would be two chances to disagree about what the app is called.
 //
 // ONLY an unambiguous single child derives. Anything else REFUSES, loudly and
 // on purpose: the panel says "ambiguous" and points at the --title convention
@@ -723,7 +841,7 @@ function titleFromArgv0(argv0) {
 // ordinary shape (`foot` -> `bash` -> `herdr`), not an ambiguity. A shell with
 // two children of its own is one again.
 function terminalChildDerivation(className, ownArgv, node) {
-  var out = { command: "", reason: "" };
+  var out = { command: "", title: "", reason: "" };
   if (!isTerminalClass(className)) return out;
 
   // Only when the terminal's own cmdline says nothing but the terminal. A
@@ -779,7 +897,63 @@ function terminalChildDerivation(className, ownArgv, node) {
   if (execFlag) words.push(execFlag);
   for (var i = 0; i < argv.length; i++) words.push(shellQuoteArg(argv[i]));
   out.command = dispatchableCommand(words.join(" "));
+  // The title travels only with a command that survived dispatchableCommand.
+  // A command the panel refuses to run and a title identity that promises to
+  // start it would be a disagreement written into the user's file.
+  if (out.command) out.title = title;
   return out;
+}
+
+// The pids of the live TERMINAL windows, in client order and without repeats.
+//
+// Why the panel reads these at all: a terminal's class says nothing about the
+// app inside it, so the child process has to be known BEFORE the click — the
+// tick builds its proposal synchronously, from a pure function, at the moment
+// the user presses. The ordinary cmdline read only asks about identities that
+// already need a launch command, and an unwatched terminal is neither watched
+// nor missing anything, so nothing would ever ask about it and every tick
+// would fall back to the useless `^foot$`.
+//
+// Terminals ONLY: reading every window's cmdline would be a /proc walk of the
+// whole desktop to answer a question that is asked about four classes.
+function terminalPids(clients) {
+  var list = isArray(clients) ? clients : [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var client = list[i];
+    if (!client || client.pid === undefined || client.pid === null) continue;
+    if (!isTerminalClass(trim(client.class)) && !isTerminalClass(trim(client.initialClass))) continue;
+    var pid = trim(String(client.pid));
+    if (!pid || seen[pid]) continue;
+    seen[pid] = true;
+    out.push(pid);
+  }
+  return out;
+}
+
+// The live window a tick is about.
+//
+// A CHIP is one window and carries its address, which is the exact answer. A
+// LIST ROW folds every window of an unwatched class onto one line and carries
+// the address of the window the row was built from — but a row that predates a
+// refresh can name an address that has since closed, and then the class is all
+// that is left. Falling back to the first window of that class keeps the tick
+// working; it is also why the address is preferred, because for a terminal the
+// two windows of one class can host different apps.
+function clientForTick(clients, address, className) {
+  var list = isArray(clients) ? clients : [];
+  var wanted = trim(address);
+  var name = trim(className);
+  var fallback = null;
+  for (var i = 0; i < list.length; i++) {
+    var client = list[i];
+    if (!client) continue;
+    if (wanted && trim(client.address) === wanted) return client;
+    if (fallback || !name) continue;
+    if (trim(client.class) === name || trim(client.initialClass) === name) fallback = client;
+  }
+  return fallback;
 }
 
 // argv -> a shell command that would start it again, or "".
@@ -3599,6 +3773,12 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       key: "class:" + className,
       identityId: "",
       className: className,
+      // The window this row was built from. A row is one line per CLASS, but a
+      // tick is about one window: for a terminal, two windows of class `foot`
+      // can host two different apps, and the proposal names the app. Carrying
+      // the address makes a row click and a chip click agree about which
+      // window is being ticked. See clientForTick.
+      address: trim(unwatchedClient && unwatchedClient.address),
       // What the map's chips have to match to light this row up. See
       // linkKeyFor — for a class row this equals `key` (both "class:"+name).
       linkKey: linkKeyFor("", className),
@@ -4338,7 +4518,9 @@ if (typeof module !== "undefined") {
     humanizeTopology: humanizeTopology,
     chromeStem: chromeStem,
     derivePattern: derivePattern,
+    deriveTitlePattern: deriveTitlePattern,
     deriveIdentityId: deriveIdentityId,
+    identityIdFromTitle: identityIdFromTitle,
     displayNameFor: displayNameFor,
     suggestIdentity: suggestIdentity,
     toggleWatchedIdentities: toggleWatchedIdentities,
@@ -4374,6 +4556,8 @@ if (typeof module !== "undefined") {
     isShellArgv: isShellArgv,
     titleFromArgv0: titleFromArgv0,
     terminalChildDerivation: terminalChildDerivation,
+    terminalPids: terminalPids,
+    clientForTick: clientForTick,
     backfillLaunchCommands: backfillLaunchCommands,
     learnableCount: learnableCount,
     launchAutofillIndex: launchAutofillIndex,

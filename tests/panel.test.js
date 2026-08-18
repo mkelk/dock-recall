@@ -3192,6 +3192,187 @@ test("the titled-terminal fixture is a foot window whose initialTitle is NOT foo
   assert.strictEqual(engine.matchClient(plain, identities), "terminal");
 });
 
+// -------------------------------------------- a tick that proposes a TITLE
+//
+// Tick 1uz. Ticking a plain `foot` window running `herdr` used to propose
+// `^foot$` — an identity that claims EVERY terminal on the desktop, which is
+// worse than useless: the next terminal the user opens would be "herdr" too.
+// When the child process names the app unambiguously the proposal is the PAIR
+// instead, and under the v4 AND semantics that pair claims one window.
+
+// The raw derivation answer, rather than the launch map footDerivation returns.
+function footChildDerivation(children, ownArgv) {
+  const argv = ownArgv || ["foot"];
+  const tree = panel.procTreeFromDump(procDump([
+    { pid: 900, argv: argv, children: children }
+  ]));
+  return panel.terminalChildDerivation("foot", argv, tree["900"]);
+}
+
+test("the derivation says the title as well as the command", () => {
+  // Two callers want two halves of one answer — the launch map wants the
+  // command, suggestIdentity wants the title — so it is derived once.
+  const derived = footChildDerivation([{ pid: 901, argv: ["herdr"] }]);
+  assert.strictEqual(derived.command, "foot --title=herdr herdr");
+  assert.strictEqual(derived.title, "herdr");
+  assert.strictEqual(derived.reason, "");
+
+  // A refusal names no title — there is nothing here it could honestly name.
+  const refused = footChildDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
+  assert.strictEqual(refused.title, "");
+  assert.strictEqual(refused.reason, "several-children");
+
+  // And a question that was never a terminal question at all.
+  assert.deepStrictEqual(panel.terminalChildDerivation("chromium", ["chromium"], null),
+    { command: "", title: "", reason: "" });
+});
+
+test("a title becomes an anchored title pattern and an id of its own", () => {
+  assert.strictEqual(panel.deriveTitlePattern("herdr"), "^herdr$");
+  // Both ends, always: a title is a whole word the --title convention put
+  // there, not a class with a varying packaging tail. derivePattern would have
+  // made this one an open-ended prefix.
+  assert.strictEqual(panel.derivePattern("chrome-thing"), "^chrome-thing");
+  assert.strictEqual(panel.deriveTitlePattern("chrome-thing"), "^chrome-thing$");
+  assert.strictEqual(panel.deriveTitlePattern(""), "");
+
+  assert.strictEqual(panel.identityIdFromTitle("herdr"), "herdr");
+  // deriveIdentityId answers "11" here — it reads a reverse-DNS CLASS, so it
+  // splits on dots and keeps the last token. A title is already one word.
+  assert.strictEqual(panel.deriveIdentityId("python3.11"), "11");
+  assert.strictEqual(panel.identityIdFromTitle("python3.11"), "python3-11");
+});
+
+test("ticking a terminal that hosts one app proposes the app, not the terminal", () => {
+  const added = panel.suggestIdentity("foot", [], footChildDerivation([{ pid: 901, argv: ["herdr"] }]));
+  assert.deepStrictEqual(added, {
+    id: "herdr",
+    patterns: ["^foot$"],
+    titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  });
+
+  // And that pair claims exactly one of the two foot windows on the desktop.
+  const clients = loadFixture("clients-titled-terminal.json");
+  assert.strictEqual(
+    engine.clientMatchesIdentity(clients.find((c) => c.initialTitle === "herdr"), added), true);
+  assert.strictEqual(
+    engine.clientMatchesIdentity(clients.find((c) => c.initialTitle === "foot"), added), false);
+});
+
+test("a refusal proposes exactly what it always proposed", () => {
+  // Two children: the derivation refuses, and the tick stays the pre-1uz one —
+  // a class identity with an empty launch. Nothing new is invented from a guess.
+  const ambiguous = footChildDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
+  assert.deepStrictEqual(panel.suggestIdentity("foot", [], ambiguous),
+    { id: "foot", patterns: ["^foot$"], launch: "" });
+
+  // Same for a terminal whose cmdline has not come back yet, and for a caller
+  // that passes no derivation at all.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", [], panel.terminalChildDerivation("foot", null, null)),
+    { id: "foot", patterns: ["^foot$"], launch: "" });
+  assert.deepStrictEqual(panel.suggestIdentity("foot", []),
+    { id: "foot", patterns: ["^foot$"], launch: "" });
+});
+
+test("the duplicate guard compares BOTH axes, not patterns alone", () => {
+  const herdr = footChildDerivation([{ pid: 901, argv: ["herdr"] }]);
+  const btop = footChildDerivation([{ pid: 901, argv: ["btop"] }]);
+
+  // The case the whole tick turns on: plain foot is already watched, so the
+  // class pattern collides. Comparing `patterns` alone would call this a
+  // duplicate and propose nothing — but "every foot window" and "the foot
+  // window titled herdr" are different rules over different windows.
+  const watchedFoot = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
+  assert.deepStrictEqual(panel.suggestIdentity("foot", watchedFoot, herdr), {
+    id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  });
+
+  // The same PAIR already on the list is the same rule, so nothing is added.
+  const watchedHerdr = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
+  assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, herdr), null);
+
+  // A different title on the same class is a different rule.
+  assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, btop).id, "btop");
+
+  // The other direction: watching one titled foot window does not block
+  // watching the class. An empty title list is NO CONSTRAINT, which makes it a
+  // wider rule rather than the same one.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", watchedHerdr),
+    { id: "foot", patterns: ["^foot$"], launch: "" });
+
+  // The class-only guard still answers as it always did.
+  assert.strictEqual(panel.suggestIdentity("foot",
+    [{ id: "terminal", patterns: ["^foot$"], launch: "" }]), null);
+
+  // An id collision is still suffixed rather than merged.
+  const takenId = [{ id: "herdr", patterns: ["^something-else$"], launch: "" }];
+  assert.strictEqual(panel.suggestIdentity("foot", takenId, herdr).id, "herdr-2");
+});
+
+test("a ticked title identity is prepended, so first-match reaches it first", () => {
+  const before = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
+  const after = panel.toggleWatchedIdentities(before, "foot", "",
+    footChildDerivation([{ pid: 901, argv: ["herdr"] }]));
+  assert.deepStrictEqual(after.map((i) => i.id), ["herdr", "terminal"]);
+
+  // matchClient is first-match-wins across the whole list and title carries no
+  // priority of its own — the ORDER is what makes this work.
+  const clients = loadFixture("clients-titled-terminal.json");
+  const titled = clients.find((c) => c.initialTitle === "herdr");
+  assert.strictEqual(engine.matchClient(titled, after), "herdr");
+  assert.strictEqual(engine.matchClient(clients.find((c) => c.initialTitle === "foot"), after), "terminal");
+  // Behind the catch-all it would never be reached at all, which is why the
+  // prepending in toggleWatchedIdentities is load-bearing here.
+  assert.strictEqual(engine.matchClient(titled, after.slice().reverse()), "terminal");
+
+  // Untick removes it by id, exactly as for any other identity.
+  assert.deepStrictEqual(panel.toggleWatchedIdentities(after, "foot", "herdr"), before);
+});
+
+test("a proposed title identity survives StateModel's normalizer intact", () => {
+  // The v4 field whitelist has to carry both lists AND the launch through a
+  // write — an identity that loses `titlePatterns` on the way in stops
+  // matching its window and nothing says why.
+  const identities = panel.toggleWatchedIdentities([], "foot", "",
+    footChildDerivation([{ pid: 901, argv: ["herdr"] }]));
+  const round = state.parseState(state.serializeState(state.setIdentities(state.defaultState(), identities)));
+  assert.deepStrictEqual(round.state.identities, [{
+    id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  }]);
+});
+
+test("the panel knows which pids to read and which window a tick is about", () => {
+  const clients = loadFixture("clients-titled-terminal.json");
+  // Terminals get their cmdline read whether or not they are watched: the
+  // proposal is built synchronously at the click, so the answer has to be
+  // there already.
+  assert.deepStrictEqual(panel.terminalPids(clients), ["268861", "8439"]);
+  assert.deepStrictEqual(panel.terminalPids(clientsLaptop.filter((c) => c.class !== "foot")), []);
+
+  // The address is the exact answer, and for two windows of one terminal class
+  // it is the only thing that tells them apart.
+  assert.strictEqual(panel.clientForTick(clients, "0x55c6f73e6d80", "foot").initialTitle, "herdr");
+  assert.strictEqual(panel.clientForTick(clients, "0x55c6f81a2500", "foot").initialTitle, "foot");
+  // A stale address falls back to the class rather than dropping the tick.
+  assert.strictEqual(panel.clientForTick(clients, "0xgone", "foot").initialTitle, "foot");
+  assert.strictEqual(panel.clientForTick(clients, "", "nothing-here"), null);
+});
+
+test("an unwatched row carries the address of the window it was built from", () => {
+  // A row is one line per class but a tick is about one window: two foot
+  // windows can host two different apps, so a row click and a chip click have
+  // to agree about which window is being ticked.
+  const rows = panel.appRows(loadFixture("clients-titled-terminal.json"),
+    monitorsLaptop, resolver([]), null, null, []);
+  const foot = rows.filter((r) => r.className === "foot");
+  assert.strictEqual(foot.length, 1, "one unwatched class row for foot");
+  assert.strictEqual(foot[0].identityId, "");
+  assert.ok(/^0x/.test(foot[0].address), "the row names a live window");
+});
+
 test("every terminal spells the title the same way, and only the exec word differs", () => {
   // The flag column that used to live in TERMINAL_FAMILY is gone: it existed
   // only because terminals disagree about `--app-id` vs `--class`, and they all

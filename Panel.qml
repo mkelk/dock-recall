@@ -862,17 +862,36 @@ Item {
 
   // The pids whose argv is wanted and not yet known. Empty is the common case
   // — every watched app either has a command already or is not running.
+  //
+  // TWO sources, and the second one is not about launch commands at all:
+  //
+  //   1. the watched identities that still need a launch command, through the
+  //      ONE matcher, as everywhere else;
+  //   2. every live TERMINAL window, watched or not (tick 1uz). A terminal's
+  //      class names no app, so ticking one has to propose the app INSIDE it,
+  //      and that proposal is built synchronously at the moment of the click.
+  //      An unwatched terminal is in neither half of source 1 — it is not
+  //      watched, and it is not missing a launch — so without this the answer
+  //      would never be ready in time and every terminal tick would fall back
+  //      to the useless class-only `^foot$`.
   function missingCmdlinePids() {
     var wanted = []
     var seen = ({})
     var list = root.identities
     var need = PanelModel.identitiesNeedingLaunch(list)
+    var pids = []
     for (var i = 0; i < need.length; i++) {
       var identity = StateModel.identityById(root.stateModel, need[i])
       if (!identity) continue
       var client = Engine.pickClientFor(root.liveClients, identity, list)
       if (!client || client.pid === undefined || client.pid === null) continue
-      var pid = String(client.pid)
+      pids.push(String(client.pid))
+    }
+    var terminals = PanelModel.terminalPids(root.liveClients)
+    for (var t = 0; t < terminals.length; t++) pids.push(terminals[t])
+
+    for (var p = 0; p < pids.length; p++) {
+      var pid = pids[p]
       // A pid is only digits by construction; the guard is here because this
       // value is about to be interpolated into a shell loop.
       if (!/^[0-9]+$/.test(pid)) continue
@@ -1090,6 +1109,27 @@ Item {
 
   // ---------------------------------------------------------------- actions
 
+  // What terminalChildDerivation answers about the window a chip (or a list
+  // row) points at, or null when there is nothing to ask.
+  //
+  // This is the panel's half of the title-identity rule (tick 1uz): a plain
+  // `foot` window running `herdr` must not be watched as "every foot window",
+  // and the only thing that can name the app inside it is the child process.
+  // The read is already here — `argvByPid` and `procTree` come from the one
+  // cmdline Process — and it deliberately stays here: Service.qml runs all the
+  // time and must never touch /proc.
+  //
+  // Untick asks nothing (the identity is already known), and a window whose
+  // cmdline has not come back yet answers "not a terminal question", which is
+  // the class-only proposal the panel always made.
+  function tickDerivation(chip) {
+    if (!chip || chip.identityId || !chip.className) return null
+    var client = PanelModel.clientForTick(root.liveClients, chip.address, chip.className)
+    if (!client || client.pid === undefined || client.pid === null) return null
+    var pid = String(client.pid)
+    return PanelModel.terminalChildDerivation(chip.className, root.argvByPid[pid], root.procTree[pid])
+  }
+
   // Click a chip: tick or untick the app it belongs to. Watched-ness is per
   // identity, so this changes every window of that app at once — which is why
   // the chip hands over the identity it already matched instead of letting the
@@ -1107,7 +1147,8 @@ Item {
         + "click its live window to watch it again")
       return
     }
-    var next = PanelModel.toggleWatchedIdentities(root.identities, chip.className, chip.identityId)
+    var next = PanelModel.toggleWatchedIdentities(root.identities, chip.className, chip.identityId,
+      root.tickDerivation(chip))
 
     // DERIVE BEFORE THE WRITE (tick i07). A tick creates an identity with an
     // empty launch, and "" means never start this one — so if the panel can
@@ -1116,7 +1157,11 @@ Item {
     // write. When it cannot, the empty write still happens instantly, and the
     // scan this call kicks off fills it in through autoFillLaunches.
     var added = PanelModel.addedIdentity(root.identities, next)
-    var inlineLaunch = ""
+    // A title identity arrives with its launch already filled: the derivation
+    // that named the app also built the command, so there is nothing left for
+    // the autofill pass to fill and the log would otherwise claim nothing was
+    // derived.
+    var inlineLaunch = (added && added.launch) ? String(added.launch) : ""
     if (added) {
       var request = PanelModel.launchRequestFor(added,
         Engine.pickClientFor(root.liveClients, added, next), root.argvByPid)
