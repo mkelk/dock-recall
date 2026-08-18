@@ -1,12 +1,15 @@
 # Dock Recall
 
-You use Omarchy differently with or without a monitor. Record how you like each
-set up, and your windows auto-arrange when you dock and undock.
+You use Omarchy differently with or without a monitor.
 
-Undock, and Hyprland re-homes your windows onto the laptop panel. Dock again and
-they stay there — piled onto one screen, on the wrong workspaces — and you spend
-the first minute of the session dragging them back. Dock Recall records that
-arrangement once per monitor setup and rebuilds it the moment the cable changes.
+The frustration: undock, and Hyprland re-homes your windows onto the laptop
+panel. Connect your monitor again and the windows stay on the laptop — piled
+onto one screen, on the wrong workspaces, grouped (or not grouped) wrong — and
+you spend the first minute of the session dragging them back and arranging it
+"just so".
+
+Dock Recall records how you like each situation set up, and your windows
+auto-arrange to your preferred setup the moment the cable changes.
 
 ![The Dock Recall panel: the topology name and its in-sync state, the workspace map with each app drawn at its true proportions, the watched app list, and Record / Restore now](preview.png)
 
