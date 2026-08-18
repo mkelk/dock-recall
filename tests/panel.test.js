@@ -198,8 +198,10 @@ test("what a toggle produces survives StateModel's normalizer intact", () => {
   const identities = panel.toggleWatchedIdentities(state.identities(before), "md.obsidian.Obsidian", "");
   const next = state.setIdentities(before, identities);
   const round = state.parseState(state.serializeState(next));
+  // A panel-created identity says nothing about titles, and schema v4
+  // materializes that as an empty list rather than an absent key.
   assert.deepStrictEqual(round.state.identities, [
-    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], launch: "" }
+    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], titlePatterns: [], launch: "" }
   ]);
 });
 
