@@ -157,3 +157,103 @@ test("firstClientFor returns null when the app is not running", () => {
   assert.strictEqual(engine.firstClientFor([], identity("browser")), null);
   assert.strictEqual(engine.firstClientFor(null, identity("browser")), null);
 });
+
+// ---------------------------------------------------------------------------
+// Title identity: matching on initialTitle
+// ---------------------------------------------------------------------------
+//
+// A TUI app in a plain terminal has the terminal's class (`foot`), like every
+// other terminal, so class patterns cannot tell them apart. `foot --title=herdr`
+// fixes `initialTitle` at map time while `class` stays `foot`. These identities
+// are built here rather than in tests/helpers.js on purpose: IDENTITIES is
+// shared by a dozen test files and already contains a `^foot$` terminal.
+
+function clientWithTitle(cls, initialTitle, title) {
+  return {
+    address: "0xdeadbeef",
+    class: cls,
+    initialClass: cls,
+    initialTitle: initialTitle,
+    title: title === undefined ? initialTitle : title,
+    workspace: { id: 1, name: "1" },
+    monitor: 0,
+    floating: false,
+    grouped: []
+  };
+}
+
+const HERDR = { id: "herdr", titlePatterns: ["^herdr$"] };
+
+test("titlePatterns match a client's initialTitle", () => {
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), HERDR));
+  assert.strictEqual(engine.matchClient(clientWithTitle("foot", "herdr"), [HERDR]), "herdr");
+
+  // A plain terminal of the same class is not herdr.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "foot"), HERDR), false);
+  assert.strictEqual(engine.matchClient(clientWithTitle("foot", "foot"), [HERDR]), null);
+
+  // Missing / empty initialTitle is not a crash and not a match.
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", ""), HERDR), false);
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithClass("foot"), HERDR), false);
+});
+
+test("the live title never decides which identity a client matches", () => {
+  // Same window, two live titles: an app that renames itself moves only `title`.
+  const asMapped = clientWithTitle("foot", "herdr", "herdr");
+  const renamed = clientWithTitle("foot", "herdr", "herdr — some file — 3 panes");
+
+  assert.strictEqual(engine.matchClient(asMapped, [HERDR]), "herdr");
+  assert.strictEqual(engine.matchClient(renamed, [HERDR]), "herdr");
+
+  // And a live title that merely looks like the identity is not enough.
+  const pretender = clientWithTitle("foot", "foot", "herdr");
+  assert.strictEqual(engine.matchClient(pretender, [HERDR]), null);
+});
+
+test("titlePatterns are never matched against class or initialClass", () => {
+  const byTitle = { id: "footish", titlePatterns: ["^foot$"] };
+  // class and initialClass are both "foot", but initialTitle is not.
+  assert.strictEqual(
+    engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), byTitle),
+    false
+  );
+});
+
+test("a class-pattern identity never claims a window by its title", () => {
+  // The regression guard: adding initialTitle to the existing `patterns` fields
+  // would let every current class pattern start claiming windows by title.
+  const terminalNamedObsidian = clientWithTitle("foot", "obsidian", "obsidian");
+
+  assert.strictEqual(
+    engine.clientMatchesIdentity(terminalNamedObsidian, identity("obsidian")),
+    false
+  );
+  assert.strictEqual(engine.matchClient(terminalNamedObsidian, IDENTITIES), "terminal");
+});
+
+test("a broken titlePattern never matches and never throws", () => {
+  const broken = { id: "broken", titlePatterns: ["([unclosed"] };
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), broken), false);
+
+  const mixed = { id: "mixed", titlePatterns: ["([unclosed", "^herdr$"] };
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), mixed));
+});
+
+test("an identity may carry both patterns and titlePatterns", () => {
+  const both = { id: "either", patterns: ["^md\\.obsidian\\."], titlePatterns: ["^herdr$"] };
+  assert.ok(engine.clientMatchesIdentity(clientWithClass("md.obsidian.Obsidian"), both));
+  assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), both));
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "foot"), both), false);
+});
+
+test("identity order decides between a class identity and a title identity", () => {
+  // A `foot --title=herdr` window satisfies BOTH: class ^foot$ and title ^herdr$.
+  const herdrWindow = clientWithTitle("foot", "herdr");
+  const terminal = { id: "terminal", patterns: ["^foot$"] };
+
+  // Title identity first: it wins, which is the ordering the record needs —
+  // specific title identities must sit BEFORE the catch-all terminal identity.
+  assert.strictEqual(engine.matchClient(herdrWindow, [HERDR, terminal]), "herdr");
+  // Terminal first: the terminal swallows it. matchClient is first-match-wins.
+  assert.strictEqual(engine.matchClient(herdrWindow, [terminal, HERDR]), "terminal");
+});

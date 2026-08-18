@@ -110,6 +110,26 @@ function monitorByDescription(monitorsJson, desc) {
 //     tail varies by profile and URL. Only a prefix pattern survives them.
 //   - A window's `class` can change at runtime while `initialClass` does not
 //     (and vice versa), so both fields are consulted.
+//
+// An identity may ALSO carry `titlePatterns: ["^herdr$"]` — regex strings in the
+// same shape, matched case-insensitively against `initialTitle` and nothing
+// else. It exists for a TUI app in a plain terminal: `herdr` running in `foot`
+// has class `foot` like every other terminal, and `foot --title=herdr herdr`
+// gives the window `initialTitle: "herdr"` while the class stays `foot`, so the
+// host's window rules keep matching it. Two rules hold this together:
+//   - `titlePatterns` is OPT-IN and separate from `patterns`. Feeding
+//     `initialTitle` into the `patterns` loop would let every existing class
+//     pattern start claiming windows by their title (the `obsidian` identity
+//     would swallow a terminal titled "obsidian").
+//   - It is matched against `initialTitle` ONLY, never `title`. Live titles
+//     change constantly — an app renaming itself moves only `title`, while
+//     `initialTitle` is fixed at map time — and matching them would make a
+//     window's identity time-varying, which is the exact failure mode this
+//     design exists to avoid. Never against `class`/`initialClass` either.
+//
+// Both lists may be present; either one matching is a match. Identity order
+// stays priority order, so a title identity must sit BEFORE the catch-all
+// terminal identity that would otherwise claim its window first.
 
 // Compile a pattern string. A user-editable list can contain a typo; a bad
 // regex must not take the whole engine down, so it simply never matches.
@@ -137,6 +157,21 @@ function clientMatchesIdentity(client, identity) {
       if (typeof value === "string" && value && re.test(value)) return true;
     }
   }
+
+  // Opt-in, and deliberately a separate loop over a single field: `initialTitle`
+  // only — never `title` (a live title makes identity time-varying), never
+  // `class`/`initialClass` (that is what `patterns` is for).
+  var titlePatterns = identity.titlePatterns || [];
+  var initialTitle = client.initialTitle;
+
+  if (typeof initialTitle === "string" && initialTitle) {
+    for (var t = 0; t < titlePatterns.length; t++) {
+      var titleRe = compilePattern(titlePatterns[t]);
+      if (!titleRe) continue;
+      if (titleRe.test(initialTitle)) return true;
+    }
+  }
+
   return false;
 }
 
