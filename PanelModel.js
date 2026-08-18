@@ -1405,6 +1405,26 @@ function launchRepairIndex(identities, launchMap) {
   return out;
 }
 
+// A repaired identity is the SAME identity with ONE field replaced, so it is
+// built by copying every field the identity already had rather than by listing
+// the fields the schema happens to have today. The enumerated form is what
+// dropped `titlePatterns` the moment schema v4 added it (tick h5i): a "Learn
+// launch" press on a title-matched app silently destroyed its title matching,
+// and the loss only showed up later, when the window stopped being recognized.
+// A copy cannot go stale when the schema grows; a field list has to be edited
+// every time, and forgetting is exactly this bug.
+//
+// A fresh object either way — never an in-place edit — because QML bindings
+// only notice a reassignment, and writeState drops a byte-identical text.
+function identityWithLaunch(identity, command) {
+  var out = {};
+  for (var key in identity) {
+    if (Object.prototype.hasOwnProperty.call(identity, key)) out[key] = identity[key];
+  }
+  out.launch = command;
+  return out;
+}
+
 // Apply those repairs. Returns a NEW identity list for StateModel.setIdentities.
 function backfillLaunchCommands(identities, launchMap) {
   var list = isArray(identities) ? identities : [];
@@ -1416,7 +1436,7 @@ function backfillLaunchCommands(identities, launchMap) {
     if (!identity) continue;
     var command = repairs[identity.id];
     if (!command) { out.push(identity); continue; }
-    out.push({ id: identity.id, patterns: identity.patterns, launch: command });
+    out.push(identityWithLaunch(identity, command));
   }
 
   return out;

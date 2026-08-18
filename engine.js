@@ -845,7 +845,7 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //
 // MULTI-WINDOW, schema v3 (epic 69b): the schema no longer says "one entry per
 // identity". `occurrence` is the field that lifts that limitation, and it ships
-// here — STATE_VERSION is 3 and every read migrates v2 entries to
+// here — STATE_VERSION is 4 and every read migrates v2 entries to
 // `occurrence: 0` — while the machinery that PRODUCES more than one entry per
 // identity (the placement comparator, the occurrence-aware record, the restore
 // matcher) lands in the ticks that follow this one. Until it does, buildLayout

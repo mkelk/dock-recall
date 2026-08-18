@@ -975,6 +975,47 @@ test("backfill fills empty launches and NEVER overwrites one that is set", () =>
   assert.deepStrictEqual(after[1].patterns, ["^chrome-mail\\.google\\.com"]);
 });
 
+test("a repaired identity keeps every field it had — titlePatterns included", () => {
+  // The defect (tick h5i): the backfill rebuilt the repaired identity from a
+  // FIXED field list, so schema v4's `titlePatterns` fell on the floor.
+  // Pressing "Learn launch" on a title-matched app silently destroyed its
+  // title matching, and the loss only surfaced later, when the window stopped
+  // being recognized. The fix is a COPY, not a longer list — a list has to be
+  // edited every time the schema grows, and forgetting to is this exact bug.
+  const identities = [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }
+  ];
+  const map = { herdr: "foot --title herdr" };
+
+  assert.deepStrictEqual(panel.backfillLaunchCommands(identities, map), [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title herdr" }
+  ]);
+  // The autofill is the same repair without a press, applied through the same
+  // function, so it must not lose the field either.
+  assert.deepStrictEqual(panel.autofillLaunchCommands(identities, map), [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title herdr" }
+  ]);
+  // And the list handed in is not edited in place: QML bindings only notice a
+  // reassignment, so an in-place repair would also skip the write.
+  assert.deepStrictEqual(identities, [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }
+  ]);
+});
+
+test("a launch repair round-trips through the file with its titles intact", () => {
+  // The epic's acceptance driven through the whole panel write path: repair,
+  // setIdentities, serialize, parse.
+  const before = state.setIdentities(state.defaultState(), [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }
+  ]);
+  const repaired = panel.backfillLaunchCommands(
+    state.identities(before), { herdr: "foot --title herdr" });
+  const round = state.parseState(state.serializeState(state.setIdentities(before, repaired)));
+  assert.deepStrictEqual(round.state.identities, [
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title herdr" }
+  ]);
+});
+
 test("a derived command carrying ]] is dropped at the backfill too", () => {
   const identities = [{ id: "x", patterns: ["^x$"], launch: "" }];
   assert.strictEqual(panel.backfillLaunchCommands(identities, { x: "evil ]] here" })[0].launch, "");
