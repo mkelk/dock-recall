@@ -289,6 +289,42 @@ function isArray(value) {
   return Object.prototype.toString.call(value) === "[object Array]";
 }
 
+// ---------------------------------------------------------------------------
+// A LOOKUP OBJECT.PROTOTYPE CANNOT ANSWER
+// ---------------------------------------------------------------------------
+//
+// Every index in this project is a bare `{}` — a dedupe map, a launch map, a
+// bucket of windows per identity — and `map[key]` on a bare object ANSWERS for
+// `constructor`, `toString`, `valueOf`, `hasOwnProperty` and the rest whether
+// or not anything was ever stored under them. The keys are identity ids, group
+// ids, member keys and class-name tokens: every one of them comes out of a
+// user-editable state file or off a window class.
+//
+// It is not hypothetical. `normalizeIdentities`' dedupe map below said "already
+// seen" about an identity nobody had seen, so an identity with `id:
+// "constructor"` vanished from the parsed state on EVERY read — the file was
+// intact and the app was simply gone. Elsewhere the same shape handed back the
+// `Object` function where a command or a window list was expected, which came
+// out as a TypeError in the middle of a restore plan. And it is reachable
+// without a hand edit: PanelModel.deriveIdentityId builds an id out of the
+// class name's segments, so an app whose window class is `Constructor` produces
+// exactly the id `constructor`.
+//
+// So every read of a map keyed by one of those goes through here. The guard is
+// `Object.prototype.hasOwnProperty.call` and never `map.hasOwnProperty(key)`:
+// the map's own `hasOwnProperty` entry is precisely one of the keys this exists
+// for, and calling it would call whatever the user stored.
+//
+// The one key it cannot repair is `__proto__`, which is a SETTER on
+// Object.prototype rather than an inherited value — a write to it is swallowed
+// before this is ever consulted, so it simply fails to be indexed rather than
+// returning something wrong. Nothing derives that id; what a hand-written one
+// does is pinned in tests/reserved-ids.test.js.
+function own(map, key) {
+  if (!map) return undefined;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
 function defaultState() {
   return { version: STATE_VERSION, paused: false, identities: [], layouts: {} };
 }
@@ -334,7 +370,7 @@ function normalizeIdentities(value) {
     if (!identity) continue;
     // A duplicate id would make identityById ambiguous and record the same
     // window twice. First wins, consistent with the rest of the engine.
-    if (seen[identity.id]) continue;
+    if (own(seen, identity.id)) continue;
     seen[identity.id] = true;
     out.push(identity);
   }

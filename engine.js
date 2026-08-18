@@ -174,6 +174,15 @@ function patternList(value) {
   return Object.prototype.toString.call(value) === "[object Array]" ? value : [];
 }
 
+// A map lookup Object.prototype cannot answer — see the long note above
+// `own` in StateModel.js. Every index in this file keyed by an identity id, a
+// group id or a member key reads through this, because `map["constructor"]` on
+// a bare object is truthy whether or not anything was put there (tick 8hp).
+function own(map, key) {
+  if (!map) return undefined;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
 // Does any pattern in the list match any of these fields? An empty or
 // all-broken list is a no.
 function anyPatternMatches(patterns, fields) {
@@ -433,11 +442,11 @@ function launchDeficits(plan) {
     if (!op || op.kind !== "launch") continue;
     var id = op.identityId;
     if (typeof id !== "string" || !id) continue;
-    if (byId[id] === undefined) {
+    if (own(byId, id) === undefined) {
       byId[id] = order.length;
       order.push({ identityId: id, count: 0 });
     }
-    order[byId[id]].count += 1;
+    order[own(byId, id)].count += 1;
   }
   return order;
 }
@@ -694,7 +703,7 @@ function chosenWindows(clientsJson, identities, monitorsJson) {
 // matchOccurrences' job.
 function windowForOccurrence(chosen, identityId, occurrence) {
   if (!chosen || !chosen.byId) return null;
-  var windows = chosen.byId[identityId];
+  var windows = own(chosen.byId, identityId);
   if (!windows || !windows.length) return null;
   return windows[occurrenceOf(occurrence)] || null;
 }
@@ -874,7 +883,7 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
   var i;
   for (i = 0; i < recordedApps.length; i++) {
     var id = recordedApps[i].identityId;
-    if (!buckets[id]) {
+    if (!own(buckets, id)) {
       buckets[id] = { entries: [], at: [] };
       order.push(id);
     }
@@ -890,10 +899,10 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
   var matchedAddresses = {};
 
   for (var b = 0; b < order.length; b++) {
-    var bucket = buckets[order[b]];
-    var live = index.byId[order[b]] || [];
+    var bucket = own(buckets, order[b]);
+    var live = own(index.byId, order[b]) || [];
     var paired = matchOccurrences(bucket.entries, live, clientsJson, monitorsJson, identities);
-    if (!usedOccurrences[order[b]]) usedOccurrences[order[b]] = {};
+    if (!own(usedOccurrences, order[b])) usedOccurrences[order[b]] = {};
     for (i = 0; i < paired.length; i++) {
       if (!paired[i]) continue;
       clientByEntry[bucket.at[i]] = paired[i];
@@ -908,8 +917,8 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
   // placement order, so the index stays a bijection.
   for (var idKey in index.byId) {
     if (!Object.prototype.hasOwnProperty.call(index.byId, idKey)) continue;
-    var windows = index.byId[idKey];
-    var used = usedOccurrences[idKey] || {};
+    var windows = own(index.byId, idKey);
+    var used = own(usedOccurrences, idKey) || {};
     var next = 0;
     for (var w = 0; w < windows.length; w++) {
       if (matchedAddresses[windows[w].address]) continue;
@@ -1423,7 +1432,7 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
 
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
-    var windows = chosen.byId[identity.id] || [];
+    var windows = own(chosen.byId, identity.id) || [];
 
     // ONE ENTRY PER RUNNING WINDOW (schema v3). Two Slack windows record twice,
     // at occurrence 0 and 1, and each entry describes its own window's monitor,
@@ -1828,7 +1837,7 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
     var recorded = recordedApps[i];
     if (!recorded.group || !recorded.group.groupId) continue;
     var groupId = recorded.group.groupId;
-    if (!byId[groupId]) {
+    if (!own(byId, groupId)) {
       byId[groupId] = { groupId: groupId, members: [] };
       order.push(groupId);
     }
@@ -2460,7 +2469,7 @@ var VERDICT_DIMENSIONS = ["monitor", "workspace", "floating", "group"];
 
 function verdictPhrase(word) {
   if (!word || word === "ok") return "";
-  var phrase = VERDICT_PHRASES[word];
+  var phrase = own(VERDICT_PHRASES, word);
   return phrase === undefined ? String(word) : phrase;
 }
 
@@ -2485,7 +2494,7 @@ var GEOMETRY_SKIP_PHRASES = {
 
 function geometrySkipPhrase(skip) {
   if (!skip) return "";
-  var phrase = GEOMETRY_SKIP_PHRASES[skip];
+  var phrase = own(GEOMETRY_SKIP_PHRASES, skip);
   return phrase === undefined ? String(skip) : phrase;
 }
 
@@ -2511,7 +2520,7 @@ function groupVerdictFor(app, groupsById) {
   // Recorded standing alone, live tabbed in with other watched windows.
   if (!recorded) return "unexpected-group";
 
-  var group = groupsById[recorded.groupId] || null;
+  var group = own(groupsById, recorded.groupId) || null;
   // The members that are actually here, in recorded tab order — the same list
   // the plan would rebuild. A member that is not restorable right now is not
   // this app's problem (it gets its own "not-running" verdict).
@@ -2528,11 +2537,11 @@ function groupVerdictFor(app, groupsById) {
 
   var extra = false;
   for (var e = 0; e < live.length; e++) {
-    if (!wantedSet[live[e]]) extra = true;
+    if (!own(wantedSet, live[e])) extra = true;
   }
   var short = false;
   for (var m = 0; m < wanted.length; m++) {
-    if (!liveSet[wanted[m]]) short = true;
+    if (!own(liveSet, wanted[m])) short = true;
   }
 
   if (extra) return "unexpected-group";
@@ -2630,10 +2639,10 @@ function verdictForApp(app, groupsById, blocked, instance) {
   }
   verdict.text = phrases.join(", ");
 
-  if (!verdict.ok && blocked && blocked[verdict.identityId]) {
+  if (!verdict.ok && blocked && own(blocked, verdict.identityId)) {
     verdict.blockedBy = {
-      kind: blocked[verdict.identityId].kind,
-      reason: blocked[verdict.identityId].reason
+      kind: own(blocked, verdict.identityId).kind,
+      reason: own(blocked, verdict.identityId).reason
     };
   }
 
@@ -2684,17 +2693,17 @@ function verdictsFor(driftReport, outcomes) {
   var i;
   for (i = 0; i < apps.length; i++) {
     var id = (apps[i] && apps[i].identityId) || "";
-    counts[id] = (counts[id] || 0) + 1;
+    counts[id] = (own(counts, id) || 0) + 1;
   }
 
   var out = [];
   for (i = 0; i < apps.length; i++) {
     var identityId = (apps[i] && apps[i].identityId) || "";
-    var index = seen[identityId] || 0;
+    var index = own(seen, identityId) || 0;
     seen[identityId] = index + 1;
     out.push(verdictForApp(apps[i], groupsById, blocked, {
       index: index,
-      count: counts[identityId] || 1
+      count: own(counts, identityId) || 1
     }));
   }
   return out;
@@ -3255,7 +3264,7 @@ var TILING_REFUSAL_PHRASES = {
 
 function tilingRefusalPhrase(reason) {
   if (!reason) return "";
-  var phrase = TILING_REFUSAL_PHRASES[reason];
+  var phrase = own(TILING_REFUSAL_PHRASES, reason);
   return phrase === undefined ? String(reason) : phrase;
 }
 
@@ -3338,8 +3347,8 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
   for (var j = 0; j < live.length; j++) liveByKey[live[j].key] = live[j];
   // Every key on one side must exist on the other, or "the same slot" is a
   // sentence about two different desktops.
-  for (var w = 0; w < wantOrder.length; w++) if (!liveByKey[wantOrder[w]]) return null;
-  for (var h = 0; h < haveOrder.length; h++) if (!recordedByKey[haveOrder[h]]) return null;
+  for (var w = 0; w < wantOrder.length; w++) if (!own(liveByKey, wantOrder[w])) return null;
+  for (var h = 0; h < haveOrder.length; h++) if (!own(recordedByKey, haveOrder[h])) return null;
 
   // ---- occupancy: selection-sort `have` into `want`, one swap per fix.
   //
@@ -3789,7 +3798,7 @@ function tilingSettled(recordedItems, liveItems) {
   for (var i = 0; i < live.length; i++) byKey[live[i].key] = live[i];
   var total = 0;
   for (var r = 0; r < recorded.length; r++) {
-    var mine = byKey[recorded[r].key];
+    var mine = own(byKey, recorded[r].key);
     if (!mine) return false;
     var score = rectIou(recorded[r], mine);
     if (score === null) return false;

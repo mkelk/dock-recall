@@ -29,6 +29,15 @@ function trim(value) {
   return String(value === undefined || value === null ? "" : value).replace(/^\s+|\s+$/g, "");
 }
 
+// A map lookup Object.prototype cannot answer — see the long note above
+// `own` in StateModel.js. Every index in this file keyed by an identity id, a
+// group id or a member key reads through this, because `map["constructor"]` on
+// a bare object is truthy whether or not anything was put there (tick 8hp).
+function own(map, key) {
+  if (!map) return undefined;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
 // Escape every character that means something to a regex. Window classes
 // contain dots as a matter of routine (md.obsidian.Obsidian), and an
 // unescaped dot in a generated pattern is a wildcard that silently widens what
@@ -225,7 +234,7 @@ function deriveIdentityId(className) {
   for (var j = 0; j < tokens.length; j++) {
     var candidate = tokens[j];
     if (!candidate || candidate.length < 2) continue;
-    if (GENERIC_TOKENS[candidate]) continue;
+    if (own(GENERIC_TOKENS, candidate)) continue;
     survivors.push(candidate);
   }
   var chosen = survivors.length ? survivors[survivors.length - 1] : text;
@@ -345,7 +354,7 @@ function suggestIdentity(className, identities, derivation) {
   var base = (titlePattern ? identityIdFromTitle(title) : deriveIdentityId(className)) || "app";
   var id = base;
   var suffix = 2;
-  while (taken[id]) {
+  while (own(taken, id)) {
     id = base + "-" + suffix;
     suffix += 1;
   }
@@ -685,7 +694,7 @@ function isSharedProcessPid(pid, windowsByPid) {
   var key = trim(pid);
   if (!key) return false;
   var map = (windowsByPid && typeof windowsByPid === "object") ? windowsByPid : {};
-  return (map[key] || 0) > 1;
+  return (own(map, key) || 0) > 1;
 }
 
 // Does this argv have the shape of a cmdline that was rewritten WITHOUT the
@@ -1265,12 +1274,12 @@ function wmClassFuzzyMatches(wmClass, className) {
   // word that names an APP: `desktop` in `org.telegram.desktop` is a packaging
   // convention, and letting it carry a match would marry unrelated entries.
   if (declaredLast !== actualLast) return false;
-  if (GENERIC_TOKENS[actualLast]) return false;
+  if (own(GENERIC_TOKENS, actualLast)) return false;
 
   var have = {};
   for (var a = 0; a < actual.length; a++) have[actual[a]] = true;
   for (var d = 0; d < declared.length; d++) {
-    if (!have[declared[d]]) return false;
+    if (!own(have, declared[d])) return false;
   }
   return true;
 }
@@ -1634,7 +1643,7 @@ function launchRepairIndex(identities, launchMap) {
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
-    var command = dispatchableCommand(map[identity.id]);
+    var command = dispatchableCommand(own(map, identity.id));
     if (!command) continue;
 
     var stored = trim(identity.launch);
@@ -1680,7 +1689,7 @@ function backfillLaunchCommands(identities, launchMap) {
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
     if (!identity) continue;
-    var command = repairs[identity.id];
+    var command = own(repairs, identity.id);
     if (!command) { out.push(identity); continue; }
     out.push(identityWithLaunch(identity, command));
   }
@@ -1695,7 +1704,7 @@ function learnableCount(identities, launchMap) {
   var repairs = launchRepairIndex(identities, launchMap);
   var count = 0;
   for (var id in repairs) {
-    if (repairs.hasOwnProperty(id)) count += 1;
+    if (Object.prototype.hasOwnProperty.call(repairs, id)) count += 1;
   }
   return count;
 }
@@ -1733,7 +1742,7 @@ function launchAutofillIndex(identities, launchMap) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
     if (trim(identity.launch)) continue;
-    var command = repairs[identity.id];
+    var command = own(repairs, identity.id);
     if (command) out[identity.id] = command;
   }
 
@@ -1749,7 +1758,7 @@ function autofillLaunchCommands(identities, launchMap) {
   var fills = launchAutofillIndex(list, launchMap);
   var any = false;
   for (var id in fills) {
-    if (fills.hasOwnProperty(id)) { any = true; break; }
+    if (Object.prototype.hasOwnProperty.call(fills, id)) { any = true; break; }
   }
   if (!any) return list;
   return backfillLaunchCommands(list, fills);
@@ -1762,7 +1771,7 @@ function autofillLaunchLog(fills, source) {
   var map = (fills && typeof fills === "object") ? fills : {};
   var pairs = [];
   for (var id in map) {
-    if (map.hasOwnProperty(id) && map[id]) pairs.push(id + " -> " + map[id]);
+    if (Object.prototype.hasOwnProperty.call(map, id) && map[id]) pairs.push(id + " -> " + map[id]);
   }
   if (!pairs.length) return "";
   pairs.sort();
@@ -1803,7 +1812,7 @@ function addedIdentity(before, after) {
   for (var j = 0; j < list.length; j++) {
     var identity = list[j];
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
-    if (!had[identity.id]) return identity;
+    if (!own(had, identity.id)) return identity;
   }
   return null;
 }
@@ -1840,8 +1849,8 @@ function launchStateIndex(identities, launchMap, refusals) {
       if (launchLooksBroken(identity.launch)) out[identity.id] = "broken";
       continue;
     }
-    if (refused[identity.id]) { out[identity.id] = "ambiguous"; continue; }
-    out[identity.id] = repairs[identity.id] ? "derivable" : "missing";
+    if (own(refused, identity.id)) { out[identity.id] = "ambiguous"; continue; }
+    out[identity.id] = own(repairs, identity.id) ? "derivable" : "missing";
   }
   return out;
 }
@@ -2579,7 +2588,7 @@ function instanceIndex(clients, monitors, resolve, driftReport, layout) {
   var i, occ, entry, identityId;
 
   function bucketFor(id) {
-    if (!byIdentity[id]) {
+    if (!own(byIdentity, id)) {
       byIdentity[id] = {
         occurrences: {}, live: [], order: [], instances: 0,
         addressByOccurrence: {}, recordedByOccurrence: {}
@@ -3185,14 +3194,14 @@ var REFUSAL_SENTENCES = {
 function refusalTagFor(reason) {
   var code = trim(reason);
   if (!code) return "";
-  var tag = REFUSAL_TAGS[code];
+  var tag = own(REFUSAL_TAGS, code);
   return tag === undefined ? code : tag;
 }
 
 function refusalSentenceFor(reason) {
   var code = trim(reason);
   if (!code) return "";
-  var sentence = REFUSAL_SENTENCES[code];
+  var sentence = own(REFUSAL_SENTENCES, code);
   return sentence === undefined
     ? "the tiled shape of this workspace is left as it is (" + code + ")"
     : sentence;
@@ -3339,7 +3348,7 @@ function slotsForClients(clients, resolve, drift, monitors, verdicts, monitorRec
     return {
       identityId: identityId,
       place: place,
-      drift: byAddress[address] || (drift ? drift[identityId] : null),
+      drift: byAddress[address] || (drift ? own(drift, identityId) : null),
       verdict: verdictsByOccurrence[occurrenceKey(identityId, place.occurrence)]
     };
   }
@@ -3516,7 +3525,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
   // only thing on screen.
   var index = instances || instanceIndex([], monitors, null, null, layout);
   function placeOf(app) {
-    var bucket = index.byIdentity ? index.byIdentity[trim(app.identityId)] : null;
+    var bucket = own(index.byIdentity, trim(app.identityId)) || null;
     if (!bucket) return { occurrence: occurrenceOf(app.occurrence), index: 0, instances: 1 };
     var occurrence = occurrenceOf(app.occurrence);
     var at = 0;
@@ -3562,7 +3571,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
         occurrence: place.occurrence,
         instances: place.instances,
         watched: true,
-        ghost: !running[app.identityId],
+        ghost: !own(running, app.identityId),
         drifted: false,
         driftTo: "",
         driftTag: "",
@@ -3862,7 +3871,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
     };
     entries.push({ row: unwatchedRow, place: buckets[b].place, occurrence: 0 });
     var derivedId = deriveIdentityId(className);
-    if (derivedId && !unwatchedRowByDerivedId[derivedId]) unwatchedRowByDerivedId[derivedId] = unwatchedRow;
+    if (derivedId && !own(unwatchedRowByDerivedId, derivedId)) unwatchedRowByDerivedId[derivedId] = unwatchedRow;
   }
 
   // ---- watched (or recorded) identities: ONE ROW PER INSTANCE -------------
@@ -3897,7 +3906,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
   for (var n = 0; n < identityIds.length; n++) {
     var identityId = identityIds[n];
     var instanceBucket = index.byIdentity[identityId];
-    var stillWatched = !haveIdentityList || watchedIds[identityId] === true;
+    var stillWatched = !haveIdentityList || own(watchedIds, identityId) === true;
     var count = instanceBucket.instances;
 
     for (var o = 0; o < instanceBucket.order.length; o++) {
@@ -3910,7 +3919,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       var verdict = verdictsByOccurrence[occurrenceKey(identityId, occurrence)];
 
       if (client) {
-        var entry = driftByAddress[address] || (count > 1 ? null : drift[identityId]) || null;
+        var entry = driftByAddress[address] || (count > 1 ? null : own(drift, identityId)) || null;
         var drifted = !!(entry && entry.status === "drifted");
         entries.push({ place: placementKeyForClient(client, monitors), occurrence: occurrence, row: {
           key: rowKey,
@@ -3933,9 +3942,9 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
           // row's own instance count goes with it, so a verdict counted over a
           // different population cannot mislabel this row.
           mismatch: verdictLine(verdict, count),
-          launchState: launch[identityId] || "",
-          launchHint: launchHintFor(launch[identityId] || ""),
-          launchRepairable: !!repairs[identityId]
+          launchState: own(launch, identityId) || "",
+          launchHint: launchHintFor(own(launch, identityId) || ""),
+          launchRepairable: !!own(repairs, identityId)
         } });
         continue;
       }
@@ -3956,9 +3965,9 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         // app happens to be running, say so on the row that already shows that
         // window rather than adding a second line for the same app — the
         // running row is also the one a click can actually re-watch.
-        var host = unwatchedRowByDerivedId[identityId];
+        var host = own(unwatchedRowByDerivedId, identityId);
         if (host) {
-          var folded = foldedOntoUnwatched[identityId];
+          var folded = own(foldedOntoUnwatched, identityId);
           if (!folded) {
             folded = { base: host.position, count: 0 };
             foldedOntoUnwatched[identityId] = folded;
@@ -4018,9 +4027,9 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         // Launch is an IDENTITY-level fact: the command that opens a second
         // Gmail window is the command that opens the first, so every instance
         // row of an identity carries the same state and the same hint.
-        launchState: launch[identityId] || "",
-        launchHint: launchHintFor(launch[identityId] || ""),
-        launchRepairable: !!repairs[identityId]
+        launchState: own(launch, identityId) || "",
+        launchHint: launchHintFor(own(launch, identityId) || ""),
+        launchRepairable: !!own(repairs, identityId)
       } });
     }
   }
