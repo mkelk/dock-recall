@@ -365,8 +365,12 @@ test("an identity whose every live match is claimed earlier is reported, with it
   ];
 
   // The hazard order: the catch-all was prepended in front of the title identity.
+  // `strict` because a class-only rule constrains strictly fewer axes than a
+  // class+title one — wider by construction, which is what makes "move it up,
+  // or untick the other one" provably safe advice (tick ytt).
   const report = engine.shadowedIdentities(clients, [terminal, herdr]);
-  assert.deepStrictEqual(report, [{ id: "herdr", windows: 1, claimedBy: ["terminal"] }]);
+  assert.deepStrictEqual(report,
+    [{ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true }]);
 
   // The order the panel writes when it prepends the SPECIFIC identity: nothing is
   // shadowed, because herdr wins its own window and terminal still wins the other.
@@ -405,14 +409,81 @@ test("a shadow report names every earlier identity that took a window, in list o
   const both = { id: "workbench", patterns: ["^code$", "^foot$"] };
   const clients = [clientWithClass("foot"), clientWithClass("code")];
 
+  // Two one-pattern identities shadow a two-pattern one BETWEEN THEM, which is
+  // why the coverage test below asks about the claimants as a union rather than
+  // one at a time. Not `strict`: all three constrain the same axis, so the
+  // panel observes rather than instructs (tick ytt).
   assert.deepStrictEqual(engine.shadowedIdentities(clients, [editor, terminal, both]), [
-    { id: "workbench", windows: 2, claimedBy: ["editor", "terminal"] }
+    { id: "workbench", windows: 2, claimed: 2, claimedBy: ["editor", "terminal"], strict: false }
   ]);
 
   // LIST order, not hyprctl order: the same desktop read with the windows the
   // other way round produces the same report.
   assert.deepStrictEqual(engine.shadowedIdentities(clients.slice().reverse(), [editor, terminal, both]), [
-    { id: "workbench", windows: 2, claimedBy: ["editor", "terminal"] }
+    { id: "workbench", windows: 2, claimed: 2, claimedBy: ["editor", "terminal"], strict: false }
+  ]);
+});
+
+// -------------------------------------------------- and when it must NOT fire
+//
+// Tick ytt. The axes-subset rule fixed the wolf-cry across axes and could not
+// see breadth WITHIN one, so the same false alarm came back class-against-class
+// — on the exact configuration StateModel's schema comment mandates.
+
+test("a webapp identity behind a catch-all is not shadowed while only the catch-all's window is open", () => {
+  const browser = { id: "browser", patterns: ["^chromium$"] };
+  const slack = { id: "slack", patterns: ["^chrome-app\\.slack\\.com", "^chromium$"] };
+
+  // ONLY the plain chromium window. slack matches it (its list carries
+  // `^chromium$` too), browser takes it first, and slack wins nothing.
+  const report = engine.shadowedIdentities([clientWithClass("chromium")], [browser, slack]);
+  assert.deepStrictEqual(report, [],
+    "slack still claims every chrome-app.slack.com window browser can never see");
+
+  // Open the webapp and slack wins fine — which is the proof that the report
+  // above would have been advice to break a working desk.
+  assert.strictEqual(
+    engine.matchClient(clientWithClass("chrome-app.slack.com__client-Profile_1"), [browser, slack]),
+    "slack");
+
+  // The claimants have to reach everywhere the shadowed identity does. Compared
+  // as pattern STRINGS: a claimant with no patterns at all constrains nothing
+  // on that axis and covers everything.
+  assert.strictEqual(engine.claimantsCover([browser], slack), false);
+  assert.strictEqual(engine.claimantsCover([browser], { patterns: ["^chromium$"] }), true);
+  assert.strictEqual(engine.claimantsCover([browser], { patterns: ["^CHROMIUM$"] }), true,
+    "compilePattern compiles case-insensitively, so the strings compare that way");
+  assert.strictEqual(
+    engine.claimantsCover([browser], { patterns: ["^chromium$"], titlePatterns: ["^slack$"] }), true,
+    "an axis the claimant leaves free is an axis it covers entirely");
+  assert.strictEqual(
+    engine.claimantsCover([{ id: "titled", patterns: [], titlePatterns: ["^x$"] }],
+      { patterns: ["^chromium$"] }), true);
+});
+
+test("a shadow is called strict only when the claimant is wider by construction", () => {
+  const wide = { id: "terminal", patterns: ["^foot$"] };
+  const narrow = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+  assert.strictEqual(engine.strictlyWider(wide, narrow), true);
+  assert.strictEqual(engine.strictlyWider(narrow, wide), false);
+  // Same axes, whatever the patterns say: first is not the same as wider, and
+  // an instruction there would be advice about what happens to be open.
+  assert.strictEqual(engine.strictlyWider(wide, { id: "other", patterns: ["^foot$"] }), false);
+});
+
+test("the notice counts what the NAMED claimant took, not every window matched", () => {
+  // Verified by execution in the vx3 review: with one titled and one plain foot
+  // window, `allfoot` matches both — but the titled one went to `herdr`, which
+  // is not a claimant (a class+title rule cannot shadow a class-only one). The
+  // notice used to read "term2 claims all 2 windows it matches". term2 claims
+  // one of them.
+  const herdr = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"] };
+  const term2 = { id: "term2", patterns: ["^foot$"] };
+  const allfoot = { id: "allfoot", patterns: ["^foot$"] };
+  const clients = [clientWithTitle("foot", "herdr"), clientWithTitle("foot", "foot")];
+
+  assert.deepStrictEqual(engine.shadowedIdentities(clients, [herdr, term2, allfoot]), [
+    { id: "allfoot", windows: 2, claimed: 1, claimedBy: ["term2"], strict: false }
   ]);
 });
 

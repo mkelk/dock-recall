@@ -292,6 +292,39 @@ function matchClient(client, identities) {
 // says a working rule is broken is the same class of wrong answer this is
 // supposed to remove.
 //
+// THE AXIS TEST IS NOT ENOUGH ON ITS OWN (tick ytt). It fixed the wolf-cry
+// across axes and cannot see breadth WITHIN one, so the same false alarm came
+// back class-against-class:
+//
+//   [ { id: "browser", patterns: ["^chromium$"] },
+//     { id: "slack",   patterns: ["^chrome-app\\.slack\\.com", "^chromium$"] } ]
+//
+// — the exact shape StateModel's schema comment mandates — with only the plain
+// chromium window open. `browser` takes it, slack wins nothing, and the axis
+// test says browser is wide enough, so the panel painted an urgent line saying
+// to reorder or untick. Slack's OTHER pattern claims windows browser can never
+// see; open the webapp and slack wins fine. Following that advice would have
+// broken a correct configuration.
+//
+// So a second, still evidence-free-of-guesses test: do the claimants TOGETHER
+// constrain at least what the shadowed identity constrains, pattern for pattern
+// (claimantsCover)? A pattern of the shadowed identity that no claimant carries
+// is room the claimants cannot reach, and an identity with room to grow into is
+// idle, not dead. The union rather than each claimant on its own, because a
+// two-pattern identity really can be shadowed by two one-pattern identities
+// between them — see the workbench test.
+//
+// KNOWN LIMIT, and it is the same root cause: patterns are compared as STRINGS,
+// so `^chrome-` in front of `^chrome-app\.slack\.com` is not seen to cover it
+// and a genuine shadow there goes unreported. That direction is the safe one —
+// silence rather than a false alarm about a working desk — and closing it means
+// deciding regex subsumption, which is not decidable and would be a guess
+// wearing a proof. The same limit reads the other way for a vacuously broad
+// axis: `{patterns:["^foot$"], titlePatterns:[".*"]}` in front of a plain
+// `{^foot$}` genuinely wins every foot window forever, and is not reported,
+// because `.*` counts as a constrained axis. Both are reachable only by hand
+// editing, and both are deliberately left alone.
+//
 // The rest of the rules, all earned:
 //   - an identity that wins even ONE live window is not shadowed. A partial
 //     loss is an ordering the user may well have meant; only a total one is a
@@ -303,11 +336,21 @@ function matchClient(client, identities) {
 //     still answers with that id, so nothing observable was lost (a duplicate
 //     id is StateModel's dedupe problem, not a matching one).
 //
-// Returns [ { id, windows, claimedBy } ] in list order, where `windows` is how
-// many live windows the identity matches and `claimedBy` names the earlier
-// identities that took them AND could shadow it — also in LIST order, not in
-// the order hyprctl happened to list the windows, so two reads of one unchanged
-// desktop agree.
+// Returns [ { id, windows, claimed, claimedBy, strict } ] in list order:
+//
+//   windows    how many live windows the identity matches
+//   claimed    how many of them a NAMED claimant took. Lower than `windows`
+//              when an earlier identity that failed the tests above took the
+//              rest — which is why it is counted separately: the sentence names
+//              the claimants, so its number has to be theirs (tick ytt).
+//   claimedBy  the earlier identities that took them AND could shadow it, in
+//              LIST order rather than the order hyprctl listed the windows, so
+//              two reads of one unchanged desktop agree.
+//   strict     whether every claimant constrains STRICTLY FEWER axes than the
+//              shadowed identity. Only then is "move it up, or untick the other
+//              one" provably safe advice; otherwise the evidence supports an
+//              observation and no more. PanelModel.shadowNoticeFor is where
+//              that distinction becomes two different sentences.
 
 // Which axes an identity constrains. An empty list is no constraint; see the
 // rule table above.
@@ -320,10 +363,52 @@ function constrainedAxes(identity) {
 
 // Could `earlier` claim everything `later` claims? Only if it constrains no
 // axis that `later` leaves free.
+//
+// The AXIS half of the question, and the whole of it for a caller that is only
+// asking about the relation between two rules — PanelModel's insert position
+// is one. shadowedIdentities asks claimantsCover as well.
 function couldShadow(earlier, later) {
   var a = constrainedAxes(earlier);
   var b = constrainedAxes(later);
   return (!a.cls || b.cls) && (!a.title || b.title);
+}
+
+// Does `earlier` constrain strictly FEWER axes than `later` — is it wider by
+// construction rather than merely wide enough? That is the case where telling
+// the user to move `later` up costs `earlier` nothing it can still claim.
+function strictlyWider(earlier, later) {
+  var a = constrainedAxes(earlier);
+  var b = constrainedAxes(later);
+  return (!a.cls && b.cls) || (!a.title && b.title);
+}
+
+// Do these claimants, together, carry every pattern `identity` constrains on
+// this axis? An empty list on a claimant is NO constraint on that axis, which
+// covers everything; an empty list on the identity is nothing to cover.
+// Compared case-insensitively, because compilePattern always compiles that way.
+function axisCovered(claimants, identity, key) {
+  var wanted = patternList(identity[key]);
+  if (wanted.length === 0) return true;
+
+  for (var w = 0; w < wanted.length; w++) {
+    if (typeof wanted[w] !== "string") continue;
+    var want = wanted[w].toLowerCase();
+    var found = false;
+    for (var c = 0; c < claimants.length && !found; c++) {
+      var have = patternList(claimants[c][key]);
+      if (have.length === 0) { found = true; break; }
+      for (var h = 0; h < have.length; h++) {
+        if (typeof have[h] === "string" && have[h].toLowerCase() === want) { found = true; break; }
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function claimantsCover(claimants, identity) {
+  return axisCovered(claimants, identity, "patterns")
+    && axisCovered(claimants, identity, "titlePatterns");
 }
 
 function shadowedIdentities(clientsJson, identities) {
@@ -337,6 +422,7 @@ function shadowedIdentities(clientsJson, identities) {
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
 
     var matched = 0;
+    var claimed = 0;
     var wins = false;
     var claimedAt = [];
 
@@ -352,7 +438,12 @@ function shadowedIdentities(clientsJson, identities) {
       // No earlier claimant, or one wearing this very id: the identity's id is
       // what matchClient answers for this window, so it has lost nothing.
       if (winner < 0 || list[winner].id === identity.id) { wins = true; break; }
-      if (couldShadow(list[winner], identity) && claimedAt.indexOf(winner) < 0) claimedAt.push(winner);
+      if (!couldShadow(list[winner], identity)) continue;
+      // Counted here rather than from `matched`: a window taken by an earlier
+      // identity that is NOT one of the claimants is not the claimants' doing,
+      // and the sentence names the claimants.
+      claimed += 1;
+      if (claimedAt.indexOf(winner) < 0) claimedAt.push(winner);
     }
 
     // Every window gone, and at least one of the identities that took them is
@@ -360,13 +451,29 @@ function shadowedIdentities(clientsJson, identities) {
     if (wins || matched === 0 || claimedAt.length === 0) continue;
 
     claimedAt.sort(function (a, b) { return a - b; });
+    var claimants = [];
     var claimedBy = [];
+    var strict = true;
     for (var k = 0; k < claimedAt.length; k++) {
-      var id = list[claimedAt[k]].id;
+      var claimant = list[claimedAt[k]];
+      claimants.push(claimant);
+      if (!strictlyWider(claimant, identity)) strict = false;
+      var id = claimant.id;
       if (typeof id === "string" && id && claimedBy.indexOf(id) < 0) claimedBy.push(id);
     }
     if (claimedBy.length === 0) continue;
-    out.push({ id: identity.id, windows: matched, claimedBy: claimedBy });
+    // The claimants have to reach everywhere this identity does. Where they do
+    // not, its emptiness is what happens to be open — not a rule that cannot
+    // fire — and saying otherwise breaks a correct desk.
+    if (!claimantsCover(claimants, identity)) continue;
+
+    out.push({
+      id: identity.id,
+      windows: matched,
+      claimed: claimed,
+      claimedBy: claimedBy,
+      strict: strict
+    });
   }
 
   return out;
@@ -4899,6 +5006,8 @@ if (typeof module !== "undefined") {
     matchClient: matchClient,
     shadowedIdentities: shadowedIdentities,
     couldShadow: couldShadow,
+    strictlyWider: strictlyWider,
+    claimantsCover: claimantsCover,
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
     liveWindowCount: liveWindowCount,

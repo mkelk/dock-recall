@@ -4421,7 +4421,10 @@ test("a request with no window at all is still a request the derivation can read
 // without both names.
 
 test("the shadow notice names the losing identity, its shadower and the fix", () => {
-  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] });
+  // `strict` is the engine's answer to "is the claimant wider BY CONSTRUCTION"
+  // — a class-only rule in front of a class+title one is. Only then is the
+  // instruction provably safe advice (tick ytt).
+  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"], strict: true });
 
   assert.ok(line.indexOf('"herdr"') >= 0, line);
   assert.ok(line.indexOf('"terminal"') >= 0, line);
@@ -4430,12 +4433,34 @@ test("the shadow notice names the losing identity, its shadower and the fix", ()
   assert.strictEqual(line.indexOf("undefined"), -1, line);
 });
 
+test("without a strict-subset relation the notice observes rather than instructs", () => {
+  // Two class-only identities: the one in front is not a wider RULE, it is
+  // simply first, and "put it above or untick it" is advice about what happens
+  // to be open. The observation is the whole of what the evidence supports.
+  const soft = panel.shadowNoticeFor({ id: "allfoot", windows: 2, claimed: 1,
+    claimedBy: ["term2"], strict: false });
+  assert.ok(soft.indexOf('No open window currently reaches "allfoot"') === 0, soft);
+  assert.strictEqual(soft.indexOf("untick"), -1, soft);
+  assert.strictEqual(soft.indexOf("above"), -1, soft);
+
+  // THE MISCOUNT (tick ytt): term2 claims ONE of the two windows allfoot
+  // matches — the other was taken by an identity that is not a claimant — and
+  // the sentence used to say it claimed all of them.
+  assert.ok(soft.indexOf("claims 1 of the 2 windows it matches") >= 0, soft);
+
+  // An entry that does not say the relation is strict has not earned an
+  // instruction, so a missing field reads as the weak case.
+  assert.ok(panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] })
+    .indexOf("No open window currently reaches") === 0);
+});
+
 test("the shadow notice counts the windows, and says two shadowers as two", () => {
-  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] });
+  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"], strict: true });
   assert.ok(one.indexOf("the only window it matches") >= 0, one);
   assert.ok(one.indexOf(" is earlier") >= 0, one);
 
-  const many = panel.shadowNoticeFor({ id: "workbench", windows: 3, claimedBy: ["editor", "terminal"] });
+  const many = panel.shadowNoticeFor({ id: "workbench", windows: 3, claimed: 3,
+    claimedBy: ["editor", "terminal"], strict: true });
   assert.ok(many.indexOf("all 3 windows it matches") >= 0, many);
   assert.ok(many.indexOf('"editor" and "terminal"') >= 0, many);
   assert.ok(many.indexOf(" are earlier") >= 0, many);

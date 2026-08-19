@@ -2856,10 +2856,13 @@ Item {
               wrapMode: Text.WordWrap
             }
 
-            // A watched app that can never be recognized while the list is in
+            // A watched app that no open window reaches while the list is in
             // this order. Urgent rather than dim: unlike the two hints above it,
-            // this one says something is already wrong — the app is being
-            // recorded under the wrong name right now.
+            // this one is about windows on screen right now, being recorded
+            // under another identity's name. What the sentence ASKS FOR varies
+            // with the evidence — an instruction only where the identity in
+            // front is wider by construction, an observation otherwise (see
+            // PanelModel.shadowNoticeFor).
             Text {
               width: parent.width
               visible: root.shadowHint !== ""

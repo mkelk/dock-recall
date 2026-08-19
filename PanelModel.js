@@ -557,20 +557,48 @@ function quotedIdList(ids) {
 // One entry of engine.shadowedIdentities -> one sentence, or "" when the entry
 // says nothing usable (which is the caller's single truthy test — a hint that
 // renders as an empty line looks like a bug in the panel).
+//
+// TWO SENTENCES, because the evidence supports two different strengths of claim
+// (tick ytt). `entry.strict` says every claimant constrains strictly fewer axes
+// than the shadowed identity — it is wider by construction, so moving the
+// shadowed identity above it costs the claimant nothing it can still reach, and
+// "put it above, or untick" is provably safe advice. Where the two constrain
+// the SAME axes, all the evidence supports is an observation: no window reaches
+// it right now. An imperative there would be advice about what is open at the
+// moment, which is the wolf-cry this detector exists to remove.
+//
+// A missing `strict` is treated as the WEAK case on purpose: an entry that does
+// not say the relation is strict has not earned an instruction.
 function shadowNoticeFor(entry) {
   if (!entry || typeof entry !== "object") return "";
   var id = trim(entry.id);
   var names = quotedIdList(entry.claimedBy);
   if (!id || !names) return "";
 
-  var count = Number(entry.windows) || 0;
-  var windows = count > 1 ? "all " + count + " windows it matches" : "the only window it matches";
-  var one = isArray(entry.claimedBy) && entry.claimedBy.length === 1;
+  var matched = Number(entry.windows) || 0;
+  // How many of them the NAMED claimants took. Absent (or nonsense) means the
+  // caller only counted matches, which is what `windows` meant before ytt.
+  var took = (entry.claimed === undefined || entry.claimed === null)
+    ? matched : (Number(entry.claimed) || 0);
+  if (took > matched) took = matched;
 
-  return '"' + id + '" never wins a window: ' + names + (one ? " is" : " are")
-    + " earlier in the list and " + (one ? "claims " : "claim ") + windows
-    + '. Put "' + id + '" above ' + (one ? names : "them") + " in the state file, or untick "
-    + (one ? names : "them") + ".";
+  var windows;
+  if (took < matched) windows = took + " of the " + matched + " windows it matches";
+  else if (matched > 1) windows = "all " + matched + " windows it matches";
+  else windows = "the only window it matches";
+
+  var one = isArray(entry.claimedBy) && entry.claimedBy.length === 1;
+  var body = names + (one ? " is" : " are") + " earlier in the list and "
+    + (one ? "claims " : "claim ") + windows;
+
+  if (entry.strict === true) {
+    return '"' + id + '" never wins a window: ' + body
+      + '. Put "' + id + '" above ' + (one ? names : "them") + " in the state file, or untick "
+      + (one ? names : "them") + ".";
+  }
+  return 'No open window currently reaches "' + id + '": ' + body
+    + ". " + names + (one ? " is" : " are") + " no narrower a rule than \"" + id
+    + "\", so this may be nothing more than what is open right now.";
 }
 
 // Every such sentence, one per line, or "" when the list is healthy.
