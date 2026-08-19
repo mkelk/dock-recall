@@ -82,8 +82,10 @@ test("the derived pattern is case-insensitive in practice", () => {
 });
 
 test("the generated pattern is what the engine matches with", () => {
-  const identity = panel.suggestIdentity("foot", []);
-  const client = makeClient({ class: "foot" });
+  // Not a terminal class: ticking one of those refuses rather than proposing
+  // the class (tick gpq, and the terminal section far below).
+  const identity = panel.suggestIdentity("chromium", []);
+  const client = makeClient({ class: "chromium" });
   assert.strictEqual(engine.clientMatchesIdentity(client, identity), true);
 });
 
@@ -146,7 +148,7 @@ test("a new identity never invents a launch command", () => {
   // only be READ (off /proc or a desktop file). It leaves the field empty for
   // the derivation pass to fill — see the launch-derivation tests below, and
   // the user-found gap they close.
-  assert.strictEqual(panel.suggestIdentity("foot", []).launch, "");
+  assert.strictEqual(panel.suggestIdentity("chromium", []).launch, "");
 });
 
 test("ticking something already watched is a no-op, not a duplicate", () => {
@@ -158,13 +160,14 @@ test("ticking something already watched is a no-op, not a duplicate", () => {
 
 test("ticking an unwatched class prepends an identity for it", () => {
   const before = [{ id: "browser", patterns: ["^chromium$"], launch: "" }];
-  const after = panel.toggleWatchedIdentities(before, "foot", "");
+  const after = panel.toggleWatchedIdentities(before, "code", "", null, engine.couldShadow);
   assert.strictEqual(after.length, 2);
   // Front, not back: the list is priority order and matchClient takes the
   // first match, so the specific thing just ticked must not sit behind a
-  // catch-all added earlier.
-  assert.strictEqual(after[0].id, "foot");
-  assert.deepStrictEqual(after[0].patterns, ["^foot$"]);
+  // catch-all added earlier. The one exception — an addition that would shadow
+  // something already on the list — is pinned in the insert-position test.
+  assert.strictEqual(after[0].id, "code");
+  assert.deepStrictEqual(after[0].patterns, ["^code$"]);
   assert.strictEqual(after[1].id, "browser");
 });
 
@@ -179,8 +182,9 @@ test("unticking removes the identity the chip was showing", () => {
 
 test("a toggle round trip returns the list to where it started", () => {
   const before = [{ id: "browser", patterns: ["^chromium$"], launch: "" }];
-  const ticked = panel.toggleWatchedIdentities(before, "foot", "");
-  const unticked = panel.toggleWatchedIdentities(ticked, "foot", "foot");
+  const ticked = panel.toggleWatchedIdentities(before, "code", "");
+  assert.strictEqual(ticked.length, 2, "something was actually added to untick again");
+  const unticked = panel.toggleWatchedIdentities(ticked, "code", "code");
   assert.deepStrictEqual(unticked, before);
 });
 
@@ -2022,8 +2026,11 @@ test("clicking ANY instance row toggles the whole identity", () => {
   }
 
   // And back the other way: ticking either one watches the app once, not twice.
+  // The class here is a terminal, so the tick carries the derivation that names
+  // the app inside it — without one it refuses (tick gpq).
   const unwatchedRows = panel.appRows(clients, monitors, resolver([]), null, null, []);
-  const retickd = panel.toggleWatchedIdentities([], unwatchedRows[0].className, unwatchedRows[0].identityId);
+  const retickd = panel.toggleWatchedIdentities([], unwatchedRows[0].className,
+    unwatchedRows[0].identityId, { command: "foot --title=herdr herdr", title: "herdr", reason: "" });
   assert.strictEqual(retickd.length, 1);
 });
 
@@ -2796,9 +2803,14 @@ test("the empty state has exactly one hint, and only when it is empty", () => {
 // upsertLayout -> serialize -> the service reads it back. Recording is the one
 // action that overwrites, so the round trip is worth pinning down.
 
+// The class-only terminal identity a hand-written state file may carry and the
+// panel refuses to create (tick gpq — it claims every terminal on the desk).
+// Written as a literal because these tests are about the record round trip, not
+// about what a tick proposes.
+const FOOT_CLASS_IDENTITY = { id: "foot", patterns: ["^foot$"], launch: "" };
+
 test("record writes a layout the service reads back unchanged", () => {
-  const identities = panel.toggleWatchedIdentities(
-    panel.toggleWatchedIdentities([], "chromium", ""), "foot", "");
+  const identities = panel.toggleWatchedIdentities([], "chromium", "").concat([FOOT_CLASS_IDENTITY]);
   const before = state.setIdentities(state.defaultState(), identities);
 
   const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, state.identities(before), AT);
@@ -2817,7 +2829,7 @@ test("record writes a layout the service reads back unchanged", () => {
 });
 
 test("recording again overwrites this topology and leaves the others alone", () => {
-  const identities = panel.toggleWatchedIdentities([], "foot", "");
+  const identities = [FOOT_CLASS_IDENTITY];
   const seeded = state.upsertLayout(
     state.setIdentities(state.defaultState(), identities),
     { topologyKey: "Some other setup", recordedAt: AT, apps: [] });
@@ -3260,19 +3272,21 @@ test("ticking a terminal that hosts one app proposes the app, not the terminal",
     engine.clientMatchesIdentity(clients.find((c) => c.initialTitle === "foot"), added), false);
 });
 
-test("a refusal proposes exactly what it always proposed", () => {
-  // Two children: the derivation refuses, and the tick stays the pre-1uz one —
-  // a class identity with an empty launch. Nothing new is invented from a guess.
+test("a refusal proposes nothing at all, and says why", () => {
+  // It USED to propose the pre-1uz class identity here — `^foot$` with an empty
+  // launch — which claims every terminal on the desktop and, once the autofill
+  // pass had stamped one app's command onto it, launched whichever one the
+  // click happened to catch. Tick gpq made it a refusal the panel says out loud.
   const ambiguous = footChildDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
   assert.deepStrictEqual(panel.suggestIdentity("foot", [], ambiguous),
-    { id: "foot", patterns: ["^foot$"], launch: "" });
+    { refusal: "several-children", className: "foot" });
 
   // Same for a terminal whose cmdline has not come back yet, and for a caller
   // that passes no derivation at all.
-  assert.deepStrictEqual(panel.suggestIdentity("foot", [], panel.terminalChildDerivation("foot", null, null)),
-    { id: "foot", patterns: ["^foot$"], launch: "" });
-  assert.deepStrictEqual(panel.suggestIdentity("foot", []),
-    { id: "foot", patterns: ["^foot$"], launch: "" });
+  assert.strictEqual(
+    panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", null, null, "foot")).refusal,
+    "not-read");
+  assert.strictEqual(panel.suggestIdentity("foot", []).refusal, "not-read");
 });
 
 test("the duplicate guard compares BOTH axes, not patterns alone", () => {
@@ -3296,11 +3310,11 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   // A different title on the same class is a different rule.
   assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, btop).id, "btop");
 
-  // The other direction: watching one titled foot window does not block
-  // watching the class. An empty title list is NO CONSTRAINT, which makes it a
-  // wider rule rather than the same one.
-  assert.deepStrictEqual(panel.suggestIdentity("foot", watchedHerdr),
-    { id: "foot", patterns: ["^foot$"], launch: "" });
+  // The other direction: watching one titled foot window does not make a
+  // class-only proposal a DUPLICATE — an empty title list is no constraint,
+  // which makes it a wider rule rather than the same one. It is refused for the
+  // other reason, that a terminal's class names no app (tick gpq).
+  assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr).refusal, "not-read");
 
   // The class-only guard still answers as it always did.
   assert.strictEqual(panel.suggestIdentity("foot",
@@ -3342,6 +3356,203 @@ test("a proposed title identity survives StateModel's normalizer intact", () => 
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
     launch: "foot --title=herdr herdr"
   }]);
+});
+
+// ------------------------------------ the tick, from the best evidence (gpq)
+//
+// The blocker: the README told the user to launch `foot --title=herdr herdr`,
+// and ticking exactly that window wrote `{id:"foot", patterns:["^foot$"]}` —
+// the catch-all the README itself calls useless — because the derivation only
+// ever looked at the child process and a three-word cmdline is "not a terminal
+// question" to it. The title was on the window the whole time.
+
+const TITLED_TERMINALS = loadFixture("clients-titled-terminal.json");
+const TITLED_WINDOW = TITLED_TERMINALS.find((c) => c.initialTitle === "herdr");
+const BARE_WINDOW = TITLED_TERMINALS.find((c) => c.initialTitle === "foot");
+
+test("a window already launched with --title proposes that title", () => {
+  const argv = ["foot", "--title=herdr", "herdr"];
+  const derived = panel.terminalTickDerivation("foot", argv, null, TITLED_WINDOW.initialTitle);
+  assert.deepStrictEqual(derived,
+    { command: "foot --title=herdr herdr", title: "herdr", reason: "" });
+
+  // And the identity it proposes matches the window that was ticked — which is
+  // the whole difference from the catch-all, which matched every terminal.
+  const added = panel.suggestIdentity("foot", [], derived);
+  assert.deepStrictEqual(added, {
+    id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  });
+  assert.strictEqual(engine.clientMatchesIdentity(TITLED_WINDOW, added), true);
+  assert.strictEqual(engine.clientMatchesIdentity(BARE_WINDOW, added), false);
+
+  // No child process is needed for any of it: the flag IS the answer, and it
+  // is read before the tree is even looked at.
+  assert.strictEqual(panel.titleFromOwnArgv(argv), "herdr");
+  // The separated spelling is as ordinary on a command line as the joined one.
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "--title", "herdr", "herdr"]), "herdr");
+  assert.strictEqual(panel.titleFromOwnArgv(["foot"]), "");
+  // Short forms are deliberately not read — they mean different things to
+  // different terminals, and a wrong one writes a pattern that matches nothing.
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "-T", "herdr"]), "");
+});
+
+test("a terminal launched with a command of its own is named by its window title", () => {
+  // `foot -e btop` sets no --title, but foot titled the window from the command
+  // and initialTitle is fixed at map time. That IS evidence about this window.
+  const derived = panel.terminalTickDerivation("foot", ["foot", "-e", "btop"], null, "btop");
+  assert.deepStrictEqual(derived, { command: "foot -e btop", title: "btop", reason: "" });
+
+  // A title that is only the class again says nothing.
+  assert.strictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "-e", "btop"], null, "foot").reason, "no-title");
+
+  // A BARE terminal never takes its title from the window: an interactive shell
+  // retitles it to a working directory before it is mapped, and
+  // `^user@host:~/git/dock-recall$` is junk that happens to match once. The
+  // child process is the evidence there — see the case below.
+  const tree = panel.procTreeFromDump(procDump([
+    { pid: 900, argv: ["foot"], children: [{ pid: 901, argv: ["herdr"] }] }
+  ]));
+  assert.strictEqual(
+    panel.terminalTickDerivation("foot", ["foot"], tree["900"], "user@host:~/git").title, "herdr");
+});
+
+test("a terminal tick that cannot name its app refuses, and never writes the catch-all", () => {
+  // THE OTHER HALF OF THE BLOCKER. Every one of these used to answer
+  // {id:"foot", patterns:["^foot$"]}: an identity claiming every terminal on
+  // the desk, whose one learned launch command starts one of them.
+  const twoChildren = panel.procTreeFromDump(procDump([
+    { pid: 900, argv: ["foot"], children: [{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }] }
+  ]))["900"];
+
+  // The /proc read has not come back yet — the race the panel admits to.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", []),
+    { refusal: "not-read", className: "foot" });
+  assert.deepStrictEqual(panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", null, null, "foot")),
+    { refusal: "not-read", className: "foot" });
+  // Two children: naming one of them would be a guess.
+  assert.strictEqual(
+    panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", ["foot"], twoChildren, "foot")).refusal,
+    "several-children");
+  // A bare prompt.
+  assert.strictEqual(panel.tickRefusalReason("foot", [],
+    panel.terminalTickDerivation("foot", ["foot"], null, "foot")), "no-child");
+
+  // The list is untouched, so nothing was written.
+  assert.deepStrictEqual(panel.toggleWatchedIdentities([], "foot", ""), []);
+
+  // A class that is not a terminal is unaffected: a class IS the whole truth
+  // about a browser window, and there is nothing to refuse.
+  assert.strictEqual(panel.tickRefusalReason("chromium", []), "");
+  assert.deepStrictEqual(panel.suggestIdentity("chromium", []),
+    { id: "chromium", patterns: ["^chromium$"], launch: "" });
+
+  // Already watched is a no-op, not a refusal: the click changed nothing.
+  assert.strictEqual(panel.suggestIdentity("foot",
+    [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }]), null);
+
+  // And the panel has a sentence for it, naming the way out.
+  const said = panel.tickRefusalHint("foot", "several-children");
+  assert.ok(said.indexOf("--title") !== -1, said);
+  assert.ok(said.indexOf("more than one thing") !== -1, said);
+  // "Press again in a moment" is only honest for the read that has not landed.
+  assert.ok(panel.tickRefusalHint("foot", "not-read").indexOf("again in a moment") !== -1);
+  assert.strictEqual(panel.tickRefusalHint("foot", ""), "");
+  assert.strictEqual(panel.tickRefusalHint("", "no-child"), "");
+});
+
+test("a new identity is never inserted in front of one it would shadow", () => {
+  // The panel used to MANUFACTURE the state engine.shadowedIdentities reports:
+  // prepending a `^foot$` in front of a working `{^foot$ + ^herdr$}` makes every
+  // herdr window answer "terminal", and even unticking then removes the wrong
+  // identity. Human decision (2026-08-19): keep prepend, except behind the
+  // identities the addition would shadow.
+  const herdr = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot" };
+  const wide = { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" };
+  const browser = { id: "browser", patterns: ["^chromium$"], titlePatterns: [], launch: "chromium" };
+
+  // The hazard, direct: the catch-all lands BEHIND the title identity.
+  assert.deepStrictEqual(panel.insertionIndexFor(wide, [herdr], engine.couldShadow), 1);
+  assert.deepStrictEqual(
+    engine.shadowedIdentities(TITLED_TERMINALS, [herdr, wide]), [],
+    "and that order shadows nothing");
+
+  // The other direction is untouched: a title identity still goes in FRONT of
+  // the catch-all, which is the order that makes it reachable at all.
+  assert.strictEqual(panel.insertionIndexFor(herdr, [wide], engine.couldShadow), 0);
+
+  // Identities that share no class pattern claim from different pools of
+  // windows, so the front is still where a new one goes. couldShadow alone says
+  // "yes" to any two class-only identities — it is an axis test, blind to what
+  // the patterns say — and following it there would sink every new identity to
+  // the back of the list for no reason.
+  assert.strictEqual(panel.insertionIndexFor(wide, [browser], engine.couldShadow), 0);
+  assert.strictEqual(panel.sharesClassPattern(wide, browser), false);
+  assert.strictEqual(panel.sharesClassPattern(wide, herdr), true);
+  // Case-insensitively, because engine.compilePattern compiles that way.
+  assert.strictEqual(panel.sharesClassPattern({ patterns: ["^Foot$"] }, wide), true);
+
+  // AFTER THE LAST one it would shadow, not before the first.
+  assert.strictEqual(
+    panel.insertionIndexFor(wide, [herdr, browser, { id: "btop", patterns: ["^foot$"], titlePatterns: ["^btop$"] }],
+      engine.couldShadow), 3);
+
+  // End to end, through the toggle: the webapp-before-catch-all shape from
+  // StateModel's own schema comment. A freshly ticked plain browser must not
+  // land in front of the webapp identity that also claims `^chromium$`.
+  const slack = { id: "slack", patterns: ["^chromium$"], titlePatterns: ["^slack$"], launch: "" };
+  const after = panel.toggleWatchedIdentities([slack], "chromium", "", null, engine.couldShadow);
+  assert.deepStrictEqual(after.map((i) => i.id), ["slack", "chromium"]);
+  assert.deepStrictEqual(
+    engine.shadowedIdentities([makeClient({ class: "chromium", initialTitle: "slack" })], after), [],
+    "and the webapp still wins its own window");
+
+  // Without the rule — every caller that predates it — the insert prepends.
+  assert.deepStrictEqual(
+    panel.toggleWatchedIdentities([slack], "chromium", "").map((i) => i.id), ["chromium", "slack"]);
+});
+
+test("the panel names the exact relaunch command until a matching window exists", () => {
+  // Human decision (2026-08-19): ticking a BARE terminal still creates the
+  // identity — the derivation is right about what the app is — but the window
+  // in front of the user has initialTitle "foot" and matches nothing. Saying
+  // nothing would be the silent wrong answer; refusing would throw away a
+  // correct derivation. So: create it, and say what is missing.
+  const argvByPid = { "268861": ["foot"] };
+  const procTree = panel.procTreeFromDump(procDump([
+    { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["herdr"] }] }
+  ]));
+  const identities = panel.toggleWatchedIdentities([], "foot", "",
+    panel.terminalTickDerivation("foot", ["foot"], procTree["268861"], "foot"),
+    engine.couldShadow);
+  assert.deepStrictEqual(identities, [{
+    id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  }]);
+
+  // The bare window alone: nothing matches, and the panel says so with the
+  // command that fixes it.
+  const said = panel.untitledTerminalHint([BARE_WINDOW], identities,
+    resolver(identities), argvByPid, procTree);
+  assert.ok(said.indexOf('"herdr" is watched') === 0, said);
+  assert.ok(said.indexOf("Relaunch it as: foot --title=herdr herdr") !== -1, said);
+
+  // It CLEARS the moment a window matches — which is exactly what relaunching
+  // with --title does.
+  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW, TITLED_WINDOW], identities,
+    resolver(identities), argvByPid, procTree), "");
+  // No evidence, no sentence: an app that is simply not running says nothing,
+  // and neither does a terminal whose child names something else.
+  assert.strictEqual(panel.untitledTerminalHint([], identities, resolver(identities), {}, {}), "");
+  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW], identities,
+    resolver(identities), argvByPid, panel.procTreeFromDump(procDump([
+      { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["btop"] }] }
+    ]))), "");
+  // A class-only identity is not this problem and never gets the line.
+  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW],
+    [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }],
+    resolver([{ id: "terminal", patterns: ["^foot$"], titlePatterns: [] }]), argvByPid, procTree), "");
 });
 
 test("the panel knows which pids to read and which window a tick is about", () => {
@@ -4249,10 +4460,14 @@ test("the panel hint is empty on a healthy list and one line per shadowed identi
   assert.ok(hint.indexOf('"gmail"') >= 0, hint);
 });
 
-test("the whole path: a prepended catch-all is detected and explained", () => {
-  // The reachable sequence from the tick: a working herdr title identity, then
-  // the user ticks a plain foot terminal — which PREPENDS `^foot$` in front of
-  // it — and every herdr window silently becomes "terminal".
+test("the whole path: a catch-all in front is detected and explained", () => {
+  // This USED to be the reachable sequence from the tick: a working herdr title
+  // identity, then the user ticks a plain foot terminal, `^foot$` is prepended
+  // in front of it, and every herdr window silently becomes "terminal". Tick
+  // gpq closed both doors — the tick refuses to write a class-only terminal
+  // identity at all, and an addition is inserted behind whatever it would
+  // shadow — so the list below can now only be reached by hand. The detector
+  // still has to catch it, which is what this pins.
   const herdrWindow = makeClient({ class: "foot", initialClass: "foot", initialTitle: "herdr", title: "herdr" });
   const plainTerminal = makeClient({ class: "foot", initialClass: "foot", initialTitle: "foot", title: "foot" });
   const clients = [herdrWindow, plainTerminal];
@@ -4261,13 +4476,17 @@ test("the whole path: a prepended catch-all is detected and explained", () => {
   assert.strictEqual(engine.matchClient(herdrWindow, before), "herdr");
   assert.strictEqual(panel.shadowedIdentityHint(engine.shadowedIdentities(clients, before)), "");
 
-  const after = panel.toggleWatchedIdentities(before, "foot", "");
-  // Insertion order is UNCHANGED by this tick: the new identity still goes in
-  // front, and matching still answers first-match-wins.
-  assert.strictEqual(after[0].patterns[0], "^foot$");
-  assert.strictEqual(engine.matchClient(herdrWindow, after), after[0].id);
+  // The tick no longer produces it: hand-edited, the catch-all goes in front.
+  const byHand = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }].concat(before);
+  assert.strictEqual(engine.matchClient(herdrWindow, byHand), "terminal");
 
-  const hint = panel.shadowedIdentityHint(engine.shadowedIdentities(clients, after));
+  const hint = panel.shadowedIdentityHint(engine.shadowedIdentities(clients, byHand));
   assert.ok(hint.indexOf('"herdr"') >= 0, hint);
-  assert.ok(hint.indexOf('"' + after[0].id + '"') >= 0, hint);
+  assert.ok(hint.indexOf('"terminal"') >= 0, hint);
+
+  // And the same identity ticked through the panel lands BEHIND herdr, where
+  // it shadows nothing.
+  const ticked = panel.toggleWatchedIdentities(before, "foot", "",
+    { command: "foot", title: "", reason: "no-child" }, engine.couldShadow);
+  assert.deepStrictEqual(ticked, before, "refused: a class-only terminal identity is not written");
 });

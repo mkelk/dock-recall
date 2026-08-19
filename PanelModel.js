@@ -330,10 +330,24 @@ function identityClaimsSame(identity, pattern, titlePattern) {
 //     launch: "foot --title=herdr herdr" }
 //
 // which under the v4 AND semantics means "the foot window titled herdr" and
-// nothing else. Without one — no derivation, a refusal, a window that is not a
-// terminal at all — the proposal is the class-only one it has always been. A
-// bare `^foot$` for a terminal is useless: it claims every terminal on the
-// desktop, which is why the title case exists.
+// nothing else.
+//
+// WITHOUT one, the answer depends on whether the class is a TERMINAL:
+//
+//   - not a terminal — the class-only proposal it has always been. A class is
+//     the whole truth about a browser window or an editor window.
+//   - a terminal — a REFUSAL, `{ refusal: "<reason>" }`. A bare `^foot$` claims
+//     every terminal on the desktop and launches whichever one command it
+//     learned, so writing it silently is the wrong answer wearing a tick mark;
+//     the README calls it useless in as many words. The reason travels so the
+//     panel can say WHY in the panel, which is what this project does with a
+//     thing it cannot read (see CLAUDE.md, "Refusals are a feature").
+//
+// The refusal covers the ABSENT derivation too — the /proc read that has not
+// come back yet, the race the panel's tickDerivation comment admits — under the
+// reason "not-read". Before tick gpq that race wrote the catch-all and the
+// autofill pass a moment later stamped the one app's command onto it, so what
+// a tick produced was decided by click timing.
 function suggestIdentity(className, identities, derivation) {
   var pattern = derivePattern(className);
   if (!pattern) return null;
@@ -349,6 +363,16 @@ function suggestIdentity(className, identities, derivation) {
     if (!identity || typeof identity.id !== "string") continue;
     taken[identity.id] = true;
     if (identityClaimsSame(identity, pattern, titlePattern)) return null;
+  }
+
+  // The refusal comes AFTER the duplicate guard on purpose: ticking something
+  // already watched is a no-op whatever its class, and answering "refused"
+  // there would be a complaint about a click that changed nothing.
+  if (!titlePattern && isTerminalClass(className)) {
+    return {
+      refusal: trim(answer.reason) || "not-read",
+      className: trim(className)
+    };
   }
 
   var base = (titlePattern ? identityIdFromTitle(title) : deriveIdentityId(className)) || "app";
@@ -392,17 +416,30 @@ function suggestIdentity(className, identities, derivation) {
 // of what a window is, so the panel can never untick something different from
 // what the chip was showing.
 //
-// New identities go to the FRONT: the list is priority order and
-// engine.matchClient returns the first match, so the specific thing the user
-// just pointed at must not end up behind a catch-all that was added earlier.
-// That is exactly what a title identity needs — `{^foot$ + ^herdr$}` has to sit
-// in front of a plain `{^foot$}` or the catch-all answers first and the title
-// axis never gets asked.
+// New identities go to the FRONT, with ONE exception: the list is priority
+// order and engine.matchClient returns the first match, so the specific thing
+// the user just pointed at must not end up behind a catch-all that was added
+// earlier. That is exactly what a title identity needs — `{^foot$ + ^herdr$}`
+// has to sit in front of a plain `{^foot$}` or the catch-all answers first and
+// the title axis never gets asked.
+//
+// THE EXCEPTION (tick gpq, human decision 2026-08-19). Prepending blindly is
+// how the panel MANUFACTURED the state engine.shadowedIdentities exists to
+// report: a user with a working `{^foot$ + ^herdr$}` ticks a plain terminal, a
+// fresh `^foot$` lands in front of it, and every herdr window silently becomes
+// "terminal". So a new identity is inserted AFTER the last existing identity it
+// would shadow — see insertionIndexFor for what "would shadow" means and why
+// the answer needs BOTH engine.couldShadow and a shared class pattern.
 //
 // `derivation` is passed straight through to suggestIdentity: it is the
-// terminalChildDerivation answer for the window being ticked, which only the
-// caller can obtain (it takes a /proc read). Untick ignores it.
-function toggleWatchedIdentities(identities, className, identityId, derivation) {
+// terminal-tick answer for the window being ticked, which only the caller can
+// obtain (it takes a /proc read). Untick ignores it.
+//
+// `couldShadow` is engine.couldShadow, passed IN rather than reimplemented:
+// which pairs of identities stand in the shadowing relation is one rule and it
+// lives beside the matcher. Without it the insert prepends, which is what every
+// caller that predates tick gpq expects.
+function toggleWatchedIdentities(identities, className, identityId, derivation, couldShadow) {
   var list = isArray(identities) ? identities : [];
   var wanted = trim(identityId);
 
@@ -416,8 +453,72 @@ function toggleWatchedIdentities(identities, className, identityId, derivation) 
   }
 
   var addition = suggestIdentity(className, list, derivation);
-  if (!addition) return list.slice();
-  return [addition].concat(list);
+  // Nothing to add (already watched), or a refusal — which is a message for the
+  // user, not a list. The caller asks tickRefusalReason BEFORE toggling so it
+  // can say so; here it is simply an unchanged list.
+  if (!addition || addition.refusal) return list.slice();
+
+  var at = insertionIndexFor(addition, list, couldShadow);
+  return list.slice(0, at).concat([addition]).concat(list.slice(at));
+}
+
+// Do two identities constrain the same window CLASS at all?
+//
+// engine.couldShadow answers about AXES — which of `patterns`/`titlePatterns`
+// each side constrains — and is deliberately blind to what the patterns say,
+// because regex subsumption is not decidable. That makes it true of ANY two
+// class-only identities, `^foot$` and `^chromium$` included, which have no
+// window in common and no order worth arguing about.
+//
+// So the insert asks this as well. Two identities that share a class pattern
+// string claim from the same pool of windows; two that do not are unordered
+// with respect to each other, and the front is where a new identity goes.
+// Compared case-insensitively because engine.compilePattern compiles that way,
+// so `^Foot$` and `^foot$` claim the same windows.
+function sharesClassPattern(a, b) {
+  var left = isArray(a && a.patterns) ? a.patterns : [];
+  var right = isArray(b && b.patterns) ? b.patterns : [];
+  for (var i = 0; i < left.length; i++) {
+    if (typeof left[i] !== "string") continue;
+    var one = trim(left[i]).toLowerCase();
+    if (!one) continue;
+    for (var j = 0; j < right.length; j++) {
+      if (typeof right[j] !== "string") continue;
+      if (trim(right[j]).toLowerCase() === one) return true;
+    }
+  }
+  return false;
+}
+
+// Where in the list a new identity belongs: the front, unless it would shadow
+// something already there.
+//
+// "Would shadow" is `couldShadow(addition, existing)` — could the addition, if
+// it sat in front, claim everything the existing one claims — AND a shared
+// class pattern, without which couldShadow's axis test says yes to every pair
+// of class-only identities and a new identity would sink to the back of the
+// list for no reason (see sharesClassPattern).
+//
+// AFTER THE LAST one it would shadow, not before the first: the addition has to
+// clear every identity it could swallow, and the identities it does NOT shadow
+// keep it in front of them, which is the ordinary prepend.
+//
+//   existing [herdr {^foot$+^herdr$}], addition {^foot$}   ->  index 1
+//   existing [browser {^chromium$}],   addition {^foot$}   ->  index 0
+//   existing [terminal {^foot$}],      addition {^foot$+^btop$} -> index 0
+function insertionIndexFor(addition, identities, couldShadow) {
+  var list = isArray(identities) ? identities : [];
+  if (typeof couldShadow !== "function") return 0;
+
+  var at = 0;
+  for (var i = 0; i < list.length; i++) {
+    var existing = list[i];
+    if (!existing || typeof existing !== "object") continue;
+    if (!sharesClassPattern(addition, existing)) continue;
+    if (!couldShadow(addition, existing)) continue;
+    at = i + 1;
+  }
+  return at;
 }
 
 // ---------------------------------------------------------------------------
@@ -971,6 +1072,201 @@ function terminalChildDerivation(className, ownArgv, node) {
   // start it would be a disagreement written into the user's file.
   if (out.command) out.title = title;
   return out;
+}
+
+// The value of the terminal's own `--title` flag, or "".
+//
+// Two spellings, because both are ordinary on a command line and the panel does
+// not get to choose how the user launched their terminal:
+//
+//   foot --title=herdr herdr
+//   foot --title herdr herdr
+//
+// The short forms (`-T`, `-t`) are deliberately NOT read: they mean different
+// things to different terminals, and a wrong guess here writes a titlePattern
+// that matches nothing. `--title` is the one flag the whole family agrees on,
+// and it is the flag this plugin tells the user to use.
+function titleFromOwnArgv(argv) {
+  var list = isArray(argv) ? argv : [];
+  var prefix = TERMINAL_TITLE_FLAG + "=";
+  for (var i = 0; i < list.length; i++) {
+    var word = typeof list[i] === "string" ? list[i] : "";
+    if (word.slice(0, prefix.length) === prefix) return trim(word.slice(prefix.length));
+    if (word === TERMINAL_TITLE_FLAG && i + 1 < list.length) return trim(list[i + 1]);
+  }
+  return "";
+}
+
+// What a TICK should propose for a terminal window — the same answer shape as
+// terminalChildDerivation, from the best evidence available rather than from
+// the child process alone.
+//
+// The blocker this fixes (tick gpq): a window ALREADY launched the way the
+// README asks — `foot --title=herdr herdr` — has a three-word cmdline, so
+// terminalChildDerivation's "only when the terminal's own cmdline says nothing
+// but the terminal" test answered "not a terminal question", and the tick fell
+// back to the `^foot$` catch-all. The title was sitting on the window the whole
+// time, twice over: in the flag that put it there and in the window's own
+// `initialTitle`. The README documented that flow as working. It did not.
+//
+// THE ORDER OF EVIDENCE, strongest first:
+//
+//   1. the terminal's own `--title=` flag. It is the exact string the window's
+//      initialTitle was set from, and the argv it came in is also the exact
+//      command that would start the window again.
+//   2. the window's `initialTitle`, when the terminal was launched WITH a
+//      command of its own (`foot -e btop`, whose title foot sets from the
+//      command) and the title is not merely the class. Restricted to that case
+//      on purpose: for a BARE terminal an interactive shell may have retitled
+//      the window to a working directory before it was mapped, and an identity
+//      built on `^~/git/dock-recall$` is junk that happens to match once.
+//   3. the single unambiguous child process — terminalChildDerivation, exactly
+//      as before, which is the bare-terminal case the whole feature began as.
+//
+// Cases 1 and 2 name a title the LIVE window already carries, so the identity
+// they propose matches it immediately. Case 3 names the title the window WOULD
+// carry if it had been launched the plugin's way: the identity is still created
+// (human decision 2026-08-19), and the panel says out loud that this window
+// will not match until it is relaunched — see untitledTerminalHint.
+//
+// `reason` is "" for a non-terminal (there is no question here), "not-read"
+// when the /proc read has not come back, "no-title" when the terminal's own
+// command line names no title and its children could not be asked, and
+// otherwise whatever terminalChildDerivation refused with.
+function terminalTickDerivation(className, ownArgv, node, initialTitle) {
+  var out = { command: "", title: "", reason: "" };
+  if (!isTerminalClass(className)) return out;
+
+  var argv = isArray(ownArgv) ? ownArgv : [];
+  if (!argv.length || !trim(argv[0])) {
+    out.reason = "not-read";
+    return out;
+  }
+
+  var flagged = titleFromOwnArgv(argv);
+  if (flagged) {
+    out.title = flagged;
+    out.command = launchCommandFromArgv(argv, className);
+    return out;
+  }
+
+  var shown = trim(initialTitle);
+  if (argv.length > 1 && shown && shown.toLowerCase() !== trim(className).toLowerCase()) {
+    out.title = shown;
+    out.command = launchCommandFromArgv(argv, className);
+    return out;
+  }
+
+  var child = terminalChildDerivation(className, argv, node);
+  if (child.title) return { command: child.command, title: child.title, reason: "" };
+  out.reason = child.reason || "no-title";
+  return out;
+}
+
+// Why a tick REFUSED, or "". The one question the panel asks before toggling,
+// so a click that cannot produce a working identity says so instead of writing
+// a catch-all. Returns "" for everything that is not a refusal — an ordinary
+// class, a terminal that named its app, a tick that is really an untick.
+function tickRefusalReason(className, identities, derivation) {
+  var proposal = suggestIdentity(className, identities, derivation);
+  if (!proposal || !proposal.refusal) return "";
+  return String(proposal.refusal);
+}
+
+// The refusal, as the sentence the panel shows. "" when there is nothing to say.
+//
+// Every branch names the SAME way out — the `--title` convention — because that
+// is the one thing the user can do that makes the next tick work, and it is the
+// convention the identity would have been built on anyway.
+function tickRefusalHint(className, reason) {
+  var name = trim(className);
+  var why = trim(reason);
+  if (!name || !why) return "";
+
+  var head = 'Not watching this ' + name + ' window yet: ';
+  var body;
+  if (why === "not-read") {
+    body = "the panel is still reading what this terminal is running. Press it again in a moment.";
+  } else if (why === "several-children") {
+    body = "it is running more than one thing, so which app it is would be a guess.";
+  } else if (why === "shell-chain") {
+    body = "it is running a shell inside a shell, so which app it is would be a guess.";
+  } else if (why === "no-child") {
+    body = "it is not running anything yet — just a shell.";
+  } else if (why === "unreadable-child") {
+    body = "the command line of the program inside it could not be read.";
+  } else {
+    body = "nothing about it names the app inside it.";
+  }
+
+  var tail = why === "not-read" ? ""
+    : ' Relaunch it as ' + name + ' --title=<name> <command> and tick it again.'
+      + ' Watching every ' + name + ' window instead is a hand edit of the state file:'
+      + ' a class-only identity claims them all and can only ever start one of them.';
+
+  return head + body + tail;
+}
+
+// A watched TITLE identity whose window is on screen but was not launched with
+// `--title`, said out loud with the exact command that fixes it.
+//
+// The human decision behind this (2026-08-19): when a bare terminal hosts one
+// unambiguous app, ticking it still CREATES the identity — the derivation is
+// right about what the app is, and the command it built is right about how to
+// start it — but the window in front of the user has `initialTitle: "foot"` and
+// so matches nothing. No row, no chip, nothing to untick, silently missing from
+// the next Record. Creating it and saying nothing would be the silent wrong
+// answer this project refuses to ship; refusing to create it would throw away a
+// correct derivation. So: create it, and say what is missing.
+//
+// EVIDENCE, not a prediction, in the same spirit as engine.shadowedIdentities:
+// the line appears only while a live terminal window's own child process names
+// this identity's title, and it CLEARS the moment any window resolves to the
+// identity — which is exactly what relaunching with `--title` does.
+//
+// `resolve` is the panel's ONE matcher (engine.matchClient bound to the watched
+// list), passed in the way appRows and the map models take it.
+function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree) {
+  var list = isArray(identities) ? identities : [];
+  var live = isArray(clients) ? clients : [];
+  var argvMap = (argvByPid && typeof argvByPid === "object") ? argvByPid : {};
+  var tree = (procTree && typeof procTree === "object") ? procTree : {};
+
+  var satisfied = {};
+  for (var c = 0; c < live.length; c++) {
+    var matched = (typeof resolve === "function") ? trim(resolve(live[c])) : "";
+    if (matched) satisfied[matched] = true;
+  }
+
+  var lines = [];
+  for (var i = 0; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+    if (!titles.length) continue;
+    if (own(satisfied, identity.id)) continue;
+
+    for (var w = 0; w < live.length; w++) {
+      var client = live[w];
+      if (!client) continue;
+      var className = trim(client.class) || trim(client.initialClass);
+      if (!isTerminalClass(className)) continue;
+      if (!patternListHas(identity.patterns, derivePattern(className))) continue;
+      var pid = (client.pid === undefined || client.pid === null) ? "" : trim(String(client.pid));
+      if (!pid) continue;
+      var answer = terminalChildDerivation(className, argvMap[pid], tree[pid]);
+      if (!answer.title) continue;
+      if (!patternListHas(titles, deriveTitlePattern(answer.title))) continue;
+
+      var command = trim(identity.launch) || answer.command;
+      lines.push('"' + identity.id + '" is watched, but this ' + className
+        + ' window was not launched with --title, so nothing matches it yet.'
+        + (command ? " Relaunch it as: " + command : ""));
+      break;
+    }
+  }
+
+  return joinLines(lines);
 }
 
 // The pids of the live TERMINAL windows, in client order and without repeats.
@@ -4593,6 +4889,11 @@ if (typeof module !== "undefined") {
     displayNameFor: displayNameFor,
     suggestIdentity: suggestIdentity,
     toggleWatchedIdentities: toggleWatchedIdentities,
+    sharesClassPattern: sharesClassPattern,
+    insertionIndexFor: insertionIndexFor,
+    tickRefusalReason: tickRefusalReason,
+    tickRefusalHint: tickRefusalHint,
+    untitledTerminalHint: untitledTerminalHint,
     shadowNoticeFor: shadowNoticeFor,
     shadowedIdentityHint: shadowedIdentityHint,
     shellQuoteArg: shellQuoteArg,
@@ -4627,6 +4928,8 @@ if (typeof module !== "undefined") {
     isShellArgv: isShellArgv,
     titleFromArgv0: titleFromArgv0,
     terminalChildDerivation: terminalChildDerivation,
+    titleFromOwnArgv: titleFromOwnArgv,
+    terminalTickDerivation: terminalTickDerivation,
     terminalPids: terminalPids,
     clientForTick: clientForTick,
     backfillLaunchCommands: backfillLaunchCommands,

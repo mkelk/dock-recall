@@ -702,6 +702,13 @@ Item {
     // the topology and the badge are.
     root.resetScroll()
 
+    // A refusal belongs to the moment it was pressed in, and every /proc answer
+    // this panel holds belongs to the last time it was open. Both are dropped
+    // here: the panel object outlives open and close, and a summon an hour
+    // later must not build a tick on an hour-old picture of the desk.
+    root.refusedTick = null
+    root.forgetProcReads()
+
     root.refresh()
     root.refreshDerivations()
     root.opened = true
@@ -832,10 +839,14 @@ Item {
   // them, and one per pid nearly as bad. PanelModel.parseSectionedDump splits
   // the result back up; the marker and the parser are tested together.
   //
-  // Neither read is on the refresh timer. Desktop files change when software
-  // is installed, and a cmdline changes when an app is restarted; once per
-  // panel opening is the right frequency for both, and re-running them twice a
-  // second would put a hundred-file scan on the user's idle desktop.
+  // Neither read is ON the refresh timer, and only one of them expires.
+  // Desktop files change when software is installed and a process's own argv
+  // never changes at all, so once per panel opening is right for both; a
+  // hundred-file scan twice a second on an idle desktop is not.
+  //
+  // The exception is a TERMINAL's process tree, which answers "what is running
+  // inside this window" — a question whose answer changes under a stable pid
+  // (tick gpq). That one expires; see cmdlineMaxAgeMs.
 
   readonly property string desktopDumpScript:
     'for f in "$HOME"/.local/share/applications/*.desktop'
@@ -896,18 +907,36 @@ Item {
       pids.push(String(client.pid))
     }
     var terminals = PanelModel.terminalPids(root.liveClients)
-    for (var t = 0; t < terminals.length; t++) pids.push(terminals[t])
+    var isTerminal = ({})
+    for (var t = 0; t < terminals.length; t++) {
+      isTerminal[terminals[t]] = true
+      pids.push(terminals[t])
+    }
 
+    var now = Date.now()
     for (var p = 0; p < pids.length; p++) {
       var pid = pids[p]
       // A pid is only digits by construction; the guard is here because this
       // value is about to be interpolated into a shell loop.
       if (!/^[0-9]+$/.test(pid)) continue
-      // `cmdlineTried` and not just `argvByPid`: a pid whose cmdline came back
+      if (seen[pid]) continue
+      // `cmdlineTriedAt` and not just `argvByPid`: a pid whose cmdline came back
       // empty (it exited between the two reads) would otherwise be asked for
       // again on every refresh tick, which is a Process every two seconds for
       // as long as the panel is open.
-      if (seen[pid] || root.cmdlineTried[pid]) continue
+      var asked = root.cmdlineTriedAt[pid]
+      if (asked !== undefined) {
+        // AN ORDINARY APP'S argv never changes while its pid lives, so asked
+        // once is asked for good. A TERMINAL's does not change either — but the
+        // question asked about a terminal is what is RUNNING INSIDE it, and that
+        // changes under a stable pid every time the user quits one program and
+        // starts another. Tick gpq: a tree read when the panel opened said
+        // "herdr", btop was running by the time the user ticked, and the panel
+        // wrote herdr's identity and herdr's launch command. So a terminal's
+        // answer expires; everything else is read once per panel opening.
+        if (!isTerminal[pid]) continue
+        if (now - asked < root.cmdlineMaxAgeMs) continue
+      }
       seen[pid] = true
       wanted.push(pid)
     }
@@ -915,17 +944,39 @@ Item {
   }
 
   property string cmdlinePidList: ""
-  // Pids this panel has already asked about, answered or not.
-  property var cmdlineTried: ({})
+  // Pids this panel has already asked about, answered or not, and WHEN — see
+  // missingCmdlinePids for which of them go stale.
+  property var cmdlineTriedAt: ({})
+  // How old a terminal's process tree may be before it is read again. Longer
+  // than the 2 s refresh so an idle panel is not spawning a shell on every
+  // cycle (it lands on every other one), short enough that the worst-case age
+  // of the tree a tick is built on is a few seconds rather than the whole time
+  // the panel has been open.
+  readonly property int cmdlineMaxAgeMs: 3000
+
+  // Everything read from /proc, forgotten. Called when the panel opens: the
+  // panel object OUTLIVES open and close, so without this a panel summoned
+  // again an hour later starts from an hour-old picture of every terminal on
+  // the desk.
+  function forgetProcReads() {
+    root.cmdlineTriedAt = ({})
+    root.argvByPid = ({})
+    root.procTree = ({})
+  }
 
   function refreshCmdlines() {
     if (cmdlineProc.running) return
     var pids = root.missingCmdlinePids()
     if (!pids.length) return
     var tried = ({})
-    for (var known in root.cmdlineTried) tried[known] = true
-    for (var i = 0; i < pids.length; i++) tried[pids[i]] = true
-    root.cmdlineTried = tried
+    for (var known in root.cmdlineTriedAt) tried[known] = root.cmdlineTriedAt[known]
+    // Stamped when ASKED rather than when answered, deliberately: a pid that
+    // answers nothing (it exited between the two reads) must not be asked again
+    // on every refresh tick. The expiry above is what keeps a terminal's answer
+    // from going stale in spite of that.
+    var now = Date.now()
+    for (var i = 0; i < pids.length; i++) tried[pids[i]] = now
+    root.cmdlineTriedAt = tried
     root.cmdlinePidList = pids.join(" ")
     cmdlineProc.running = true
   }
@@ -961,14 +1012,29 @@ Item {
       // Merged rather than replaced, and reassigned rather than mutated: a
       // later read asks only about the pids it does not know yet, and QML only
       // notices a whole new object.
+      //
+      // But the pids this read ASKED about are dropped first (tick gpq). A
+      // terminal that has stopped running anything answers with no children at
+      // all, and a merge would leave the previous answer standing — the panel
+      // would keep proposing an app that is no longer there.
+      var asked = ({})
+      var askedList = String(root.cmdlinePidList || "").split(" ")
+      for (var a = 0; a < askedList.length; a++) {
+        if (askedList[a]) asked[askedList[a]] = true
+      }
+
       var merged = ({})
-      for (var known in root.argvByPid) merged[known] = root.argvByPid[known]
+      for (var known in root.argvByPid) {
+        if (!asked[known]) merged[known] = root.argvByPid[known]
+      }
       for (var pid in fresh) merged[pid] = fresh[pid]
       root.argvByPid = merged
 
       var freshTree = PanelModel.procTreeFromDump(text)
       var mergedTree = ({})
-      for (var seen in root.procTree) mergedTree[seen] = root.procTree[seen]
+      for (var seen in root.procTree) {
+        if (!asked[seen]) mergedTree[seen] = root.procTree[seen]
+      }
       for (var root_pid in freshTree) mergedTree[root_pid] = freshTree[root_pid]
       root.procTree = mergedTree
 
@@ -1128,14 +1194,54 @@ Item {
   // time and must never touch /proc.
   //
   // Untick asks nothing (the identity is already known), and a window whose
-  // cmdline has not come back yet answers "not a terminal question", which is
-  // the class-only proposal the panel always made.
-  function tickDerivation(chip) {
-    if (!chip || chip.identityId || !chip.className) return null
-    var client = PanelModel.clientForTick(root.liveClients, chip.address, chip.className)
+  // cmdline has not come back yet answers "not-read" — a REFUSAL since tick
+  // gpq, not the class-only catch-all it used to fall back to.
+  //
+  // The window's `initialTitle` travels with the question: a terminal already
+  // launched `foot --title=herdr herdr` carries the answer on its own window,
+  // and reading the child process is only the third-best source (see
+  // PanelModel.terminalTickDerivation).
+  function tickDerivationFor(address, className) {
+    if (!className) return null
+    var client = PanelModel.clientForTick(root.liveClients, address, className)
     if (!client || client.pid === undefined || client.pid === null) return null
     var pid = String(client.pid)
-    return PanelModel.terminalChildDerivation(chip.className, root.argvByPid[pid], root.procTree[pid])
+    return PanelModel.terminalTickDerivation(className, root.argvByPid[pid], root.procTree[pid],
+      client.initialTitle)
+  }
+
+  function tickDerivation(chip) {
+    if (!chip || chip.identityId || !chip.className) return null
+    return root.tickDerivationFor(chip.address, chip.className)
+  }
+
+  // The window a tick REFUSED, kept so the panel can say why: { className,
+  // address }. Not a message but the question that produced one — the hint
+  // below re-asks it against the live desktop every frame, so a refusal that
+  // was only "the /proc read has not come back" clears itself the moment it
+  // does, and one that was "this terminal runs two things" stays up for as long
+  // as that is true.
+  property var refusedTick: null
+
+  readonly property string tickRefusalHint: {
+    var pending = root.refusedTick
+    if (!pending) return ""
+    // Referenced so the hint re-evaluates when either read lands.
+    var argv = root.argvByPid
+    var tree = root.procTree
+    var reason = PanelModel.tickRefusalReason(pending.className, root.identities,
+      root.tickDerivationFor(pending.address, pending.className))
+    return PanelModel.tickRefusalHint(pending.className, reason)
+  }
+
+  // A watched title identity whose window is on screen but was not launched
+  // with --title, and the exact command that would fix it. Evidence-based and
+  // self-clearing, like shadowHint: it is gone the moment a window matches.
+  readonly property string untitledHint: {
+    var list = root.identities
+    return PanelModel.untitledTerminalHint(root.liveClients, list,
+      function (client) { return Engine.matchClient(client, list) || "" },
+      root.argvByPid, root.procTree)
   }
 
   // Click a chip: tick or untick the app it belongs to. Watched-ness is per
@@ -1155,8 +1261,26 @@ Item {
         + "click its live window to watch it again")
       return
     }
+    var derivation = root.tickDerivation(chip)
+
+    // A tick that cannot produce a working identity says so rather than writing
+    // the `^foot$` catch-all (tick gpq). The reason is kept, not the sentence:
+    // the hint re-asks the question every frame and clears itself.
+    var refusal = chip.identityId ? ""
+      : PanelModel.tickRefusalReason(chip.className, root.identities, derivation)
+    if (refusal) {
+      root.refusedTick = { className: chip.className, address: chip.address || "" }
+      root.warn("tick refused for \"" + chip.className + "\" (" + refusal + "): "
+        + PanelModel.tickRefusalHint(chip.className, refusal))
+      // The read may simply not be back yet, and pressing again is the whole
+      // remedy — so go and get it.
+      root.refreshDerivations()
+      return
+    }
+    root.refusedTick = null
+
     var next = PanelModel.toggleWatchedIdentities(root.identities, chip.className, chip.identityId,
-      root.tickDerivation(chip))
+      derivation, Engine.couldShadow)
 
     // DERIVE BEFORE THE WRITE (tick i07). A tick creates an identity with an
     // empty launch, and "" means never start this one — so if the panel can
@@ -2694,6 +2818,30 @@ Item {
               width: parent.width
               visible: root.shadowHint !== ""
               text: root.shadowHint
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // A tick that refused, and a watched app whose window cannot match
+            // it until it is relaunched. Both are urgent for the same reason
+            // the shadow line is: the user pressed something and the desktop
+            // does not say what they expect it to say.
+            Text {
+              width: parent.width
+              visible: root.tickRefusalHint !== ""
+              text: root.tickRefusalHint
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: root.untitledHint !== ""
+              text: root.untitledHint
               color: Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

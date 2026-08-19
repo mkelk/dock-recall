@@ -4898,6 +4898,7 @@ if (typeof module !== "undefined") {
     clientMatchesIdentity: clientMatchesIdentity,
     matchClient: matchClient,
     shadowedIdentities: shadowedIdentities,
+    couldShadow: couldShadow,
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
     liveWindowCount: liveWindowCount,
