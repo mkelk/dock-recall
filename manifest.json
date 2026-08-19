@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "mkelk.dock-recall",
   "name": "Dock Recall",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": "Morten Elk",
   "license": "MIT",
-  "description": "You use Omarchy differently with or without a monitor. Record how you like each set up, and your windows auto-arrange when you dock and undock.",
+  "description": "Auto-arrange apps when you connect and disconnect a monitor. Record how you like each set up, and get auto-arranged setup on laptop and with external monitor.",
   "kinds": [
     "service",
     "bar-widget",
