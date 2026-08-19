@@ -14,12 +14,14 @@
 // the panel epic (writes it). Add fields; never repurpose one.
 //
 //   State {
-//     version:    3                 // the schema generation. A file at an
+//     version:    4                 // the schema generation. A file at an
 //                                   // OLDER version is UPGRADED in place on the
 //                                   // read (see "Migration" below); a file from
-//                                   // the FUTURE keeps its own number and is
-//                                   // still read, with parseState reporting the
-//                                   // mismatch so the UI can warn.
+//                                   // the FUTURE keeps its own number, is still
+//                                   // read and restored from, and becomes
+//                                   // READ-ONLY — parseState reports the
+//                                   // mismatch and writeRefusal turns every
+//                                   // writer away (see "Reading the future").
 //     paused:     false             // v2. The whole tool's on/off switch, owned
 //                                   // by the panel's activate/deactivate
 //                                   // control. `true` means the service ignores
@@ -57,6 +59,20 @@
 //                         // `class` and `initialClass`. A malformed pattern is
 //                         // dropped by engine.compilePattern rather than
 //                         // throwing — a typo in the UI must not brick restore.
+//     titlePatterns:      // v4. The same kind of list: regex SOURCE strings,
+//       string[]          // the same repair semantics as `patterns`, matched
+//                         // against a client's `initialTitle` and NOTHING
+//                         // ELSE. Not the live `title`, which changes as the
+//                         // user works — an identity whose membership moved
+//                         // under a window would record one desk and restore
+//                         // another. `initialTitle` is set once, when the
+//                         // window maps, and survives the app renaming itself.
+//                         // It exists because a terminal launched to host one
+//                         // app (`foot --title herdr`) cannot be told from a
+//                         // plain terminal by class alone — both read `foot`.
+//                         // [] means "this identity does not look at titles",
+//                         // which is what every identity written before v4
+//                         // means, and it is ALWAYS PRESENT (see Migration).
 //     launch:   string    // shell command run to bring the app back when no
 //                         // window matches. "" means "never launch this one" —
 //                         // a legitimate choice for apps that must not be
@@ -122,10 +138,39 @@
 //
 //   v2 -> v3 is the same kind of step and is applied by the same single pass:
 //   every entry that does not carry an `occurrence` gains `occurrence: 0`, and
-//   `version` becomes 3. Nothing else moves. A v1 file therefore CHAINS —
-//   v1 -> v2 -> v3 in one read — because normalizeLayout writes the v2 fields
-//   and the v3 field unconditionally, so there are no intermediate states to
-//   sequence. A v3 file read and written back is byte-identical to itself.
+//   `version` becomes 3. Nothing else moves.
+//
+//   v3 -> v4 is the same kind of step again, one field further out: every
+//   identity that does not carry `titlePatterns` gains `titlePatterns: []`, and
+//   `version` becomes 4. No layout entry moves at all — this generation touches
+//   identities only.
+//
+//   THE DELIBERATE CHOICE, v4: the empty list IS MATERIALIZED. normalizeIdentity
+//   writes `titlePatterns` on every identity it returns, so a v3 file read and
+//   written back gains a `"titlePatterns": []` line per identity rather than
+//   keeping the key absent. That costs one line per identity in the file and
+//   buys the thing every other field here already has: ONE shape. Consumers
+//   (engine.matchClient today; any pattern editor the panel grows later — there
+//   is no such editor yet, in Panel.qml or PanelModel.js) never have to
+//   distinguish "absent" from "empty", exactly as they never have to for
+//   `patterns: []` or
+//   `launch: ""`, both of which have always been written whether the file said
+//   so or not. Everything an identity DID say is carried through untouched: the
+//   upgrade is purely additive, and pinned as such by tests/state.test.js.
+//
+//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 in one read — because
+//   normalizeLayout writes the v2 and v3 fields and normalizeIdentity writes the
+//   v4 field unconditionally, so there are no intermediate states to sequence.
+//   A v4 file read and written back is byte-identical to itself.
+//
+// Reading the future (the other direction, and it has no migration):
+//   A file whose version EXCEEDS this build's is read and run from, and is never
+//   written. There is no forward migration to run — this build cannot know what
+//   a later generation added — and the two halves above make the round trip
+//   destructive: normalizeIdentity drops the unknown fields, migrateVersion
+//   keeps the newer number, so any write would persist stripped content under a
+//   version that says nothing was stripped. `writeRefusal` is the single rule,
+//   and every writer of this file asks it before touching the disk.
 //
 // Quirks the UI must know:
 //   - layouts is a MAP keyed by topologyKey, and Layout.topologyKey repeats that
@@ -236,12 +281,53 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 3;
+var STATE_VERSION = 4;
 
 // ES5, no Array.isArray assumptions about the QML JS engine's vintage: this is
 // the one array test that behaves the same in node and in Qt's V4.
 function isArray(value) {
   return Object.prototype.toString.call(value) === "[object Array]";
+}
+
+// ---------------------------------------------------------------------------
+// A LOOKUP OBJECT.PROTOTYPE CANNOT ANSWER
+// ---------------------------------------------------------------------------
+//
+// Every index in this project is a bare `{}` — a dedupe map, a launch map, a
+// bucket of windows per identity — and `map[key]` on a bare object ANSWERS for
+// `constructor`, `toString`, `valueOf`, `hasOwnProperty` and the rest whether
+// or not anything was ever stored under them. The keys are identity ids, group
+// ids, member keys and class-name tokens: every one of them comes out of a
+// user-editable state file or off a window class.
+//
+// It is not hypothetical. `normalizeIdentities`' dedupe map below said "already
+// seen" about an identity nobody had seen, so an identity with `id:
+// "constructor"` vanished from the parsed state on EVERY read — the file was
+// intact and the app was simply gone. Elsewhere the same shape handed back the
+// `Object` function where a command or a window list was expected, which came
+// out as a TypeError in the middle of a restore plan. And it is reachable
+// without a hand edit: PanelModel.deriveIdentityId builds an id out of the
+// class name's segments, so an app whose window class is `Constructor` produces
+// exactly the id `constructor`.
+//
+// So every read of a map keyed by one of those goes through here. The guard is
+// `Object.prototype.hasOwnProperty.call` and never `map.hasOwnProperty(key)`:
+// the map's own `hasOwnProperty` entry is precisely one of the keys this exists
+// for, and calling it would call whatever the user stored.
+//
+// The one key it cannot repair is `__proto__`, which is a SETTER on
+// Object.prototype rather than an inherited value: a write to it never stores
+// anything this guard could find, and a READ of it answers with the prototype
+// object — so an index keyed by that id hands back something that is neither
+// the value nor undefined. It survives this module intact (parse, serialize,
+// identityById, launchCommandFor — all pinned in tests/reserved-ids.test.js),
+// and a hand-written LAYOUT entry naming it makes engine.matchLayout, driftOf
+// and planRestore throw a TypeError. That is a known limit rather than a
+// regression — the pre-8hp code throws identically — and it is pinned as one:
+// nothing derives the id `__proto__`, so reaching it takes a hand edit.
+function own(map, key) {
+  if (!map) return undefined;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
 }
 
 function defaultState() {
@@ -271,6 +357,11 @@ function normalizeIdentity(value) {
   return {
     id: id,
     patterns: normalizePatterns(value.patterns),
+    // v4. Same coercion as `patterns` — same repair semantics, same "a typo
+    // costs you the pattern, never the identity" — and always written, even
+    // when empty, so nothing downstream has to tell absent from empty. An
+    // identity from a v3 file gains it here; that IS the v3 -> v4 migration.
+    titlePatterns: normalizePatterns(value.titlePatterns),
     launch: typeof value.launch === "string" ? value.launch : ""
   };
 }
@@ -284,7 +375,7 @@ function normalizeIdentities(value) {
     if (!identity) continue;
     // A duplicate id would make identityById ambiguous and record the same
     // window twice. First wins, consistent with the rest of the engine.
-    if (seen[identity.id]) continue;
+    if (own(seen, identity.id)) continue;
     seen[identity.id] = true;
     out.push(identity);
   }
@@ -432,7 +523,8 @@ function normalizeLayouts(value) {
 // A version from the FUTURE is preserved verbatim. This reader drops top-level
 // keys it does not know, so stamping such a file with the current number would
 // advertise a downgrade it did not perform; keeping the number lets parseState
-// report the mismatch and the UI warn instead.
+// report the mismatch and writeRefusal keep the file READ-ONLY. The number
+// survives the round trip in memory precisely so that every writer can see it.
 function migrateVersion(value) {
   if (typeof value !== "number" || !isFinite(value)) return STATE_VERSION;
   return value > STATE_VERSION ? value : STATE_VERSION;
@@ -462,9 +554,10 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> v2). Not an error and not a recovery: nothing
-//               was lost and nothing was invented. The service logs it once and
-//               the next write persists the upgraded shape.
+//               upgraded (v1 -> v2 -> v3 -> v4, as far as it has to go, in the
+//               one pass). Not an error and not a recovery: nothing was lost
+//               and nothing was invented. The service logs it once and the next
+//               write persists the upgraded shape.
 function parseState(raw) {
   var text = typeof raw === "string" ? raw : "";
   if (!text.replace(/^\s+|\s+$/g, "")) {
@@ -487,7 +580,12 @@ function parseState(raw) {
   var migrated = false;
   if (typeof parsed.version === "number" && parsed.version > STATE_VERSION) {
     // From the future. Not recovered: fields have only ever been added, so the
-    // file still reads. The caller decides whether to warn.
+    // READ is sound — every field this generation knows about is there and the
+    // service can restore from it. The ROUND TRIP is not: normalizeIdentity is
+    // a whitelist, so writing this state back would drop everything the newer
+    // version added while migrateVersion kept its number. That is why the state
+    // is READ-ONLY, not merely warned about — see writeRefusal, which every
+    // writer of this file consults.
     error = "unexpected state version " + parsed.version + " (expected " + STATE_VERSION + ")";
   } else if (typeof parsed.version !== "number" || parsed.version < STATE_VERSION) {
     // An older (or version-less) file, upgraded in place. Reported separately
@@ -498,8 +596,47 @@ function parseState(raw) {
   return { state: state, error: error, recovered: false, migrated: migrated };
 }
 
+// MAY this state be written back to the file it came from? Returns null when it
+// may, and the REASON it may not when it may not. Every writer of the state file
+// — Service.qml's writeState, Panel.qml's writeState, scripts/record-current —
+// asks this first and refuses out loud with the answer.
+//
+// One case, and it is the destructive one: a state whose version is from the
+// FUTURE. Reading such a file is safe and running from it is safe (fields have
+// only ever been added), but the round trip is not, because the two halves of
+// this module disagree on purpose:
+//
+//   - normalizeIdentity is a WHITELIST — deliberately, that is the junk repair a
+//     hand-editable file needs — so every identity field a newer schema added is
+//     dropped on the way in, `titlePatterns` being exactly the kind of
+//     hand-authored, unrecoverable value at stake;
+//   - migrateVersion PRESERVES the future number, because claiming a downgrade
+//     this reader did not perform would be a worse lie.
+//
+// Put those together and any write — a Record, a panel edit, a pause toggle —
+// persists the stripped content STILL STAMPED with the newer version. The next
+// binary that understands that version then sees nothing to migrate, and what
+// it added is gone. A refusal costs the user one edit; a write costs them the
+// file. So: read it, run from it, never write it.
+//
+// Pure and here rather than duplicated in two QML files, so the rule has one
+// definition and a test.
+function writeRefusal(state) {
+  var version = state && typeof state.version === "number" && isFinite(state.version)
+    ? state.version : STATE_VERSION;
+  if (version > STATE_VERSION) {
+    return "the state file is schema v" + version + ", newer than this build understands (v"
+      + STATE_VERSION + ") — it is READ-ONLY, because writing it back would drop every field v"
+      + version + " added while still stamping the file v" + version
+      + ". Upgrade Dock Recall, or move the file aside, to make changes.";
+  }
+  return null;
+}
+
 // Pretty-printed with a trailing newline: this file is meant to be readable and
-// hand-editable, and it lands in a directory people `cat`.
+// hand-editable, and it lands in a directory people `cat`. Round-tripping a
+// FUTURE version through here is lossy by construction — ask writeRefusal
+// before you hand the result to a file.
 function serializeState(state) {
   return JSON.stringify(normalizeState(state), null, 2) + "\n";
 }
@@ -1147,6 +1284,7 @@ if (typeof module !== "undefined") {
     normalizeGeometry: normalizeGeometry,
     migrateVersion: migrateVersion,
     parseState: parseState,
+    writeRefusal: writeRefusal,
     serializeState: serializeState,
     layoutFor: layoutFor,
     hasLayoutFor: hasLayoutFor,

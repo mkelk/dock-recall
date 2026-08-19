@@ -29,6 +29,15 @@ function trim(value) {
   return String(value === undefined || value === null ? "" : value).replace(/^\s+|\s+$/g, "");
 }
 
+// A map lookup Object.prototype cannot answer — see the long note above
+// `own` in StateModel.js. Every index in this file keyed by an identity id, a
+// group id or a member key reads through this, because `map["constructor"]` on
+// a bare object is truthy whether or not anything was put there (tick 8hp).
+function own(map, key) {
+  if (!map) return undefined;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
+
 // Escape every character that means something to a regex. Window classes
 // contain dots as a matter of routine (md.obsidian.Obsidian), and an
 // unescaped dot in a generated pattern is a wildcard that silently widens what
@@ -169,6 +178,19 @@ function derivePattern(className) {
   return "^" + escapeRegex(text) + "$";
 }
 
+// The regex the state file stores for a window TITLE (schema v4
+// `titlePatterns`). Always anchored on BOTH ends, with no prefix case: a title
+// put there by the `--title` convention is a whole word chosen on purpose, not
+// a packaging string with a varying tail like a Chromium class. derivePattern
+// is deliberately not reused — its chrome- branch would turn a binary honestly
+// named `chrome-something` into an open-ended prefix that claims titles nobody
+// asked for.
+function deriveTitlePattern(title) {
+  var text = trim(title);
+  if (!text) return "";
+  return "^" + escapeRegex(text) + "$";
+}
+
 // A readable, stable id for a window class — the handle a recorded placement
 // refers to, so it has to survive being looked at in a text editor.
 //
@@ -212,11 +234,25 @@ function deriveIdentityId(className) {
   for (var j = 0; j < tokens.length; j++) {
     var candidate = tokens[j];
     if (!candidate || candidate.length < 2) continue;
-    if (GENERIC_TOKENS[candidate]) continue;
+    if (own(GENERIC_TOKENS, candidate)) continue;
     survivors.push(candidate);
   }
   var chosen = survivors.length ? survivors[survivors.length - 1] : text;
   return chosen.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// The id a TITLE identity carries: the name of the app inside the terminal,
+// not the terminal's. `foot` hosting `herdr` is "herdr" — an id of "foot"
+// would name the wrong thing, and the user would have no way to tell two
+// terminal identities apart in their own state file.
+//
+// deriveIdentityId is the wrong tool for this: it reads a class, so it splits
+// on dots and keeps the LAST token, which would turn the title "python3.11"
+// into the id "11". A title is already one word — titleFromArgv0 reduced a
+// binary path to one — so all it needs is the same final reduction to the
+// characters an id may carry.
+function identityIdFromTitle(title) {
+  return trim(title).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 // The display name for a chip and a list row.
@@ -225,18 +261,100 @@ function displayNameFor(className) {
   return id ? titleCase(id) : trim(className);
 }
 
-// Build the Identity a freshly ticked class needs.
+// Does this pattern list already carry this exact pattern string?
+function patternListHas(value, pattern) {
+  var list = isArray(value) ? value : [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] === pattern) return true;
+  }
+  return false;
+}
+
+// THE DUPLICATE GUARD, and what it compares now that an identity has two axes.
 //
-// Returns null when an identity with this exact pattern is ALREADY on the list
-// — the class is watched, and adding a second identity for it would record the
-// same window twice and make matchClient's answer depend on list order.
+// It used to compare `patterns` alone, which was complete while `patterns` was
+// the only axis: same class pattern meant same rule. Schema v4 added
+// `titlePatterns`, the two are ANDed (see the rule table in engine.js), and a
+// class pattern on its own no longer says what an identity claims. So the guard
+// compares BOTH AXES, and an empty title list counts as "no title constraint"
+// rather than "any title" — because that is exactly what it means to
+// matchClient:
+//
+//   proposal           existing on the list         verdict
+//   -----------------  ---------------------------  -------------------------
+//   ^foot$             ^foot$                       duplicate — same rule
+//   ^foot$ + ^herdr$   ^foot$ + ^herdr$             duplicate — same rule
+//   ^foot$ + ^herdr$   ^foot$, no title             NOT a duplicate. The
+//                                                   existing rule claims EVERY
+//                                                   foot window; the proposal
+//                                                   claims the one titled
+//                                                   herdr. Two different rules,
+//                                                   and the specific one is
+//                                                   prepended so first-match
+//                                                   reaches it first.
+//   ^foot$             ^foot$ + ^herdr$             NOT a duplicate — the same
+//                                                   thing the other way round:
+//                                                   watching plain foot is
+//                                                   still possible once one
+//                                                   titled foot window is
+//                                                   watched.
+//
+// Comparing `patterns` alone would have refused to propose the herdr identity
+// on any desktop that already watches plain foot — which is the ordinary case
+// and the whole point of a title identity.
+function identityClaimsSame(identity, pattern, titlePattern) {
+  if (!patternListHas(identity.patterns, pattern)) return false;
+  var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+  if (!titlePattern) return titles.length === 0;
+  return patternListHas(titles, titlePattern);
+}
+
+// Build the Identity a freshly ticked window needs.
+//
+// Returns null when an identity claiming the same thing is ALREADY on the list
+// — see identityClaimsSame above for what "the same thing" means — because
+// adding a second identity for it would record the same window twice and make
+// matchClient's answer depend on list order.
 //
 // A colliding id (Chromium's second webapp on a domain already claimed) gets a
 // numeric suffix rather than being merged: two ids that look alike are a
 // cosmetic problem, one id meaning two apps is a data-loss one.
-function suggestIdentity(className, identities) {
+//
+// `derivation` is OPTIONAL and is what terminalChildDerivation answered about
+// the window being ticked. It is passed IN rather than computed here because
+// naming the app inside a terminal takes a /proc read, and this function is
+// pure. When it carries a title — meaning the ticked window is a terminal
+// hosting exactly one unambiguous child — the proposal is a TITLE identity:
+//
+//   { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+//     launch: "foot --title=herdr herdr" }
+//
+// which under the v4 AND semantics means "the foot window titled herdr" and
+// nothing else.
+//
+// WITHOUT one, the answer depends on whether the class is a TERMINAL:
+//
+//   - not a terminal — the class-only proposal it has always been. A class is
+//     the whole truth about a browser window or an editor window.
+//   - a terminal — a REFUSAL, `{ refusal: "<reason>" }`. A bare `^foot$` claims
+//     every terminal on the desktop and launches whichever one command it
+//     learned, so writing it silently is the wrong answer wearing a tick mark;
+//     the README calls it useless in as many words. The reason travels so the
+//     panel can say WHY in the panel, which is what this project does with a
+//     thing it cannot read (see CLAUDE.md, "Refusals are a feature").
+//
+// The refusal covers the ABSENT derivation too — the /proc read that has not
+// come back yet, the race the panel's tickDerivation comment admits — under the
+// reason "not-read". Before tick gpq that race wrote the catch-all and the
+// autofill pass a moment later stamped the one app's command onto it, so what
+// a tick produced was decided by click timing.
+function suggestIdentity(className, identities, derivation) {
   var pattern = derivePattern(className);
   if (!pattern) return null;
+
+  var answer = (derivation && typeof derivation === "object") ? derivation : {};
+  var title = typeof answer.title === "string" ? trim(answer.title) : "";
+  var titlePattern = title ? deriveTitlePattern(title) : "";
 
   var list = isArray(identities) ? identities : [];
   var taken = {};
@@ -244,30 +362,49 @@ function suggestIdentity(className, identities) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string") continue;
     taken[identity.id] = true;
-    var patterns = isArray(identity.patterns) ? identity.patterns : [];
-    for (var p = 0; p < patterns.length; p++) {
-      if (patterns[p] === pattern) return null;
-    }
+    if (identityClaimsSame(identity, pattern, titlePattern)) return null;
   }
 
-  var base = deriveIdentityId(className) || "app";
+  // The refusal comes AFTER the duplicate guard on purpose: ticking something
+  // already watched is a no-op whatever its class, and answering "refused"
+  // there would be a complaint about a click that changed nothing.
+  if (!titlePattern && isTerminalClass(className)) {
+    return {
+      refusal: trim(answer.reason) || "not-read",
+      className: trim(className)
+    };
+  }
+
+  var base = (titlePattern ? identityIdFromTitle(title) : deriveIdentityId(className)) || "app";
   var id = base;
   var suffix = 2;
-  while (taken[id]) {
+  while (own(taken, id)) {
     id = base + "-" + suffix;
     suffix += 1;
   }
 
-  // launch: "" still, because THIS function is pure and synchronous and a
-  // truthful launch command can only be read off the running process or a
-  // desktop file — I/O the caller has to do. The field is filled in a moment
-  // later by the panel's derivation pass (deriveLaunchMap /
+  // launch: "" for the class case, because THIS function is pure and
+  // synchronous and a truthful launch command can only be read off the running
+  // process or a desktop file — I/O the caller has to do. The field is filled
+  // in a moment later by the panel's derivation pass (deriveLaunchMap /
   // backfillLaunchCommands below), never guessed from the class here.
   //
   // The user-found bug this comment used to describe as a feature: an identity
   // that stays at "" can never be restored when its app is closed, which is
   // exactly the case Restore exists for.
-  return { id: id, patterns: [pattern], launch: "" };
+  //
+  // The TITLE case is not a guess and not an exception to that rule: the
+  // caller already did the read, and `derivation.command` is the very command
+  // terminalChildDerivation built from it. Writing it here rather than leaving
+  // the autofill pass to derive the identical string a moment later means the
+  // identity is complete in the first write.
+  if (!titlePattern) return { id: id, patterns: [pattern], launch: "" };
+  return {
+    id: id,
+    patterns: [pattern],
+    titlePatterns: [titlePattern],
+    launch: dispatchableCommand(answer.command)
+  };
 }
 
 // Tick or untick a class. Returns a NEW identity list for the caller to hand
@@ -279,10 +416,30 @@ function suggestIdentity(className, identities) {
 // of what a window is, so the panel can never untick something different from
 // what the chip was showing.
 //
-// New identities go to the FRONT: the list is priority order and
-// engine.matchClient returns the first match, so the specific thing the user
-// just pointed at must not end up behind a catch-all that was added earlier.
-function toggleWatchedIdentities(identities, className, identityId) {
+// New identities go to the FRONT, with ONE exception: the list is priority
+// order and engine.matchClient returns the first match, so the specific thing
+// the user just pointed at must not end up behind a catch-all that was added
+// earlier. That is exactly what a title identity needs — `{^foot$ + ^herdr$}`
+// has to sit in front of a plain `{^foot$}` or the catch-all answers first and
+// the title axis never gets asked.
+//
+// THE EXCEPTION (tick gpq, human decision 2026-08-19). Prepending blindly is
+// how the panel MANUFACTURED the state engine.shadowedIdentities exists to
+// report: a user with a working `{^foot$ + ^herdr$}` ticks a plain terminal, a
+// fresh `^foot$` lands in front of it, and every herdr window silently becomes
+// "terminal". So a new identity is inserted AFTER the last existing identity it
+// would shadow — see insertionIndexFor for what "would shadow" means and why
+// the answer needs BOTH engine.couldShadow and a shared class pattern.
+//
+// `derivation` is passed straight through to suggestIdentity: it is the
+// terminal-tick answer for the window being ticked, which only the caller can
+// obtain (it takes a /proc read). Untick ignores it.
+//
+// `couldShadow` is engine.couldShadow, passed IN rather than reimplemented:
+// which pairs of identities stand in the shadowing relation is one rule and it
+// lives beside the matcher. Without it the insert prepends, which is what every
+// caller that predates tick gpq expects.
+function toggleWatchedIdentities(identities, className, identityId, derivation, couldShadow) {
   var list = isArray(identities) ? identities : [];
   var wanted = trim(identityId);
 
@@ -295,22 +452,177 @@ function toggleWatchedIdentities(identities, className, identityId) {
     return out;
   }
 
-  var addition = suggestIdentity(className, list);
-  if (!addition) return list.slice();
-  return [addition].concat(list);
+  var addition = suggestIdentity(className, list, derivation);
+  // Nothing to add (already watched), or a refusal — which is a message for the
+  // user, not a list. The caller asks tickRefusalReason BEFORE toggling so it
+  // can say so; here it is simply an unchanged list.
+  if (!addition || addition.refusal) return list.slice();
+
+  var at = insertionIndexFor(addition, list, couldShadow);
+  return list.slice(0, at).concat([addition]).concat(list.slice(at));
+}
+
+// Do two identities constrain the same window CLASS at all?
+//
+// engine.couldShadow answers about AXES — which of `patterns`/`titlePatterns`
+// each side constrains — and is deliberately blind to what the patterns say,
+// because regex subsumption is not decidable. That makes it true of ANY two
+// class-only identities, `^foot$` and `^chromium$` included, which have no
+// window in common and no order worth arguing about.
+//
+// So the insert asks this as well. Two identities that share a class pattern
+// string claim from the same pool of windows; two that do not are unordered
+// with respect to each other, and the front is where a new identity goes.
+// Compared case-insensitively because engine.compilePattern compiles that way,
+// so `^Foot$` and `^foot$` claim the same windows.
+function sharesClassPattern(a, b) {
+  var left = isArray(a && a.patterns) ? a.patterns : [];
+  var right = isArray(b && b.patterns) ? b.patterns : [];
+  for (var i = 0; i < left.length; i++) {
+    if (typeof left[i] !== "string") continue;
+    var one = trim(left[i]).toLowerCase();
+    if (!one) continue;
+    for (var j = 0; j < right.length; j++) {
+      if (typeof right[j] !== "string") continue;
+      if (trim(right[j]).toLowerCase() === one) return true;
+    }
+  }
+  return false;
+}
+
+// Where in the list a new identity belongs: the front, unless it would shadow
+// something already there.
+//
+// "Would shadow" is `couldShadow(addition, existing)` — could the addition, if
+// it sat in front, claim everything the existing one claims — AND a shared
+// class pattern, without which couldShadow's axis test says yes to every pair
+// of class-only identities and a new identity would sink to the back of the
+// list for no reason (see sharesClassPattern).
+//
+// AFTER THE LAST one it would shadow, not before the first: the addition has to
+// clear every identity it could swallow, and the identities it does NOT shadow
+// keep it in front of them, which is the ordinary prepend.
+//
+//   existing [herdr {^foot$+^herdr$}], addition {^foot$}   ->  index 1
+//   existing [browser {^chromium$}],   addition {^foot$}   ->  index 0
+//   existing [terminal {^foot$}],      addition {^foot$+^btop$} -> index 0
+function insertionIndexFor(addition, identities, couldShadow) {
+  var list = isArray(identities) ? identities : [];
+  if (typeof couldShadow !== "function") return 0;
+
+  var at = 0;
+  for (var i = 0; i < list.length; i++) {
+    var existing = list[i];
+    if (!existing || typeof existing !== "object") continue;
+    if (!sharesClassPattern(addition, existing)) continue;
+    if (!couldShadow(addition, existing)) continue;
+    at = i + 1;
+  }
+  return at;
+}
+
+// ---------------------------------------------------------------------------
+// Saying that an identity can never win
+// ---------------------------------------------------------------------------
+//
+// engine.shadowedIdentities does the finding — it is a question about the
+// matcher, so it lives beside the matcher, and the report is passed IN here the
+// way the drift report and the verdicts are. This half is the sentence.
+//
+// It has to name BOTH identities. The user's only fixes are to move one above
+// the other in the state file or to untick the one in front, and neither is
+// possible from a message that says only "something is wrong". Naming the ids —
+// not the display names — is deliberate: the id is what they will read in the
+// file and what the chip's tick removes.
+//
+// Why this is a panel-level line rather than a row hint: a shadowed identity
+// usually has NO row. Its windows all resolved to the identity in front, so
+// appRows lists them under that one; the shadowed identity appears only as a
+// recorded ghost, if it happens to be in the layout, saying "not running" about
+// an app that is on screen. There is nothing to hang the reason on.
+
+// `"a"`, `"a" and "b"`, `"a", "b" and "c"` — ids, quoted, in the order given.
+function quotedIdList(ids) {
+  var list = isArray(ids) ? ids : [];
+  var quoted = [];
+  for (var i = 0; i < list.length; i++) {
+    var id = trim(list[i]);
+    if (id) quoted.push('"' + id + '"');
+  }
+  if (quoted.length === 0) return "";
+  if (quoted.length === 1) return quoted[0];
+  return quoted.slice(0, quoted.length - 1).join(", ") + " and " + quoted[quoted.length - 1];
+}
+
+// One entry of engine.shadowedIdentities -> one sentence, or "" when the entry
+// says nothing usable (which is the caller's single truthy test — a hint that
+// renders as an empty line looks like a bug in the panel).
+//
+// TWO SENTENCES, because the evidence supports two different strengths of claim
+// (tick ytt). `entry.strict` says every claimant constrains strictly fewer axes
+// than the shadowed identity — it is wider by construction, so moving the
+// shadowed identity above it costs the claimant nothing it can still reach, and
+// "put it above, or untick" is provably safe advice. Where the two constrain
+// the SAME axes, all the evidence supports is an observation: no window reaches
+// it right now. An imperative there would be advice about what is open at the
+// moment, which is the wolf-cry this detector exists to remove.
+//
+// A missing `strict` is treated as the WEAK case on purpose: an entry that does
+// not say the relation is strict has not earned an instruction.
+function shadowNoticeFor(entry) {
+  if (!entry || typeof entry !== "object") return "";
+  var id = trim(entry.id);
+  var names = quotedIdList(entry.claimedBy);
+  if (!id || !names) return "";
+
+  var matched = Number(entry.windows) || 0;
+  // How many of them the NAMED claimants took. Absent (or nonsense) means the
+  // caller only counted matches, which is what `windows` meant before ytt.
+  var took = (entry.claimed === undefined || entry.claimed === null)
+    ? matched : (Number(entry.claimed) || 0);
+  if (took > matched) took = matched;
+
+  var windows;
+  if (took < matched) windows = took + " of the " + matched + " windows it matches";
+  else if (matched > 1) windows = "all " + matched + " windows it matches";
+  else windows = "the only window it matches";
+
+  var one = isArray(entry.claimedBy) && entry.claimedBy.length === 1;
+  var body = names + (one ? " is" : " are") + " earlier in the list and "
+    + (one ? "claims " : "claim ") + windows;
+
+  if (entry.strict === true) {
+    return '"' + id + '" never wins a window: ' + body
+      + '. Put "' + id + '" above ' + (one ? names : "them") + " in the state file, or untick "
+      + (one ? names : "them") + ".";
+  }
+  return 'No open window currently reaches "' + id + '": ' + body
+    + ". " + names + (one ? " is" : " are") + " no narrower a rule than \"" + id
+    + "\", so this may be nothing more than what is open right now.";
+}
+
+// Every such sentence, one per line, or "" when the list is healthy.
+function shadowedIdentityHint(report) {
+  var list = isArray(report) ? report : [];
+  var lines = [];
+  for (var i = 0; i < list.length; i++) lines.push(shadowNoticeFor(list[i]));
+  return joinLines(lines);
 }
 
 // ---------------------------------------------------------------------------
 // Deriving a launch command
 // ---------------------------------------------------------------------------
 //
-// The gap this section closes: suggestIdentity writes `launch: ""` for every
-// identity the panel creates, and "" means NEVER LAUNCH (see the Identity
-// schema note in StateModel.js). A user who ticked three webapps, recorded
-// them, closed them and pressed Restore therefore got nothing at all — the
-// service logged "not running and has no launch command — leaving it" three
-// times and called it a converged pass. Restore could bring a window back to
-// its workspace but could never bring the app back.
+// The gap this section closes: suggestIdentity writes `launch: ""` for the
+// identities it creates from a CLASS alone, and "" means NEVER LAUNCH (see the
+// Identity schema note in StateModel.js). A TITLE identity is the exception —
+// the caller already read /proc to name the app inside the terminal, so the
+// command comes back with the title and is written in the same breath — but
+// every ordinary tick still arrives here empty. A user who ticked three
+// webapps, recorded them, closed them and pressed Restore got nothing at all —
+// the service logged "not running and has no launch command — leaving it"
+// three times and called it a converged pass. Restore could bring a window back
+// to its workspace but could never bring the app back.
 //
 // So the panel learns the command instead of guessing it, from the two places
 // where a true answer already exists:
@@ -514,7 +826,7 @@ function isSharedProcessPid(pid, windowsByPid) {
   var key = trim(pid);
   if (!key) return false;
   var map = (windowsByPid && typeof windowsByPid === "object") ? windowsByPid : {};
-  return (map[key] || 0) > 1;
+  return (own(map, key) || 0) > 1;
 }
 
 // Does this argv have the shape of a cmdline that was rewritten WITHOUT the
@@ -573,16 +885,28 @@ function argvLooksNulLess(argv) {
 // Terminal-hosted apps: deriving a launch from the CHILD process
 // ---------------------------------------------------------------------------
 //
-// The blind spot the README's app-id section describes, closed from the other
-// side. A TUI app typed into a plain terminal (`herdr` in `foot`) owns no
+// The blind spot the README's terminal-title section describes, closed from the
+// other side. A TUI app typed into a plain terminal (`herdr` in `foot`) owns no
 // window of its own: the window is class `foot`, and /proc/<pid>/cmdline is
 // `foot` — the terminal, not the app. Nothing in the derivation above can see
 // past that, so the identity gets no launch command and Restore can never bring
 // the app back.
 //
 // The terminal's CHILD process is the app. Reading it turns `foot` into
-// `foot --app-id=herdr herdr`, which is exactly the command the README asks the
+// `foot --title=herdr herdr`, which is exactly the command the README asks the
 // user to bind by hand — so the panel can offer it instead of asking.
+//
+// Why the TITLE, and not a window class of its own (measured 2026-08-18):
+//
+//   - `foot --title=herdr herdr` fixes `initialTitle` at `herdr` and leaves
+//     `class` as `foot`, so every Omarchy class-matched window rule still
+//     applies. A private class would silently lose all of them.
+//   - `initialTitle` is set once, at map time. An app that renames itself the
+//     instant it starts moves `title` only, never `initialTitle` — which is
+//     why identity matching reads `initialTitle` and nothing else.
+//   - Hyprland FULL-matches an unanchored window-rule regex, so a compound
+//     class like `foot.herdr` cannot be made to match alongside plain `foot`.
+//     The title is the only route.
 //
 // The window classes of the terminals this is attempted for. A named list, like
 // BROWSER_FAMILY, so adding a terminal is a one-line edit:
@@ -592,33 +916,34 @@ function argvLooksNulLess(argv) {
 //   kitty              kitty (class kitty)
 //   ghostty            Ghostty (class ghostty, com.mitchellh.ghostty)
 //
-// The whole COMMAND SHAPE differs between them, not just the flag, and the
-// derived command has to run — so both halves are carried per entry rather
-// than assumed. A derived command that is merely plausible would fail at the
-// one moment it matters: a restore after a reboot, with nobody watching.
+// They all spell the title the same way, so THAT is a constant rather than a
+// per-entry column: the flag column existed only because the terminals disagree
+// about `--app-id` versus `--class`, and no terminal here disagrees about
+// `--title`. What still differs per terminal is the COMMAND SHAPE, and the
+// derived command has to run — a command that is merely plausible would fail at
+// the one moment it matters: a restore after a reboot, with nobody watching.
 //
-//   flag  how the terminal spells the window class
-//           foot, footclient   --app-id
-//           kitty, alacritty, ghostty   --class
 //   exec  what has to come between the flags and the hosted command
 //           foot, kitty        "" — a bare trailing command is the command
 //           alacritty, ghostty "-e" — a bare trailing command is REJECTED
 //
 // So the two shapes are:
 //
-//   foot --app-id=herdr herdr
-//   alacritty --class=herdr -e herdr
+//   foot --title=herdr herdr
+//   alacritty --title=herdr -e herdr
 //
 // Alacritty is the one that used to be wrong here. Verified against Alacritty
-// 0.17.0: there is no `--app-id` (it is `--class`), and `alacritty --class=x x`
-// exits with a usage error — `-e` is not optional.
+// 0.17.0: `alacritty --title=x x` exits with a usage error — `-e` is not
+// optional.
+var TERMINAL_TITLE_FLAG = "--title";
+
 var TERMINAL_FAMILY = [
-  { test: /^foot(client)?$/i, flag: "--app-id", exec: "" },
-  { test: /^kitty$/i, flag: "--class", exec: "" },
-  { test: /^alacritty$/i, flag: "--class", exec: "-e" },
-  // Ghostty's shape is taken from upstream docs (`--class`, `-e`) and is
-  // unverified locally — no Ghostty on the machine this was written on.
-  { test: /^(com\.mitchellh\.)?ghostty$/i, flag: "--class", exec: "-e" }
+  { test: /^foot(client)?$/i, exec: "" },
+  { test: /^kitty$/i, exec: "" },
+  { test: /^alacritty$/i, exec: "-e" },
+  // Ghostty's `-e` is taken from upstream docs and is unverified locally — no
+  // Ghostty on the machine this was written on.
+  { test: /^(com\.mitchellh\.)?ghostty$/i, exec: "-e" }
 ];
 
 function isTerminalClass(className) {
@@ -628,15 +953,6 @@ function isTerminalClass(className) {
     if (TERMINAL_FAMILY[i].test.test(text)) return true;
   }
   return false;
-}
-
-// The app-id flag this terminal spells its window class with.
-function terminalClassFlag(className) {
-  var text = trim(className);
-  for (var i = 0; i < TERMINAL_FAMILY.length; i++) {
-    if (TERMINAL_FAMILY[i].test.test(text)) return TERMINAL_FAMILY[i].flag;
-  }
-  return "--app-id";
 }
 
 // The word that has to sit between the flags and the hosted command, or "" for
@@ -691,23 +1007,32 @@ function childNodesOf(node) {
   return out;
 }
 
-// The window class to give a terminal-hosted app, derived from the binary it
-// runs. Lower-cased and reduced to the characters a class may safely carry —
-// the same shape deriveIdentityId produces, for the same reason.
-function appIdFromArgv0(argv0) {
+// The window TITLE to give a terminal-hosted app, derived from the binary it
+// runs. Lower-cased and reduced to the characters a title pattern may safely
+// carry — the same shape deriveIdentityId produces, for the same reason: the
+// derived word ends up inside an anchored regex, and Hyprland full-matches an
+// unanchored one.
+function titleFromArgv0(argv0) {
   var name = basenameOf(argv0).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
   return name;
 }
 
 // The whole terminal-child rule, as one answer:
 //
-//   { command: "<terminal> <class flag>=<derived> [-e] <child argv>", reason: "" }
-//   { command: "", reason: "no-child" | "several-children" | "shell-chain"
-//                        | "unreadable-child" }
-//   { command: "", reason: "" }   — not a terminal question at all
+//   { command: "<terminal> --title=<derived> [-e] <child argv>", title: "<derived>",
+//     reason: "" }
+//   { command: "", title: "", reason: "no-child" | "several-children"
+//                                   | "shell-chain" | "unreadable-child" }
+//   { command: "", title: "", reason: "" }  — not a terminal question at all
+//
+// `title` is the same word the command's `--title=` carries, said separately
+// because two different callers want two different halves of one answer: the
+// launch derivation wants the command, and suggestIdentity wants the title —
+// it is both the new identity's id and its `titlePatterns` entry. Deriving it
+// twice would be two chances to disagree about what the app is called.
 //
 // ONLY an unambiguous single child derives. Anything else REFUSES, loudly and
-// on purpose: the panel says "ambiguous" and points at the app-id convention
+// on purpose: the panel says "ambiguous" and points at the --title convention
 // rather than guessing. A terminal with two children is a terminal running two
 // things (or a shell job plus a pager), and picking one of them would write a
 // launch command that reopens the wrong app — silently, and only discovered at
@@ -717,11 +1042,11 @@ function appIdFromArgv0(argv0) {
 // ordinary shape (`foot` -> `bash` -> `herdr`), not an ambiguity. A shell with
 // two children of its own is one again.
 function terminalChildDerivation(className, ownArgv, node) {
-  var out = { command: "", reason: "" };
+  var out = { command: "", title: "", reason: "" };
   if (!isTerminalClass(className)) return out;
 
   // Only when the terminal's own cmdline says nothing but the terminal. A
-  // `foot --app-id=herdr herdr` cmdline already IS the answer and goes through
+  // `foot --title=herdr herdr` cmdline already IS the answer and goes through
   // the ordinary derivation; so does `foot -e something`.
   var own = isArray(ownArgv) ? ownArgv : [];
   if (own.length !== 1 || !trim(own[0])) return out;
@@ -760,20 +1085,332 @@ function terminalChildDerivation(className, ownArgv, node) {
     return out;
   }
 
-  var appId = appIdFromArgv0(argv[0]);
-  if (!appId) {
+  var title = titleFromArgv0(argv[0]);
+  if (!title) {
     out.reason = "unreadable-child";
     return out;
   }
 
-  var words = [shellQuoteArg(trim(own[0])), terminalClassFlag(className) + "=" + appId];
+  var words = [shellQuoteArg(trim(own[0])), TERMINAL_TITLE_FLAG + "=" + title];
   // Alacritty and Ghostty reject a bare trailing command; foot and kitty take
   // one. See TERMINAL_FAMILY.
   var execFlag = terminalExecFlag(className);
   if (execFlag) words.push(execFlag);
   for (var i = 0; i < argv.length; i++) words.push(shellQuoteArg(argv[i]));
   out.command = dispatchableCommand(words.join(" "));
+  // The title travels only with a command that survived dispatchableCommand.
+  // A command the panel refuses to run and a title identity that promises to
+  // start it would be a disagreement written into the user's file.
+  if (out.command) out.title = title;
   return out;
+}
+
+// The value of the terminal's own `--title` flag, or "".
+//
+// Two spellings, because both are ordinary on a command line and the panel does
+// not get to choose how the user launched their terminal:
+//
+//   foot --title=herdr herdr
+//   foot --title herdr herdr
+//
+// The short forms (`-T`, `-t`) are deliberately NOT read: they mean different
+// things to different terminals, and a wrong guess here writes a titlePattern
+// that matches nothing. `--title` is the one flag the whole family agrees on,
+// and it is the flag this plugin tells the user to use.
+function titleFromOwnArgv(argv) {
+  var list = isArray(argv) ? argv : [];
+  var prefix = TERMINAL_TITLE_FLAG + "=";
+  for (var i = 0; i < list.length; i++) {
+    var word = typeof list[i] === "string" ? list[i] : "";
+    if (word.slice(0, prefix.length) === prefix) return trim(word.slice(prefix.length));
+    if (word === TERMINAL_TITLE_FLAG && i + 1 < list.length) return trim(list[i + 1]);
+  }
+  return "";
+}
+
+// What a TICK should propose for a terminal window — the same answer shape as
+// terminalChildDerivation, from the best evidence available rather than from
+// the child process alone.
+//
+// The blocker this fixes (tick gpq): a window ALREADY launched the way the
+// README asks — `foot --title=herdr herdr` — has a three-word cmdline, so
+// terminalChildDerivation's "only when the terminal's own cmdline says nothing
+// but the terminal" test answered "not a terminal question", and the tick fell
+// back to the `^foot$` catch-all. The title was sitting on the window the whole
+// time, twice over: in the flag that put it there and in the window's own
+// `initialTitle`. The README documented that flow as working. It did not.
+//
+// THE ORDER OF EVIDENCE, strongest first:
+//
+//   1. the terminal's own `--title=` flag. It is the exact string the window's
+//      initialTitle was set from, and the argv it came in is also the exact
+//      command that would start the window again.
+//   2. the window's `initialTitle`, when the terminal was launched WITH a
+//      command of its own (`foot -e btop`, whose title foot sets from the
+//      command) and the title is not merely the class. Restricted to that case
+//      on purpose: for a BARE terminal an interactive shell may have retitled
+//      the window to a working directory before it was mapped, and an identity
+//      built on `^~/git/dock-recall$` is junk that happens to match once.
+//   3. the single unambiguous child process — terminalChildDerivation, exactly
+//      as before, which is the bare-terminal case the whole feature began as.
+//
+// Cases 1 and 2 name a title the LIVE window already carries, so the identity
+// they propose matches it immediately. Case 3 names the title the window WOULD
+// carry if it had been launched the plugin's way: the identity is still created
+// (human decision 2026-08-19), and the panel says out loud that this window
+// will not match until it is relaunched — see untitledTerminalHint.
+//
+// `reason` is "" for a non-terminal (there is no question here), "not-read"
+// when the /proc read has not come back, "no-title" when the terminal's own
+// command line names no title and its children could not be asked, and
+// otherwise whatever terminalChildDerivation refused with.
+function terminalTickDerivation(className, ownArgv, node, initialTitle) {
+  var out = { command: "", title: "", reason: "" };
+  if (!isTerminalClass(className)) return out;
+
+  var argv = isArray(ownArgv) ? ownArgv : [];
+  if (!argv.length || !trim(argv[0])) {
+    out.reason = "not-read";
+    return out;
+  }
+
+  var flagged = titleFromOwnArgv(argv);
+  if (flagged) {
+    out.title = flagged;
+    out.command = launchCommandFromArgv(argv, className);
+    return out;
+  }
+
+  var shown = trim(initialTitle);
+  if (argv.length > 1 && shown && shown.toLowerCase() !== trim(className).toLowerCase()) {
+    out.title = shown;
+    out.command = launchCommandFromArgv(argv, className);
+    return out;
+  }
+
+  var child = terminalChildDerivation(className, argv, node);
+  if (child.title) return { command: child.command, title: child.title, reason: "" };
+  out.reason = child.reason || "no-title";
+  return out;
+}
+
+// Why a tick REFUSED, or "". The one question the panel asks before toggling,
+// so a click that cannot produce a working identity says so instead of writing
+// a catch-all. Returns "" for everything that is not a refusal — an ordinary
+// class, a terminal that named its app, a tick that is really an untick.
+function tickRefusalReason(className, identities, derivation) {
+  var proposal = suggestIdentity(className, identities, derivation);
+  if (!proposal || !proposal.refusal) return "";
+  return String(proposal.refusal);
+}
+
+// The refusal, as the sentence the panel shows. "" when there is nothing to say.
+//
+// Every branch names the SAME way out — the `--title` convention — because that
+// is the one thing the user can do that makes the next tick work, and it is the
+// convention the identity would have been built on anyway.
+function tickRefusalHint(className, reason) {
+  var name = trim(className);
+  var why = trim(reason);
+  if (!name || !why) return "";
+
+  var head = 'Not watching this ' + name + ' window yet: ';
+  var body;
+  if (why === "not-read") {
+    body = "the panel is still reading what this terminal is running. Press it again in a moment.";
+  } else if (why === "several-children") {
+    body = "it is running more than one thing, so which app it is would be a guess.";
+  } else if (why === "shell-chain") {
+    body = "it is running a shell inside a shell, so which app it is would be a guess.";
+  } else if (why === "no-child") {
+    body = "it is not running anything yet — just a shell.";
+  } else if (why === "unreadable-child") {
+    body = "the command line of the program inside it could not be read.";
+  } else {
+    body = "nothing about it names the app inside it.";
+  }
+
+  var tail = why === "not-read" ? ""
+    : ' Relaunch it as ' + name + ' --title=<name> <command> and tick it again.'
+      + ' Watching every ' + name + ' window instead is a hand edit of the state file:'
+      + ' a class-only identity claims them all and can only ever start one of them.';
+
+  return head + body + tail;
+}
+
+// A watched TITLE identity whose window is on screen but was not launched with
+// `--title`, said out loud with the exact command that fixes it.
+//
+// The human decision behind this (2026-08-19): when a bare terminal hosts one
+// unambiguous app, ticking it still CREATES the identity — the derivation is
+// right about what the app is, and the command it built is right about how to
+// start it — but the window in front of the user has `initialTitle: "foot"` and
+// so matches nothing. No row, no chip, nothing to untick, silently missing from
+// the next Record. Creating it and saying nothing would be the silent wrong
+// answer this project refuses to ship; refusing to create it would throw away a
+// correct derivation. So: create it, and say what is missing.
+//
+// EVIDENCE, not a prediction, in the same spirit as engine.shadowedIdentities:
+// the line appears only while a live terminal window's own child process names
+// this identity's title, and it CLEARS the moment any window resolves to the
+// identity — which is exactly what relaunching with `--title` does.
+//
+// `resolve` is the panel's ONE matcher (engine.matchClient bound to the watched
+// list), passed in the way appRows and the map models take it.
+function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree) {
+  var list = isArray(identities) ? identities : [];
+  var live = isArray(clients) ? clients : [];
+  var argvMap = (argvByPid && typeof argvByPid === "object") ? argvByPid : {};
+  var tree = (procTree && typeof procTree === "object") ? procTree : {};
+
+  var satisfied = {};
+  for (var c = 0; c < live.length; c++) {
+    var matched = (typeof resolve === "function") ? trim(resolve(live[c])) : "";
+    if (matched) satisfied[matched] = true;
+  }
+
+  var lines = [];
+  for (var i = 0; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+    if (!titles.length) continue;
+    if (own(satisfied, identity.id)) continue;
+
+    for (var w = 0; w < live.length; w++) {
+      var client = live[w];
+      if (!client) continue;
+      var className = trim(client.class) || trim(client.initialClass);
+      if (!isTerminalClass(className)) continue;
+      if (!patternListHas(identity.patterns, derivePattern(className))) continue;
+      var pid = (client.pid === undefined || client.pid === null) ? "" : trim(String(client.pid));
+      if (!pid) continue;
+      var answer = terminalChildDerivation(className, argvMap[pid], tree[pid]);
+      if (!answer.title) continue;
+      if (!patternListHas(titles, deriveTitlePattern(answer.title))) continue;
+
+      var command = trim(identity.launch) || answer.command;
+      lines.push('"' + identity.id + '" is watched, but this ' + className
+        + ' window was not launched with --title, so nothing matches it yet.'
+        + (command ? " Relaunch it as: " + command : ""));
+      break;
+    }
+  }
+
+  return joinLines(lines);
+}
+
+// The same fact the hint states in a sentence, as a set of identity ids — so
+// the LIST can carry it too: { identityId: className }.
+//
+// Why the list needs it (tick 1m4). A title identity created for a bare
+// terminal matches no window until that terminal is relaunched with `--title`.
+// Until then it has no chip and no row, so pressing the chip again re-ticks
+// idempotently instead of unticking, and the only way back from a mis-tick was
+// a hand edit of the state file. appRows turns this index into a row that is
+// ticked, says why it is not running, and unticks on a click — the recovery.
+//
+// EVIDENCE, not a prediction, exactly as the hint is: an id appears only while
+// a live TERMINAL window of the identity's own class is on screen and nothing
+// resolves to the identity, and it is gone the moment a window matches.
+//
+// Two things the hint asks for and this deliberately does not:
+//
+//   the /proc read — the row has to survive a panel frame whose cmdline map has
+//   not come back yet (it is refreshed on every open), and a row that blinks
+//   out while the user is reaching for it is worse than a row that says one
+//   sentence less. What the child process is called does not change the answer:
+//   the identity is on the watched list either way, and either way it matches
+//   nothing.
+//
+//   non-terminal classes — a webapp identity (`chromium` + `^Slack$`) whose
+//   window is simply closed is an ORDINARY not-running app, and telling that
+//   user to relaunch with `--title` would be advice about the wrong thing. The
+//   terminal case is the one where "not running" and "not titled" cannot be
+//   told apart, and where the same relaunch is the fix for both.
+function awaitingTitleIndex(clients, identities, resolve) {
+  var list = isArray(identities) ? identities : [];
+  var live = isArray(clients) ? clients : [];
+  var resolver = typeof resolve === "function" ? resolve : function () { return ""; };
+
+  var satisfied = {};
+  for (var c = 0; c < live.length; c++) {
+    var matched = trim(resolver(live[c]));
+    if (matched) satisfied[matched] = true;
+  }
+
+  var out = {};
+  for (var i = 0; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+    if (!titles.length) continue;
+    if (own(satisfied, identity.id)) continue;
+
+    for (var w = 0; w < live.length; w++) {
+      var client = live[w];
+      if (!isMappable(client)) continue;
+      var className = trim(client.class) || trim(client.initialClass);
+      if (!isTerminalClass(className)) continue;
+      if (!patternListHas(identity.patterns, derivePattern(className))) continue;
+      out[identity.id] = className;
+      break;
+    }
+  }
+
+  return out;
+}
+
+// The pids of the live TERMINAL windows, in client order and without repeats.
+//
+// Why the panel reads these at all: a terminal's class says nothing about the
+// app inside it, so the child process has to be known BEFORE the click — the
+// tick builds its proposal synchronously, from a pure function, at the moment
+// the user presses. The ordinary cmdline read only asks about identities that
+// already need a launch command, and an unwatched terminal is neither watched
+// nor missing anything, so nothing would ever ask about it and every tick
+// would fall back to the useless `^foot$`.
+//
+// Terminals ONLY: reading every window's cmdline would be a /proc walk of the
+// whole desktop to answer a question that is asked about four classes.
+function terminalPids(clients) {
+  var list = isArray(clients) ? clients : [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var client = list[i];
+    if (!client || client.pid === undefined || client.pid === null) continue;
+    if (!isTerminalClass(trim(client.class)) && !isTerminalClass(trim(client.initialClass))) continue;
+    var pid = trim(String(client.pid));
+    if (!pid || seen[pid]) continue;
+    seen[pid] = true;
+    out.push(pid);
+  }
+  return out;
+}
+
+// The live window a tick is about.
+//
+// A CHIP is one window and carries its address, which is the exact answer. A
+// LIST ROW folds every window of an unwatched class onto one line and carries
+// the address of the window the row was built from — but a row that predates a
+// refresh can name an address that has since closed, and then the class is all
+// that is left. Falling back to the first window of that class keeps the tick
+// working; it is also why the address is preferred, because for a terminal the
+// two windows of one class can host different apps.
+function clientForTick(clients, address, className) {
+  var list = isArray(clients) ? clients : [];
+  var wanted = trim(address);
+  var name = trim(className);
+  var fallback = null;
+  for (var i = 0; i < list.length; i++) {
+    var client = list[i];
+    if (!client) continue;
+    if (wanted && trim(client.address) === wanted) return client;
+    if (fallback || !name) continue;
+    if (trim(client.class) === name || trim(client.initialClass) === name) fallback = client;
+  }
+  return fallback;
 }
 
 // argv -> a shell command that would start it again, or "".
@@ -1025,12 +1662,12 @@ function wmClassFuzzyMatches(wmClass, className) {
   // word that names an APP: `desktop` in `org.telegram.desktop` is a packaging
   // convention, and letting it carry a match would marry unrelated entries.
   if (declaredLast !== actualLast) return false;
-  if (GENERIC_TOKENS[actualLast]) return false;
+  if (own(GENERIC_TOKENS, actualLast)) return false;
 
   var have = {};
   for (var a = 0; a < actual.length; a++) have[actual[a]] = true;
   for (var d = 0; d < declared.length; d++) {
-    if (!have[declared[d]]) return false;
+    if (!own(have, declared[d])) return false;
   }
   return true;
 }
@@ -1314,11 +1951,15 @@ function identitiesNeedingLaunch(identities) {
 // Returns { commands: { identityId: command }, refusals: { identityId: reason } }.
 //
 // The REFUSALS are tick dwv's half: a terminal-class window whose app cannot be
-// named without guessing (no child, two children, a shell with two descendants)
-// yields no command AND no desktop-file fallback, because the fallback for a
-// terminal is the terminal — `foot` launches an empty prompt, not the app the
-// user recorded, and offering it would be a repair that quietly does nothing.
-// The identity gets launchState "ambiguous" and a hint pointing at the app-id
+// named without guessing yields no command AND no desktop-file fallback. All
+// four reasons, which is the whole list terminalChildDerivation can answer
+// with: `no-child` (an empty prompt), `several-children` (two things running),
+// `shell-chain` (a shell inside a shell) and `unreadable-child` (a child whose
+// cmdline came back as a rendering rather than an argv). No fallback, because
+// the fallback for a terminal is the terminal — `foot` launches an empty
+// prompt, not the app the user recorded, and offering it would be a repair that
+// quietly does nothing.
+// The identity gets launchState "ambiguous" and a hint pointing at the --title
 // convention instead. Nothing here ever WATCHES anything: derivation feeds the
 // existing suggest/learn flows and no other.
 function launchDerivation(requests, desktopFiles, windowsByPid, procTree) {
@@ -1394,7 +2035,7 @@ function launchRepairIndex(identities, launchMap) {
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
-    var command = dispatchableCommand(map[identity.id]);
+    var command = dispatchableCommand(own(map, identity.id));
     if (!command) continue;
 
     var stored = trim(identity.launch);
@@ -1402,6 +2043,32 @@ function launchRepairIndex(identities, launchMap) {
     if (launchLooksBroken(stored) && command !== stored) out[identity.id] = command;
   }
 
+  return out;
+}
+
+// A repaired identity is the SAME identity with ONE field replaced, so it is
+// built by copying every field the identity already had rather than by listing
+// the fields the schema happens to have today. The enumerated form is what
+// dropped `titlePatterns` the moment schema v4 added it (tick h5i): a "Learn
+// launch" press on a title-matched app silently destroyed its title matching,
+// and the loss only showed up later, when the window stopped being recognized.
+// A copy cannot go stale when the schema grows; a field list has to be edited
+// every time, and forgetting is exactly this bug.
+//
+// A fresh object either way — never an in-place edit — because QML bindings
+// only notice a reassignment, and writeState drops a byte-identical text.
+//
+// The copy is SHALLOW, so the returned identity's `patterns` and
+// `titlePatterns` arrays are the input's, not clones. That holds only while
+// nothing mutates a pattern list in place — nothing does; serializeState
+// rebuilds both lists on every write — and a future in-place editor has to
+// deep-copy here first.
+function identityWithLaunch(identity, command) {
+  var out = {};
+  for (var key in identity) {
+    if (Object.prototype.hasOwnProperty.call(identity, key)) out[key] = identity[key];
+  }
+  out.launch = command;
   return out;
 }
 
@@ -1414,9 +2081,9 @@ function backfillLaunchCommands(identities, launchMap) {
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
     if (!identity) continue;
-    var command = repairs[identity.id];
+    var command = own(repairs, identity.id);
     if (!command) { out.push(identity); continue; }
-    out.push({ id: identity.id, patterns: identity.patterns, launch: command });
+    out.push(identityWithLaunch(identity, command));
   }
 
   return out;
@@ -1429,7 +2096,7 @@ function learnableCount(identities, launchMap) {
   var repairs = launchRepairIndex(identities, launchMap);
   var count = 0;
   for (var id in repairs) {
-    if (repairs.hasOwnProperty(id)) count += 1;
+    if (Object.prototype.hasOwnProperty.call(repairs, id)) count += 1;
   }
   return count;
 }
@@ -1467,7 +2134,7 @@ function launchAutofillIndex(identities, launchMap) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
     if (trim(identity.launch)) continue;
-    var command = repairs[identity.id];
+    var command = own(repairs, identity.id);
     if (command) out[identity.id] = command;
   }
 
@@ -1483,7 +2150,7 @@ function autofillLaunchCommands(identities, launchMap) {
   var fills = launchAutofillIndex(list, launchMap);
   var any = false;
   for (var id in fills) {
-    if (fills.hasOwnProperty(id)) { any = true; break; }
+    if (Object.prototype.hasOwnProperty.call(fills, id)) { any = true; break; }
   }
   if (!any) return list;
   return backfillLaunchCommands(list, fills);
@@ -1496,7 +2163,7 @@ function autofillLaunchLog(fills, source) {
   var map = (fills && typeof fills === "object") ? fills : {};
   var pairs = [];
   for (var id in map) {
-    if (map.hasOwnProperty(id) && map[id]) pairs.push(id + " -> " + map[id]);
+    if (Object.prototype.hasOwnProperty.call(map, id) && map[id]) pairs.push(id + " -> " + map[id]);
   }
   if (!pairs.length) return "";
   pairs.sort();
@@ -1537,7 +2204,7 @@ function addedIdentity(before, after) {
   for (var j = 0; j < list.length; j++) {
     var identity = list[j];
     if (!identity || typeof identity.id !== "string" || !identity.id) continue;
-    if (!had[identity.id]) return identity;
+    if (!own(had, identity.id)) return identity;
   }
   return null;
 }
@@ -1555,10 +2222,14 @@ function addedIdentity(before, after) {
 //   "ambiguous"  empty, and the app runs inside a terminal whose child process
 //                does not name it without guessing (tick dwv). NOT the same as
 //                "missing": there is something the user can DO about it, and
-//                the hint says what — give the app its own window class. It
-//                outranks "derivable" on purpose: the only thing derivable for
-//                a bare terminal is the terminal, and offering to learn that
-//                would be a repair that opens an empty prompt.
+//                the hint says what — relaunch it with a `--title` of its own.
+//                NOT a window class of its own, which is the advice this epic
+//                exists to retract: a dedicated class silently loses every
+//                class-matched window rule the desktop already has for
+//                terminals (README, "Terminal-hosted apps are known by their
+//                title"). It outranks "derivable" on purpose: the only thing
+//                derivable for a bare terminal is the terminal, and offering to
+//                learn that would be a repair that opens an empty prompt.
 //
 // `refusals` is optional ({ identityId: reason }, from launchRefusalIndex);
 // without it this answers exactly what it answered before tick dwv.
@@ -1574,8 +2245,8 @@ function launchStateIndex(identities, launchMap, refusals) {
       if (launchLooksBroken(identity.launch)) out[identity.id] = "broken";
       continue;
     }
-    if (refused[identity.id]) { out[identity.id] = "ambiguous"; continue; }
-    out[identity.id] = repairs[identity.id] ? "derivable" : "missing";
+    if (own(refused, identity.id)) { out[identity.id] = "ambiguous"; continue; }
+    out[identity.id] = own(repairs, identity.id) ? "derivable" : "missing";
   }
   return out;
 }
@@ -1585,10 +2256,9 @@ function launchHintFor(launchState) {
   if (launchState === "missing") return "no launch cmd";
   if (launchState === "broken") return "launch cmd looks broken";
   // The sentence that points at the convention rather than at the failure: the
-  // app is invisible because it shares its terminal's window class, and the fix
-  // is to give it one of its own (README, "Terminal-hosted apps need their own
-  // window class").
-  if (launchState === "ambiguous") return "runs in a terminal — give it its own --app-id";
+  // app is invisible because it shares its terminal's window title, and the fix
+  // is to give it one of its own (README, the terminal-hosted apps section).
+  if (launchState === "ambiguous") return "runs in a terminal — give it its own --title";
   return "";
 }
 
@@ -2314,7 +2984,7 @@ function instanceIndex(clients, monitors, resolve, driftReport, layout) {
   var i, occ, entry, identityId;
 
   function bucketFor(id) {
-    if (!byIdentity[id]) {
+    if (!own(byIdentity, id)) {
       byIdentity[id] = {
         occurrences: {}, live: [], order: [], instances: 0,
         addressByOccurrence: {}, recordedByOccurrence: {}
@@ -2920,14 +3590,14 @@ var REFUSAL_SENTENCES = {
 function refusalTagFor(reason) {
   var code = trim(reason);
   if (!code) return "";
-  var tag = REFUSAL_TAGS[code];
+  var tag = own(REFUSAL_TAGS, code);
   return tag === undefined ? code : tag;
 }
 
 function refusalSentenceFor(reason) {
   var code = trim(reason);
   if (!code) return "";
-  var sentence = REFUSAL_SENTENCES[code];
+  var sentence = own(REFUSAL_SENTENCES, code);
   return sentence === undefined
     ? "the tiled shape of this workspace is left as it is (" + code + ")"
     : sentence;
@@ -3074,7 +3744,7 @@ function slotsForClients(clients, resolve, drift, monitors, verdicts, monitorRec
     return {
       identityId: identityId,
       place: place,
-      drift: byAddress[address] || (drift ? drift[identityId] : null),
+      drift: byAddress[address] || (drift ? own(drift, identityId) : null),
       verdict: verdictsByOccurrence[occurrenceKey(identityId, place.occurrence)]
     };
   }
@@ -3251,7 +3921,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
   // only thing on screen.
   var index = instances || instanceIndex([], monitors, null, null, layout);
   function placeOf(app) {
-    var bucket = index.byIdentity ? index.byIdentity[trim(app.identityId)] : null;
+    var bucket = own(index.byIdentity, trim(app.identityId)) || null;
     if (!bucket) return { occurrence: occurrenceOf(app.occurrence), index: 0, instances: 1 };
     var occurrence = occurrenceOf(app.occurrence);
     var at = 0;
@@ -3297,7 +3967,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
         occurrence: place.occurrence,
         instances: place.instances,
         watched: true,
-        ghost: !running[app.identityId],
+        ghost: !own(running, app.identityId),
         drifted: false,
         driftTo: "",
         driftTag: "",
@@ -3467,12 +4137,25 @@ function comparePlacement(a, b) {
 // callers that predate the launch-derivation repair keep working and simply
 // get launchState "" on every row.
 //
-// THREE ROW STATES, and the third one is the repair this function exists in its
+// FOUR ROW STATES, and the last two are the repairs this function exists in its
 // current shape for:
 //
 //   watched          — an identity on the list. Ticked; a click unticks it.
 //   unwatched        — a live window matching nothing. Unticked; a click
 //                      watches it.
+//   awaitingTitle    — a watched TITLE identity that matches no window yet,
+//                      because the terminal it was derived from has not been
+//                      relaunched with `--title` (see awaitingTitleIndex). It
+//                      has no recorded placement either, so before tick 1m4 it
+//                      produced nothing at all: no chip, no row, and pressing
+//                      the chip again re-ticked idempotently rather than
+//                      unticking, which left a mis-tick recoverable only by
+//                      hand-editing the state file. It is a watched identity
+//                      like any other, so it renders as one — ticked, clickable,
+//                      and a click removes it — and it says WHY it is not
+//                      running rather than reading as an app that is merely
+//                      closed. It disappears into an ordinary chip and row the
+//                      moment a matching window exists.
 //   recordedUnwatched — an identity the RECORDING still refers to but the
 //                      watched list no longer has. It used to render ticked,
 //                      because "it is in the layout" was mistaken for "it is
@@ -3568,6 +4251,12 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       key: "class:" + className,
       identityId: "",
       className: className,
+      // The window this row was built from. A row is one line per CLASS, but a
+      // tick is about one window: for a terminal, two windows of class `foot`
+      // can host two different apps, and the proposal names the app. Carrying
+      // the address makes a row click and a chip click agree about which
+      // window is being ticked. See clientForTick.
+      address: trim(unwatchedClient && unwatchedClient.address),
       // What the map's chips have to match to light this row up. See
       // linkKeyFor — for a class row this equals `key` (both "class:"+name).
       linkKey: linkKeyFor("", className),
@@ -3578,6 +4267,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       // ever false: every live window can be ticked or unticked.
       clickable: true,
       recordedUnwatched: false,
+      awaitingTitle: false,
       occurrence: 0,
       instances: 1,
       position: livePlacementLabel(unwatchedClient, monitors)
@@ -3591,7 +4281,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
     };
     entries.push({ row: unwatchedRow, place: buckets[b].place, occurrence: 0 });
     var derivedId = deriveIdentityId(className);
-    if (derivedId && !unwatchedRowByDerivedId[derivedId]) unwatchedRowByDerivedId[derivedId] = unwatchedRow;
+    if (derivedId && !own(unwatchedRowByDerivedId, derivedId)) unwatchedRowByDerivedId[derivedId] = unwatchedRow;
   }
 
   // ---- watched (or recorded) identities: ONE ROW PER INSTANCE -------------
@@ -3605,7 +4295,12 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
   // The TICK is still per identity: both rows carry the same `identityId`, and
   // Panel.qml toggles by that, so clicking either one watches or unwatches the
   // app as a whole. There is no such thing as watching one window of an app —
-  // patterns match classes, and both windows have the same class.
+  // watching is a property of the IDENTITY, and an identity is a matching rule;
+  // the rows are the live windows that rule claims, and a rule cannot be turned
+  // on for one of them. (A rule CAN be written narrowly enough to claim a
+  // single specifically-titled window of a shared class — that is what
+  // `titlePatterns` is for — but that is a second identity with its own tick,
+  // not a per-window toggle on this one.)
   var identityIds = [];
   for (var known in index.byIdentity) {
     if (Object.prototype.hasOwnProperty.call(index.byIdentity, known)) identityIds.push(known);
@@ -3621,7 +4316,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
   for (var n = 0; n < identityIds.length; n++) {
     var identityId = identityIds[n];
     var instanceBucket = index.byIdentity[identityId];
-    var stillWatched = !haveIdentityList || watchedIds[identityId] === true;
+    var stillWatched = !haveIdentityList || own(watchedIds, identityId) === true;
     var count = instanceBucket.instances;
 
     for (var o = 0; o < instanceBucket.order.length; o++) {
@@ -3634,7 +4329,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       var verdict = verdictsByOccurrence[occurrenceKey(identityId, occurrence)];
 
       if (client) {
-        var entry = driftByAddress[address] || (count > 1 ? null : drift[identityId]) || null;
+        var entry = driftByAddress[address] || (count > 1 ? null : own(drift, identityId)) || null;
         var drifted = !!(entry && entry.status === "drifted");
         entries.push({ place: placementKeyForClient(client, monitors), occurrence: occurrence, row: {
           key: rowKey,
@@ -3646,6 +4341,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
           ghost: false,
           clickable: true,
           recordedUnwatched: false,
+          awaitingTitle: false,
           occurrence: occurrence,
           instances: count,
           position: livePlacementLabel(client, monitors)
@@ -3657,9 +4353,9 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
           // row's own instance count goes with it, so a verdict counted over a
           // different population cannot mislabel this row.
           mismatch: verdictLine(verdict, count),
-          launchState: launch[identityId] || "",
-          launchHint: launchHintFor(launch[identityId] || ""),
-          launchRepairable: !!repairs[identityId]
+          launchState: own(launch, identityId) || "",
+          launchHint: launchHintFor(own(launch, identityId) || ""),
+          launchRepairable: !!own(repairs, identityId)
         } });
         continue;
       }
@@ -3680,9 +4376,9 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         // app happens to be running, say so on the row that already shows that
         // window rather than adding a second line for the same app — the
         // running row is also the one a click can actually re-watch.
-        var host = unwatchedRowByDerivedId[identityId];
+        var host = own(unwatchedRowByDerivedId, identityId);
         if (host) {
-          var folded = foldedOntoUnwatched[identityId];
+          var folded = own(foldedOntoUnwatched, identityId);
           if (!folded) {
             folded = { base: host.position, count: 0 };
             foldedOntoUnwatched[identityId] = folded;
@@ -3707,6 +4403,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
           // exactly the bug this row replaces.
           clickable: false,
           recordedUnwatched: true,
+          awaitingTitle: false,
           occurrence: occurrence,
           instances: count,
           position: where + " · recorded · no longer watched",
@@ -3731,6 +4428,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         ghost: true,
         clickable: true,
         recordedUnwatched: false,
+        awaitingTitle: false,
         occurrence: occurrence,
         instances: count,
         position: where + " · not running",
@@ -3742,9 +4440,65 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         // Launch is an IDENTITY-level fact: the command that opens a second
         // Gmail window is the command that opens the first, so every instance
         // row of an identity carries the same state and the same hint.
-        launchState: launch[identityId] || "",
-        launchHint: launchHintFor(launch[identityId] || ""),
-        launchRepairable: !!repairs[identityId]
+        launchState: own(launch, identityId) || "",
+        launchHint: launchHintFor(own(launch, identityId) || ""),
+        launchRepairable: !!own(repairs, identityId)
+      } });
+    }
+  }
+
+  // ---- watched identities waiting for a title ----------------------------
+  //
+  // The fourth row state (see above). These identities are on the watched list
+  // and NOT in the instance index at all: no window resolves to them, and the
+  // recording — if there is one — has never seen them either, because they were
+  // created after the last Record and match nothing to record. So no loop above
+  // can reach them, and without this pass the panel's only trace of them is the
+  // untitledTerminalHint sentence, which explains the situation but cannot undo
+  // it.
+  //
+  // Only with an identity list: without one there is nothing to enumerate, and
+  // every caller that predates this gets exactly the rows it got before.
+  if (haveIdentityList) {
+    var awaiting = awaitingTitleIndex(list, identityList, resolver);
+    for (var t = 0; t < identityList.length; t++) {
+      var waiting = identityList[t];
+      if (!waiting || typeof waiting.id !== "string" || !waiting.id) continue;
+      if (!own(awaiting, waiting.id)) continue;
+      // Belt and braces: an identity the index knows already has a row of its
+      // own — a live one, or the recorded ghost above — and both are clickable.
+      // A second row for it would be the same tick offered twice.
+      if (own(index.byIdentity, waiting.id)) continue;
+      var waitingState = own(launch, waiting.id) || "";
+      entries.push({ place: UNPLACED, occurrence: 0, row: {
+        // One window at most is ever waiting on one title, so this identity has
+        // exactly one instance and spells its keys the bare single-window way.
+        key: waiting.id,
+        identityId: waiting.id,
+        // No live window, so no class — the same "" the recorded ghosts carry,
+        // and what makes a click on this row an untick by identity id.
+        className: "",
+        linkKey: instanceLinkKeyFor(waiting.id, "", 0, 1),
+        name: instanceNameFor(waiting.id, 0, 1),
+        watched: true,
+        ghost: true,
+        clickable: true,
+        recordedUnwatched: false,
+        awaitingTitle: true,
+        occurrence: 0,
+        instances: 1,
+        // WHY it is not running, not just that it is not: an ordinary closed app
+        // comes back when it is started again, and this one will not until the
+        // terminal hosting it carries a title of its own. The exact command is
+        // in the panel's own hint line (untitledTerminalHint) — saying it twice
+        // on a row that has no room for it would only crowd out the app's name.
+        position: "not running · will match once relaunched with --title",
+        drifted: false,
+        driftTo: "",
+        mismatch: "",
+        launchState: waitingState,
+        launchHint: launchHintFor(waitingState),
+        launchRepairable: !!own(repairs, waiting.id)
       } });
     }
   }
@@ -4296,16 +5050,29 @@ function emptyStateHint(watchedCount) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    // Exported for the QML side as much as for the tests: an identity-id lookup
+    // in Panel.qml has to go through this too (tick 8hp).
+    own: own,
     escapeRegex: escapeRegex,
     titleCase: titleCase,
     shortMonitorLabel: shortMonitorLabel,
     humanizeTopology: humanizeTopology,
     chromeStem: chromeStem,
     derivePattern: derivePattern,
+    deriveTitlePattern: deriveTitlePattern,
     deriveIdentityId: deriveIdentityId,
+    identityIdFromTitle: identityIdFromTitle,
     displayNameFor: displayNameFor,
     suggestIdentity: suggestIdentity,
     toggleWatchedIdentities: toggleWatchedIdentities,
+    sharesClassPattern: sharesClassPattern,
+    insertionIndexFor: insertionIndexFor,
+    tickRefusalReason: tickRefusalReason,
+    tickRefusalHint: tickRefusalHint,
+    untitledTerminalHint: untitledTerminalHint,
+    awaitingTitleIndex: awaitingTitleIndex,
+    shadowNoticeFor: shadowNoticeFor,
+    shadowedIdentityHint: shadowedIdentityHint,
     shellQuoteArg: shellQuoteArg,
     dispatchableCommand: dispatchableCommand,
     parseProcCmdline: parseProcCmdline,
@@ -4334,11 +5101,14 @@ if (typeof module !== "undefined") {
     launchRefusalIndex: launchRefusalIndex,
     procTreeFromDump: procTreeFromDump,
     isTerminalClass: isTerminalClass,
-    terminalClassFlag: terminalClassFlag,
     terminalExecFlag: terminalExecFlag,
     isShellArgv: isShellArgv,
-    appIdFromArgv0: appIdFromArgv0,
+    titleFromArgv0: titleFromArgv0,
     terminalChildDerivation: terminalChildDerivation,
+    titleFromOwnArgv: titleFromOwnArgv,
+    terminalTickDerivation: terminalTickDerivation,
+    terminalPids: terminalPids,
+    clientForTick: clientForTick,
     backfillLaunchCommands: backfillLaunchCommands,
     learnableCount: learnableCount,
     launchAutofillIndex: launchAutofillIndex,

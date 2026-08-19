@@ -110,6 +110,47 @@ function monitorByDescription(monitorsJson, desc) {
 //     tail varies by profile and URL. Only a prefix pattern survives them.
 //   - A window's `class` can change at runtime while `initialClass` does not
 //     (and vice versa), so both fields are consulted.
+//
+// An identity may ALSO carry `titlePatterns: ["^herdr$"]` — regex strings in the
+// same shape, matched case-insensitively against `initialTitle` and nothing
+// else. It exists for a TUI app in a plain terminal: `herdr` running in `foot`
+// has class `foot` like every other terminal, and `foot --title=herdr herdr`
+// gives the window `initialTitle: "herdr"` while the class stays `foot`, so the
+// host's window rules keep matching it. Two rules hold this together:
+//   - `titlePatterns` is OPT-IN and separate from `patterns`. Feeding
+//     `initialTitle` into the `patterns` loop would let every existing class
+//     pattern start claiming windows by their title (the `obsidian` identity
+//     would swallow a terminal titled "obsidian").
+//   - It is matched against `initialTitle` ONLY, never `title`. Live titles
+//     change constantly — an app renaming itself moves only `title`, while
+//     `initialTitle` is fixed at map time — and matching them would make a
+//     window's identity time-varying, which is the exact failure mode this
+//     design exists to avoid. Never against `class`/`initialClass` either.
+//
+// WHEN BOTH LISTS ARE PRESENT THE RULE IS AND. An EMPTY list means "no
+// constraint on this axis"; a NON-EMPTY one is a constraint that has to be
+// satisfied:
+//
+//   patterns    titlePatterns   matches when
+//   ---------   -------------   ---------------------------------------------
+//   non-empty   non-empty       BOTH sides match — the class side against
+//                               `class`/`initialClass`, the title side against
+//                               `initialTitle`
+//   non-empty   empty           the class side alone
+//   empty       non-empty       the title side alone
+//   empty       empty           never
+//
+// AND rather than OR because `{patterns: ["^foot$"], titlePatterns: ["^herdr$"]}`
+// is what a person writes to mean "the foot window titled herdr", and under OR
+// that identity would claim EVERY foot window instead. A list of nothing but
+// broken patterns is still a constraint (it is not empty), so it can never be
+// satisfied. One consequence is worth saying out loud, and is pinned by a test
+// in tests/identity.test.js: when `titlePatterns` is non-empty and the client
+// has no usable `initialTitle`, the title side fails and the identity does not
+// match at all — a satisfied class side cannot rescue it.
+//
+// Identity order stays priority order, so a title identity must sit BEFORE the
+// catch-all terminal identity that would otherwise claim its window first.
 
 // Compile a pattern string. A user-editable list can contain a typo; a bad
 // regex must not take the whole engine down, so it simply never matches.
@@ -122,13 +163,29 @@ function compilePattern(pattern) {
   }
 }
 
-// Does this client belong to this identity?
-function clientMatchesIdentity(client, identity) {
-  if (!client || !identity) return false;
+// A pattern list, or an empty one. ES5, and no assumption about the QML JS
+// engine's Array.isArray — the same test StateModel and PanelModel use. The
+// guard matters: `identity.patterns || []` hands a bare STRING to the loop
+// below, which then iterates it by characters, so `"zzh"` would match "herdr"
+// through /h/i. normalizeIdentity coerces a bare string into a one-element list
+// before it can get here, but a hand-built identity does not go through it, and
+// a list that is not a list is no constraint rather than a nonsense one.
+function patternList(value) {
+  return Object.prototype.toString.call(value) === "[object Array]" ? value : [];
+}
 
-  var patterns = identity.patterns || [];
-  var fields = [client.class, client.initialClass];
+// A map lookup Object.prototype cannot answer — see the long note above
+// `own` in StateModel.js. Every index in this file keyed by an identity id, a
+// group id or a member key reads through this, because `map["constructor"]` on
+// a bare object is truthy whether or not anything was put there (tick 8hp).
+function own(map, key) {
+  if (!map) return undefined;
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+}
 
+// Does any pattern in the list match any of these fields? An empty or
+// all-broken list is a no.
+function anyPatternMatches(patterns, fields) {
   for (var p = 0; p < patterns.length; p++) {
     var re = compilePattern(patterns[p]);
     if (!re) continue;
@@ -140,6 +197,30 @@ function clientMatchesIdentity(client, identity) {
   return false;
 }
 
+// Does this client belong to this identity? See the rule table above: a
+// non-empty list is a constraint, an empty one is not, and every constraint
+// present has to be satisfied.
+function clientMatchesIdentity(client, identity) {
+  if (!client || !identity) return false;
+
+  var patterns = patternList(identity.patterns);
+  // Opt-in, and deliberately a separate axis over a single field:
+  // `initialTitle` only — never `title` (a live title makes identity
+  // time-varying), never `class`/`initialClass` (that is what `patterns` is
+  // for).
+  var titlePatterns = patternList(identity.titlePatterns);
+
+  // An identity that constrains nothing claims nothing.
+  if (patterns.length === 0 && titlePatterns.length === 0) return false;
+
+  if (patterns.length > 0 &&
+      !anyPatternMatches(patterns, [client.class, client.initialClass])) return false;
+  if (titlePatterns.length > 0 &&
+      !anyPatternMatches(titlePatterns, [client.initialTitle])) return false;
+
+  return true;
+}
+
 // The id of the first identity this client belongs to, or null when the client
 // is not watched. Identity order is priority order: put the specific webapp
 // identities before a catch-all browser identity.
@@ -149,6 +230,258 @@ function matchClient(client, identities) {
     if (clientMatchesIdentity(client, list[i])) return list[i].id;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// SHADOWED IDENTITIES — an identity that can never win, said out loud
+// ---------------------------------------------------------------------------
+//
+// matchClient is first-match-wins across the WHOLE list, so a wide identity
+// sitting in front of a narrow one silently swallows it: a user with a working
+// `{patterns:["^foot$"], titlePatterns:["^herdr$"]}` identity, with a plain
+// `^foot$` ahead of it, sees every herdr window become "terminal". The record
+// binds it wrong, a restore launches the wrong command, and the chip shows the
+// wrong name — so even unticking removes the wrong identity. Nothing anywhere
+// says so.
+//
+// The panel used to MANUFACTURE that list by prepending every new identity;
+// since tick gpq an addition is inserted behind whatever it would shadow, so
+// reaching this state takes a hand edit or a file written by an older build.
+// Which is exactly why the detector stays: the file is user-editable, and the
+// panel is not the only thing that writes it.
+//
+// This does NOT change the priority rule and does not reorder anything: list
+// order stays the contract. It only NAMES the state, because a silent wrong
+// answer is the thing this project refuses to ship.
+//
+// WHY IT ASKS THE DESKTOP RATHER THAN THE PATTERNS. Whether one regex claims a
+// superset of another's windows is not a question a regex engine can answer, so
+// a static "does `^foot$` subsume `^foot$` + `^herdr$`?" analysis would be a
+// guess wearing a proof. The live window list is evidence: an identity that
+// matches windows and wins none of them has demonstrably lost, right now, on
+// this desktop. It is also the only version of the question the user can act
+// on — the windows are on screen in front of them.
+//
+// Note what this is NOT: PanelModel's identityClaimsSame is the DUPLICATE
+// guard, and it decides whether two rules are the SAME rule (an exact match on
+// both axes) so a proposal can be refused before it is written. Shadowing is
+// the asymmetric relation that guard deliberately lets through — `^foot$`
+// already watched does not stop `^foot$` + `^herdr$` being proposed, and must
+// not, since the narrow one is prepended in front of it. This function catches
+// the case where the list ended up the other way round.
+//
+// WHICH DIRECTION IS THE BAD ONE, re-derived from the v4 AND rule. An identity
+// that constrains BOTH axes is strictly narrower than one constraining only the
+// class, because every constraint present has to be satisfied (see the rule
+// table above). So:
+//
+//   in front           behind                      can the front one shadow it?
+//   -----------------  --------------------------  ----------------------------
+//   ^foot$             ^foot$ + title ^herdr$      YES — it claims every foot
+//                                                  window, titled or not. This
+//                                                  is the hazard.
+//   ^foot$ + ^herdr$   ^foot$                      NO — it only ever takes the
+//                                                  ONE titled window; plain
+//                                                  terminals still fall through.
+//
+// That asymmetry is decidable WITHOUT deciding regex subsumption, from which
+// AXES each side constrains: an identity that constrains an axis its rival
+// leaves free is asking for something strictly narrower on that axis and can
+// never claim everything the rival does. So a claimant counts only when its
+// constrained axes are a SUBSET of the shadowed identity's.
+//
+// Without that test the detector would cry wolf on the ordinary correct desk: a
+// user whose herdr identity sits properly in front of `terminal`, with herdr
+// running and no plain terminal open, would be told `terminal` never matches —
+// true this second, false the moment they open a terminal, and a panel that
+// says a working rule is broken is the same class of wrong answer this is
+// supposed to remove.
+//
+// THE AXIS TEST IS NOT ENOUGH ON ITS OWN (tick ytt). It fixed the wolf-cry
+// across axes and cannot see breadth WITHIN one, so the same false alarm came
+// back class-against-class:
+//
+//   [ { id: "browser", patterns: ["^chromium$"] },
+//     { id: "slack",   patterns: ["^chrome-app\\.slack\\.com", "^chromium$"] } ]
+//
+// — the exact shape StateModel's schema comment mandates — with only the plain
+// chromium window open. `browser` takes it, slack wins nothing, and the axis
+// test says browser is wide enough, so the panel painted an urgent line saying
+// to reorder or untick. Slack's OTHER pattern claims windows browser can never
+// see; open the webapp and slack wins fine. Following that advice would have
+// broken a correct configuration.
+//
+// So a second, still evidence-free-of-guesses test: do the claimants TOGETHER
+// constrain at least what the shadowed identity constrains, pattern for pattern
+// (claimantsCover)? A pattern of the shadowed identity that no claimant carries
+// is room the claimants cannot reach, and an identity with room to grow into is
+// idle, not dead. The union rather than each claimant on its own, because a
+// two-pattern identity really can be shadowed by two one-pattern identities
+// between them — see the workbench test.
+//
+// KNOWN LIMIT, and it is the same root cause: patterns are compared as STRINGS,
+// so `^chrome-` in front of `^chrome-app\.slack\.com` is not seen to cover it
+// and a genuine shadow there goes unreported. That direction is the safe one —
+// silence rather than a false alarm about a working desk — and closing it means
+// deciding regex subsumption, which is not decidable and would be a guess
+// wearing a proof. The same limit reads the other way for a vacuously broad
+// axis: `{patterns:["^foot$"], titlePatterns:[".*"]}` in front of a plain
+// `{^foot$}` genuinely wins every foot window forever, and is not reported,
+// because `.*` counts as a constrained axis. Both are reachable only by hand
+// editing, and both are deliberately left alone.
+//
+// The rest of the rules, all earned:
+//   - an identity that wins even ONE live window is not shadowed. A partial
+//     loss is an ordering the user may well have meant; only a total one is a
+//     rule that cannot fire.
+//   - an identity with NO live match is never called shadowed. Its app is not
+//     running, there is no evidence either way, and a refusal without evidence
+//     is the guess this exists to avoid.
+//   - an earlier identity carrying the SAME id is not a shadower. matchClient
+//     still answers with that id, so nothing observable was lost (a duplicate
+//     id is StateModel's dedupe problem, not a matching one).
+//
+// Returns [ { id, windows, claimed, claimedBy, strict } ] in list order:
+//
+//   windows    how many live windows the identity matches
+//   claimed    how many of them a NAMED claimant took. Lower than `windows`
+//              when an earlier identity that failed the tests above took the
+//              rest — which is why it is counted separately: the sentence names
+//              the claimants, so its number has to be theirs (tick ytt).
+//   claimedBy  the earlier identities that took them AND could shadow it, in
+//              LIST order rather than the order hyprctl listed the windows, so
+//              two reads of one unchanged desktop agree.
+//   strict     whether every claimant constrains STRICTLY FEWER axes than the
+//              shadowed identity. Only then is "move it up, or untick the other
+//              one" provably safe advice; otherwise the evidence supports an
+//              observation and no more. PanelModel.shadowNoticeFor is where
+//              that distinction becomes two different sentences.
+
+// Which axes an identity constrains. An empty list is no constraint; see the
+// rule table above.
+function constrainedAxes(identity) {
+  return {
+    cls: patternList(identity.patterns).length > 0,
+    title: patternList(identity.titlePatterns).length > 0
+  };
+}
+
+// Could `earlier` claim everything `later` claims? Only if it constrains no
+// axis that `later` leaves free.
+//
+// The AXIS half of the question, and the whole of it for a caller that is only
+// asking about the relation between two rules — PanelModel's insert position
+// is one. shadowedIdentities asks claimantsCover as well.
+function couldShadow(earlier, later) {
+  var a = constrainedAxes(earlier);
+  var b = constrainedAxes(later);
+  return (!a.cls || b.cls) && (!a.title || b.title);
+}
+
+// Does `earlier` constrain strictly FEWER axes than `later` — is it wider by
+// construction rather than merely wide enough? That is the case where telling
+// the user to move `later` up costs `earlier` nothing it can still claim.
+function strictlyWider(earlier, later) {
+  var a = constrainedAxes(earlier);
+  var b = constrainedAxes(later);
+  return (!a.cls && b.cls) || (!a.title && b.title);
+}
+
+// Do these claimants, together, carry every pattern `identity` constrains on
+// this axis? An empty list on a claimant is NO constraint on that axis, which
+// covers everything; an empty list on the identity is nothing to cover.
+// Compared case-insensitively, because compilePattern always compiles that way.
+function axisCovered(claimants, identity, key) {
+  var wanted = patternList(identity[key]);
+  if (wanted.length === 0) return true;
+
+  for (var w = 0; w < wanted.length; w++) {
+    if (typeof wanted[w] !== "string") continue;
+    var want = wanted[w].toLowerCase();
+    var found = false;
+    for (var c = 0; c < claimants.length && !found; c++) {
+      var have = patternList(claimants[c][key]);
+      if (have.length === 0) { found = true; break; }
+      for (var h = 0; h < have.length; h++) {
+        if (typeof have[h] === "string" && have[h].toLowerCase() === want) { found = true; break; }
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function claimantsCover(claimants, identity) {
+  return axisCovered(claimants, identity, "patterns")
+    && axisCovered(claimants, identity, "titlePatterns");
+}
+
+function shadowedIdentities(clientsJson, identities) {
+  var clients = clientsJson || [];
+  var list = identities || [];
+  var out = [];
+
+  // From 1: the first identity has nothing in front of it to lose to.
+  for (var i = 1; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+
+    var matched = 0;
+    var claimed = 0;
+    var wins = false;
+    var claimedAt = [];
+
+    for (var c = 0; c < clients.length; c++) {
+      var client = clients[c];
+      if (!clientMatchesIdentity(client, identity)) continue;
+      matched += 1;
+
+      var winner = -1;
+      for (var e = 0; e < i; e++) {
+        if (clientMatchesIdentity(client, list[e])) { winner = e; break; }
+      }
+      // No earlier claimant, or one wearing this very id: the identity's id is
+      // what matchClient answers for this window, so it has lost nothing.
+      if (winner < 0 || list[winner].id === identity.id) { wins = true; break; }
+      if (!couldShadow(list[winner], identity)) continue;
+      // Counted here rather than from `matched`: a window taken by an earlier
+      // identity that is NOT one of the claimants is not the claimants' doing,
+      // and the sentence names the claimants.
+      claimed += 1;
+      if (claimedAt.indexOf(winner) < 0) claimedAt.push(winner);
+    }
+
+    // Every window gone, and at least one of the identities that took them is
+    // wide enough to keep taking them.
+    if (wins || matched === 0 || claimedAt.length === 0) continue;
+
+    claimedAt.sort(function (a, b) { return a - b; });
+    var claimants = [];
+    var claimedBy = [];
+    var strict = true;
+    for (var k = 0; k < claimedAt.length; k++) {
+      var claimant = list[claimedAt[k]];
+      claimants.push(claimant);
+      if (!strictlyWider(claimant, identity)) strict = false;
+      var id = claimant.id;
+      if (typeof id === "string" && id && claimedBy.indexOf(id) < 0) claimedBy.push(id);
+    }
+    if (claimedBy.length === 0) continue;
+    // The claimants have to reach everywhere this identity does. Where they do
+    // not, its emptiness is what happens to be open — not a rule that cannot
+    // fire — and saying otherwise breaks a correct desk.
+    if (!claimantsCover(claimants, identity)) continue;
+
+    out.push({
+      id: identity.id,
+      windows: matched,
+      claimed: claimed,
+      claimedBy: claimedBy,
+      strict: strict
+    });
+  }
+
+  return out;
 }
 
 // The first client belonging to an identity, in the order hyprctl listed them,
@@ -221,11 +554,11 @@ function launchDeficits(plan) {
     if (!op || op.kind !== "launch") continue;
     var id = op.identityId;
     if (typeof id !== "string" || !id) continue;
-    if (byId[id] === undefined) {
+    if (own(byId, id) === undefined) {
       byId[id] = order.length;
       order.push({ identityId: id, count: 0 });
     }
-    order[byId[id]].count += 1;
+    order[own(byId, id)].count += 1;
   }
   return order;
 }
@@ -454,7 +787,11 @@ function memberOccurrenceOf(key) {
 // never disagree. Pass it to groupMemberIds.
 //
 // An identity with no windows is ABSENT from byId rather than present with an
-// empty array, so `chosen.byId[id]` stays falsy for "not running".
+// empty array. Read it with `own(chosen.byId, id)` and nothing else: a bare
+// `chosen.byId[id]` answers with Object.prototype's own member for an id like
+// "constructor" or "toString" — a native function where a window list belongs,
+// which is truthy, and which is how "not running" became a TypeError in the
+// middle of a restore plan (tick 8hp). Every consumer here uses own().
 function chosenWindows(clientsJson, identities, monitorsJson) {
   var list = identities || [];
   var byId = {};
@@ -482,7 +819,7 @@ function chosenWindows(clientsJson, identities, monitorsJson) {
 // matchOccurrences' job.
 function windowForOccurrence(chosen, identityId, occurrence) {
   if (!chosen || !chosen.byId) return null;
-  var windows = chosen.byId[identityId];
+  var windows = own(chosen.byId, identityId);
   if (!windows || !windows.length) return null;
   return windows[occurrenceOf(occurrence)] || null;
 }
@@ -662,7 +999,7 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
   var i;
   for (i = 0; i < recordedApps.length; i++) {
     var id = recordedApps[i].identityId;
-    if (!buckets[id]) {
+    if (!own(buckets, id)) {
       buckets[id] = { entries: [], at: [] };
       order.push(id);
     }
@@ -678,10 +1015,10 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
   var matchedAddresses = {};
 
   for (var b = 0; b < order.length; b++) {
-    var bucket = buckets[order[b]];
-    var live = index.byId[order[b]] || [];
+    var bucket = own(buckets, order[b]);
+    var live = own(index.byId, order[b]) || [];
     var paired = matchOccurrences(bucket.entries, live, clientsJson, monitorsJson, identities);
-    if (!usedOccurrences[order[b]]) usedOccurrences[order[b]] = {};
+    if (!own(usedOccurrences, order[b])) usedOccurrences[order[b]] = {};
     for (i = 0; i < paired.length; i++) {
       if (!paired[i]) continue;
       clientByEntry[bucket.at[i]] = paired[i];
@@ -696,8 +1033,8 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
   // placement order, so the index stays a bijection.
   for (var idKey in index.byId) {
     if (!Object.prototype.hasOwnProperty.call(index.byId, idKey)) continue;
-    var windows = index.byId[idKey];
-    var used = usedOccurrences[idKey] || {};
+    var windows = own(index.byId, idKey);
+    var used = own(usedOccurrences, idKey) || {};
     var next = 0;
     for (var w = 0; w < windows.length; w++) {
       if (matchedAddresses[windows[w].address]) continue;
@@ -766,11 +1103,17 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //
 // GEOMETRY (schema v2) — what it is and, just as importantly, what it is not.
 //
-// `at`/`size` are RECORDED and MEASURED; nothing in planRestore reads them and
-// no op moves or resizes a window because of them. They exist so the verdict
-// layer can score how closely a restored desktop matches the recording — the
-// tiled-layout question the state matrix's out-of-scope table raised, which
-// could not even be asked while the record threw the numbers away.
+// `at`/`size` are RECORDED and MEASURED, and for entries recorded
+// `floating: true`, planRestore also ACTS on them (since tick qkv): a float
+// outside GEOMETRY_TOLERANCE_PX of its recorded rect is drift and plans a
+// `geometry` op that resizes and moves it back — see the "Floating geometry"
+// block below and geometryPlanSkip for the one thing that can veto it. For
+// entries recorded tiled they remain measurement only; no op moves or resizes
+// a tiled window because of them. Scoring is the other reason they exist: the
+// verdict layer uses them to judge how closely a restored desktop matches the
+// recording — the tiled-layout question the state matrix's out-of-scope table
+// raised, which could not even be asked while the record threw the numbers
+// away.
 //
 // null means "not known", and it is permanent and legal:
 //   - every entry of a v1 record, upgraded (StateModel migrates to null, never
@@ -809,14 +1152,18 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 // recorded windows); tests/record.test.js asserts it over every fixture.
 //
 // MULTI-WINDOW, schema v3 (epic 69b): the schema no longer says "one entry per
-// identity". `occurrence` is the field that lifts that limitation, and it ships
-// here — STATE_VERSION is 3 and every read migrates v2 entries to
-// `occurrence: 0` — while the machinery that PRODUCES more than one entry per
-// identity (the placement comparator, the occurrence-aware record, the restore
-// matcher) lands in the ticks that follow this one. Until it does, buildLayout
-// still emits exactly one entry per identity, and that entry is occurrence 0,
-// so a v3 file written today is byte-identical to the v2 file it replaces apart
-// from the two new numbers.
+// identity". `occurrence` is the field that lifted that limitation and it
+// shipped WITH v3 — every read migrates a v2 entry to `occurrence: 0` — and the
+// machinery that PRODUCES more than one entry per identity (the placement
+// comparator, the occurrence-aware record, the restore matcher) landed in the
+// ticks that followed. It is all here now: buildLayout emits one entry per
+// recorded WINDOW, so a second window of one identity is recorded at
+// occurrence 1 (pinned in tests/record.test.js).
+//
+// STATE_VERSION has since moved on to 4, which is a generation about
+// IDENTITIES rather than entries — it adds `titlePatterns` — so a file written
+// today carries that line per identity too. No layout entry changed shape for
+// it.
 
 // The tab order to believe for `client`'s group.
 //
@@ -1201,7 +1548,7 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
 
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
-    var windows = chosen.byId[identity.id] || [];
+    var windows = own(chosen.byId, identity.id) || [];
 
     // ONE ENTRY PER RUNNING WINDOW (schema v3). Two Slack windows record twice,
     // at occurrence 0 and 1, and each entry describes its own window's monitor,
@@ -1606,7 +1953,7 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
     var recorded = recordedApps[i];
     if (!recorded.group || !recorded.group.groupId) continue;
     var groupId = recorded.group.groupId;
-    if (!byId[groupId]) {
+    if (!own(byId, groupId)) {
       byId[groupId] = { groupId: groupId, members: [] };
       order.push(groupId);
     }
@@ -2238,7 +2585,7 @@ var VERDICT_DIMENSIONS = ["monitor", "workspace", "floating", "group"];
 
 function verdictPhrase(word) {
   if (!word || word === "ok") return "";
-  var phrase = VERDICT_PHRASES[word];
+  var phrase = own(VERDICT_PHRASES, word);
   return phrase === undefined ? String(word) : phrase;
 }
 
@@ -2263,7 +2610,7 @@ var GEOMETRY_SKIP_PHRASES = {
 
 function geometrySkipPhrase(skip) {
   if (!skip) return "";
-  var phrase = GEOMETRY_SKIP_PHRASES[skip];
+  var phrase = own(GEOMETRY_SKIP_PHRASES, skip);
   return phrase === undefined ? String(skip) : phrase;
 }
 
@@ -2289,7 +2636,7 @@ function groupVerdictFor(app, groupsById) {
   // Recorded standing alone, live tabbed in with other watched windows.
   if (!recorded) return "unexpected-group";
 
-  var group = groupsById[recorded.groupId] || null;
+  var group = own(groupsById, recorded.groupId) || null;
   // The members that are actually here, in recorded tab order — the same list
   // the plan would rebuild. A member that is not restorable right now is not
   // this app's problem (it gets its own "not-running" verdict).
@@ -2306,11 +2653,11 @@ function groupVerdictFor(app, groupsById) {
 
   var extra = false;
   for (var e = 0; e < live.length; e++) {
-    if (!wantedSet[live[e]]) extra = true;
+    if (!own(wantedSet, live[e])) extra = true;
   }
   var short = false;
   for (var m = 0; m < wanted.length; m++) {
-    if (!liveSet[wanted[m]]) short = true;
+    if (!own(liveSet, wanted[m])) short = true;
   }
 
   if (extra) return "unexpected-group";
@@ -2408,10 +2755,10 @@ function verdictForApp(app, groupsById, blocked, instance) {
   }
   verdict.text = phrases.join(", ");
 
-  if (!verdict.ok && blocked && blocked[verdict.identityId]) {
+  if (!verdict.ok && blocked && own(blocked, verdict.identityId)) {
     verdict.blockedBy = {
-      kind: blocked[verdict.identityId].kind,
-      reason: blocked[verdict.identityId].reason
+      kind: own(blocked, verdict.identityId).kind,
+      reason: own(blocked, verdict.identityId).reason
     };
   }
 
@@ -2462,17 +2809,17 @@ function verdictsFor(driftReport, outcomes) {
   var i;
   for (i = 0; i < apps.length; i++) {
     var id = (apps[i] && apps[i].identityId) || "";
-    counts[id] = (counts[id] || 0) + 1;
+    counts[id] = (own(counts, id) || 0) + 1;
   }
 
   var out = [];
   for (i = 0; i < apps.length; i++) {
     var identityId = (apps[i] && apps[i].identityId) || "";
-    var index = seen[identityId] || 0;
+    var index = own(seen, identityId) || 0;
     seen[identityId] = index + 1;
     out.push(verdictForApp(apps[i], groupsById, blocked, {
       index: index,
-      count: counts[identityId] || 1
+      count: own(counts, identityId) || 1
     }));
   }
   return out;
@@ -3033,7 +3380,7 @@ var TILING_REFUSAL_PHRASES = {
 
 function tilingRefusalPhrase(reason) {
   if (!reason) return "";
-  var phrase = TILING_REFUSAL_PHRASES[reason];
+  var phrase = own(TILING_REFUSAL_PHRASES, reason);
   return phrase === undefined ? String(reason) : phrase;
 }
 
@@ -3116,8 +3463,8 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
   for (var j = 0; j < live.length; j++) liveByKey[live[j].key] = live[j];
   // Every key on one side must exist on the other, or "the same slot" is a
   // sentence about two different desktops.
-  for (var w = 0; w < wantOrder.length; w++) if (!liveByKey[wantOrder[w]]) return null;
-  for (var h = 0; h < haveOrder.length; h++) if (!recordedByKey[haveOrder[h]]) return null;
+  for (var w = 0; w < wantOrder.length; w++) if (!own(liveByKey, wantOrder[w])) return null;
+  for (var h = 0; h < haveOrder.length; h++) if (!own(recordedByKey, haveOrder[h])) return null;
 
   // ---- occupancy: selection-sort `have` into `want`, one swap per fix.
   //
@@ -3567,7 +3914,7 @@ function tilingSettled(recordedItems, liveItems) {
   for (var i = 0; i < live.length; i++) byKey[live[i].key] = live[i];
   var total = 0;
   for (var r = 0; r < recorded.length; r++) {
-    var mine = byKey[recorded[r].key];
+    var mine = own(byKey, recorded[r].key);
     if (!mine) return false;
     var score = rectIou(recorded[r], mine);
     if (score === null) return false;
@@ -4666,6 +5013,10 @@ if (typeof module !== "undefined") {
     monitorByDescription: monitorByDescription,
     clientMatchesIdentity: clientMatchesIdentity,
     matchClient: matchClient,
+    shadowedIdentities: shadowedIdentities,
+    couldShadow: couldShadow,
+    strictlyWider: strictlyWider,
+    claimantsCover: claimantsCover,
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
     liveWindowCount: liveWindowCount,

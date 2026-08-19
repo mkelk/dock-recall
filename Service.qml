@@ -68,6 +68,21 @@ Item {
   property var state: StateModel.defaultState()
   property bool stateLoaded: false
   property string lastWrittenText: ""
+  // A read-only state file (schema newer than this build — see
+  // StateModel.writeRefusal) is a thing the user has to be TOLD, not merely
+  // logged at: every edit they make from now on will be turned away. The warning
+  // goes in the log on every reload, the toast once per DOWNGRADE EPISODE —
+  // because the FileView reloads on every touch of the file and four seconds of
+  // toast per touch is how a notification stops being read. The flag is rearmed
+  // the moment the file is writable again (see the reload handler below), so a
+  // second downgrade in one session is announced as loudly as the first.
+  //
+  // The toast is not the only surface and never was the load-bearing one: it
+  // fires at LOAD time, possibly hours before the user presses anything, and
+  // notify-send needs a notification daemon to land anywhere at all. The panel
+  // carries a persistent line for the same condition (Panel.qml's
+  // writeRefusalReason, tick sma).
+  property bool futureVersionAnnounced: false
 
   // ------------------------------------------------------------ cycle state
   //
@@ -608,6 +623,20 @@ Item {
       root.warn("no state file (" + result.error + ") — creating a fresh default")
     } else if (result.error) {
       root.warn("state: " + result.error)
+      // The only `error` that is not a recovery is a version from the future,
+      // and it has a consequence worth spelling out: the file still drives
+      // restores, but nothing may write it (tick 291). Said in the same words
+      // the refusals themselves use, so the log reads as one story.
+      var refusal = StateModel.writeRefusal(result.state)
+      if (refusal) {
+        root.warn("running READ-ONLY from this file — " + refusal)
+        if (!root.futureVersionAnnounced) {
+          root.futureVersionAnnounced = true
+          root.notify("Dock Recall is read-only",
+            "The state file is schema v" + result.state.version + "; this build understands v"
+              + StateModel.STATE_VERSION + ". Restores still run, but recording and edits are refused.")
+        }
+      }
     } else if (result.migrated) {
       // An older schema, upgraded on the way in (v1 -> v2: geometry fields and
       // the paused flag, all additive). Logged, NOT written back: the upgrade
@@ -618,6 +647,11 @@ Item {
       root.log("state file upgraded to schema v" + StateModel.STATE_VERSION
         + " on read (geometry + paused are additive; the file on disk is untouched until the next write)")
     }
+
+    // Writable again — the user upgraded the plugin, or moved the newer file
+    // aside. Rearm the toast so a second downgrade is announced as loudly as
+    // the first.
+    if (!StateModel.writeRefusal(result.state)) root.futureVersionAnnounced = false
 
     // Captured before the assignment, for the same reason `previous` is: the
     // toast below is about the DIFFERENCE, and only a reload that CHANGES the
@@ -722,7 +756,19 @@ Item {
   // Persist a state object. Writing the exact bytes already on disk is skipped:
   // atomic writes replace the file, which wakes the watcher, which reloads —
   // harmless but noisy, and pointless.
+  //
+  // A state from a NEWER schema than this build is never written (tick 291): the
+  // reader strips the fields it does not know and keeps the newer version
+  // number, so a write here would quietly delete a later generation's data.
+  // Refused out loud, with the reason, exactly as every other refusal in this
+  // plugin is. The rule itself lives in StateModel.writeRefusal so this file and
+  // Panel.qml cannot drift apart on it.
   function writeState(next) {
+    var refusal = StateModel.writeRefusal(next)
+    if (refusal) {
+      root.warn("not writing the state file: " + refusal)
+      return
+    }
     var text = StateModel.serializeState(next)
     if (text === root.lastWrittenText && stateFile.loaded) return
     root.lastWrittenText = text
@@ -1543,9 +1589,15 @@ Item {
   //
   // This is the line that turns "launch produced no window" from a dead end
   // into a diagnosis: the launch command worked and opened SOMETHING, it just
-  // wasn't the class the identity watches (the shared-Chromium bug wrote
+  // was not a window the identity claims (the shared-Chromium bug wrote
   // `--app=…gmail` as chromium's launch, so the window that appeared was
   // chrome-mail.google.com…, and the WARN now says so).
+  //
+  // CLASSES are what it can list, and since schema v4 an identity can also
+  // constrain `initialTitle` — so a window of the right class whose title is
+  // wrong shows up here looking correct. That is exactly the terminal case: a
+  // launch that lost its `--title` opens a `foot` window the `{^foot$ +
+  // ^herdr$}` identity does not claim, and this line will report "foot".
   function launchedClassesSince(before) {
     var seen = ({})
     var out = []

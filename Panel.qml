@@ -321,6 +321,28 @@ Item {
   // Why Record is unavailable, when it is. Separate from emptyHint because they
   // are different sentences about different problems and can be true at once.
   readonly property string recordHint: PanelModel.recordBlockedHint(root.statusModel.restoring)
+  // An identity that matches windows on this desk and wins none of them —
+  // every one taken by an identity earlier in the list. It has no row of its
+  // own to say so on (its windows are listed under the identity that took
+  // them), so the reason goes here, next to the other two hints. Empty on a
+  // healthy list. See engine.shadowedIdentities for what counts as shadowed
+  // and, just as importantly, what does not.
+  readonly property string shadowHint: PanelModel.shadowedIdentityHint(
+    Engine.shadowedIdentities(root.liveClients, root.identities))
+
+  // Why the state file cannot be written, when it cannot: a file from a newer
+  // schema is read and run from, but never written back (StateModel.writeRefusal
+  // owns the rule and the reason).
+  //
+  // A PERSISTENT line rather than a message on the click that failed (tick sma).
+  // The condition is a property of the file, not of the moment, and every
+  // affordance in the panel is dead while it holds; the only other place it was
+  // ever said out loud is the service's notify-send at load time, possibly hours
+  // earlier, on a desk that may have no notification daemon at all.
+  readonly property string writeRefusalReason: {
+    var refusal = root.stateLoaded ? StateModel.writeRefusal(root.stateModel) : null
+    return refusal ? String(refusal) : ""
+  }
 
   // ------------------------------------------------------ launch derivation
   //
@@ -694,6 +716,13 @@ Item {
     // the topology and the badge are.
     root.resetScroll()
 
+    // A refusal belongs to the moment it was pressed in, and every /proc answer
+    // this panel holds belongs to the last time it was open. Both are dropped
+    // here: the panel object outlives open and close, and a summon an hour
+    // later must not build a tick on an hour-old picture of the desk.
+    root.refusedTick = null
+    root.forgetProcReads()
+
     root.refresh()
     root.refreshDerivations()
     root.opened = true
@@ -824,10 +853,14 @@ Item {
   // them, and one per pid nearly as bad. PanelModel.parseSectionedDump splits
   // the result back up; the marker and the parser are tested together.
   //
-  // Neither read is on the refresh timer. Desktop files change when software
-  // is installed, and a cmdline changes when an app is restarted; once per
-  // panel opening is the right frequency for both, and re-running them twice a
-  // second would put a hundred-file scan on the user's idle desktop.
+  // Neither read is ON the refresh timer, and only one of them expires.
+  // Desktop files change when software is installed and a process's own argv
+  // never changes at all, so once per panel opening is right for both; a
+  // hundred-file scan twice a second on an idle desktop is not.
+  //
+  // The exception is a TERMINAL's process tree, which answers "what is running
+  // inside this window" — a question whose answer changes under a stable pid
+  // (tick gpq). That one expires; see cmdlineMaxAgeMs.
 
   readonly property string desktopDumpScript:
     'for f in "$HOME"/.local/share/applications/*.desktop'
@@ -862,25 +895,62 @@ Item {
 
   // The pids whose argv is wanted and not yet known. Empty is the common case
   // — every watched app either has a command already or is not running.
+  //
+  // TWO sources, and the second one is not about launch commands at all:
+  //
+  //   1. the watched identities that still need a launch command, through the
+  //      ONE matcher, as everywhere else;
+  //   2. every live TERMINAL window, watched or not (tick 1uz). A terminal's
+  //      class names no app, so ticking one has to propose the app INSIDE it,
+  //      and that proposal is built synchronously at the moment of the click.
+  //      An unwatched terminal is in neither half of source 1 — it is not
+  //      watched, and it is not missing a launch — so without this the answer
+  //      would never be ready in time and every terminal tick would fall back
+  //      to the useless class-only `^foot$`.
   function missingCmdlinePids() {
     var wanted = []
     var seen = ({})
     var list = root.identities
     var need = PanelModel.identitiesNeedingLaunch(list)
+    var pids = []
     for (var i = 0; i < need.length; i++) {
       var identity = StateModel.identityById(root.stateModel, need[i])
       if (!identity) continue
       var client = Engine.pickClientFor(root.liveClients, identity, list)
       if (!client || client.pid === undefined || client.pid === null) continue
-      var pid = String(client.pid)
+      pids.push(String(client.pid))
+    }
+    var terminals = PanelModel.terminalPids(root.liveClients)
+    var isTerminal = ({})
+    for (var t = 0; t < terminals.length; t++) {
+      isTerminal[terminals[t]] = true
+      pids.push(terminals[t])
+    }
+
+    var now = Date.now()
+    for (var p = 0; p < pids.length; p++) {
+      var pid = pids[p]
       // A pid is only digits by construction; the guard is here because this
       // value is about to be interpolated into a shell loop.
       if (!/^[0-9]+$/.test(pid)) continue
-      // `cmdlineTried` and not just `argvByPid`: a pid whose cmdline came back
+      if (seen[pid]) continue
+      // `cmdlineTriedAt` and not just `argvByPid`: a pid whose cmdline came back
       // empty (it exited between the two reads) would otherwise be asked for
       // again on every refresh tick, which is a Process every two seconds for
       // as long as the panel is open.
-      if (seen[pid] || root.cmdlineTried[pid]) continue
+      var asked = root.cmdlineTriedAt[pid]
+      if (asked !== undefined) {
+        // AN ORDINARY APP'S argv never changes while its pid lives, so asked
+        // once is asked for good. A TERMINAL's does not change either — but the
+        // question asked about a terminal is what is RUNNING INSIDE it, and that
+        // changes under a stable pid every time the user quits one program and
+        // starts another. Tick gpq: a tree read when the panel opened said
+        // "herdr", btop was running by the time the user ticked, and the panel
+        // wrote herdr's identity and herdr's launch command. So a terminal's
+        // answer expires; everything else is read once per panel opening.
+        if (!isTerminal[pid]) continue
+        if (now - asked < root.cmdlineMaxAgeMs) continue
+      }
       seen[pid] = true
       wanted.push(pid)
     }
@@ -888,17 +958,39 @@ Item {
   }
 
   property string cmdlinePidList: ""
-  // Pids this panel has already asked about, answered or not.
-  property var cmdlineTried: ({})
+  // Pids this panel has already asked about, answered or not, and WHEN — see
+  // missingCmdlinePids for which of them go stale.
+  property var cmdlineTriedAt: ({})
+  // How old a terminal's process tree may be before it is read again. Longer
+  // than the 2 s refresh so an idle panel is not spawning a shell on every
+  // cycle (it lands on every other one), short enough that the worst-case age
+  // of the tree a tick is built on is a few seconds rather than the whole time
+  // the panel has been open.
+  readonly property int cmdlineMaxAgeMs: 3000
+
+  // Everything read from /proc, forgotten. Called when the panel opens: the
+  // panel object OUTLIVES open and close, so without this a panel summoned
+  // again an hour later starts from an hour-old picture of every terminal on
+  // the desk.
+  function forgetProcReads() {
+    root.cmdlineTriedAt = ({})
+    root.argvByPid = ({})
+    root.procTree = ({})
+  }
 
   function refreshCmdlines() {
     if (cmdlineProc.running) return
     var pids = root.missingCmdlinePids()
     if (!pids.length) return
     var tried = ({})
-    for (var known in root.cmdlineTried) tried[known] = true
-    for (var i = 0; i < pids.length; i++) tried[pids[i]] = true
-    root.cmdlineTried = tried
+    for (var known in root.cmdlineTriedAt) tried[known] = root.cmdlineTriedAt[known]
+    // Stamped when ASKED rather than when answered, deliberately: a pid that
+    // answers nothing (it exited between the two reads) must not be asked again
+    // on every refresh tick. The expiry above is what keeps a terminal's answer
+    // from going stale in spite of that.
+    var now = Date.now()
+    for (var i = 0; i < pids.length; i++) tried[pids[i]] = now
+    root.cmdlineTriedAt = tried
     root.cmdlinePidList = pids.join(" ")
     cmdlineProc.running = true
   }
@@ -934,14 +1026,29 @@ Item {
       // Merged rather than replaced, and reassigned rather than mutated: a
       // later read asks only about the pids it does not know yet, and QML only
       // notices a whole new object.
+      //
+      // But the pids this read ASKED about are dropped first (tick gpq). A
+      // terminal that has stopped running anything answers with no children at
+      // all, and a merge would leave the previous answer standing — the panel
+      // would keep proposing an app that is no longer there.
+      var asked = ({})
+      var askedList = String(root.cmdlinePidList || "").split(" ")
+      for (var a = 0; a < askedList.length; a++) {
+        if (askedList[a]) asked[askedList[a]] = true
+      }
+
       var merged = ({})
-      for (var known in root.argvByPid) merged[known] = root.argvByPid[known]
+      for (var known in root.argvByPid) {
+        if (!asked[known]) merged[known] = root.argvByPid[known]
+      }
       for (var pid in fresh) merged[pid] = fresh[pid]
       root.argvByPid = merged
 
       var freshTree = PanelModel.procTreeFromDump(text)
       var mergedTree = ({})
-      for (var seen in root.procTree) mergedTree[seen] = root.procTree[seen]
+      for (var seen in root.procTree) {
+        if (!asked[seen]) mergedTree[seen] = root.procTree[seen]
+      }
       for (var root_pid in freshTree) mergedTree[root_pid] = freshTree[root_pid]
       root.procTree = mergedTree
 
@@ -983,16 +1090,36 @@ Item {
   // write is observable (see the state-file rule in .tick/learnings.md), and
   // round-tripped through StateModel so what the panel shows after a click is
   // literally what the file now says — normalization included.
+  //
+  // THE ONE PLACE THE PANEL TOUCHES THE STATE FILE. Every action above and below
+  // — tick a chip, learn a launch, Record, undo, Forget, pause — arrives here,
+  // which is why the read-only check for a newer-schema file sits here and
+  // nowhere else (tick 291). Such a file is read and shown, but writing it would
+  // strip whatever a later version added and stamp the newer number back on the
+  // remains; StateModel.writeRefusal owns that rule and the service asks it too.
+  //
+  // RETURNS whether the file now says what the caller asked for (tick sma).
+  // Every caller gates its success log on that, because the alternative is what
+  // this repo exists not to do: the refusal below was a console.warn and the
+  // next line of the caller logged "recorded 7 apps" regardless, so the panel
+  // AFFIRMED a write it had just refused. A byte-identical write is `true` —
+  // nothing was refused and the file already says it.
   function writeState(next) {
     if (!root.stateLoaded) {
       root.warn("refusing to write the state file before it has been read")
-      return
+      return false
+    }
+    var refusal = StateModel.writeRefusal(next)
+    if (refusal) {
+      root.warn("not writing the state file: " + refusal)
+      return false
     }
     var text = StateModel.serializeState(next)
-    if (text === root.lastWrittenText) return
+    if (text === root.lastWrittenText) return true
     root.lastWrittenText = text
     root.stateModel = StateModel.parseState(text).state
     stateFile.setText(text)
+    return true
   }
 
   FileView {
@@ -1078,6 +1205,67 @@ Item {
 
   // ---------------------------------------------------------------- actions
 
+  // What terminalChildDerivation answers about the window a chip (or a list
+  // row) points at, or null when there is nothing to ask.
+  //
+  // This is the panel's half of the title-identity rule (tick 1uz): a plain
+  // `foot` window running `herdr` must not be watched as "every foot window",
+  // and the only thing that can name the app inside it is the child process.
+  // The read is already here — `argvByPid` and `procTree` come from the one
+  // cmdline Process — and it deliberately stays here: Service.qml runs all the
+  // time and must never touch /proc.
+  //
+  // Untick asks nothing (the identity is already known), and a window whose
+  // cmdline has not come back yet answers "not-read" — a REFUSAL since tick
+  // gpq, not the class-only catch-all it used to fall back to.
+  //
+  // The window's `initialTitle` travels with the question: a terminal already
+  // launched `foot --title=herdr herdr` carries the answer on its own window,
+  // and reading the child process is only the third-best source (see
+  // PanelModel.terminalTickDerivation).
+  function tickDerivationFor(address, className) {
+    if (!className) return null
+    var client = PanelModel.clientForTick(root.liveClients, address, className)
+    if (!client || client.pid === undefined || client.pid === null) return null
+    var pid = String(client.pid)
+    return PanelModel.terminalTickDerivation(className, root.argvByPid[pid], root.procTree[pid],
+      client.initialTitle)
+  }
+
+  function tickDerivation(chip) {
+    if (!chip || chip.identityId || !chip.className) return null
+    return root.tickDerivationFor(chip.address, chip.className)
+  }
+
+  // The window a tick REFUSED, kept so the panel can say why: { className,
+  // address }. Not a message but the question that produced one — the hint
+  // below re-asks it against the live desktop every frame, so a refusal that
+  // was only "the /proc read has not come back" clears itself the moment it
+  // does, and one that was "this terminal runs two things" stays up for as long
+  // as that is true.
+  property var refusedTick: null
+
+  readonly property string tickRefusalHint: {
+    var pending = root.refusedTick
+    if (!pending) return ""
+    // Referenced so the hint re-evaluates when either read lands.
+    var argv = root.argvByPid
+    var tree = root.procTree
+    var reason = PanelModel.tickRefusalReason(pending.className, root.identities,
+      root.tickDerivationFor(pending.address, pending.className))
+    return PanelModel.tickRefusalHint(pending.className, reason)
+  }
+
+  // A watched title identity whose window is on screen but was not launched
+  // with --title, and the exact command that would fix it. Evidence-based and
+  // self-clearing, like shadowHint: it is gone the moment a window matches.
+  readonly property string untitledHint: {
+    var list = root.identities
+    return PanelModel.untitledTerminalHint(root.liveClients, list,
+      function (client) { return Engine.matchClient(client, list) || "" },
+      root.argvByPid, root.procTree)
+  }
+
   // Click a chip: tick or untick the app it belongs to. Watched-ness is per
   // identity, so this changes every window of that app at once — which is why
   // the chip hands over the identity it already matched instead of letting the
@@ -1095,7 +1283,26 @@ Item {
         + "click its live window to watch it again")
       return
     }
-    var next = PanelModel.toggleWatchedIdentities(root.identities, chip.className, chip.identityId)
+    var derivation = root.tickDerivation(chip)
+
+    // A tick that cannot produce a working identity says so rather than writing
+    // the `^foot$` catch-all (tick gpq). The reason is kept, not the sentence:
+    // the hint re-asks the question every frame and clears itself.
+    var refusal = chip.identityId ? ""
+      : PanelModel.tickRefusalReason(chip.className, root.identities, derivation)
+    if (refusal) {
+      root.refusedTick = { className: chip.className, address: chip.address || "" }
+      root.warn("tick refused for \"" + chip.className + "\" (" + refusal + "): "
+        + PanelModel.tickRefusalHint(chip.className, refusal))
+      // The read may simply not be back yet, and pressing again is the whole
+      // remedy — so go and get it.
+      root.refreshDerivations()
+      return
+    }
+    root.refusedTick = null
+
+    var next = PanelModel.toggleWatchedIdentities(root.identities, chip.className, chip.identityId,
+      derivation, Engine.couldShadow)
 
     // DERIVE BEFORE THE WRITE (tick i07). A tick creates an identity with an
     // empty launch, and "" means never start this one — so if the panel can
@@ -1104,23 +1311,42 @@ Item {
     // write. When it cannot, the empty write still happens instantly, and the
     // scan this call kicks off fills it in through autoFillLaunches.
     var added = PanelModel.addedIdentity(root.identities, next)
-    var inlineLaunch = ""
+    // A title identity arrives with its launch already filled: the derivation
+    // that named the app also built the command, so there is nothing left for
+    // the autofill pass to fill and the log would otherwise claim nothing was
+    // derived.
+    var inlineLaunch = (added && added.launch) ? String(added.launch) : ""
     if (added) {
       var request = PanelModel.launchRequestFor(added,
         Engine.pickClientFor(root.liveClients, added, next), root.argvByPid)
       var derived = PanelModel.launchDerivation(request ? [request] : [],
         root.desktopFiles, root.windowsByPid, root.procTree).commands
       var fills = PanelModel.launchAutofillIndex(next, derived)
-      if (fills[added.id]) {
+      // `own`, never `fills[added.id]` (tick 8hp, and the one lookup its sweep
+      // missed): for an id like "constructor" a bare read answers with
+      // Object.prototype's member — truthy, and a native function where a
+      // command belongs, which the log line would then print. The WRITE was
+      // already safe (autofillLaunchCommands is own()-guarded); this is the
+      // sentence that would have lied about it.
+      var fill = PanelModel.own(fills, added.id)
+      if (fill) {
         next = PanelModel.autofillLaunchCommands(next, fills)
-        inlineLaunch = fills[added.id]
+        inlineLaunch = fill
       }
     }
 
-    root.writeState(StateModel.setIdentities(root.stateModel, next))
-    root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + chip.className + "\"")
-      + " — " + next.length + " identities"
-      + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
+    if (root.writeState(StateModel.setIdentities(root.stateModel, next))) {
+      // Name the identity the write actually created (tick l97), not the class
+      // that was clicked — a title identity (foot hosting btop) creates an id
+      // unrelated to the class ticked, and even the ordinary case (ticking
+      // md.obsidian.Obsidian creates id "obsidian") reads clearer this way.
+      // `added` falls back to the class only in the defensive case where the
+      // toggle added nothing (chip.identityId is already handled above).
+      var createdId = added ? added.id : chip.className
+      root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + createdId + "\"")
+        + " — " + next.length + " identities"
+        + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
+    }
     // A newly ticked app whose launch could NOT be derived here has an empty one
     // by construction; go and find out what would start it while its window is
     // still in front of us.
@@ -1140,9 +1366,14 @@ Item {
   // backfill through Record without destroying the recording they are trying
   // to restore.
   //
-  // Returns the state to write, or null when there is nothing to do. The
-  // callers decide whether to write it alone or together with a layout, so a
-  // Record is still ONE atomic write and not two.
+  // Returns { state, line } — the state to write and the line to log ONCE IT IS
+  // WRITTEN — or null when there is nothing to do. The callers decide whether to
+  // write it alone or together with a layout, so a Record is still ONE atomic
+  // write and not two.
+  //
+  // The line travels back rather than being logged here (tick sma): this ran
+  // before the write was even attempted, so a refused Record still announced
+  // that it had learned three launch commands.
   function withLearnedLaunches(base) {
     var next = PanelModel.backfillLaunchCommands(StateModel.identities(base), root.derivedLaunch)
     var learned = []
@@ -1157,8 +1388,10 @@ Item {
       }
     }
     if (!learned.length) return null
-    root.log("learned " + learned.length + " launch command(s): " + learned.join("; "))
-    return StateModel.setIdentities(base, next)
+    return {
+      state: StateModel.setIdentities(base, next),
+      line: "learned " + learned.length + " launch command(s): " + learned.join("; ")
+    }
   }
 
   // What a finished scan is allowed to write on its own (tick i07).
@@ -1185,9 +1418,10 @@ Item {
     var fills = PanelModel.launchAutofillIndex(root.identities, root.derivedLaunch)
     var line = PanelModel.autofillLaunchLog(fills, source)
     if (!line) return
-    root.writeState(StateModel.setIdentities(root.stateModel,
-      PanelModel.autofillLaunchCommands(root.identities, fills)))
-    root.log(line)
+    if (root.writeState(StateModel.setIdentities(root.stateModel,
+        PanelModel.autofillLaunchCommands(root.identities, fills)))) {
+      root.log(line)
+    }
   }
 
   function learnLaunches() {
@@ -1201,7 +1435,7 @@ Item {
       root.log("nothing to learn: every watched app either has a launch command or has no derivable one")
       return
     }
-    root.writeState(learned)
+    if (root.writeState(learned.state)) root.log(learned.line)
   }
 
   // One row's worth of the same repair. The list is where the user SEES that an
@@ -1218,9 +1452,10 @@ Item {
     var one = ({})
     one[identityId] = command
     if (!PanelModel.learnableCount(root.identities, one)) return
-    root.writeState(StateModel.setIdentities(root.stateModel,
-      PanelModel.backfillLaunchCommands(root.identities, one)))
-    root.log("learned launch for \"" + identityId + "\": " + command)
+    if (root.writeState(StateModel.setIdentities(root.stateModel,
+        PanelModel.backfillLaunchCommands(root.identities, one)))) {
+      root.log("learned launch for \"" + identityId + "\": " + command)
+    }
   }
 
   // Switch the tool off, or back on.
@@ -1243,7 +1478,7 @@ Item {
       root.stateModel = fresh
       return
     }
-    root.writeState(StateModel.setPaused(fresh, next))
+    if (!root.writeState(StateModel.setPaused(fresh, next))) return
     root.log(next
       ? "paused — monitor changes will be ignored until this is switched back on"
       : "activated — monitor changes will be acted on again")
@@ -1301,13 +1536,13 @@ Item {
     var act = PanelModel.undoStashAction(stash) === "forget" ? "forget" : "record"
 
     if (PanelModel.recordUndoRestores(stash)) {
-      root.writeState(StateModel.upsertLayout(fresh, stash.previousLayout))
+      if (!root.writeState(StateModel.upsertLayout(fresh, stash.previousLayout))) return
       root.log("undid the " + act + " for topology \"" + stash.topologyKey + "\" — put back the layout"
         + " recorded at " + (stash.previousLayout.recordedAt || "an unknown time")
         + " (" + (stash.previousLayout.apps || []).length + " apps)")
       return
     }
-    root.writeState(StateModel.removeLayout(fresh, stash.topologyKey))
+    if (!root.writeState(StateModel.removeLayout(fresh, stash.topologyKey))) return
     root.log("undid the " + act + " for topology \"" + stash.topologyKey + "\" — this setup had no"
       + " layout before it, so it has none again")
   }
@@ -1319,21 +1554,25 @@ Item {
       root.warn("record refused: the monitor list resolves to no topology at all")
       return
     }
-    // ARMED BEFORE THE WRITE, from the state the write is about to replace. One
-    // stash, so a second record discards the first one's undo — which is the
-    // sketch's "single undo kept in memory until next record" exactly: the net
-    // is under the last thing you did, not under everything you have ever done.
-    root.recordUndo = {
-      topologyKey: layout.topologyKey,
-      previousLayout: StateModel.layoutFor(root.stateModel, layout.topologyKey)
-    }
+    // READ before the write, ARMED after it (tick sma). The layout this record
+    // is about to replace has to be read from the state the write will replace
+    // — but the undo BUTTON is the panel's one positive confirmation that a
+    // record happened, and arming it before the write meant a refused write
+    // grew an Undo button for a record that never took place. One stash, so a
+    // second record discards the first one's undo: the sketch's "single undo
+    // kept in memory until next record" exactly — the net is under the last
+    // thing you did, not under everything you have ever done.
+    var replaced = StateModel.layoutFor(root.stateModel, layout.topologyKey)
     // Backfill FIRST, then file the layout on top of the result, so recording
     // and learning land in the file as a single atomic write. Recording is the
     // moment the user says "this arrangement matters", which is exactly when an
     // app that cannot be relaunched stops being a curiosity and starts being
     // the reason Restore does nothing.
-    var base = root.withLearnedLaunches(root.stateModel) || root.stateModel
-    root.writeState(StateModel.upsertLayout(base, layout))
+    var learned = root.withLearnedLaunches(root.stateModel)
+    var base = learned ? learned.state : root.stateModel
+    if (!root.writeState(StateModel.upsertLayout(base, layout))) return
+    root.recordUndo = { topologyKey: layout.topologyKey, previousLayout: replaced }
+    if (learned) root.log(learned.line)
     root.log("recorded " + layout.apps.length + " apps for topology \"" + layout.topologyKey + "\"")
     // A short recording says why it is short. `excluded` is the engine's
     // structured note (tick pqv): apps deliberately left out of the layout, not
@@ -1440,8 +1679,13 @@ Item {
       root.closeOverflow()
       return
     }
+    // Armed after the write, for the reason recordLayout's comment gives: an
+    // Undo button is a claim that something happened.
+    if (!root.writeState(StateModel.removeLayout(fresh, root.topologyKey))) {
+      root.closeOverflow()
+      return
+    }
     root.recordUndo = stash
-    root.writeState(StateModel.removeLayout(fresh, root.topologyKey))
     root.log("forgot the layout for topology \"" + root.topologyKey + "\" ("
       + (stash.previousLayout.apps || []).length + " apps) — undo puts it back")
     root.closeOverflow()
@@ -1452,8 +1696,13 @@ Item {
   // flight. `restoring` comes from the service's status file, so the button
   // follows the same signal the bar glyph's sweep does, and recordHint says out
   // loud why it went dim.
+  //
+  // A read-only file dims it too (tick sma): the button's whole act is a write,
+  // and an enabled button for a write that will be refused is the affordance
+  // lying about what it does. writeRefusalReason says why, in the hint stack.
   readonly property bool canRecord: root.stateLoaded && root.haveLiveData
     && root.liveMonitors.length > 0 && !root.statusModel.restoring
+    && root.writeRefusalReason === ""
 
   // Ask the service to restore, and GET OUT OF THE WAY first.
   //
@@ -2616,6 +2865,61 @@ Item {
               visible: root.recordHint !== ""
               text: root.recordHint
               color: root.dimForeground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // A watched app that no open window reaches while the list is in
+            // this order. Urgent rather than dim: unlike the two hints above it,
+            // this one is about windows on screen right now, being recorded
+            // under another identity's name. What the sentence ASKS FOR varies
+            // with the evidence — an instruction only where the identity in
+            // front is wider by construction, an observation otherwise (see
+            // PanelModel.shadowNoticeFor).
+            Text {
+              width: parent.width
+              visible: root.shadowHint !== ""
+              text: root.shadowHint
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // The file is read-only, so nothing in this panel can change it.
+            // Said once, persistently, in the urgent colour — the alternative
+            // was a Record that logged success and grew an Undo button for a
+            // write that never happened (tick sma).
+            Text {
+              width: parent.width
+              visible: root.writeRefusalReason !== ""
+              text: "Read-only: " + root.writeRefusalReason
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // A tick that refused, and a watched app whose window cannot match
+            // it until it is relaunched. Both are urgent for the same reason
+            // the shadow line is: the user pressed something and the desktop
+            // does not say what they expect it to say.
+            Text {
+              width: parent.width
+              visible: root.tickRefusalHint !== ""
+              text: root.tickRefusalHint
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              width: parent.width
+              visible: root.untitledHint !== ""
+              text: root.untitledHint
+              color: Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap

@@ -57,6 +57,48 @@ key, a floating app, and an identity with `launch: ""` (the "never launch this
 one" contract). Do not add geometry to this file — its whole job is to be the
 older schema.
 
+### E. A titled terminal beside a plain one — `clients-titled-terminal.json`
+
+The window a `--title` launch actually produces, next to the window a bare
+terminal produces. Two `foot` clients on one workspace:
+
+| | `class` | `initialTitle` | `title` | what it is |
+|---|---|---|---|---|
+| `0x55c6f81a2500` | `foot` | `foot` | `user@host:~/git/dock-recall` | a plain terminal at a prompt |
+| `0x55c6f73e6d80` | `foot` | `herdr` | `herdr — 3 lists, 41 items` | `foot --title=herdr herdr` |
+
+Synthesized rather than captured (tick hqa) — every `foot` client in
+`clients-laptop.json` carries `initialTitle: "foot"`, so no real capture had
+the shape — but synthesized from the fields hyprctl really reports.
+
+It is not the only fixture holding two windows of one class:
+`clients-laptop.json` carries two `foot` windows and two Gmail webapp windows,
+and several tests turn on exactly that (one identity, two instances). What is
+unique here is two windows of one class hosting **different apps that want
+different identities** — where the class is ambiguous not about which window,
+but about what is running in it.
+
+The traps it exists for:
+
+- **The class is untouched.** Both windows are `class: "foot"`,
+  `initialClass: "foot"`. That is the whole `--title` convention: every
+  class-matched Omarchy window rule still applies to the titled window.
+- **`title` drifts, `initialTitle` does not.** The titled window renamed itself
+  the instant it started, so `title` and `initialTitle` disagree. Matching reads
+  `initialTitle` only — a live title would make a window's identity
+  time-varying.
+- **Title is the only discriminator.** `{"patterns":["^foot$"],
+  "titlePatterns":["^herdr$"]}` claims one of these two and a bare
+  `{"patterns":["^foot$"]}` claims both, which is what the AND rule and the
+  first-match ordering are for.
+
+**Not in `helpers.js` `FIXTURE_NAMES`, on purpose.** That list is the four
+captured layer-1 files, read as clients/monitors PAIRS by `fixtures.test.js`
+("all four fixtures") and by the topology tests. This file is synthesized, has
+no monitor half, and answers one question; `panel.test.js` loads it by name.
+Adding it to the shared list would claim it is a captured desktop and would put
+a foot window with a drifted title into twelve tests that never asked for one.
+
 ## Traps these fixtures exercise
 
 | Trap | Where it lives | Why it matters |
@@ -67,7 +109,7 @@ older schema.
 | **Obsidian's Quattro class rename** | `class: "md.obsidian.Obsidian"` | The literal `obsidian` no longer matches; one identity has to carry both spellings as patterns. |
 | **Chromium webapp synthesized classes** | `chrome-app.slack.com__client_T0EXAMPLE01_C0EXAMPLE02-Profile_1`, `chrome-web.whatsapp.com__-Profile_1`, `chrome-mail.google.com__mail_u_0_-Profile_1`, `chrome-calendar.google.com__calendar_u_0_r-Profile_1`, `chrome-www.rememberthemilk.com__app_-Profile_1` | Long, per-profile, per-URL classes. Only prefix/substring patterns survive them. |
 | **A real 4-window group, with tab order** | the four clients on workspace 10 | Every member's `grouped` array is identical, and its order **is** the tab order: `md.obsidian.Obsidian` → `org.telegram.desktop` → Slack webapp → WhatsApp webapp. Recording a group means preserving that sequence. |
-| **Duplicate windows for one identity** | two `foot` clients (ws 1) and two `chrome-mail.google.com__…` clients (ws 9) | A layout stores one entry per identity, so "first matching window wins" has to be deterministic. |
+| **Duplicate windows for one identity** | two `foot` clients (ws 1) and two `chrome-mail.google.com__…` clients (ws 9) | A layout stores one entry per window (schema v3), each carrying an `occurrence` index, so the placement order that assigns those indices has to be deterministic. |
 | **Plain unqualified classes** | `chromium`, `code`, `foot` | Not everything is a reverse-DNS or webapp class; patterns must handle bare names too. |
 
 ## Recapturing
