@@ -1322,9 +1322,16 @@ Item {
       var derived = PanelModel.launchDerivation(request ? [request] : [],
         root.desktopFiles, root.windowsByPid, root.procTree).commands
       var fills = PanelModel.launchAutofillIndex(next, derived)
-      if (fills[added.id]) {
+      // `own`, never `fills[added.id]` (tick 8hp, and the one lookup its sweep
+      // missed): for an id like "constructor" a bare read answers with
+      // Object.prototype's member — truthy, and a native function where a
+      // command belongs, which the log line would then print. The WRITE was
+      // already safe (autofillLaunchCommands is own()-guarded); this is the
+      // sentence that would have lied about it.
+      var fill = PanelModel.own(fills, added.id)
+      if (fill) {
         next = PanelModel.autofillLaunchCommands(next, fills)
-        inlineLaunch = fills[added.id]
+        inlineLaunch = fill
       }
     }
 

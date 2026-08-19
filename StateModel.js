@@ -316,10 +316,15 @@ function isArray(value) {
 // for, and calling it would call whatever the user stored.
 //
 // The one key it cannot repair is `__proto__`, which is a SETTER on
-// Object.prototype rather than an inherited value — a write to it is swallowed
-// before this is ever consulted, so it simply fails to be indexed rather than
-// returning something wrong. Nothing derives that id; what a hand-written one
-// does is pinned in tests/reserved-ids.test.js.
+// Object.prototype rather than an inherited value: a write to it never stores
+// anything this guard could find, and a READ of it answers with the prototype
+// object — so an index keyed by that id hands back something that is neither
+// the value nor undefined. It survives this module intact (parse, serialize,
+// identityById, launchCommandFor — all pinned in tests/reserved-ids.test.js),
+// and a hand-written LAYOUT entry naming it makes engine.matchLayout, driftOf
+// and planRestore throw a TypeError. That is a known limit rather than a
+// regression — the pre-8hp code throws identically — and it is pinned as one:
+// nothing derives the id `__proto__`, so reaching it takes a hand edit.
 function own(map, key) {
   if (!map) return undefined;
   return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;

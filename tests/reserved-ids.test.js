@@ -29,10 +29,12 @@ const monitorsLaptop = loadFixture("monitors-laptop.json");
 const AT = "2026-08-15T18:30:00Z";
 
 // Every inherited key a real state file could plausibly carry. `__proto__` is
-// deliberately in the list: it is the one that is not merely inherited but has
-// a SETTER on Object.prototype, so a write to it is swallowed rather than
-// stored — the read guard cannot help there, and what is claimed for it below
-// is exactly what holds (it survives the round trip; it is not deduped).
+// deliberately in the list, and it is the one the read guard cannot repair: it
+// is a SETTER on Object.prototype rather than an inherited value, so a write to
+// it stores nothing and a read of it answers with the prototype object. What is
+// pinned for it is the STATE-MODEL half — it survives the round trip, and it is
+// not deduped. The engine half does not hold, and the last test in this file
+// pins that honestly rather than leaving the claim to a comment.
 const RESERVED = ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf"];
 
 // ---------------------------------------------------------------- reachable
@@ -227,4 +229,51 @@ test("matchLayout pairs a reserved id's recorded entry to its live window", () =
     ? (matched.clientByEntry[i] && matched.clientByEntry[i].address)
     : null);
   assert.deepStrictEqual(addresses.slice().sort(), ["0xc0", "0xc1"]);
+});
+
+// -------------------------------------------------- the one that does NOT hold
+//
+// `__proto__` is the key the read guard cannot repair, and the comments used to
+// claim it "simply fails to be indexed rather than returning something wrong".
+// It does return something wrong. Writing it to a bare object stores nothing;
+// reading it back answers with the prototype object, and the engine indexes
+// built on identity ids hand that to code expecting a window list.
+//
+// Pinned rather than fixed, and pinned as a LIMIT: the same call throws
+// identically on the pre-8hp code, so this is not a regression, and nothing
+// derives the id `__proto__` — PanelModel.identityIdFromTitle and
+// deriveIdentityId both strip the underscores. Reaching it takes a hand-written
+// layout entry. If a future change makes these calls survive, this test is the
+// one to delete, deliberately.
+test("a hand-written layout naming __proto__ throws, and that is a known limit", () => {
+  const identities = [{ id: "__proto__", patterns: ["^Thing$"] }];
+  const client = makeClient({ address: "0xp0", class: "Thing", workspace: 1 });
+  const layout = {
+    topologyKey: "K",
+    recordedAt: AT,
+    apps: [{
+      identityId: "__proto__", occurrence: 0, floating: false,
+      monitor: { index: 0 }, workspaceId: 1,
+      geometry: { x: 0, y: 0, width: 10, height: 10 }
+    }]
+  };
+
+  for (const name of ["matchLayout", "driftOf", "planRestore"]) {
+    assert.throws(() => engine[name]([client], monitorsLaptop, layout, identities), TypeError,
+      name + " no longer throws on a __proto__ identity id — update the comments that say it does");
+  }
+
+  // Neither the id generator nor the title-derived id can produce it, which is
+  // why this stays a limit rather than a bug.
+  assert.notStrictEqual(panel.deriveIdentityId("__proto__"), "__proto__");
+  assert.notStrictEqual(panel.identityIdFromTitle("__proto__"), "__proto__");
+
+  // And the state model half still holds: it round-trips and is not deduped.
+  const parsed = state.parseState(state.serializeState({
+    version: state.STATE_VERSION,
+    identities: [{ id: "__proto__", patterns: ["^Thing$"], titlePatterns: [], launch: "thing" }],
+    layouts: {}
+  }));
+  assert.strictEqual(parsed.state.identities.length, 1);
+  assert.strictEqual(parsed.state.identities[0].id, "__proto__");
 });

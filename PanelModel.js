@@ -613,13 +613,16 @@ function shadowedIdentityHint(report) {
 // Deriving a launch command
 // ---------------------------------------------------------------------------
 //
-// The gap this section closes: suggestIdentity writes `launch: ""` for every
-// identity the panel creates, and "" means NEVER LAUNCH (see the Identity
-// schema note in StateModel.js). A user who ticked three webapps, recorded
-// them, closed them and pressed Restore therefore got nothing at all — the
-// service logged "not running and has no launch command — leaving it" three
-// times and called it a converged pass. Restore could bring a window back to
-// its workspace but could never bring the app back.
+// The gap this section closes: suggestIdentity writes `launch: ""` for the
+// identities it creates from a CLASS alone, and "" means NEVER LAUNCH (see the
+// Identity schema note in StateModel.js). A TITLE identity is the exception —
+// the caller already read /proc to name the app inside the terminal, so the
+// command comes back with the title and is written in the same breath — but
+// every ordinary tick still arrives here empty. A user who ticked three
+// webapps, recorded them, closed them and pressed Restore got nothing at all —
+// the service logged "not running and has no launch command — leaving it"
+// three times and called it a converged pass. Restore could bring a window back
+// to its workspace but could never bring the app back.
 //
 // So the panel learns the command instead of guessing it, from the two places
 // where a true answer already exists:
@@ -1887,10 +1890,14 @@ function identitiesNeedingLaunch(identities) {
 // Returns { commands: { identityId: command }, refusals: { identityId: reason } }.
 //
 // The REFUSALS are tick dwv's half: a terminal-class window whose app cannot be
-// named without guessing (no child, two children, a shell with two descendants)
-// yields no command AND no desktop-file fallback, because the fallback for a
-// terminal is the terminal — `foot` launches an empty prompt, not the app the
-// user recorded, and offering it would be a repair that quietly does nothing.
+// named without guessing yields no command AND no desktop-file fallback. All
+// four reasons, which is the whole list terminalChildDerivation can answer
+// with: `no-child` (an empty prompt), `several-children` (two things running),
+// `shell-chain` (a shell inside a shell) and `unreadable-child` (a child whose
+// cmdline came back as a rendering rather than an argv). No fallback, because
+// the fallback for a terminal is the terminal — `foot` launches an empty
+// prompt, not the app the user recorded, and offering it would be a repair that
+// quietly does nothing.
 // The identity gets launchState "ambiguous" and a hint pointing at the --title
 // convention instead. Nothing here ever WATCHES anything: derivation feeds the
 // existing suggest/learn flows and no other.
@@ -2154,10 +2161,14 @@ function addedIdentity(before, after) {
 //   "ambiguous"  empty, and the app runs inside a terminal whose child process
 //                does not name it without guessing (tick dwv). NOT the same as
 //                "missing": there is something the user can DO about it, and
-//                the hint says what — give the app its own window class. It
-//                outranks "derivable" on purpose: the only thing derivable for
-//                a bare terminal is the terminal, and offering to learn that
-//                would be a repair that opens an empty prompt.
+//                the hint says what — relaunch it with a `--title` of its own.
+//                NOT a window class of its own, which is the advice this epic
+//                exists to retract: a dedicated class silently loses every
+//                class-matched window rule the desktop already has for
+//                terminals (README, "Terminal-hosted apps are known by their
+//                title"). It outranks "derivable" on purpose: the only thing
+//                derivable for a bare terminal is the terminal, and offering to
+//                learn that would be a repair that opens an empty prompt.
 //
 // `refusals` is optional ({ identityId: reason }, from launchRefusalIndex);
 // without it this answers exactly what it answered before tick dwv.
@@ -4905,6 +4916,9 @@ function emptyStateHint(watchedCount) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    // Exported for the QML side as much as for the tests: an identity-id lookup
+    // in Panel.qml has to go through this too (tick 8hp).
+    own: own,
     escapeRegex: escapeRegex,
     titleCase: titleCase,
     shortMonitorLabel: shortMonitorLabel,

@@ -69,8 +69,14 @@ terminal produces. Two `foot` clients on one workspace:
 
 Synthesized rather than captured (tick hqa) — every `foot` client in
 `clients-laptop.json` carries `initialTitle: "foot"`, so no real capture had
-the shape — but synthesized from the fields hyprctl really reports, and it is
-the ONLY fixture where the class cannot tell two windows apart.
+the shape — but synthesized from the fields hyprctl really reports.
+
+It is not the only fixture holding two windows of one class:
+`clients-laptop.json` carries two `foot` windows and two Gmail webapp windows,
+and several tests turn on exactly that (one identity, two instances). What is
+unique here is two windows of one class hosting **different apps that want
+different identities** — where the class is ambiguous not about which window,
+but about what is running in it.
 
 The traps it exists for:
 

@@ -188,9 +188,12 @@ alacritty --title=herdr -e herdr  # Alacritty
 ghostty --title=herdr -e herdr    # Ghostty
 ```
 
-That means remapping whatever keystroke launches it. With the title in place the
-panel sees a distinct chip, learns the exact launch command, and restores the app
-like any other.
+That means remapping whatever keystroke launches it. Until you tick it the panel
+still draws that window as *Foot*, because a class is all it knows about a window
+nobody has claimed. Tick it and the panel reads the title off the window itself,
+proposes `{"patterns":["^foot$"],"titlePatterns":["^herdr$"]}`, writes that exact
+command as the identity's launch in the same click, and restores the app like any
+other. From then on the chip is named after the app rather than the terminal.
 
 ### The panel can usually write that command for you
 
@@ -209,16 +212,24 @@ that terminal needs included:
 That is the point of the pair: a bare `^foot$` would claim every terminal on the
 desktop, so the next window you opened would be "herdr" too. A plain interactive
 shell in between is looked through, so `foot` → `bash` → `herdr` derives just as
-well. Ticking a terminal you use as a terminal still gives the plain class
-identity, and the two coexist — the specific one is matched first.
+well.
+
+The window it derived from usually does not match that identity yet: a terminal
+you typed `herdr` into has `initialTitle: "foot"`, and the pair asks for `herdr`.
+So the panel carries a line naming the identity and the exact command to relaunch
+with, and the line disappears the moment a window matches.
 
 It only does this when the answer is **unambiguous — exactly one child**. A
-terminal running two things, a shell with two jobs, a shell inside a shell, or a
-terminal sitting at an empty prompt is refused out loud: the row says the app
-runs in a terminal and points at the title rule, no command is offered, and
-nothing is guessed. Deriving one of two candidates would write a launch command
-that silently reopens the wrong app, and you would only find out at the next
-restore.
+terminal running two things, a shell with two jobs, a shell inside a shell, a
+terminal sitting at an empty prompt, or one whose child's command line cannot be
+read is refused out loud: the tick writes nothing, the panel says which of those
+it was and what to relaunch with, and nothing is guessed. It will **not** fall
+back to a bare `^foot$` — an identity that claims every terminal and can only
+ever start one of them is a worse answer than none. If you do want every terminal
+window watched as one app, write that identity into the state file by hand.
+
+Deriving one of two candidates would write a launch command that silently
+reopens the wrong app, and you would only find out at the next restore.
 
 In the recording, such a window is claimed by an identity that carries
 `titlePatterns` — regex strings matched against `initialTitle` — beside the usual
@@ -226,6 +237,13 @@ In the recording, such a window is claimed by an identity that carries
 is no constraint on that axis; when **both are non-empty both must match**, so
 `{"patterns":["^foot$"],"titlePatterns":["^herdr$"]}` means exactly "the foot
 window titled herdr".
+
+**The identity list is priority order and the first match wins**, so a wide rule
+sitting in front of a narrow one swallows it. The panel will not write that
+arrangement: a new identity goes to the front, except behind any identity it
+would shadow. And where a list already holds one — a hand edit, or a file from
+an older build — the panel names both identities and says no open window reaches
+the one behind.
 
 **Class matching still works**, and nothing about it changed. If you already
 launch an app with a window class of its own, it keeps being matched and restored
@@ -264,7 +282,7 @@ inside a ±2 px tolerance and tiled windows scored by intersection-over-union.
 Underneath that, every state the desktop can be in has a defined behaviour and a
 test that pins it — including the ones the plugin deliberately refuses, which are
 written down as refusals rather than left as gaps. `tests/` is where that
-contract lives: 686 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
+contract lives: 756 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
 which drives the installed plugin end to end against a headless output.
 
 The behaviour has also been through a physical checklist on a real ultrawide over
@@ -279,7 +297,7 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 686 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 756 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml
 ./scripts/dev-install --restart    # install this working tree and restart the shell

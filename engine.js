@@ -236,14 +236,19 @@ function matchClient(client, identities) {
 // SHADOWED IDENTITIES — an identity that can never win, said out loud
 // ---------------------------------------------------------------------------
 //
-// matchClient is first-match-wins across the WHOLE list, and the panel's
-// toggleWatchedIdentities PREPENDS. Put together, that is a reachable way to
-// lose an answer silently: a user with a working
-// `{patterns:["^foot$"], titlePatterns:["^herdr$"]}` identity later ticks a
-// plain foot terminal, a fresh `^foot$` identity goes in FRONT of it, and every
-// herdr window quietly becomes "terminal". The record binds it wrong, a restore
-// launches the wrong command, and the chip shows the wrong name — so even
-// unticking removes the wrong identity. Nothing anywhere says so.
+// matchClient is first-match-wins across the WHOLE list, so a wide identity
+// sitting in front of a narrow one silently swallows it: a user with a working
+// `{patterns:["^foot$"], titlePatterns:["^herdr$"]}` identity, with a plain
+// `^foot$` ahead of it, sees every herdr window become "terminal". The record
+// binds it wrong, a restore launches the wrong command, and the chip shows the
+// wrong name — so even unticking removes the wrong identity. Nothing anywhere
+// says so.
+//
+// The panel used to MANUFACTURE that list by prepending every new identity;
+// since tick gpq an addition is inserted behind whatever it would shadow, so
+// reaching this state takes a hand edit or a file written by an older build.
+// Which is exactly why the detector stays: the file is user-editable, and the
+// panel is not the only thing that writes it.
 //
 // This does NOT change the priority rule and does not reorder anything: list
 // order stays the contract. It only NAMES the state, because a silent wrong
@@ -782,7 +787,11 @@ function memberOccurrenceOf(key) {
 // never disagree. Pass it to groupMemberIds.
 //
 // An identity with no windows is ABSENT from byId rather than present with an
-// empty array, so `chosen.byId[id]` stays falsy for "not running".
+// empty array. Read it with `own(chosen.byId, id)` and nothing else: a bare
+// `chosen.byId[id]` answers with Object.prototype's own member for an id like
+// "constructor" or "toString" — a native function where a window list belongs,
+// which is truthy, and which is how "not running" became a TypeError in the
+// middle of a restore plan (tick 8hp). Every consumer here uses own().
 function chosenWindows(clientsJson, identities, monitorsJson) {
   var list = identities || [];
   var byId = {};

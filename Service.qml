@@ -71,9 +71,17 @@ Item {
   // A read-only state file (schema newer than this build — see
   // StateModel.writeRefusal) is a thing the user has to be TOLD, not merely
   // logged at: every edit they make from now on will be turned away. The warning
-  // goes in the log on every reload, the toast once per session, because the
-  // FileView reloads on every touch of the file and four seconds of toast per
-  // touch is how a notification stops being read.
+  // goes in the log on every reload, the toast once per DOWNGRADE EPISODE —
+  // because the FileView reloads on every touch of the file and four seconds of
+  // toast per touch is how a notification stops being read. The flag is rearmed
+  // the moment the file is writable again (see the reload handler below), so a
+  // second downgrade in one session is announced as loudly as the first.
+  //
+  // The toast is not the only surface and never was the load-bearing one: it
+  // fires at LOAD time, possibly hours before the user presses anything, and
+  // notify-send needs a notification daemon to land anywhere at all. The panel
+  // carries a persistent line for the same condition (Panel.qml's
+  // writeRefusalReason, tick sma).
   property bool futureVersionAnnounced: false
 
   // ------------------------------------------------------------ cycle state
@@ -1581,9 +1589,15 @@ Item {
   //
   // This is the line that turns "launch produced no window" from a dead end
   // into a diagnosis: the launch command worked and opened SOMETHING, it just
-  // wasn't the class the identity watches (the shared-Chromium bug wrote
+  // was not a window the identity claims (the shared-Chromium bug wrote
   // `--app=…gmail` as chromium's launch, so the window that appeared was
   // chrome-mail.google.com…, and the WARN now says so).
+  //
+  // CLASSES are what it can list, and since schema v4 an identity can also
+  // constrain `initialTitle` — so a window of the right class whose title is
+  // wrong shows up here looking correct. That is exactly the terminal case: a
+  // launch that lost its `--title` opens a `foot` window the `{^foot$ +
+  // ^herdr$}` identity does not claim, and this line will report "foot".
   function launchedClassesSince(before) {
     var seen = ({})
     var out = []
