@@ -330,6 +330,20 @@ Item {
   readonly property string shadowHint: PanelModel.shadowedIdentityHint(
     Engine.shadowedIdentities(root.liveClients, root.identities))
 
+  // Why the state file cannot be written, when it cannot: a file from a newer
+  // schema is read and run from, but never written back (StateModel.writeRefusal
+  // owns the rule and the reason).
+  //
+  // A PERSISTENT line rather than a message on the click that failed (tick sma).
+  // The condition is a property of the file, not of the moment, and every
+  // affordance in the panel is dead while it holds; the only other place it was
+  // ever said out loud is the service's notify-send at load time, possibly hours
+  // earlier, on a desk that may have no notification daemon at all.
+  readonly property string writeRefusalReason: {
+    var refusal = root.stateLoaded ? StateModel.writeRefusal(root.stateModel) : null
+    return refusal ? String(refusal) : ""
+  }
+
   // ------------------------------------------------------ launch derivation
   //
   // The user-found gap this closes: the panel writes `launch: ""` for every
@@ -1083,21 +1097,29 @@ Item {
   // nowhere else (tick 291). Such a file is read and shown, but writing it would
   // strip whatever a later version added and stamp the newer number back on the
   // remains; StateModel.writeRefusal owns that rule and the service asks it too.
+  //
+  // RETURNS whether the file now says what the caller asked for (tick sma).
+  // Every caller gates its success log on that, because the alternative is what
+  // this repo exists not to do: the refusal below was a console.warn and the
+  // next line of the caller logged "recorded 7 apps" regardless, so the panel
+  // AFFIRMED a write it had just refused. A byte-identical write is `true` —
+  // nothing was refused and the file already says it.
   function writeState(next) {
     if (!root.stateLoaded) {
       root.warn("refusing to write the state file before it has been read")
-      return
+      return false
     }
     var refusal = StateModel.writeRefusal(next)
     if (refusal) {
       root.warn("not writing the state file: " + refusal)
-      return
+      return false
     }
     var text = StateModel.serializeState(next)
-    if (text === root.lastWrittenText) return
+    if (text === root.lastWrittenText) return true
     root.lastWrittenText = text
     root.stateModel = StateModel.parseState(text).state
     stateFile.setText(text)
+    return true
   }
 
   FileView {
@@ -1306,10 +1328,11 @@ Item {
       }
     }
 
-    root.writeState(StateModel.setIdentities(root.stateModel, next))
-    root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + chip.className + "\"")
-      + " — " + next.length + " identities"
-      + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
+    if (root.writeState(StateModel.setIdentities(root.stateModel, next))) {
+      root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + chip.className + "\"")
+        + " — " + next.length + " identities"
+        + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
+    }
     // A newly ticked app whose launch could NOT be derived here has an empty one
     // by construction; go and find out what would start it while its window is
     // still in front of us.
@@ -1329,9 +1352,14 @@ Item {
   // backfill through Record without destroying the recording they are trying
   // to restore.
   //
-  // Returns the state to write, or null when there is nothing to do. The
-  // callers decide whether to write it alone or together with a layout, so a
-  // Record is still ONE atomic write and not two.
+  // Returns { state, line } — the state to write and the line to log ONCE IT IS
+  // WRITTEN — or null when there is nothing to do. The callers decide whether to
+  // write it alone or together with a layout, so a Record is still ONE atomic
+  // write and not two.
+  //
+  // The line travels back rather than being logged here (tick sma): this ran
+  // before the write was even attempted, so a refused Record still announced
+  // that it had learned three launch commands.
   function withLearnedLaunches(base) {
     var next = PanelModel.backfillLaunchCommands(StateModel.identities(base), root.derivedLaunch)
     var learned = []
@@ -1346,8 +1374,10 @@ Item {
       }
     }
     if (!learned.length) return null
-    root.log("learned " + learned.length + " launch command(s): " + learned.join("; "))
-    return StateModel.setIdentities(base, next)
+    return {
+      state: StateModel.setIdentities(base, next),
+      line: "learned " + learned.length + " launch command(s): " + learned.join("; ")
+    }
   }
 
   // What a finished scan is allowed to write on its own (tick i07).
@@ -1374,9 +1404,10 @@ Item {
     var fills = PanelModel.launchAutofillIndex(root.identities, root.derivedLaunch)
     var line = PanelModel.autofillLaunchLog(fills, source)
     if (!line) return
-    root.writeState(StateModel.setIdentities(root.stateModel,
-      PanelModel.autofillLaunchCommands(root.identities, fills)))
-    root.log(line)
+    if (root.writeState(StateModel.setIdentities(root.stateModel,
+        PanelModel.autofillLaunchCommands(root.identities, fills)))) {
+      root.log(line)
+    }
   }
 
   function learnLaunches() {
@@ -1390,7 +1421,7 @@ Item {
       root.log("nothing to learn: every watched app either has a launch command or has no derivable one")
       return
     }
-    root.writeState(learned)
+    if (root.writeState(learned.state)) root.log(learned.line)
   }
 
   // One row's worth of the same repair. The list is where the user SEES that an
@@ -1407,9 +1438,10 @@ Item {
     var one = ({})
     one[identityId] = command
     if (!PanelModel.learnableCount(root.identities, one)) return
-    root.writeState(StateModel.setIdentities(root.stateModel,
-      PanelModel.backfillLaunchCommands(root.identities, one)))
-    root.log("learned launch for \"" + identityId + "\": " + command)
+    if (root.writeState(StateModel.setIdentities(root.stateModel,
+        PanelModel.backfillLaunchCommands(root.identities, one)))) {
+      root.log("learned launch for \"" + identityId + "\": " + command)
+    }
   }
 
   // Switch the tool off, or back on.
@@ -1432,7 +1464,7 @@ Item {
       root.stateModel = fresh
       return
     }
-    root.writeState(StateModel.setPaused(fresh, next))
+    if (!root.writeState(StateModel.setPaused(fresh, next))) return
     root.log(next
       ? "paused — monitor changes will be ignored until this is switched back on"
       : "activated — monitor changes will be acted on again")
@@ -1490,13 +1522,13 @@ Item {
     var act = PanelModel.undoStashAction(stash) === "forget" ? "forget" : "record"
 
     if (PanelModel.recordUndoRestores(stash)) {
-      root.writeState(StateModel.upsertLayout(fresh, stash.previousLayout))
+      if (!root.writeState(StateModel.upsertLayout(fresh, stash.previousLayout))) return
       root.log("undid the " + act + " for topology \"" + stash.topologyKey + "\" — put back the layout"
         + " recorded at " + (stash.previousLayout.recordedAt || "an unknown time")
         + " (" + (stash.previousLayout.apps || []).length + " apps)")
       return
     }
-    root.writeState(StateModel.removeLayout(fresh, stash.topologyKey))
+    if (!root.writeState(StateModel.removeLayout(fresh, stash.topologyKey))) return
     root.log("undid the " + act + " for topology \"" + stash.topologyKey + "\" — this setup had no"
       + " layout before it, so it has none again")
   }
@@ -1508,21 +1540,25 @@ Item {
       root.warn("record refused: the monitor list resolves to no topology at all")
       return
     }
-    // ARMED BEFORE THE WRITE, from the state the write is about to replace. One
-    // stash, so a second record discards the first one's undo — which is the
-    // sketch's "single undo kept in memory until next record" exactly: the net
-    // is under the last thing you did, not under everything you have ever done.
-    root.recordUndo = {
-      topologyKey: layout.topologyKey,
-      previousLayout: StateModel.layoutFor(root.stateModel, layout.topologyKey)
-    }
+    // READ before the write, ARMED after it (tick sma). The layout this record
+    // is about to replace has to be read from the state the write will replace
+    // — but the undo BUTTON is the panel's one positive confirmation that a
+    // record happened, and arming it before the write meant a refused write
+    // grew an Undo button for a record that never took place. One stash, so a
+    // second record discards the first one's undo: the sketch's "single undo
+    // kept in memory until next record" exactly — the net is under the last
+    // thing you did, not under everything you have ever done.
+    var replaced = StateModel.layoutFor(root.stateModel, layout.topologyKey)
     // Backfill FIRST, then file the layout on top of the result, so recording
     // and learning land in the file as a single atomic write. Recording is the
     // moment the user says "this arrangement matters", which is exactly when an
     // app that cannot be relaunched stops being a curiosity and starts being
     // the reason Restore does nothing.
-    var base = root.withLearnedLaunches(root.stateModel) || root.stateModel
-    root.writeState(StateModel.upsertLayout(base, layout))
+    var learned = root.withLearnedLaunches(root.stateModel)
+    var base = learned ? learned.state : root.stateModel
+    if (!root.writeState(StateModel.upsertLayout(base, layout))) return
+    root.recordUndo = { topologyKey: layout.topologyKey, previousLayout: replaced }
+    if (learned) root.log(learned.line)
     root.log("recorded " + layout.apps.length + " apps for topology \"" + layout.topologyKey + "\"")
     // A short recording says why it is short. `excluded` is the engine's
     // structured note (tick pqv): apps deliberately left out of the layout, not
@@ -1629,8 +1665,13 @@ Item {
       root.closeOverflow()
       return
     }
+    // Armed after the write, for the reason recordLayout's comment gives: an
+    // Undo button is a claim that something happened.
+    if (!root.writeState(StateModel.removeLayout(fresh, root.topologyKey))) {
+      root.closeOverflow()
+      return
+    }
     root.recordUndo = stash
-    root.writeState(StateModel.removeLayout(fresh, root.topologyKey))
     root.log("forgot the layout for topology \"" + root.topologyKey + "\" ("
       + (stash.previousLayout.apps || []).length + " apps) — undo puts it back")
     root.closeOverflow()
@@ -1641,8 +1682,13 @@ Item {
   // flight. `restoring` comes from the service's status file, so the button
   // follows the same signal the bar glyph's sweep does, and recordHint says out
   // loud why it went dim.
+  //
+  // A read-only file dims it too (tick sma): the button's whole act is a write,
+  // and an enabled button for a write that will be refused is the affordance
+  // lying about what it does. writeRefusalReason says why, in the hint stack.
   readonly property bool canRecord: root.stateLoaded && root.haveLiveData
     && root.liveMonitors.length > 0 && !root.statusModel.restoring
+    && root.writeRefusalReason === ""
 
   // Ask the service to restore, and GET OUT OF THE WAY first.
   //
@@ -2818,6 +2864,20 @@ Item {
               width: parent.width
               visible: root.shadowHint !== ""
               text: root.shadowHint
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // The file is read-only, so nothing in this panel can change it.
+            // Said once, persistently, in the urgent colour — the alternative
+            // was a Record that logged success and grew an Undo button for a
+            // write that never happened (tick sma).
+            Text {
+              width: parent.width
+              visible: root.writeRefusalReason !== ""
+              text: "Read-only: " + root.writeRefusalReason
               color: Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

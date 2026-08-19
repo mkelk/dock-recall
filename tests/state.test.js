@@ -685,6 +685,57 @@ function occurrences(source, needle) {
   return source.split(needle).length - 1;
 }
 
+// -------------------------------------------- a refused write says so (sma)
+//
+// The blocker: press Record on a v5 file and the panel AFFIRMED SUCCESS.
+// writeState's refusal was a console.warn and a bare `return`; the next line
+// logged "recorded 7 apps" regardless; and because the undo stash was armed
+// BEFORE the write, the Undo button — the panel's one positive confirmation
+// that a record happened — appeared for a record that was refused. The user
+// walked away believing their arrangement was saved.
+//
+// The gates are QML, which node cannot instantiate, so they are pinned at the
+// source the way the writeRefusal call itself is below.
+test("a refused write can never look like it worked", () => {
+  const root = path.join(__dirname, "..");
+  const source = fs.readFileSync(path.join(root, "Panel.qml"), "utf8");
+
+  // 1. writeState ANSWERS, and answers false on both refusal paths.
+  const body = balancedBody(source, "function writeState(next) {", "Panel.qml");
+  assert.strictEqual(occurrences(body, "return false"), 2,
+    "writeState must answer false for the unread file AND for the refusal");
+  assert.ok(occurrences(body, "return true") >= 1, "and true when the file says what was asked");
+
+  // 2. EVERY caller gates on the answer. A bare `root.writeState(...)` followed
+  //    by a log line is exactly the shape this tick removed.
+  const calls = source.split("\n").filter((line) => line.indexOf("root.writeState(") !== -1);
+  assert.ok(calls.length >= 7, "the whole family is here: " + calls.length);
+  for (const line of calls) {
+    assert.ok(/if \(!?root\.writeState\(/.test(line.trim()),
+      "an ungated write, whose success log runs whatever the file did: " + line.trim());
+  }
+
+  // 3. The undo stash is armed AFTER the write, in both places that arm it.
+  //    Armed before, it grew an Undo button for a record that never happened.
+  const record = balancedBody(source, "function recordLayout() {", "Panel.qml");
+  assert.ok(record.indexOf("root.writeState(") < record.indexOf("root.recordUndo = {"),
+    "recordLayout arms the undo before the write it may not survive");
+  const forget = balancedBody(source, "function forgetLayout() {", "Panel.qml");
+  assert.ok(forget.indexOf("root.writeState(") < forget.indexOf("root.recordUndo = stash"),
+    "forgetLayout arms the undo before the write it may not survive");
+
+  // 4. And the panel SAYS the file is read-only, persistently, rather than
+  //    leaving the only word on the subject to a notify-send toast at load
+  //    time — on a desk that may have no notification daemon at all.
+  assert.ok(/property string writeRefusalReason/.test(source),
+    "Panel.qml never asks StateModel.writeRefusal about the file it is showing");
+  assert.ok(/visible: root\.writeRefusalReason !== ""/.test(source),
+    "the read-only reason is never rendered");
+  const canRecord = source.slice(source.indexOf("readonly property bool canRecord:"));
+  assert.ok(canRecord.slice(0, 400).indexOf("writeRefusalReason") !== -1,
+    "canRecord offers a Record the file will refuse");
+});
+
 test("every writer of the state file consults writeRefusal before touching the disk", () => {
   const root = path.join(__dirname, "..");
 
