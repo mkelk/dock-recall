@@ -1300,6 +1300,67 @@ function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree)
   return joinLines(lines);
 }
 
+// The same fact the hint states in a sentence, as a set of identity ids — so
+// the LIST can carry it too: { identityId: className }.
+//
+// Why the list needs it (tick 1m4). A title identity created for a bare
+// terminal matches no window until that terminal is relaunched with `--title`.
+// Until then it has no chip and no row, so pressing the chip again re-ticks
+// idempotently instead of unticking, and the only way back from a mis-tick was
+// a hand edit of the state file. appRows turns this index into a row that is
+// ticked, says why it is not running, and unticks on a click — the recovery.
+//
+// EVIDENCE, not a prediction, exactly as the hint is: an id appears only while
+// a live TERMINAL window of the identity's own class is on screen and nothing
+// resolves to the identity, and it is gone the moment a window matches.
+//
+// Two things the hint asks for and this deliberately does not:
+//
+//   the /proc read — the row has to survive a panel frame whose cmdline map has
+//   not come back yet (it is refreshed on every open), and a row that blinks
+//   out while the user is reaching for it is worse than a row that says one
+//   sentence less. What the child process is called does not change the answer:
+//   the identity is on the watched list either way, and either way it matches
+//   nothing.
+//
+//   non-terminal classes — a webapp identity (`chromium` + `^Slack$`) whose
+//   window is simply closed is an ORDINARY not-running app, and telling that
+//   user to relaunch with `--title` would be advice about the wrong thing. The
+//   terminal case is the one where "not running" and "not titled" cannot be
+//   told apart, and where the same relaunch is the fix for both.
+function awaitingTitleIndex(clients, identities, resolve) {
+  var list = isArray(identities) ? identities : [];
+  var live = isArray(clients) ? clients : [];
+  var resolver = typeof resolve === "function" ? resolve : function () { return ""; };
+
+  var satisfied = {};
+  for (var c = 0; c < live.length; c++) {
+    var matched = trim(resolver(live[c]));
+    if (matched) satisfied[matched] = true;
+  }
+
+  var out = {};
+  for (var i = 0; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+    if (!titles.length) continue;
+    if (own(satisfied, identity.id)) continue;
+
+    for (var w = 0; w < live.length; w++) {
+      var client = live[w];
+      if (!isMappable(client)) continue;
+      var className = trim(client.class) || trim(client.initialClass);
+      if (!isTerminalClass(className)) continue;
+      if (!patternListHas(identity.patterns, derivePattern(className))) continue;
+      out[identity.id] = className;
+      break;
+    }
+  }
+
+  return out;
+}
+
 // The pids of the live TERMINAL windows, in client order and without repeats.
 //
 // Why the panel reads these at all: a terminal's class says nothing about the
@@ -4076,12 +4137,25 @@ function comparePlacement(a, b) {
 // callers that predate the launch-derivation repair keep working and simply
 // get launchState "" on every row.
 //
-// THREE ROW STATES, and the third one is the repair this function exists in its
+// FOUR ROW STATES, and the last two are the repairs this function exists in its
 // current shape for:
 //
 //   watched          — an identity on the list. Ticked; a click unticks it.
 //   unwatched        — a live window matching nothing. Unticked; a click
 //                      watches it.
+//   awaitingTitle    — a watched TITLE identity that matches no window yet,
+//                      because the terminal it was derived from has not been
+//                      relaunched with `--title` (see awaitingTitleIndex). It
+//                      has no recorded placement either, so before tick 1m4 it
+//                      produced nothing at all: no chip, no row, and pressing
+//                      the chip again re-ticked idempotently rather than
+//                      unticking, which left a mis-tick recoverable only by
+//                      hand-editing the state file. It is a watched identity
+//                      like any other, so it renders as one — ticked, clickable,
+//                      and a click removes it — and it says WHY it is not
+//                      running rather than reading as an app that is merely
+//                      closed. It disappears into an ordinary chip and row the
+//                      moment a matching window exists.
 //   recordedUnwatched — an identity the RECORDING still refers to but the
 //                      watched list no longer has. It used to render ticked,
 //                      because "it is in the layout" was mistaken for "it is
@@ -4193,6 +4267,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       // ever false: every live window can be ticked or unticked.
       clickable: true,
       recordedUnwatched: false,
+      awaitingTitle: false,
       occurrence: 0,
       instances: 1,
       position: livePlacementLabel(unwatchedClient, monitors)
@@ -4266,6 +4341,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
           ghost: false,
           clickable: true,
           recordedUnwatched: false,
+          awaitingTitle: false,
           occurrence: occurrence,
           instances: count,
           position: livePlacementLabel(client, monitors)
@@ -4327,6 +4403,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
           // exactly the bug this row replaces.
           clickable: false,
           recordedUnwatched: true,
+          awaitingTitle: false,
           occurrence: occurrence,
           instances: count,
           position: where + " · recorded · no longer watched",
@@ -4351,6 +4428,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         ghost: true,
         clickable: true,
         recordedUnwatched: false,
+        awaitingTitle: false,
         occurrence: occurrence,
         instances: count,
         position: where + " · not running",
@@ -4365,6 +4443,62 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         launchState: own(launch, identityId) || "",
         launchHint: launchHintFor(own(launch, identityId) || ""),
         launchRepairable: !!own(repairs, identityId)
+      } });
+    }
+  }
+
+  // ---- watched identities waiting for a title ----------------------------
+  //
+  // The fourth row state (see above). These identities are on the watched list
+  // and NOT in the instance index at all: no window resolves to them, and the
+  // recording — if there is one — has never seen them either, because they were
+  // created after the last Record and match nothing to record. So no loop above
+  // can reach them, and without this pass the panel's only trace of them is the
+  // untitledTerminalHint sentence, which explains the situation but cannot undo
+  // it.
+  //
+  // Only with an identity list: without one there is nothing to enumerate, and
+  // every caller that predates this gets exactly the rows it got before.
+  if (haveIdentityList) {
+    var awaiting = awaitingTitleIndex(list, identityList, resolver);
+    for (var t = 0; t < identityList.length; t++) {
+      var waiting = identityList[t];
+      if (!waiting || typeof waiting.id !== "string" || !waiting.id) continue;
+      if (!own(awaiting, waiting.id)) continue;
+      // Belt and braces: an identity the index knows already has a row of its
+      // own — a live one, or the recorded ghost above — and both are clickable.
+      // A second row for it would be the same tick offered twice.
+      if (own(index.byIdentity, waiting.id)) continue;
+      var waitingState = own(launch, waiting.id) || "";
+      entries.push({ place: UNPLACED, occurrence: 0, row: {
+        // One window at most is ever waiting on one title, so this identity has
+        // exactly one instance and spells its keys the bare single-window way.
+        key: waiting.id,
+        identityId: waiting.id,
+        // No live window, so no class — the same "" the recorded ghosts carry,
+        // and what makes a click on this row an untick by identity id.
+        className: "",
+        linkKey: instanceLinkKeyFor(waiting.id, "", 0, 1),
+        name: instanceNameFor(waiting.id, 0, 1),
+        watched: true,
+        ghost: true,
+        clickable: true,
+        recordedUnwatched: false,
+        awaitingTitle: true,
+        occurrence: 0,
+        instances: 1,
+        // WHY it is not running, not just that it is not: an ordinary closed app
+        // comes back when it is started again, and this one will not until the
+        // terminal hosting it carries a title of its own. The exact command is
+        // in the panel's own hint line (untitledTerminalHint) — saying it twice
+        // on a row that has no room for it would only crowd out the app's name.
+        position: "not running · will match once relaunched with --title",
+        drifted: false,
+        driftTo: "",
+        mismatch: "",
+        launchState: waitingState,
+        launchHint: launchHintFor(waitingState),
+        launchRepairable: !!own(repairs, waiting.id)
       } });
     }
   }
@@ -4936,6 +5070,7 @@ if (typeof module !== "undefined") {
     tickRefusalReason: tickRefusalReason,
     tickRefusalHint: tickRefusalHint,
     untitledTerminalHint: untitledTerminalHint,
+    awaitingTitleIndex: awaitingTitleIndex,
     shadowNoticeFor: shadowNoticeFor,
     shadowedIdentityHint: shadowedIdentityHint,
     shellQuoteArg: shellQuoteArg,

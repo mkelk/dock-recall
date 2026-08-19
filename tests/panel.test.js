@@ -3555,6 +3555,82 @@ test("the panel names the exact relaunch command until a matching window exists"
     resolver([{ id: "terminal", patterns: ["^foot$"], titlePatterns: [] }]), argvByPid, procTree), "");
 });
 
+test("a title identity with no window yet still gets a row, and the row unticks it", () => {
+  // The gap tick 1m4 closes. Ticking a bare terminal creates a correct identity
+  // that matches nothing yet, so it produced no chip and no row — and pressing
+  // the chip again re-ticked idempotently rather than unticking, because there
+  // was no ticked chip to clear. A mis-tick could only be undone by editing the
+  // state file by hand.
+  const procTree = panel.procTreeFromDump(procDump([
+    { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["herdr"] }] }
+  ]));
+  const identities = panel.toggleWatchedIdentities([], "foot", "",
+    panel.terminalTickDerivation("foot", ["foot"], procTree["268861"], "foot"),
+    engine.couldShadow);
+  assert.deepStrictEqual(identities.map((i) => i.id), ["herdr"]);
+  assert.ok(!engine.matchClient(BARE_WINDOW, identities),
+    "the ticked window still matches nothing — that is the whole problem");
+
+  const rows = panel.appRows([BARE_WINDOW], monitorsLaptop, resolver(identities),
+    null, null, identities, {});
+  const herdr = rows.filter((r) => r.identityId === "herdr");
+  assert.strictEqual(herdr.length, 1, "the identity has a row of its own");
+  assert.strictEqual(herdr[0].watched, true, "it IS watched, so it renders ticked");
+  assert.strictEqual(herdr[0].awaitingTitle, true);
+  assert.strictEqual(herdr[0].clickable, true, "and a click can take it back off");
+  // WHY it is not running, which is what tells it apart from a closed app.
+  assert.strictEqual(herdr[0].position,
+    "not running · will match once relaunched with --title");
+  assert.strictEqual(herdr[0].ghost, true);
+  // The untick, end to end: the row carries no class, so it is removed by id —
+  // and the identity is gone without a hand edit anywhere.
+  assert.deepStrictEqual(
+    panel.toggleWatchedIdentities(identities, herdr[0].className, herdr[0].identityId,
+      null, engine.couldShadow), []);
+
+  // It becomes an ORDINARY row the moment a matching window exists — one row,
+  // not two, and no longer a ghost.
+  const relaunched = panel.appRows([TITLED_WINDOW], monitorsLaptop, resolver(identities),
+    null, null, identities, {});
+  const matched = relaunched.filter((r) => r.identityId === "herdr");
+  assert.strictEqual(matched.length, 1);
+  assert.strictEqual(matched[0].awaitingTitle, false);
+  assert.strictEqual(matched[0].ghost, false);
+
+  // Evidence, not a prediction, exactly like the hint: no terminal of that class
+  // on screen, no row.
+  assert.deepStrictEqual(panel.awaitingTitleIndex([], identities, resolver(identities)), {});
+  assert.deepStrictEqual(panel.appRows([], monitorsLaptop, resolver(identities),
+    null, null, identities, {}), []);
+  assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW], identities, resolver(identities)),
+    { herdr: "foot" });
+  assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW, TITLED_WINDOW], identities,
+    resolver(identities)), {}, "and it clears the moment a window matches");
+
+  // A webapp identity whose window is simply closed is an ordinary closed app,
+  // and `--title` is advice about the wrong thing.
+  const slack = [{ id: "slack", patterns: ["^chromium$"], titlePatterns: ["^Slack$"], launch: "" }];
+  assert.deepStrictEqual(panel.awaitingTitleIndex(
+    [makeClient({ class: "chromium", initialTitle: "News" })], slack, resolver(slack)), {});
+  // A class-only identity is not this problem either — it matches its terminal
+  // already.
+  const wide = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
+  assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW], wide, resolver(wide)), {});
+
+  // A recorded placement already gives the identity a clickable "not running"
+  // row; this pass must not add a second one for the same tick.
+  const layout = {
+    apps: [{ identityId: "herdr", monitorDescription: "Samsung Display Corp. ATNA60HR07-0",
+      workspaceId: 3, occurrence: 0 }]
+  };
+  const recorded = panel.appRows([BARE_WINDOW], monitorsLaptop, resolver(identities),
+    null, layout, identities, {}).filter((r) => r.identityId === "herdr");
+  assert.strictEqual(recorded.length, 1);
+  assert.strictEqual(recorded[0].awaitingTitle, false);
+  assert.ok(recorded[0].position.indexOf("not running") !== -1, recorded[0].position);
+  assert.strictEqual(recorded[0].clickable, true);
+});
+
 test("the panel knows which pids to read and which window a tick is about", () => {
   const clients = loadFixture("clients-titled-terminal.json");
   // Terminals get their cmdline read whether or not they are watched: the
