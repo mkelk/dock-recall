@@ -1336,7 +1336,14 @@ Item {
     }
 
     if (root.writeState(StateModel.setIdentities(root.stateModel, next))) {
-      root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + chip.className + "\"")
+      // Name the identity the write actually created (tick l97), not the class
+      // that was clicked — a title identity (foot hosting btop) creates an id
+      // unrelated to the class ticked, and even the ordinary case (ticking
+      // md.obsidian.Obsidian creates id "obsidian") reads clearer this way.
+      // `added` falls back to the class only in the defensive case where the
+      // toggle added nothing (chip.identityId is already handled above).
+      var createdId = added ? added.id : chip.className
+      root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + createdId + "\"")
         + " — " + next.length + " identities"
         + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
     }
