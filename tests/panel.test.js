@@ -5179,3 +5179,135 @@ test("Panel.qml supplies the same inputs to the renamed hint", () => {
   assert.ok(binding.slice(0, 300).indexOf("root.liveClients") !== -1, binding.slice(0, 300));
   assert.ok(binding.slice(0, 300).indexOf("Engine.matchClient") !== -1, binding.slice(0, 300));
 });
+
+// ------------------------------------------- one question, asked once (zkb)
+//
+// Cleanup B. A single chip click asked suggestIdentity TWICE — once through
+// tickRefusalReason to find out whether to refuse, and again inside
+// toggleWatchedIdentities to build the list — and then diffed the two lists with
+// addedIdentity to recover the identity the second call had just built and
+// thrown away. Three passes over the same question, and three places for the
+// answers to disagree if any of them ever grew a condition the others lacked.
+//
+// tickOutcome is that question asked once: what does this click DO?
+
+test("tickOutcome answers the whole click in one pass", () => {
+  const derivation = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+
+  // A tick that adds.
+  const add = panel.tickOutcome([], "foot", "", derivation, engine.couldShadow);
+  assert.strictEqual(add.refusal, "");
+  assert.deepStrictEqual(add.added, {
+    id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  });
+  assert.deepStrictEqual(add.identities, [add.added]);
+
+  // An UNTICK names no addition and needs no proposal at all.
+  const off = panel.tickOutcome(add.identities, "foot", "herdr", derivation, engine.couldShadow);
+  assert.strictEqual(off.refusal, "");
+  assert.strictEqual(off.added, null);
+  assert.deepStrictEqual(off.identities, []);
+
+  // A refusal: the list is untouched and the reason travels.
+  const refused = panel.tickOutcome([], "foot", "", null, engine.couldShadow);
+  assert.strictEqual(refused.refusal, "not-read");
+  assert.strictEqual(refused.added, null);
+  assert.deepStrictEqual(refused.identities, []);
+
+  // The duplicate from tick v5c arrives the same way.
+  const dup = panel.tickOutcome(add.identities, "foot", "", derivation, engine.couldShadow);
+  assert.strictEqual(dup.refusal, "already-watched");
+  assert.strictEqual(dup.added, null);
+  assert.deepStrictEqual(dup.identities, add.identities);
+
+  // A class that derives no pattern at all: nothing to add, nothing to say.
+  const nothing = panel.tickOutcome([], "", "", null, engine.couldShadow);
+  assert.strictEqual(nothing.refusal, "");
+  assert.strictEqual(nothing.added, null);
+  assert.deepStrictEqual(nothing.identities, []);
+});
+
+test("toggleWatchedIdentities is tickOutcome's list, so the two cannot disagree", () => {
+  const derivation = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+  const cases = [
+    [[], "foot", "", derivation],
+    [[], "chromium", "", null],
+    [[{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }], "foot", "herdr", null],
+    [[{ id: "browser", patterns: ["^chromium$"], launch: "" }], "chromium", "", null]
+  ];
+  for (const [identities, className, identityId, derived] of cases) {
+    assert.deepStrictEqual(
+      panel.toggleWatchedIdentities(identities, className, identityId, derived, engine.couldShadow),
+      panel.tickOutcome(identities, className, identityId, derived, engine.couldShadow).identities,
+      className + "/" + identityId);
+  }
+});
+
+test("the panel asks each of these questions exactly once", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const serviceSource = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8");
+
+  function bodyOf(source, header, what) {
+    const start = source.indexOf(header);
+    assert.ok(start !== -1, what + " has no " + header);
+    let depth = 0;
+    for (let i = start + header.length - 1; i < source.length; i++) {
+      if (source[i] === "{") depth += 1;
+      else if (source[i] === "}") {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, i + 1);
+      }
+    }
+    assert.fail(what + ": unbalanced braces after " + header);
+  }
+  const count = (text, needle) => text.split(needle).length - 1;
+
+  // One click, one proposal. toggleWatchedIdentities and addedIdentity were the
+  // second and third passes over it.
+  const toggle = bodyOf(panelSource, "function toggleChip(chip) {", "Panel.qml");
+  assert.strictEqual(count(toggle, "PanelModel.tickOutcome("), 1, toggle);
+  assert.strictEqual(count(toggle, "PanelModel.tickRefusalReason("), 0,
+    "toggleChip still asks the refusal question separately from the toggle");
+  assert.strictEqual(count(toggle, "PanelModel.toggleWatchedIdentities("), 0, toggle);
+  assert.strictEqual(count(toggle, "PanelModel.addedIdentity("), 0,
+    "toggleChip still recovers the added identity by diffing two lists");
+
+  // One state read, one refusal question. loadState asked writeRefusal twice
+  // about the same object.
+  const load = bodyOf(serviceSource, "function loadState(raw, exists) {", "Service.qml");
+  assert.strictEqual(count(load, "StateModel.writeRefusal("), 1, load);
+});
+
+test("the /proc maps are reassigned only when they changed", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // Every ~4 s the cmdline read landed and reassigned both maps whatever it
+  // found, and every binding downstream of them — the whole launch derivation
+  // chain, the hints, the rows — re-evaluated for nothing. The read still
+  // happens; only a CHANGED answer is published.
+  // The publish of each merged map has to sit inside the comparison against
+  // its own serialized shadow, and there must be exactly one of each.
+  const guards = [
+    ["argvByPid", "if (mergedText !== root.argvByPidText) {", "root.argvByPid = merged"],
+    ["procTree", "if (mergedTreeText !== root.procTreeText) {", "root.procTree = mergedTree"]
+  ];
+  for (const [map, guard, publish] of guards) {
+    const at = source.indexOf(guard);
+    assert.ok(at !== -1, map + " is published without comparing against its last published value");
+    const published = source.indexOf(publish, at);
+    assert.ok(published !== -1 && published - at < 120,
+      map + " is published somewhere other than inside its guard");
+    assert.strictEqual(source.split(publish).length - 1, 1,
+      map + " is published more than once, so one of them is unguarded");
+  }
+  // And the shadows are dropped with the maps when the panel forgets its reads,
+  // or the next read would compare against a picture the panel no longer holds.
+  const forget = source.slice(source.indexOf("function forgetProcReads()"));
+  assert.ok(forget.slice(0, 500).indexOf("argvByPidText") !== -1, forget.slice(0, 500));
+  assert.ok(forget.slice(0, 500).indexOf("procTreeText") !== -1, forget.slice(0, 500));
+});

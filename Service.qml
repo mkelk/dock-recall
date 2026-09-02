@@ -614,6 +614,12 @@ Item {
 
     root.stateReadRetries = 0
 
+    // ONE question about this state, asked once (tick zkb). It used to be asked
+    // twice — here for the notice, and again at the bottom to rearm the toast —
+    // about the same object, which is one place too many for a rule this file
+    // does not own.
+    var refusal = StateModel.writeRefusal(result.state)
+
     if (result.recovered) {
       // The file is not there at all: first run. Say so, then write the
       // default — FileView cannot watch a file that does not exist.
@@ -625,7 +631,6 @@ Item {
       // file (tick 291), and — since tick t03 — nothing may restore from it
       // either. Both said in the same words the refusals themselves use, so the
       // log reads as one story.
-      var refusal = StateModel.writeRefusal(result.state)
       if (refusal) {
         root.warn("running READ-ONLY from this file — " + refusal)
         root.warn("and INERT — " + StateModel.restoreRefusal(result.state))
@@ -651,7 +656,7 @@ Item {
     // Writable again — the user upgraded the plugin, or moved the newer file
     // aside. Rearm the toast so a second downgrade is announced as loudly as
     // the first.
-    if (!StateModel.writeRefusal(result.state)) root.futureVersionAnnounced = false
+    if (!refusal) root.futureVersionAnnounced = false
 
     // Captured before the assignment, for the same reason `previous` is: the
     // toast below is about the DIFFERENCE, and only a reload that CHANGES the

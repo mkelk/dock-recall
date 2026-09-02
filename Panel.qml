@@ -378,6 +378,22 @@ Item {
   // child, and this is the only place the panel can see it.
   property var procTree: ({})
 
+  // The last PUBLISHED value of each, serialized (tick zkb).
+  //
+  // The /proc read lands roughly every four seconds while the panel is open —
+  // a terminal's answer expires after 3 s by design, because what runs inside
+  // one changes under a stable pid. Both maps were then reassigned whatever
+  // came back, and QML notices an assignment, not a difference: the entire
+  // derivation chain downstream of them re-evaluated on every read, almost
+  // always to the identical answer. The READ is unchanged and still expires;
+  // only a changed answer is published.
+  //
+  // Serialized rather than deep-compared because these are plain JSON-shaped
+  // maps built the same way every time, so equal content serializes equally.
+  // A false "changed" costs exactly what every read used to cost.
+  property string argvByPidText: "{}"
+  property string procTreeText: "{}"
+
   // The identities with no launch command, paired with whatever the live
   // desktop knows about them.
   readonly property var launchRequests: {
@@ -982,6 +998,10 @@ Item {
     root.cmdlineTriedAt = ({})
     root.argvByPid = ({})
     root.procTree = ({})
+    // The published-value shadows go with them, or the next read would compare
+    // against an hour-old picture and decline to publish the fresh one.
+    root.argvByPidText = "{}"
+    root.procTreeText = "{}"
   }
 
   function refreshCmdlines() {
@@ -1048,7 +1068,12 @@ Item {
         if (!asked[known]) merged[known] = root.argvByPid[known]
       }
       for (var pid in fresh) merged[pid] = fresh[pid]
-      root.argvByPid = merged
+      // Published only if it actually differs — see argvByPidText.
+      var mergedText = JSON.stringify(merged)
+      if (mergedText !== root.argvByPidText) {
+        root.argvByPidText = mergedText
+        root.argvByPid = merged
+      }
 
       var freshTree = PanelModel.procTreeFromDump(text)
       var mergedTree = ({})
@@ -1056,7 +1081,11 @@ Item {
         if (!asked[seen]) mergedTree[seen] = root.procTree[seen]
       }
       for (var root_pid in freshTree) mergedTree[root_pid] = freshTree[root_pid]
-      root.procTree = mergedTree
+      var mergedTreeText = JSON.stringify(mergedTree)
+      if (mergedTreeText !== root.procTreeText) {
+        root.procTreeText = mergedTreeText
+        root.procTree = mergedTree
+      }
 
       root.autoFillLaunches("cmdline read")
     }
@@ -1321,11 +1350,19 @@ Item {
     }
     var derivation = root.tickDerivation(chip)
 
+    // ONE question, asked once (tick zkb). This used to ask suggestIdentity
+    // twice — through tickRefusalReason and again inside
+    // toggleWatchedIdentities — and then diff the two lists with addedIdentity
+    // to recover the identity the second call had already built. tickOutcome
+    // answers all three at once: whether to refuse, what to write, and what
+    // was added.
+    var outcome = PanelModel.tickOutcome(root.identities, chip.className, chip.identityId,
+      derivation, Engine.couldShadow)
+
     // A tick that cannot produce a working identity says so rather than writing
     // the `^foot$` catch-all (tick gpq). The reason is kept, not the sentence:
     // the hint re-asks the question every frame and clears itself.
-    var refusal = chip.identityId ? ""
-      : PanelModel.tickRefusalReason(chip.className, root.identities, derivation)
+    var refusal = chip.identityId ? "" : outcome.refusal
     if (refusal) {
       root.refusedTick = { className: chip.className, address: chip.address || "" }
       root.warn("tick refused for \"" + chip.className + "\" (" + refusal + "): "
@@ -1337,8 +1374,7 @@ Item {
     }
     root.refusedTick = null
 
-    var next = PanelModel.toggleWatchedIdentities(root.identities, chip.className, chip.identityId,
-      derivation, Engine.couldShadow)
+    var next = outcome.identities
 
     // DERIVE BEFORE THE WRITE (tick i07). A tick creates an identity with an
     // empty launch, and "" means never start this one — so if the panel can
@@ -1346,7 +1382,7 @@ Item {
     // scan, or its argv is in the cmdline map), the launch goes into the SAME
     // write. When it cannot, the empty write still happens instantly, and the
     // scan this call kicks off fills it in through autoFillLaunches.
-    var added = PanelModel.addedIdentity(root.identities, next)
+    var added = outcome.added
     // A title identity arrives with its launch already filled: the derivation
     // that named the app also built the command, so there is nothing left for
     // the autofill pass to fill and the log would otherwise claim nothing was

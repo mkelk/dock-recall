@@ -463,6 +463,31 @@ function suggestIdentity(className, identities, derivation) {
 // lives beside the matcher. Without it the insert prepends, which is what every
 // caller that predates tick gpq expects.
 function toggleWatchedIdentities(identities, className, identityId, derivation, couldShadow) {
+  return tickOutcome(identities, className, identityId, derivation, couldShadow).identities;
+}
+
+// EVERYTHING one chip click does, decided once (tick zkb).
+//
+// A single click used to ask suggestIdentity TWICE — through tickRefusalReason
+// to decide whether to refuse, and again inside toggleWatchedIdentities to
+// build the list — and then diff the two lists with addedIdentity to recover
+// the identity the second call had just built and discarded. Three passes over
+// one question, and three places for the answers to drift apart the day any of
+// them grows a condition the others lack.
+//
+// Returns { refusal, identities, added }:
+//   refusal    — the reason to say no, or "". The panel shows it and writes
+//                nothing.
+//   identities — the list to write. Always a new array, and equal to the input
+//                (by value) whenever nothing changed.
+//   added      — the identity this click created, or null. The panel's success
+//                line names it, so it must be the object that was actually
+//                inserted rather than one recovered by comparing lists.
+//
+// toggleWatchedIdentities is this function's `identities`, so the two can never
+// answer differently; the panel calls this one, and the older name stays for
+// the callers and tests that only ever wanted the list.
+function tickOutcome(identities, className, identityId, derivation, couldShadow) {
   var list = isArray(identities) ? identities : [];
   var wanted = trim(identityId);
 
@@ -472,17 +497,23 @@ function toggleWatchedIdentities(identities, className, identityId, derivation, 
       if (list[i] && list[i].id === wanted) continue;
       out.push(list[i]);
     }
-    return out;
+    return { refusal: "", identities: out, added: null };
   }
 
   var addition = suggestIdentity(className, list, derivation);
-  // Nothing to add (already watched), or a refusal — which is a message for the
-  // user, not a list. The caller asks tickRefusalReason BEFORE toggling so it
-  // can say so; here it is simply an unchanged list.
-  if (!addition || addition.refusal) return list.slice();
+  // Null is "there is no proposal to make at all" (a class that derives no
+  // pattern); a refusal is a message for the user. Neither changes the list.
+  if (!addition) return { refusal: "", identities: list.slice(), added: null };
+  if (addition.refusal) {
+    return { refusal: String(addition.refusal), identities: list.slice(), added: null };
+  }
 
   var at = insertionIndexFor(addition, list, couldShadow);
-  return list.slice(0, at).concat([addition]).concat(list.slice(at));
+  return {
+    refusal: "",
+    identities: list.slice(0, at).concat([addition]).concat(list.slice(at)),
+    added: addition
+  };
 }
 
 // Do two identities constrain the same window CLASS at all?
@@ -5406,6 +5437,7 @@ if (typeof module !== "undefined") {
     displayNameFor: displayNameFor,
     suggestIdentity: suggestIdentity,
     toggleWatchedIdentities: toggleWatchedIdentities,
+    tickOutcome: tickOutcome,
     sharesClassPattern: sharesClassPattern,
     insertionIndexFor: insertionIndexFor,
     tickRefusalReason: tickRefusalReason,
