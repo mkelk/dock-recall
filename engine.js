@@ -152,15 +152,43 @@ function monitorByDescription(monitorsJson, desc) {
 // Identity order stays priority order, so a title identity must sit BEFORE the
 // catch-all terminal identity that would otherwise claim its window first.
 
+// Compiled patterns, keyed by their source string.
+//
+// THE CACHE INVARIANT: one pattern string always compiles to the same regex, so
+// one compiled object per source may be shared by every caller. That holds only
+// because the flags are fixed at "i" and there is no /g anywhere here — a
+// global regex carries `lastIndex` between calls, and sharing one would make
+// `.test` answer differently depending on who asked last. A pattern that does
+// NOT compile caches its `null` too: a typo in a hand-edited file is asked
+// about exactly as often as a good one.
+//
+// Why it earns its keep: shadowedIdentities is O(clients x identities^2) and
+// sits on a binding that re-evaluates on every Hyprland event, so the same
+// dozen patterns were recompiled thousands of times per refresh. Behaviour is
+// identical either way — this is a memo of a pure function, not a decision.
+//
+// Never evicted, and it does not need to be: the key space is the DISTINCT
+// pattern strings of a state file a human hand-edits — tens, not thousands —
+// and nothing a window can inject reaches it. The "re:" prefix keeps a pattern
+// spelled `__proto__` or `constructor` off Object.prototype's members (see the
+// reserved-id note above `own` in StateModel.js), so the hasOwnProperty guard
+// is the whole of the repair this map needs.
+var COMPILED_PATTERNS = {};
+
 // Compile a pattern string. A user-editable list can contain a typo; a bad
 // regex must not take the whole engine down, so it simply never matches.
 function compilePattern(pattern) {
   if (typeof pattern !== "string" || !pattern) return null;
+  var key = "re:" + pattern;
+  if (Object.prototype.hasOwnProperty.call(COMPILED_PATTERNS, key)) return COMPILED_PATTERNS[key];
+  var compiled = null;
   try {
-    return new RegExp(pattern, "i");
+    compiled = new RegExp(pattern, "i");
   } catch (e) {
-    return null;
+    compiled = null;
   }
+  COMPILED_PATTERNS[key] = compiled;
+  return compiled;
 }
 
 // A pattern list, or an empty one. ES5, and no assumption about the QML JS

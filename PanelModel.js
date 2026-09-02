@@ -261,13 +261,15 @@ function displayNameFor(className) {
   return id ? titleCase(id) : trim(className);
 }
 
-// Does this pattern list already carry this exact pattern string?
+// Does this pattern list already carry this EXACT pattern string?
+//
+// Its one caller left is the duplicate guard, where exact equality is the right
+// question: it compares a pattern this file just generated against patterns
+// stored in the file, and two identities are duplicates only when they say the
+// same thing. Every place that asks whether a pattern MATCHES something reads
+// it the matcher's way instead — matchesAnyPattern, tick 7qe.
 function patternListHas(value, pattern) {
-  var list = isArray(value) ? value : [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] === pattern) return true;
-  }
-  return false;
+  return (isArray(value) ? value : []).indexOf(pattern) !== -1;
 }
 
 // THE DUPLICATE GUARD, and what it compares now that an identity has two axes.
@@ -368,11 +370,11 @@ function suggestIdentity(className, identities, derivation) {
   // The refusal comes AFTER the duplicate guard on purpose: ticking something
   // already watched is a no-op whatever its class, and answering "refused"
   // there would be a complaint about a click that changed nothing.
+  // A refusal carries the reason and nothing else. It used to repeat the class
+  // back as well, and no caller ever read it: every one of them — the panel's
+  // refusal line included — already has the class it just passed in.
   if (!titlePattern && isTerminalClass(className)) {
-    return {
-      refusal: trim(answer.reason) || "not-read",
-      className: trim(className)
-    };
+    return { refusal: trim(answer.reason) || "not-read" };
   }
 
   var base = (titlePattern ? identityIdFromTitle(title) : deriveIdentityId(className)) || "app";
@@ -576,10 +578,11 @@ function shadowNoticeFor(entry) {
   if (!id || !names) return "";
 
   var matched = Number(entry.windows) || 0;
-  // How many of them the NAMED claimants took. Absent (or nonsense) means the
-  // caller only counted matches, which is what `windows` meant before ytt.
-  var took = (entry.claimed === undefined || entry.claimed === null)
-    ? matched : (Number(entry.claimed) || 0);
+  // How many of them the NAMED claimants took. engine.shadowedIdentities is the
+  // only producer of these entries and it always writes the field; the
+  // pre-ytt fallback that read an absent one as "all of them" outlived the
+  // shape it was compensating for.
+  var took = Number(entry.claimed) || 0;
   if (took > matched) took = matched;
 
   var windows;

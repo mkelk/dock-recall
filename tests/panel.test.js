@@ -3279,7 +3279,7 @@ test("a refusal proposes nothing at all, and says why", () => {
   // click happened to catch. Tick gpq made it a refusal the panel says out loud.
   const ambiguous = footChildDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
   assert.deepStrictEqual(panel.suggestIdentity("foot", [], ambiguous),
-    { refusal: "several-children", className: "foot" });
+    { refusal: "several-children" });
 
   // Same for a terminal whose cmdline has not come back yet, and for a caller
   // that passes no derivation at all.
@@ -3467,7 +3467,7 @@ test("a shell or flag-only argv never trusts a shell-retitled window title", () 
   for (const argv of [["foot", "--working-directory=/x"], ["foot", "fish"]]) {
     assert.deepStrictEqual(
       panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", argv, null, "~/proj")),
-      { refusal: "no-title", className: "foot" });
+      { refusal: "no-title" });
   }
 
   // A REAL hosted command is still trusted — that is the case the branch exists
@@ -3502,7 +3502,7 @@ test("no title travels with a command the panel refuses to run", () => {
   for (const argv of [flagged, shown]) {
     const derived = panel.terminalTickDerivation("foot", argv, null, "herdr");
     assert.deepStrictEqual(panel.suggestIdentity("foot", [], derived),
-      { refusal: "unrunnable-command", className: "foot" });
+      { refusal: "unrunnable-command" });
     assert.strictEqual(panel.tickRefusalReason("foot", [], derived), "unrunnable-command");
     const hint = panel.tickRefusalHint("foot", "unrunnable-command");
     assert.ok(hint.indexOf("cannot be turned into a command that runs") !== -1, hint);
@@ -3523,9 +3523,9 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
 
   // The /proc read has not come back yet — the race the panel admits to.
   assert.deepStrictEqual(panel.suggestIdentity("foot", []),
-    { refusal: "not-read", className: "foot" });
+    { refusal: "not-read" });
   assert.deepStrictEqual(panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", null, null, "foot")),
-    { refusal: "not-read", className: "foot" });
+    { refusal: "not-read" });
   // Two children: naming one of them would be a guess.
   assert.strictEqual(
     panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", ["foot"], twoChildren, "foot")).refusal,
@@ -4641,7 +4641,7 @@ test("the shadow notice names the losing identity, its shadower and the fix", ()
   // `strict` is the engine's answer to "is the claimant wider BY CONSTRUCTION"
   // — a class-only rule in front of a class+title one is. Only then is the
   // instruction provably safe advice (tick ytt).
-  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"], strict: true });
+  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true });
 
   assert.ok(line.indexOf('"herdr"') >= 0, line);
   assert.ok(line.indexOf('"terminal"') >= 0, line);
@@ -4667,12 +4667,12 @@ test("without a strict-subset relation the notice observes rather than instructs
 
   // An entry that does not say the relation is strict has not earned an
   // instruction, so a missing field reads as the weak case.
-  assert.ok(panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] })
+  assert.ok(panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"] })
     .indexOf("No open window currently reaches") === 0);
 });
 
 test("the shadow notice counts the windows, and says two shadowers as two", () => {
-  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"], strict: true });
+  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true });
   assert.ok(one.indexOf("the only window it matches") >= 0, one);
   assert.ok(one.indexOf(" is earlier") >= 0, one);
 
