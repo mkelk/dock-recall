@@ -781,6 +781,12 @@ function dispatchableCommand(command) {
 // is the shape of a bug — a map miss, a function that got copied where a string
 // was meant, a value out of a hand-edited file — and the right answer to a
 // value the panel cannot explain is to write nothing.
+//
+// The cost, stated: the `class` and `async` prefixes also refuse a real command
+// whose executable is named `class` or `async` (`async run …`). That is the
+// trade this deliberately takes — such a binary is vanishingly rare, the user
+// can still hand-edit the launch into the state file, and the failure mode it
+// buys off is JavaScript source silently becoming a stored launch command.
 var FUNCTION_SOURCE = /^\s*(function\b|class\b|async\b|\(\s*[A-Za-z0-9_$,\s]*\)\s*=>)/;
 
 function learnableLaunch(value) {
@@ -1457,8 +1463,8 @@ function tickRefusalHint(className, reason) {
     return isTerminalClass(name)
       ? already + ' Relaunch it as ' + name + ' --title=<name> <command> and it will be claimed'
         + ' on sight; ticking it again cannot add anything, because there is nothing to add.'
-      : already + ' Nothing is added by ticking it again. Check the rule’s title patterns'
-        + ' against this window’s title — the state file is hand-editable.';
+      : already + " Nothing is added by ticking it again. Check the rule's title patterns"
+        + " against this window's title — the state file is hand-editable.";
   }
   if (why === "not-read") {
     body = "the panel is still reading what this terminal is running. Press it again in a moment.";
@@ -3753,7 +3759,16 @@ function failedRestoreRows(verdicts, rows) {
 // this app's share of it — because a button that quietly did more than its label
 // says is how a user stops trusting the panel. Naming the app is still the point:
 // it is what tells them which failure they are acting on.
-function retryTooltip(row, restoring) {
+//
+// `restoreRefusalReason` is optional and usually "" — an inert file (tick 66x)
+// dims Retry exactly as it dims Restore now, and for the same reason: retrying
+// is the whole restore, and the whole restore is what the build has refused.
+function retryTooltip(row, restoring, restoreRefusalReason) {
+  var inert = trim(restoreRefusalReason);
+  // Before the `restoring` branch: an inert file never starts a cycle, so a
+  // restore cannot be running because of one, and if some other cycle is in
+  // flight the honest sentence is still that this button will not join it.
+  if (inert) return "Nothing will be restored: " + inert;
   if (restoring) return "A restore is running — this will be retried by it.";
   var name = row ? trim(row.name) : "";
   var lines = [name
@@ -5150,15 +5165,43 @@ function badgeTooltip(glyphState, status) {
   return "Every watched app is where the recording puts it.";
 }
 
+// May a manual restore actually FIRE? (tick 66x.)
+//
+// The one question behind every manual entry point — the footer's Restore now,
+// a failed row's Retry, and the Enter that stands in for either — so that all
+// three agree by construction instead of by three copies of the same `&&`.
+//
+// Two ways to answer no, and they are different in kind. Nothing recorded for
+// this topology is an EMPTY state: there is no layout, so there is nothing to
+// put back. A restore refusal is an INERT state: there is a layout, the file is
+// readable, and this build has decided it may not act on what it read (a schema
+// from the future, whose narrowing fields are stripped on the way in — see
+// StateModel.restoreRefusal, and the same gate in Service.requestRestore, which
+// is where a trigger written anyway would die). The service refuses either way;
+// what this stops is the panel offering a lit button for it.
+function mayManualRestore(hasLayout, restoreRefusalReason) {
+  if (!hasLayout) return false;
+  return trim(restoreRefusalReason) === "";
+}
+
 // The two footer actions, which are the two exits from drift — and each says
 // which direction it moves things in, because that is the whole difference
 // between them.
-function restoreTooltip(hasLayout, topologyName) {
+//
+// `restoreRefusalReason` is optional and usually "": when it is not, the button
+// is dim and the tooltip is the one place a pointer user gets the reason on
+// demand (the panel's persistent Inert line is the other, always on screen).
+function restoreTooltip(hasLayout, topologyName, restoreRefusalReason) {
+  var inert = trim(restoreRefusalReason);
   var where = trim(topologyName);
   // Callers pass humanizeTopology's output, which is never "" — an empty
   // topology comes back as EMPTY_TOPOLOGY ("No monitors"), not "". Treat that
   // the same as empty, or a degenerate desk reads "for No monitors".
   if (!where || where === EMPTY_TOPOLOGY) where = "";
+  // Ahead of the empty-layout branch: an inert file is the stronger refusal, and
+  // saying "nothing recorded yet" about a file full of recordings this build has
+  // decided it may not read would be the wrong sentence twice over.
+  if (inert) return "Nothing will be restored: " + inert;
   if (!hasLayout) {
     return "Nothing recorded for " + (where || "this setup") + " yet — there is no layout to put back.";
   }
@@ -5556,6 +5599,7 @@ if (typeof module !== "undefined") {
     panelFocusOrder: panelFocusOrder,
     badgeFor: badgeFor,
     badgeTooltip: badgeTooltip,
+    mayManualRestore: mayManualRestore,
     restoreTooltip: restoreTooltip,
     recordTooltip: recordTooltip,
     pauseTooltip: pauseTooltip,

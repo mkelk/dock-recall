@@ -27,6 +27,19 @@ set -uo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox-lib.sh"
 
+# The four knobs this scenario runs on, STATED rather than inherited (tick 66x).
+# The library defaults are these same values; writing them here is what makes
+# the seed below readable without a second file open, and what makes a change to
+# a default show up in this file's diff. They are validated by sandbox_up.
+#
+# To vary one for a debugging run, export DR_SANDBOX_APP_ID (or _OUTPUT,
+# _TARGET_WS, _SCATTER_WS) — a plain `APP_ID=…` is deliberately ignored, because
+# that name belongs to too many other tools to be trusted as an instruction.
+APP_ID="dr-sim"        # the class the seeded identity matches, and what foot is told to be
+OUTPUT="sbx-test"      # the headless monitor the dock/undock is performed on
+TARGET_WS=9            # where the recorded layout puts the window
+SCATTER_WS=1           # where case 2 throws it, to watch the restore bring it back
+
 sandbox_up
 
 # ------------------------------------------------------------------ 3. the seed

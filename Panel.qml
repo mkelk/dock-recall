@@ -580,15 +580,16 @@ Item {
       return
     }
     if (root.focusSection === "restore") {
-      if (root.recordedLayout) root.restoreNow()
+      if (root.canRestore) root.restoreNow()
       return
     }
     // Enter/Space on a failed row IS its Retry button, and Retry is the whole
-    // restore — the same call the pointer makes, under the same two guards the
+    // restore — the same call the pointer makes, under the same guards the
     // button carries (`enabled`), so the keyboard cannot start a second cycle
-    // over a running one or a restore with nothing recorded.
+    // over a running one, a restore with nothing recorded, or one from an inert
+    // state file.
     if (root.focusSection === "failed") {
-      if (root.recordedLayout && !root.statusModel.restoring) root.restoreNow()
+      if (root.canRestore && !root.statusModel.restoring) root.restoreNow()
       return
     }
     if (root.focusSection === "record") {
@@ -1793,6 +1794,19 @@ Item {
     && root.liveMonitors.length > 0 && !root.statusModel.restoring
     && root.writeRefusalReason === ""
 
+  // The same shape for the OTHER footer action (tick 66x). Restore now and a
+  // failed row's Retry were lit while `restoreRefusalReason` held: the click
+  // wrote the trigger, the panel dismissed itself, and the service refused the
+  // cycle into its log — a dead end the user could only find by reading a log
+  // file. The inert file is not a moment, it is a property of what is on disk,
+  // so the affordance follows it exactly as Record follows the read-only half.
+  //
+  // Which of the two refusals applies is PanelModel's answer, not a binding's:
+  // three call sites share it (the two buttons and the keyboard's Enter) and
+  // three copies of the condition is how they drift apart.
+  readonly property bool canRestore: PanelModel.mayManualRestore(
+    !!root.recordedLayout, root.restoreRefusalReason)
+
   // Ask the service to restore, and GET OUT OF THE WAY first.
   //
   // The panel is a keyboard-focused layer surface, and while it is up the
@@ -1818,6 +1832,20 @@ Item {
   // because a manual restore should get out of the way whether or not the plan
   // turns out to need the focus.
   function restoreNow() {
+    // The inert file, LAST LINE OF DEFENCE (tick 66x). Both buttons that reach
+    // here are already dim while `restoreRefusalReason` holds, but this function
+    // is the thing that writes the trigger and then dismisses the panel, and a
+    // dismissed panel is a refusal the user can only read in a log file. So the
+    // refusal happens BEFORE either: nothing is written, the panel STAYS OPEN,
+    // and the Inert line — which says the whole reason, and is already on screen
+    // — is scrolled to. Refusals are a feature, and a feature has to be visible
+    // at the moment it costs the user their click.
+    if (root.restoreRefusalReason !== "") {
+      root.log("manual restore REFUSED — " + root.restoreRefusalReason)
+      root.ensureCursorVisible(inertLine)
+      return
+    }
+
     var wasOpen = root.opened
     if (wasOpen) {
       root.log("closing the panel before the restore — the desktop is the thing to watch,"
@@ -2994,7 +3022,14 @@ Item {
             // from it either (tick t03). Separate line, because "read-only"
             // reads as "your layouts are safe, you just cannot change them" —
             // and the user needs to know the dock has stopped acting.
+            //
+            // Named, because restoreNow scrolls it into view when a manual
+            // restore is refused (tick 66x): the line is always on screen while
+            // the file is inert, but on a long panel "on screen" can mean below
+            // the fold, and a dim button the user just pressed deserves to point
+            // at the sentence that explains it.
             Text {
+              id: inertLine
               width: parent.width
               visible: root.restoreRefusalReason !== ""
               text: "Inert: " + root.restoreRefusalReason
@@ -3336,16 +3371,17 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     text: root.statusModel.restoring ? "Restoring…" : "Retry"
                     tooltipText: PanelModel.wrapTooltip(
-                      PanelModel.retryTooltip(failedRow.modelData, root.statusModel.restoring),
+                      PanelModel.retryTooltip(failedRow.modelData, root.statusModel.restoring,
+                        root.restoreRefusalReason),
                       root.footerTooltipColumns)
                     bordered: true
                     hasCursor: failedRow.hasCursor
-                    enabled: !root.statusModel.restoring && !!root.recordedLayout
+                    enabled: !root.statusModel.restoring && root.canRestore
                     opacity: enabled ? 1.0 : 0.45
                     foreground: root.foreground
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
-                    onClicked: if (root.recordedLayout) root.restoreNow()
+                    onClicked: if (root.canRestore) root.restoreNow()
                   }
                 }
               }
@@ -3386,7 +3422,8 @@ Item {
                   id: restoreButton
                   text: "Restore now"
                   tooltipText: PanelModel.wrapTooltip(
-                    PanelModel.restoreTooltip(!!root.recordedLayout, root.topologyName),
+                    PanelModel.restoreTooltip(!!root.recordedLayout, root.topologyName,
+                      root.restoreRefusalReason),
                     root.footerTooltipColumns)
                   bordered: true
                   // The keyboard cursor is the panel's own, not Qt's focus
@@ -3397,13 +3434,17 @@ Item {
                   onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(restoreButton)
                   // Nothing recorded for this topology means nothing to
                   // restore; the sketch's empty state leaves Record as the
-                  // only lit action.
-                  enabled: !!root.recordedLayout
-                  opacity: root.recordedLayout ? 1.0 : 0.45
+                  // only lit action. An INERT state file dims it too (tick
+                  // 66x) — the service will refuse the cycle, and a lit button
+                  // for a refused cycle is the affordance lying about what it
+                  // does. Both reasons live in canRestore; the tooltip and the
+                  // panel's own Inert line say which one holds.
+                  enabled: root.canRestore
+                  opacity: root.canRestore ? 1.0 : 0.45
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: if (root.recordedLayout) root.restoreNow()
+                  onClicked: if (root.canRestore) root.restoreNow()
                 }
 
                 Button {

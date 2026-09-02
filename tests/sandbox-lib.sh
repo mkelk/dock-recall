@@ -59,10 +59,24 @@ SPECIAL_WS="special:dr-sandbox"
 # Defaults a scenario may override BEFORE sandbox_up. APP_ID is the class the
 # seeded identity matches and the class `foot --app-id=…` produces, so the two
 # move together.
-APP_ID="${APP_ID:-dr-sim}"
-OUTPUT="${OUTPUT:-sbx-test}"
-TARGET_WS="${TARGET_WS:-9}"
-SCATTER_WS="${SCATTER_WS:-1}"
+#
+# NAMESPACED, and the plain names are IGNORED (tick 66x). These four used to
+# read `${APP_ID:-dr-sim}` straight from the environment, and `APP_ID` is a name
+# half the world exports — an Android build, a Flatpak helper, a shell rc. An
+# ambient one silently reconfigured the gate: the seeded identity would match a
+# class the harness never launches, every case would fail, and nothing in the
+# output would say why. An override is a deliberate act, so it gets a deliberate
+# name; anything a scenario sets in the script itself still wins, because it
+# assigns after this file is sourced.
+SANDBOX_IGNORED_ENV=""
+for _sbx_var in APP_ID OUTPUT TARGET_WS SCATTER_WS; do
+  [[ -n ${!_sbx_var:-} ]] && SANDBOX_IGNORED_ENV="$SANDBOX_IGNORED_ENV $_sbx_var"
+done
+unset _sbx_var
+APP_ID="${DR_SANDBOX_APP_ID:-dr-sim}"
+OUTPUT="${DR_SANDBOX_OUTPUT:-sbx-test}"
+TARGET_WS="${DR_SANDBOX_TARGET_WS:-9}"
+SCATTER_WS="${DR_SANDBOX_SCATTER_WS:-1}"
 
 SBOX=""
 STATE=""
@@ -214,6 +228,77 @@ owned_by_nested() {
   return 1
 }
 
+# ----------------------------------------------------------------- config check
+
+# The four knobs, validated before anything is built out of them (tick 66x).
+#
+# They are not just labels: APP_ID is interpolated into a JSON state file AND
+# into the anchored regex that identity matches on (`"^$APP_ID$"`), OUTPUT names
+# a headless monitor and is compared with `jq --arg`, and the two workspace ids
+# are pasted into Lua dispatch strings and into `[[ … == $WS ]]`. A value with a
+# space, a regex metacharacter or a `]]` in it does not fail loudly there — it
+# produces a seed that matches something else, a Lua string that ends early, or
+# a `[[` test that is a syntax error two hundred lines into a run. So the values
+# are checked here, where the message can say which knob and what is wrong,
+# rather than discovered in a case that fails for a reason it cannot name.
+#
+# Called from sandbox_up, which is AFTER a scenario's own assignments — those
+# are as capable of being wrong as an environment variable is.
+#
+# `.` is allowed even though it is a regex metacharacter: reverse-DNS classes
+# (`org.gnome.Nautilus`) are the normal shape of an app id, and in `^$APP_ID$`
+# a dot still matches its own literal — it only widens the pattern, it cannot
+# make it match something the harness never launches. Everything that can end a
+# string early or change what a shell does is out.
+sandbox_check_config() {
+  local bad=0 name value
+
+  for name in APP_ID OUTPUT; do
+    value="${!name}"
+    if [[ -z $value ]]; then
+      echo "FAIL: $name is empty — set DR_SANDBOX_$name to a class/monitor name"
+      bad=1
+    elif [[ ! $value =~ ^[A-Za-z0-9._-]+$ ]]; then
+      echo "FAIL: $name is '$value'."
+      echo "      Only letters, digits, '.', '_' and '-' are allowed: this value is"
+      echo "      interpolated into a JSON state file, into the anchored regex the"
+      echo "      seeded identity matches on, and into Lua dispatch strings. A space,"
+      echo "      a regex metacharacter or a ']]' there corrupts the seed silently."
+      echo "      Set DR_SANDBOX_$name to a plain name."
+      bad=1
+    fi
+  done
+
+  for name in TARGET_WS SCATTER_WS; do
+    value="${!name}"
+    if [[ ! $value =~ ^[0-9]+$ ]]; then
+      echo "FAIL: $name is '$value' — a workspace id here must be digits only."
+      echo "      It is pasted into a Lua dispatch string and into a numeric [[ ]]"
+      echo "      comparison; anything else is a broken dispatch or a syntax error."
+      echo "      Set DR_SANDBOX_$name to a workspace number."
+      bad=1
+    fi
+  done
+
+  if [[ -n $TARGET_WS && $TARGET_WS == "$SCATTER_WS" ]]; then
+    echo "FAIL: TARGET_WS and SCATTER_WS are both '$TARGET_WS' — the scatter case"
+    echo "      moves a window OFF its target and back, and cannot do that to the"
+    echo "      workspace it is already on. It would pass without proving anything."
+    bad=1
+  fi
+
+  (( bad == 0 )) || exit 1
+
+  # Said out loud rather than obeyed: an exported APP_ID is far more likely to be
+  # someone else's than a deliberate override of this gate, and a person who did
+  # mean it needs to know the spelling that works.
+  if [[ -n $SANDBOX_IGNORED_ENV ]]; then
+    note "ignoring ambient$SANDBOX_IGNORED_ENV from the environment — the sandbox"
+    note "reads DR_SANDBOX_* only (DR_SANDBOX_APP_ID, …). Effective values:"
+  fi
+  note "config        APP_ID=$APP_ID OUTPUT=$OUTPUT TARGET_WS=$TARGET_WS SCATTER_WS=$SCATTER_WS"
+}
+
 # ------------------------------------------------------------------ sandbox_up
 
 sandbox_up() {
@@ -228,6 +313,11 @@ sandbox_up() {
   for tool in hyprctl Hyprland qs jq node foot flock; do
     command -v "$tool" >/dev/null || { echo "FAIL: $tool is not on PATH"; exit 1; }
   done
+
+  # After the scenario's own assignments and before anything is built out of
+  # them: a bad APP_ID is cheapest to catch here and dearest to catch in a case.
+  echo "=== sandbox: configuration ==="
+  sandbox_check_config
 
   # One sandbox run at a time, belt-and-braces on top of the ownership check
   # below. Two overlapping runs each launch a nested compositor into the same

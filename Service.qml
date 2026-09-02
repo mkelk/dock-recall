@@ -2664,6 +2664,11 @@ Item {
     // `byHand` is deliberately not consulted: pausing is the user saying "not
     // now", and their button rightly overrides it; this is the build saying "I
     // cannot read this file properly", and no button changes that.
+    //
+    // Asked at CYCLE START only, the same shape as `paused` below: a file that
+    // turns inert mid-cycle is two builds writing the same state file at once,
+    // and the queued rerun that a mid-cycle change schedules is refused here
+    // anyway, one settle delay later.
     if (root.stateLoaded) {
       var inert = StateModel.restoreRefusal(root.state)
       if (inert) {

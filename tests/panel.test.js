@@ -4263,6 +4263,59 @@ test("Retry says out loud that it runs the whole restore", () => {
   assert.ok(panel.retryTooltip(null, false).length > 0);
 });
 
+// ------------------------------------- may the manual restore fire at all (66x)
+//
+// The blocker: an INERT state file (a schema from the future — StateModel.
+// restoreRefusal) left Restore now and Retry LIT. Pressing either wrote the
+// trigger and dismissed the panel; the service then refused the cycle into its
+// log, where a user never looks. A refusal is a feature only if it is visible,
+// so the refusal has to reach the affordance itself — and the condition all
+// three entry points (both buttons and the keyboard's Enter) share is here,
+// once, rather than copied into three QML bindings.
+test("an inert state file refuses the manual restore, and every button says so", () => {
+  const future = state.parseState(JSON.stringify({
+    version: state.STATE_VERSION + 1, identities: [], layouts: {}
+  })).state;
+  const inert = state.restoreRefusal(future);
+  assert.ok(inert, "the fixture is only a fixture if a future version really refuses");
+
+  // The two ways to answer no are different in kind, and both answer no.
+  assert.strictEqual(panel.mayManualRestore(true, ""), true, "the ordinary desk");
+  assert.strictEqual(panel.mayManualRestore(false, ""), false, "nothing recorded: nothing to put back");
+  assert.strictEqual(panel.mayManualRestore(true, inert), false,
+    "a layout the build may not act on is not a layout the button may offer");
+  assert.strictEqual(panel.mayManualRestore(false, inert), false);
+  // Whitespace is not a reason; a missing argument is not a refusal.
+  assert.strictEqual(panel.mayManualRestore(true, "   "), true);
+  assert.strictEqual(panel.mayManualRestore(true, undefined), true);
+  assert.strictEqual(panel.mayManualRestore(true, null), true);
+
+  // ...and the dim buttons carry the reason, so a pointer user gets it on
+  // demand and not only from the panel's persistent Inert line.
+  const restore = panel.restoreTooltip(true, "Laptop", inert);
+  assert.ok(restore.indexOf("Nothing will be restored") === 0, restore);
+  assert.ok(restore.indexOf(inert) !== -1, "the tooltip quotes the refusal itself");
+  assert.strictEqual(restore.indexOf("Safe to press twice"), -1,
+    "an inert file must not be offered as something safe to press twice");
+
+  // The inert reason outranks the empty-layout sentence: saying "nothing
+  // recorded yet" about a file full of recordings would be wrong twice over.
+  assert.strictEqual(panel.restoreTooltip(false, "Laptop", inert).indexOf("no layout to put back"), -1);
+
+  const scene = failedScene();
+  const browser = panel.failedRestoreRows(scene.verdicts, scene.rows)
+    .find((f) => f.identityId === "chromium");
+  const retry = panel.retryTooltip(browser, false, inert);
+  assert.ok(retry.indexOf("Nothing will be restored") === 0, retry);
+  assert.ok(retry.indexOf(inert) !== -1);
+  // Retry IS the whole restore, so it cannot claim to be running one either.
+  assert.strictEqual(panel.retryTooltip(browser, true, inert).indexOf("A restore is running"), -1);
+
+  // And the ordinary desk is untouched by the new argument.
+  assert.strictEqual(panel.restoreTooltip(true, "Laptop", ""), panel.restoreTooltip(true, "Laptop"));
+  assert.strictEqual(panel.retryTooltip(browser, false, ""), panel.retryTooltip(browser, false));
+});
+
 // ------------------------------------------------ one undo after Record (7ow)
 //
 // The sketch, twice: "Recording OVERWRITES this topology's layout — the previous

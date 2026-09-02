@@ -747,6 +747,47 @@ test("Service.qml gates every restore path on restoreRefusal", () => {
     "flushPendingRestore replays a held request against a file that may not be acted on");
 });
 
+// The panel's half of the same contract (tick 66x). Service.requestRestore
+// refuses an inert file, but it refuses it into a log — and the panel had
+// already written the trigger and DISMISSED ITSELF by then, so the user's click
+// vanished with no sentence attached to it. The refusal has to happen before
+// either of those two irreversible steps, with the panel still on screen.
+test("Panel.qml refuses a manual restore from an inert file before it dismisses", () => {
+  const root = path.join(__dirname, "..");
+  const source = fs.readFileSync(path.join(root, "Panel.qml"), "utf8");
+
+  const body = balancedBody(source, "function restoreNow() {", "Panel.qml");
+  const gate = body.indexOf("root.restoreRefusalReason");
+  assert.ok(gate !== -1, "restoreNow never asks whether the file may drive a restore");
+  assert.ok(gate < body.indexOf("triggerFile.setText("),
+    "restoreNow writes the trigger before it asks — the click dead-ends in the service's log");
+  assert.ok(gate < body.indexOf("root.dismiss()"),
+    "restoreNow dismisses the panel before it asks, taking the refusal off screen with it");
+  // Refused means refused: neither irreversible step may be reachable from the
+  // inert branch, so the branch has to END in a return.
+  const refusalBranch = body.slice(gate, body.indexOf("}", gate));
+  assert.ok(refusalBranch.indexOf("return") !== -1,
+    "the inert branch falls through into the trigger write");
+  // ...and the panel is not dismissed by it: the Inert line is the whole point.
+  assert.strictEqual(refusalBranch.indexOf("dismiss"), -1,
+    "a dismissed panel is a refusal the user can only read in a log file");
+  assert.ok(refusalBranch.indexOf("ensureCursorVisible") !== -1,
+    "the refusal is not brought into view at the moment the click costs the user something");
+
+  // The affordances follow the file, not the moment: every entry point to
+  // restoreNow gates on the one shared answer rather than on `recordedLayout`
+  // alone. (Three of them — the footer button, a failed row's Retry, and the
+  // keyboard's Enter, which stands in for both.)
+  const calls = source.split("\n").filter((line) => line.indexOf("root.restoreNow()") !== -1);
+  assert.ok(calls.length >= 3, "expected the footer, the retry row and the keyboard: " + calls.length);
+  for (const line of calls) {
+    assert.ok(line.indexOf("root.canRestore") !== -1,
+      "a caller of restoreNow that does not consult canRestore: " + line.trim());
+  }
+  assert.ok(source.indexOf("PanelModel.mayManualRestore(") !== -1,
+    "canRestore no longer asks PanelModel — the condition has drifted back into a binding");
+});
+
 test("the same three writes against a v4 file go through (the guard is not a blanket no)", () => {
   const file = freshStateFile(state.serializeState(sampleState()));
   const before = fs.readFileSync(file, "utf8");
