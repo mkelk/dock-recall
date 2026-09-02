@@ -12,12 +12,16 @@ Cloned from the machine that built it, outside any git worktree:
 | | |
 |---|---|
 | Path | `~/git/omarchy-iso` |
-| Origin | `melk@omarchy-asus:git/omarchy-iso` |
+| Origin | the build host (`$OMARCHY_ISO_HOST`, see below) |
 | Branch / commit | `quattro` @ `268bac16d351a21d867e37565738f458b11cb06c` |
 | Size | 2.8 MB (scripts only) |
 
 The `archiso` submodule is deliberately left uninitialized: it is only needed to
 *build* an ISO, and we copy a released one instead.
+
+`$OMARCHY_ISO_HOST` throughout this note means the machine that built the ISO
+and the base image — the box with `~/git/omarchy-iso` and the omarchy fork on
+it, reachable over SSH. It is named in the operator's SSH config, not here.
 
 Entry point is `bin/omarchy-iso-test`. Relevant flags: `--reuse-base`,
 `--sync-omarchy DIR`, `--sync-all DIR`, `--no-preview`, `--keep-running`,
@@ -55,7 +59,7 @@ The Android SDK is on `PATH` ahead of `/usr/bin` and ships its own `qemu-img`:
 
 ```
 $ which -a qemu-img
-/home/melk/Android/Sdk/emulator/qemu-img      # version 2.12.0 (2017)
+~/Android/Sdk/emulator/qemu-img           # version 2.12.0 (2017)
 /usr/bin/qemu-img                             # version 11.1.0
 ```
 
@@ -87,7 +91,7 @@ which runs `imv` on the collected PNGs when `WAYLAND_DISPLAY`/`DISPLAY` is set.
 **Always pass `--no-preview`.** That is the only desktop-visible surface in the
 whole harness.
 
-## Artifacts copied from omarchy-asus
+## Artifacts copied from the build host
 
 Both were rsync'd (`--partial`) rather than rebuilt.
 
@@ -110,7 +114,7 @@ creates a throwaway overlay `runs/<timestamp>/run.qcow2` backed by `base.qcow2`,
 boots it, and SSHes in. The base is never mutated by a run, so runs are
 repeatable and disposable.
 
-Because the base is a full install image, copying it from omarchy-asus avoids a
+Because the base is a full install image, copying it from the build host avoids a
 ~40 minute install on every fresh checkout.
 
 ## Headless smoke boot (verification)
@@ -170,6 +174,8 @@ local path. This was chosen over the alternatives deliberately:
 
 ```
 cd ~/git/omarchy-iso
-./bin/omarchy-iso-test release/omarchy-4.0.1.iso \
+PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.0.1.iso \
   --reuse-base --no-preview --sync-omarchy <stage>
 ```
+
+`--no-preview` and the `PATH` pin are both load-bearing; see above.
