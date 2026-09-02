@@ -9,6 +9,8 @@ const path = require("node:path");
 
 const engine = require("../engine.js");
 const state = require("../StateModel.js");
+// Only for the cross-pin below: StateModel itself may never require PanelModel.
+const panel = require("../PanelModel.js");
 const { loadFixture, IDENTITIES } = require("./helpers.js");
 
 const clientsLaptop = loadFixture("clients-laptop.json");
@@ -1076,6 +1078,77 @@ test("a hand-written --app-id launch the identity's patterns DO claim survives",
   }));
   assert.deepStrictEqual(result.state.identities.map((i) => i.launch),
     ["/usr/bin/foot --app-id=scratchpad", "foot --app-id=notes notes"]);
+});
+
+test("an --app-id that is not the retired backfill's survives the migration", () => {
+  // Tick bcc. The detector asked one question — "does this command spell
+  // `--app-id` anywhere?" — and the retired backfill was not the only thing that
+  // does. Two ordinary launches were EMPTIED on the way to v4:
+  //
+  //   a hand-written PWA launch, where `--app-id` is Chromium's own flag and
+  //   names an extension id. Chromium's window class is `chrome-<id>-Default`,
+  //   never the flag's value, so patternsClaimClass could only ever say
+  //   "unclaimed" — the identity is correct, matches, restores, and the
+  //   migration destroyed the command that starts it. normalizeIdentity's own
+  //   comment promises a hand edit is "a decision this module does not
+  //   overrule".
+  //
+  //   an `--app-id` belonging to the program the terminal HOSTS, which is not
+  //   the terminal's flag at all and forces no class whatsoever.
+  //
+  // The backfill only ever wrote `<terminal-binary> --app-id=<id> <command>`,
+  // so that is the only shape the detector is allowed to fire on.
+  const result = state.parseState(JSON.stringify({
+    version: 3,
+    identities: [
+      { id: "gmail", patterns: ["^chrome-cinhimbnkkaeohfgghhklpknlkffjgod-Default$"],
+        launch: "chromium --app-id=cinhimbnkkaeohfgghhklpknlkffjgod" },
+      { id: "logs", patterns: ["^foot$"], launch: "foot -e grep --app-id log.txt" }
+    ],
+    layouts: {}
+  }));
+  assert.strictEqual(result.migrated, true);
+  assert.deepStrictEqual(result.state.identities.map((i) => i.launch), [
+    "chromium --app-id=cinhimbnkkaeohfgghhklpknlkffjgod",
+    "foot -e grep --app-id log.txt"
+  ]);
+
+  // And the two shapes that ARE the backfill's still go, so the scoping did not
+  // simply switch the repair off.
+  const still = state.parseState(JSON.stringify({
+    version: 3,
+    identities: [
+      { id: "herdr", patterns: ["^foot$"], launch: "foot --app-id=herdr herdr" },
+      { id: "scratchpad", patterns: ["^scratchpad$"], launch: "/usr/bin/foot --app-id=scratchpad" }
+    ],
+    layouts: {}
+  }));
+  assert.deepStrictEqual(still.state.identities.map((i) => i.launch),
+    ["", "/usr/bin/foot --app-id=scratchpad"]);
+});
+
+test("StateModel's terminal knowledge agrees with PanelModel's", () => {
+  // StateModel may not require PanelModel (QML .js imports cannot see each
+  // other — the same constraint that has isArray and own in all three modules),
+  // so the duplicated terminal-family and exec-boundary knowledge is pinned to
+  // the original here instead.
+  for (const binary of state.TERMINAL_BINARIES) {
+    assert.ok(panel.isTerminalClass(binary),
+      `${binary} must still be a terminal to PanelModel`);
+  }
+  for (const word of ["chromium", "code", "obsidian", ""]) {
+    assert.ok(!panel.isTerminalClass(word), word);
+  }
+
+  // The boundary words, read through the one PanelModel behaviour that shows
+  // them: past a boundary the terminal's own argv has ended, so a --title after
+  // it is not the terminal's.
+  for (const word of state.TERMINAL_ARGV_END) {
+    assert.strictEqual(panel.titleFromOwnArgv(["foot", word, "--title=x"]), "",
+      `${word} must still end the terminal's own argv`);
+  }
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "--fullscreen", "--title=x"]), "x",
+    "and an ordinary flag must not, or the pin above would prove nothing");
 });
 
 test("the version bump is unchanged for a v3 file whose launches are clean", () => {

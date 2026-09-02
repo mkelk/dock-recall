@@ -356,22 +356,82 @@ function normalizePatterns(value) {
   return patterns;
 }
 
-// The window class an `--app-id` flag in a launch command FORCES, or null when
-// the command names no such flag at all. `""` — the flag with nothing after it
-// — is a found flag with no class, which is not the same answer as "absent".
+// The terminal binaries the retired backfill could have written a launch for,
+// and the words after which a terminal's own argv has ENDED — everything past
+// one of them belongs to the program the terminal hosts.
 //
-// Whitespace splitting is enough here and quoting is deliberately not parsed:
-// this is a DETECTOR for a command shape one retired code path wrote, and that
-// path never quoted the flag or its value. A hand-written command that hides
-// `--app-id` inside a quoted argument reads as absent, which leaves it alone —
-// the safe direction for a field the user may have typed.
+// DUPLICATED FROM PanelModel (TERMINAL_FAMILY, TERMINAL_EXEC_BOUNDARIES) ON
+// PURPOSE: this file may not require it — QML `.js` imports cannot see each
+// other, the same constraint that has `isArray` and `own` in all three modules
+// (see the note at line 94). Only the two facts forcedAppIdClass needs are
+// copied, and tests/state.test.js pins both copies to the originals.
+//
+// Binaries, not classes: PanelModel matches window class names, and this reads
+// the first word of a COMMAND. They coincide for this family — `com.mitchellh.
+// ghostty` is a class only, and its binary is `ghostty`.
+var TERMINAL_BINARIES = ["foot", "footclient", "kitty", "alacritty", "ghostty"];
+var TERMINAL_ARGV_END = ["-e", "--", "--hold"];
+
+function isTerminalBinary(word) {
+  var text = typeof word === "string" ? word : "";
+  var cut = text.lastIndexOf("/");
+  var name = (cut === -1 ? text : text.substring(cut + 1)).toLowerCase();
+  if (!name) return false;
+  for (var i = 0; i < TERMINAL_BINARIES.length; i++) {
+    if (TERMINAL_BINARIES[i] === name) return true;
+  }
+  return false;
+}
+
+function isTerminalArgvEnd(word) {
+  for (var i = 0; i < TERMINAL_ARGV_END.length; i++) {
+    if (TERMINAL_ARGV_END[i] === word) return true;
+  }
+  return false;
+}
+
+// The window class an `--app-id` flag FORCES in a launch command OF THE SHAPE
+// THE RETIRED BACKFILL WROTE, or null when this command is not that shape or
+// names no such flag. `""` — the flag with nothing after it — is a found flag
+// with no class, which is not the same answer as "absent".
+//
+// The shape is the whole point (tick bcc). This asked only "does the command
+// spell `--app-id` anywhere?", and the backfill is far from the only thing that
+// does; two ordinary launches were emptied on migration because of it:
+//
+//   `chromium --app-id=<extension-id>` — Chromium's OWN flag, a hand-written PWA
+//   launch. The window class it produces is `chrome-<extension-id>-Default` and
+//   never the flag's value, so patternsClaimClass could only ever answer
+//   "unclaimed" about a perfectly correct identity, and the migration destroyed
+//   the command that starts it. normalizeIdentity's comment promises that a hand
+//   edit of this field "is a decision this module does not overrule".
+//
+//   `foot -e grep --app-id log.txt` — the flag belongs to the program the
+//   terminal HOSTS. It forces no window class at all.
+//
+// The backfill only ever wrote `<terminal-binary> --app-id=<id> <command>`. So
+// the detector fires only when the FIRST word is a terminal-family binary (by
+// basename: it wrote `/usr/bin/foot` as readily as `foot`) and the `--app-id`
+// token sits in the TERMINAL's own argv — before an exec boundary, and before
+// the first bare word, which is where foot's and kitty's hosted command begins.
+//
+// Whitespace splitting is enough and quoting is deliberately not parsed: the
+// retired path never quoted the flag or its value. A command that hides
+// `--app-id` inside a quoted argument reads as absent — and so does every shape
+// the scoping now excludes. All of them leave the launch ALONE, which is the
+// safe direction for a field the user may have typed.
 function forcedAppIdClass(launch) {
   if (typeof launch !== "string") return null;
   var words = launch.replace(/^\s+|\s+$/g, "").split(/\s+/);
+  if (!isTerminalBinary(words[0])) return null;
   var prefix = "--app-id=";
-  for (var i = 0; i < words.length; i++) {
+  // From 1: words[0] is the terminal binary, and the bare-word stop below would
+  // otherwise end the scan on it.
+  for (var i = 1; i < words.length; i++) {
+    if (isTerminalArgvEnd(words[i])) return null;
     if (words[i] === "--app-id") return i + 1 < words.length ? words[i + 1] : "";
     if (words[i].slice(0, prefix.length) === prefix) return words[i].slice(prefix.length);
+    if (words[i].charAt(0) !== "-") return null;
   }
   return null;
 }
@@ -1407,6 +1467,10 @@ if (typeof module !== "undefined") {
     normalizeStatus: normalizeStatus,
     normalizeVerdict: normalizeVerdict,
     normalizeVerdicts: normalizeVerdicts,
+    // Exported for the cross-pin in tests/state.test.js and nothing else: they
+    // are copies of PanelModel's, and the test is what keeps them honest.
+    TERMINAL_BINARIES: TERMINAL_BINARIES,
+    TERMINAL_ARGV_END: TERMINAL_ARGV_END,
     FORENSICS_KEEP: FORENSICS_KEEP,
     forensicsFileName: forensicsFileName,
     forensicsPrune: forensicsPrune,
