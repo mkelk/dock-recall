@@ -11,9 +11,14 @@
 # tests/sim-dock.sh uses on a live desk — except here the desk is a VM nobody is
 # looking at, so this test may run unattended and may restart the shell.
 #
-# The layout is recorded THROUGH THE ENGINE (node + StateModel.js), not by
-# hand-writing JSON: the schema is the engine's business, and a hand-written
-# file would rot at the next STATE_VERSION bump. It is written atomically
+# The layout is recorded THROUGH THE ENGINE (node + StateModel.js) rather than
+# by hand-writing it: the schema is the engine's business, and a hand-written
+# layout would rot at the next STATE_VERSION bump. One thing IS hand-written —
+# the identity the test watches, seeded as literal JSON below — and its `version`
+# field is read out of StateModel rather than typed, for exactly the same reason:
+# a seed claiming a stale version is read as a MIGRATION, and v4's migration is
+# not purely additive (it can rewrite `launch`), so a hardcoded number would
+# quietly change what the test thinks it seeded. Both writes are atomic
 # (temp + rename) because the service watches the file and a truncating write is
 # observable.
 #
@@ -211,9 +216,16 @@ sleep 2
 # Seed the identity, then record the layout through the engine itself. The
 # topology key for laptop+dock can only be computed while the dock exists, which
 # is why this runs here and not before step 3.
+#
+# The schema version the seed declares comes from StateModel, not from this
+# file: see the header. It is the only part of the seed the engine owns.
+SCHEMA_VERSION=$(node -e 'process.stdout.write(String(require(process.argv[1] + "/StateModel.js").STATE_VERSION))' "$PLUGIN_DIR" 2>/dev/null)
+[[ $SCHEMA_VERSION =~ ^[0-9]+$ ]] ||
+  fail "schema version read from StateModel" "StateModel.STATE_VERSION came back as '$SCHEMA_VERSION'"
+
 cat > "$STATE.seed" <<JSON
 {
-  "version": 4,
+  "version": $SCHEMA_VERSION,
   "identities": [
     {
       "id": "$IDENTITY",

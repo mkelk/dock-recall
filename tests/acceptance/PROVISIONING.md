@@ -1,4 +1,4 @@
-# VM acceptance harness — provisioning on omarchy-host
+# VM acceptance harness — provisioning on the dev box
 
 Tier C of the sandbox model runs dock-recall acceptance tests inside a real
 Omarchy VM. The harness is `omarchy-iso`; it is **not** vendored here and not
@@ -44,7 +44,7 @@ already present. **Pre-install them:**
 sudo pacman -S --needed qemu-full edk2-ovmf
 ```
 
-Only those two were missing on omarchy-host; `socat`, `imagemagick`,
+Only those two were missing on this machine; `socat`, `imagemagick`,
 `tesseract` and `tesseract-data-eng` were already installed. `qemu-full` is the
 full meta-package and pulls ~118 packages. Installing the leaner `qemu-base`
 instead does **not** work: the harness checks for `qemu-full` by name and would
@@ -172,10 +172,15 @@ local path. This was chosen over the alternatives deliberately:
 
 ## Invocation
 
+`tests/acceptance/run.sh` is the entrypoint and wraps all of this; what it runs
+underneath is:
+
 ```
 cd ~/git/omarchy-iso
 PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.0.1.iso \
   --reuse-base --no-preview --sync-omarchy <stage>
 ```
 
-`--no-preview` and the `PATH` pin are both load-bearing; see above.
+`--no-preview` and the `PATH` pin are both load-bearing; see above. The harness's
+exit code is not the gate — `run.sh` parses the run's output instead, and
+`tests/acceptance/README.md` explains why.

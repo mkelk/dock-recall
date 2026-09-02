@@ -464,9 +464,17 @@ poll 20 bash -c "grep -qF 'state-dir ready' '$SBOX/qs.log'" || note "warning: no
 
 echo "=== seed ==="
 
+# The identity seed is the one piece of hand-written JSON here, and its schema
+# version is read out of StateModel rather than typed: a seed declaring an OLDER
+# version is read as a MIGRATION, and v4's migration is not purely additive (it
+# can rewrite `launch`), so a hardcoded number would quietly change what this
+# gate thinks it seeded. The LAYOUT below goes through the engine.
+SCHEMA_VERSION=$(node -e 'process.stdout.write(String(require(process.argv[1] + "/StateModel.js").STATE_VERSION))' "$REPO_ROOT")
+[[ $SCHEMA_VERSION =~ ^[0-9]+$ ]] || { echo "FAIL: StateModel.STATE_VERSION came back as '$SCHEMA_VERSION'"; exit 1; }
+
 cat > "$STATE.seed" <<JSON
 {
-  "version": 1,
+  "version": $SCHEMA_VERSION,
   "identities": [
     { "id": "$APP_ID", "patterns": ["^$APP_ID\$"], "launch": "foot --app-id=$APP_ID" }
   ],

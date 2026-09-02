@@ -72,7 +72,7 @@ must use a Lua config.
 
 # 2026-09-02 — Tier B: the plugin itself, in an invisible nested Hyprland
 
-Run: `tests/sandbox-dock.sh` (config: `tests/nested.lua`). Machine: omarchy-zen,
+Run: `tests/sandbox-dock.sh` (config: `tests/nested.lua`). Machine: the dev box,
 Hyprland 0.56.2, Omarchy 4 "Quattro", Quickshell from `/usr/bin/qs`.
 
 The 2026-08-15 run above proved the sandbox could host *monitor surgery*. This

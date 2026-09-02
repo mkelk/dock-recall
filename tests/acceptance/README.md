@@ -14,11 +14,30 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 
 | | |
 |---|---|
+| `run.sh` | **the entrypoint** — stage, boot, run, and answer in an exit code |
 | `dock-recall-roundtrip-test.sh` | the test, written in the harness's `*-test.sh` style |
 | `stage.sh` | builds the directory the harness pushes into the guest |
 | `PROVISIONING.md` | what has to exist on the host, and where |
 
 ## Running it
+
+```bash
+OMARCHY_ISO_HOST=<the host holding ~/git/omarchy> ./tests/acceptance/run.sh
+```
+
+That is the whole gate. **Exit 0 means the round trip passed inside the VM**;
+exit 1 says which of the two required lines was missing and prints every
+`not ok -` from the run. It stages, pins `PATH=/usr/bin:$PATH`, and passes
+`--reuse-base --no-preview`, so none of those can be forgotten. About 3 minutes,
+entirely headless.
+
+Results land in `~/git/omarchy-iso/test-runs/omarchy-4.0.1/runs/<timestamp>/`:
+`serial.log`, the harness's own console captures, and `omarchy-acceptance/` with
+this test's screenshots and `dock-recall-service.log` — the `[dock-recall]`
+lines the service itself emitted during the run. `run.sh` also keeps the
+harness's own output at the `log:` path it prints.
+
+The underlying invocation, for when something needs to be run by hand:
 
 ```bash
 stage=$(mktemp -d)
@@ -29,7 +48,7 @@ PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.0.1.iso \
   --reuse-base --no-preview --sync-omarchy "$stage"
 ```
 
-Two flags are not optional:
+Two of those pieces are not optional:
 
 - **`--no-preview`** — without it the harness ends by opening the screenshots in
   `imv` on your desktop. The VM itself is always headless (`-display none`), so
@@ -39,12 +58,7 @@ Two flags are not optional:
   create the run overlay. Without the pin the run dies at
   `qemu-img create -f qcow2 -b base.qcow2 -F qcow2`.
 
-Results land in `~/git/omarchy-iso/test-runs/omarchy-4.0.1/runs/<timestamp>/`:
-`serial.log`, the harness's own console captures, and `omarchy-acceptance/` with
-this test's screenshots and `dock-recall-service.log` — the `[dock-recall]`
-lines the service itself emitted during the run.
-
-### Read the right exit code
+### Background: why `run.sh` parses lines instead of reading an exit code
 
 **The harness exits 1 even when this test passes.** Before the acceptance suite
 it runs its own `shortcut_smoke_phase`, and on the current base image three of
@@ -56,12 +70,20 @@ not ok - menu shortcut opens
 not ok - universal clipboard test opens Chromium
 ```
 
-That is what turns the harness's exit code red. The line that answers whether
-dock-recall is healthy is the suite's own:
+That is what turns the harness's exit code red, and it is why
+`omarchy-iso-test`'s own status can never be the gate. What *is* unambiguous is
+its output, so `run.sh` requires **both** of these lines and nothing less:
 
 ```
 ok - acceptance suite passed in 18s (artifacts in /tmp/omarchy-acceptance)
+ok - dock-recall round trip: record, undock, scatter, redock, restored
 ```
+
+Both, because either one alone is a lie. The suite's line on its own would go
+green if the test file never reached the guest and nothing dock-recall-shaped
+ran at all; this test's line on its own would mean the suite aborted somewhere
+after us. `run.sh` matches them literally (`grep -F`), so a change to either
+message is a loud failure rather than a quiet fuzzy match.
 
 A whole run takes about 2.5 minutes with `--reuse-base`; the suite itself is
 under 20 seconds of that.
@@ -111,11 +133,18 @@ recording can put it back.
 `success-dock-recall-<step>.png` is captured at each visually distinct state;
 `base-test.sh`'s `fail` captures `failure-<step>.png` before aborting.
 
-The layout is recorded through the engine rather than by hand-writing JSON, and
-rather than by driving the panel: hand-written JSON rots at the next
+The layout is recorded through the engine rather than by hand-writing it, and
+rather than by driving the panel: a hand-written layout rots at the next
 `STATE_VERSION` bump, and the panel has no IPC for Record — its only summon
 payload is `{"focus":...}`. Recording through `StateModel` is the same code path
 the panel writes with, so the file is always schema-correct.
+
+The identity the test watches *is* hand-written — a literal JSON seed, because
+there is no engine call that means "start watching this". Its `version` field is
+read out of `StateModel.STATE_VERSION` rather than typed in, which is the part
+that would otherwise rot: a seed declaring an older version is read as a
+migration, and v4's migration is not purely additive (it can rewrite `launch`),
+so a stale number would quietly change what the test believes it seeded.
 
 ## Guest packages
 
