@@ -14,12 +14,18 @@
 # THE THREE ISOLATION RULES, enforced by the footer at the bottom of this file:
 #   1. the nested compositor's window lives on a special workspace that is never
 #      toggled open, so nothing appears on any visible workspace;
-#   2. nothing steals focus — the live `activewindow` is compared before/after;
+#   2. nothing steals focus — the live `activewindow` is compared before/after
+#      (this one and the visible-workspace check are AMBIGUOUS: your own clicking
+#      about during the run trips them too, so they fail loudly but say so);
 #   3. nothing writes live state — ~/.local/state/omarchy/dock-recall.json is
 #      compared byte-for-byte, and the sandbox's HOME is a mktemp dir.
 #
 # Usage: tests/sandbox-dock.sh        exit 0 = all cases passed
 #        DR_SANDBOX_KEEP=1 tests/sandbox-dock.sh   keep the sandbox dir + logs
+#
+# Runs alongside your work, but only ONE AT A TIME: a flock on
+# $XDG_RUNTIME_DIR/dock-recall-sandbox.lock turns a second concurrent run into a
+# busy message, because two runs share one $XDG_RUNTIME_DIR/hypr.
 #
 # See tests/nested-notes.md for what was measured while building this.
 
@@ -56,6 +62,19 @@ FAILURES=0
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 note() { echo "  · $*"; }
+
+# A live-session delta THIS RUN CANNOT BE PROVEN TO HAVE CAUSED. It fails the
+# gate exactly like `fail` — the gate does not get to guess — but it prints its
+# own attribution so the reader can tell it apart from the checks no user action
+# can trip (a stray sandbox client, the live state file, the monitor set).
+fail_ambiguous() {
+  echo "FAIL: $*"
+  echo "      NOTE: this can be your own activity during the run — a click, an"
+  echo "            alt-tab, a workspace switch, a notification stealing focus."
+  echo "            Rerun while leaving the desktop alone to confirm; if it"
+  echo "            repeats on an idle desk, the sandbox really did leak."
+  FAILURES=$((FAILURES + 1))
+}
 
 live()   { HYPRLAND_INSTANCE_SIGNATURE="$LIVE_SIG"   hyprctl "$@"; }
 nested() { HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" hyprctl "$@"; }
@@ -132,11 +151,18 @@ cleanup() {
   local status=$?
   set +e
   trap - EXIT
+  # A Ctrl-C landing mid-teardown used to abort the teardown itself and leave the
+  # nested compositor orphaned on the user's special workspace — the one thing
+  # this function exists to prevent. Teardown is short; it runs to the end.
+  trap '' INT TERM
   echo "--- teardown ---"
   [[ -n $QS_PID ]] && kill_wait "$QS_PID"
   [[ -n $NESTED_PID ]] && kill_wait "$NESTED_PID"
   # Hyprland does not remove its own socket directory when it is killed, and a
-  # drift of dead instance dirs is what the newest-directory probe reads.
+  # drift of dead instance dirs is what the adoption probe reads. NESTED_SIG is
+  # only ever set for a directory whose `hyprland.lock` pid was VERIFIED to be
+  # our own nested compositor, so this rm can never reach another run's live
+  # socket dir — and on a failed adoption it stays empty and nothing is removed.
   [[ -n $NESTED_SIG ]] && rm -rf "${XDG_RUNTIME_DIR:?}/hypr/$NESTED_SIG"
 
   if [[ -n $SBOX && -d $SBOX ]]; then
@@ -150,13 +176,30 @@ cleanup() {
   exit $status
 }
 trap cleanup EXIT
-trap 'exit 130' INT TERM
+# Conventional signal exit codes: 128 + signo. The EXIT trap above still runs.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ------------------------------------------------------------------- preflight
 
-for tool in hyprctl Hyprland qs jq node foot; do
+for tool in hyprctl Hyprland qs jq node foot flock; do
   command -v "$tool" >/dev/null || { echo "FAIL: $tool is not on PATH"; exit 1; }
 done
+
+# One sandbox run at a time, belt-and-braces on top of the ownership check
+# below. Two overlapping runs each launch a nested compositor into the same
+# $XDG_RUNTIME_DIR/hypr, and before the ownership check existed either could
+# adopt the other's instance, drive it, and rm -rf its socket dir on the way
+# out. Non-blocking: a second run says so and stops rather than queueing behind
+# a run that may take minutes.
+SANDBOX_LOCK="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/dock-recall-sandbox.lock"
+exec 9>"$SANDBOX_LOCK" || { echo "FAIL: cannot open the sandbox lock $SANDBOX_LOCK"; exit 1; }
+if ! flock -n 9; then
+  echo "FAIL: another sandbox-dock.sh run holds $SANDBOX_LOCK."
+  echo "      The nested-compositor sandbox is serialized across working trees;"
+  echo "      wait for that run to finish and try again."
+  exit 1
+fi
 [[ -n $LIVE_SIG ]] || { echo "FAIL: no HYPRLAND_INSTANCE_SIGNATURE — run this from inside a Hyprland session"; exit 1; }
 [[ -n ${WAYLAND_DISPLAY:-} ]] || { echo "FAIL: no WAYLAND_DISPLAY — the nested compositor needs a parent"; exit 1; }
 [[ -f $NESTED_CONF ]] || { echo "FAIL: missing $NESTED_CONF"; exit 1; }
@@ -203,33 +246,124 @@ wl_before=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -E '^wayland-[0-9]+$' | sor
 # because only an exec dispatch can carry the `[workspace … silent]` rule that
 # parks the window out of sight without touching focus. The wrapper exists to
 # hand us back a pid: `hyprctl dispatch exec` reports none.
+#
+# It is ALSO where the sandbox's environment has to be established. The dispatch
+# comes from the live compositor, so this script starts with the user's real
+# env, and everything launched INSIDE the nested world inherits from it — the
+# plugin's own `foot --app-id=dr-sim`, and whatever the user's shell rc does
+# with a real HOME. Redirecting only the Quickshell that hosts the plugin is not
+# enough: exports have to happen here, before Hyprland is exec'd.
 cat > "$SBOX/launch-nested.sh" <<'LAUNCH'
 #!/bin/bash
-echo $$ > "$1"
-exec Hyprland -c "$2" > "$3" 2>&1
+# $1 = sandbox root, $2 = nested Hyprland config.
+sbox="$1"; conf="$2"
+echo $$ > "$sbox/nested.pid"
+
+# The redirect every client of the nested compositor inherits. HOME is the one
+# that matters (Service.qml derives its state dir from HOME); the XDG_* vars go
+# with it so nothing falls back to the real ones. XDG_RUNTIME_DIR is left alone
+# — it is where the Wayland and hyprctl sockets have to live.
+export HOME="$sbox/home"
+export XDG_STATE_HOME="$sbox/home/.local/state"
+export XDG_CONFIG_HOME="$sbox/home/.config"
+export XDG_CACHE_HOME="$sbox/home/.cache"
+export XDG_DATA_HOME="$sbox/home/.local/share"
+
+# Stub-first, so a `notify-send` from anything in the nested world hits the
+# recording stub instead of the user's screen. DBUS_SESSION_BUS_ADDRESS is
+# deliberately NOT dropped — Hyprland wants a session bus — so the stub is the
+# guard on the one path that was measured reaching the live desktop.
+export PATH="$sbox/bin:$PATH"
+
+exec Hyprland -c "$conf" > "$sbox/nested-hyprland.log" 2>&1
 LAUNCH
 chmod +x "$SBOX/launch-nested.sh"
 
-live dispatch "hl.dsp.exec_cmd([[ [workspace $SPECIAL_WS silent] $SBOX/launch-nested.sh $SBOX/nested.pid $NESTED_CONF $SBOX/nested-hyprland.log ]])" >/dev/null
+# `hl.dsp.exec_cmd([[ … ]])` is a Lua long string that Hyprland word-splits: the
+# arguments below cannot be quoted, so a path containing whitespace would arrive
+# as two arguments, and a `]]` would end the string early. Refusing is cheaper
+# and clearer than escaping. (This is why the wrapper takes the sandbox root and
+# derives its own paths — the user's PATH, which may well contain a space, is
+# built inside the wrapper and never crosses the dispatch.)
+for _p in "$SBOX" "$NESTED_CONF"; do
+  case $_p in
+    *[[:space:]]*) echo "FAIL: path contains whitespace, which hl.dsp.exec_cmd's long string cannot carry: $_p"; exit 1 ;;
+    *']]'*)        echo "FAIL: path contains ']]', which would terminate the Lua long string: $_p"; exit 1 ;;
+  esac
+done
 
-# The new instance announces itself by creating its socket directory.
+live dispatch "hl.dsp.exec_cmd([[ [workspace $SPECIAL_WS silent] $SBOX/launch-nested.sh $SBOX $NESTED_CONF ]])" >/dev/null
+
+# The wrapper writes its pid before exec'ing Hyprland, so this pid IS the nested
+# compositor's — and it is what every later ownership question is answered
+# against, so it is collected FIRST.
 for _ in $(seq 60); do
-  NESTED_SIG=$(comm -13 <(echo "$hypr_before") <(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | sort) | tail -1)
-  [[ -n $NESTED_SIG && -S $XDG_RUNTIME_DIR/hypr/$NESTED_SIG/.socket.sock ]] && break
-  NESTED_SIG=""
+  NESTED_PID=$(cat "$SBOX/nested.pid" 2>/dev/null)
+  [[ -n $NESTED_PID ]] && break
   sleep 0.5
 done
-[[ -n $NESTED_SIG ]] || { echo "FAIL: nested Hyprland never came up (see $SBOX/nested-hyprland.log)"; exit 1; }
-NESTED_PID=$(cat "$SBOX/nested.pid" 2>/dev/null)
-[[ -n $NESTED_PID ]] || { echo "FAIL: nested Hyprland wrote no pid"; exit 1; }
+[[ -n $NESTED_PID ]] || { echo "FAIL: nested Hyprland wrote no pid (see $SBOX/nested-hyprland.log)"; exit 1; }
 
-# Its Wayland socket is the one that appeared alongside it. The plugin's
-# Quickshell has to connect to THAT display, not the user's.
-for _ in $(seq 40); do
-  NESTED_WD=$(comm -13 <(echo "$wl_before") <(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -E '^wayland-[0-9]+$' | sort) | tail -1)
-  [[ -n $NESTED_WD ]] && break
+# owned_by_nested <pid> — is <pid> our nested compositor, or a descendant of it?
+# The wrapper execs Hyprland, so equality is the normal answer; the walk covers
+# a future wrapper that forks instead of exec'ing.
+owned_by_nested() {
+  local pid="$1" i
+  for i in 1 2 3 4 5; do
+    [[ -n $pid && $pid =~ ^[0-9]+$ ]] || return 1
+    (( pid <= 1 )) && return 1
+    [[ $pid == "$NESTED_PID" ]] && return 0
+    pid=$(awk '/^PPid:/{print $2}' "/proc/$pid/status" 2>/dev/null)
+  done
+  return 1
+}
+
+# ADOPTION, ownership-checked. The old probe took the NEWEST new directory under
+# $XDG_RUNTIME_DIR/hypr, which two near-simultaneous runs can resolve to the
+# same instance: both would then drive one compositor, and the first to finish
+# would rm -rf a socket dir still in use. Every instance writes
+# `<sig>/hyprland.lock` = "<pid>\n<wayland socket>", so the directory can be
+# matched to OUR pid rather than to a timestamp — and the same file hands over
+# the Wayland display, which removes a second newest-wins probe.
+NESTED_LOCK_PID=""
+unowned_seen=""
+for _ in $(seq 60); do
+  while read -r cand; do
+    [[ -n $cand ]] || continue
+    [[ -S $XDG_RUNTIME_DIR/hypr/$cand/.socket.sock ]] || continue
+    lock="$XDG_RUNTIME_DIR/hypr/$cand/hyprland.lock"
+    [[ -r $lock ]] || continue
+    cand_pid=$(sed -n 1p "$lock" 2>/dev/null | tr -d '[:space:]')
+    if owned_by_nested "$cand_pid"; then
+      NESTED_SIG="$cand"
+      NESTED_LOCK_PID="$cand_pid"
+      NESTED_WD=$(sed -n 2p "$lock" 2>/dev/null | tr -d '[:space:]')
+      break
+    fi
+    unowned_seen="$unowned_seen $cand(pid ${cand_pid:-?})"
+  done < <(comm -13 <(echo "$hypr_before") <(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | sort))
+  [[ -n $NESTED_SIG ]] && break
   sleep 0.5
 done
+if [[ -z $NESTED_SIG ]]; then
+  echo "FAIL: no Hyprland instance directory belongs to our nested compositor (pid $NESTED_PID)."
+  echo "      New instance dirs seen, none owned by us:${unowned_seen:- none}"
+  echo "      Nothing was driven and NO socket directory was removed — another"
+  echo "      run's instance is never touched. See $SBOX/nested-hyprland.log."
+  exit 1
+fi
+note "ownership  $NESTED_SIG/hyprland.lock says pid $NESTED_LOCK_PID; launcher pid is $NESTED_PID — match"
+
+# The Wayland socket usually comes from that same lock file. The old
+# newest-socket diff stays as the fallback for a Hyprland that writes only a pid.
+if [[ -z $NESTED_WD ]]; then
+  for _ in $(seq 40); do
+    NESTED_WD=$(comm -13 <(echo "$wl_before") <(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep -E '^wayland-[0-9]+$' | sort) | tail -1)
+    [[ -n $NESTED_WD ]] && break
+    sleep 0.5
+  done
+  [[ -n $NESTED_WD ]] && note "display    from the socket diff (hyprland.lock carried no wayland line)"
+fi
 [[ -n $NESTED_WD ]] || { echo "FAIL: nested Hyprland exposed no new wayland socket"; exit 1; }
 
 poll 30 nested monitors -j >/dev/null || { echo "FAIL: nested Hyprland is not answering hyprctl"; exit 1; }
@@ -309,7 +443,7 @@ env -i \
   WAYLAND_DISPLAY="$NESTED_WD" \
   HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" \
   DR_TEST_LOCKED=false \
-  qs -p "$SBOX/qs" > "$SBOX/qs.log" 2>&1 &
+  qs -p "$SBOX/qs" > "$SBOX/qs.log" 2>&1 9>&- &
 QS_PID=$!
 
 if poll 30 bash -c "grep -qF 'service-ready' '$SBOX/qs.log'"; then
@@ -378,7 +512,13 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
 
 sleep 1
 nested output remove "$OUTPUT" >/dev/null
-poll 15 bash -c "! HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl monitors all -j | jq -e --arg n '$OUTPUT' 'any(.[]; .name==\$n)' >/dev/null"
+# The run proper has to start UNDOCKED. If the output is still there, case 1 is
+# not a LAUNCH-on-dock test at all — it starts from the state it means to reach —
+# so a timeout here is a failed check, not something to poll past in silence.
+if ! poll 15 bash -c "! HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl monitors all -j | jq -e --arg n '$OUTPUT' 'any(.[]; .name==\$n)' >/dev/null"; then
+  fail "seed teardown — $OUTPUT never went away after 'output remove'; the cases would start DOCKED and prove nothing"
+  diagnostics
+fi
 sleep 3
 
 # =================================================================== THE CASES
@@ -472,6 +612,18 @@ fi
 #
 # Mandatory footer. Every one of these is about the LIVE session, and any delta
 # fails the gate however well the cases went.
+#
+# They are not all equally attributable, and the footer says which is which:
+#
+#   AUTHORITATIVE — a stray sandbox client on a visible workspace, a changed
+#   live state file, a changed monitor set. Nothing the user does at their desk
+#   produces any of these, so a delta is the sandbox leaking, full stop.
+#
+#   AMBIGUOUS — the active window and the visible workspaces. Both are things
+#   the user changes constantly just by working, and this gate advertises itself
+#   as safe to run WHILE they do. A delta still fails (the gate does not guess),
+#   but it is reported through fail_ambiguous with the rerun instruction: on an
+#   idle desk the same delta is real.
 
 echo "=== isolation footer ==="
 
@@ -484,21 +636,27 @@ else
   LIVE_STATE_AFTER="absent"
 fi
 
-[[ $LIVE_AW_AFTER == "$LIVE_AW_BEFORE" ]] \
-  && pass "isolation: live active window unchanged ($LIVE_AW_AFTER)" \
-  || fail "isolation: live active window moved $LIVE_AW_BEFORE -> $LIVE_AW_AFTER"
+if [[ $LIVE_AW_AFTER == "$LIVE_AW_BEFORE" ]]; then
+  pass "isolation: live active window unchanged ($LIVE_AW_AFTER)"
+else
+  fail_ambiguous "isolation [ambiguous]: live active window moved $LIVE_AW_BEFORE -> $LIVE_AW_AFTER"
+fi
 
 [[ $LIVE_STATE_AFTER == "$LIVE_STATE_BEFORE" ]] \
   && pass "isolation: live state file byte-identical ($LIVE_STATE_BEFORE)" \
-  || fail "isolation: live state file changed $LIVE_STATE_BEFORE -> $LIVE_STATE_AFTER"
+  || fail "isolation [authoritative]: live state file changed $LIVE_STATE_BEFORE -> $LIVE_STATE_AFTER"
 
 [[ $LIVE_MONITORS_AFTER == "$LIVE_MONITORS_BEFORE" ]] \
   && pass "isolation: live monitor set unchanged ($LIVE_MONITORS_AFTER)" \
-  || fail "isolation: live monitors changed $LIVE_MONITORS_BEFORE -> $LIVE_MONITORS_AFTER"
+  || fail "isolation [authoritative]: live monitors changed $LIVE_MONITORS_BEFORE -> $LIVE_MONITORS_AFTER"
 
-[[ $LIVE_VISIBLE_AFTER == "$LIVE_VISIBLE_BEFORE" ]] \
-  && pass "isolation: live visible workspaces unchanged" \
-  || fail "isolation: live visible workspaces changed $LIVE_VISIBLE_BEFORE -> $LIVE_VISIBLE_AFTER"
+if [[ $LIVE_VISIBLE_AFTER == "$LIVE_VISIBLE_BEFORE" ]]; then
+  pass "isolation: live visible workspaces unchanged"
+else
+  fail_ambiguous "isolation [ambiguous]: live visible workspaces changed
+        before: $LIVE_VISIBLE_BEFORE
+        after:  $LIVE_VISIBLE_AFTER"
+fi
 
 # Nothing of ours may be sitting on a workspace the user can see. The only live
 # client this run is allowed to own is the nested compositor, and only on the
@@ -507,7 +665,7 @@ strays=$(live clients -j | jq -c --arg s "$SPECIAL_WS" --arg c "$APP_ID" --argjs
   '[.[]|select(.class==$c or ((.pid==$p or .class=="aquamarine") and .workspace.name!=$s))|{class,pid,ws:.workspace.name}]')
 [[ $strays == "[]" ]] \
   && pass "isolation: no sandbox window on any visible live workspace" \
-  || fail "isolation: sandbox windows leaked into the live session: $strays"
+  || fail "isolation [authoritative]: sandbox windows leaked into the live session: $strays"
 
 if [[ -f $SBOX/notify-send.calls ]]; then
   note "notify-send stub absorbed $(wc -l < "$SBOX/notify-send.calls") toast(s) — none reached the desktop"

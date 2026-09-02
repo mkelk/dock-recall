@@ -315,8 +315,16 @@ path the plugin writes is redirected into a `mktemp` HOME, and the script ends b
 asserting the live session is untouched — same active window, same monitors,
 same visible workspaces, and a byte-identical
 `~/.local/state/omarchy/dock-recall.json`. It needs no permission and no quiet
-moment: run it from any working tree, in parallel, while you work. Exit 0 is the
-gate; a failure keeps the sandbox directory and prints its path.
+moment: run it from any working tree while you work. Exit 0 is the gate; a
+failure keeps the sandbox directory and prints its path. Two caveats come with
+running it alongside your work. **One run at a time** — a second concurrent run
+stops with a busy message, because both would share one
+`$XDG_RUNTIME_DIR/hypr`. And **two of the isolation checks can go falsely red**:
+the active window and the visible workspaces are things *you* change by clicking
+around, so the footer marks those two `[ambiguous]`, prints the before/after
+delta, and tells you to rerun on an idle desk to confirm. The other three —
+a stray sandbox window, the live state file, the monitor set — are
+`[authoritative]`: nothing you do at your desk can produce them.
 
 `tests/sim-dock.sh` is the same three cases against **your live session**, and it
 is on-request only — it creates a headless output on your real desktop and moves
