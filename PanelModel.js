@@ -1335,7 +1335,7 @@ function titleFromOwnArgv(argv) {
 // they propose matches it immediately. Case 3 names the title the window WOULD
 // carry if it had been launched the plugin's way: the identity is still created
 // (human decision 2026-08-19), and the panel says out loud that this window
-// will not match until it is relaunched — see untitledTerminalHint.
+// will not match until it is relaunched — see awaitingTitleHint.
 //
 // `reason` is "" for a non-terminal (there is no question here), "not-read"
 // when the /proc read has not come back, "no-title" when the terminal's own
@@ -1460,7 +1460,7 @@ function tickRefusalHint(className, reason) {
 //
 // Which watched TITLE identities have a live terminal window of their own class
 // on screen and nothing matching them? Two callers want two shapes of the
-// answer — untitledTerminalHint wants a sentence, awaitingTitleIndex wants a
+// answer — awaitingTitleHint wants a sentence, awaitingTitleIndex wants a
 // row — and they asked it twice, ~20 lines apart, in code that had drifted
 // apart on both of the things it decides:
 //
@@ -1481,9 +1481,26 @@ function tickRefusalHint(className, reason) {
 //   README's `--title` advice is most often used for. Nothing here is placed
 //   anywhere, so having no slot costs the window nothing.
 //
-// Returns [{ identity, windows: [{ client, className }] }] — every candidate
-// window per identity, in client order, because the row wants the first and the
-// hint wants the first whose child process names the identity's title.
+//   THE TERMINAL FILTER, removed here and moved outward (tick s7l, finding A12).
+//   This used to drop every non-terminal window, defended by a comment about the
+//   ADVICE: a webapp identity whose window is closed is an ordinary not-running
+//   app, and telling that user to relaunch with `--title` would be advice about
+//   the wrong thing. The comment is right about the advice and was applied to
+//   the wrong thing — what the filter removed was the RECOVERY ROW.
+//
+//   So a hand-authored `^chromium$` + `^Gmail$` (the README invites the hand
+//   edit) matched nothing while an ordinary chromium window sat on screen, and
+//   had no chip, no row, and no way back except editing the state file: exactly
+//   the state tick 1m4 exists to make recoverable, one class of app further out.
+//   The candidate now says whether its window is a terminal, and the two places
+//   that give advice branch on it. Note what the condition still requires — a
+//   LIVE window of the identity's own class. A closed webapp has none, so it
+//   stays an ordinary not-running app and nothing here says a word about it.
+//
+// Returns [{ identity, windows: [{ client, className, isTerminal }] }] — every
+// candidate window per identity, in client order, because the row wants the
+// first and the hint wants the first whose child process names the identity's
+// title.
 function awaitingTitleCandidates(clients, identities, resolve) {
   var list = isArray(identities) ? identities : [];
   var live = isArray(clients) ? clients : [];
@@ -1510,13 +1527,15 @@ function awaitingTitleCandidates(clients, identities, resolve) {
       var client = live[w];
       if (!client) continue;
       var className = trim(client.class) || trim(client.initialClass);
-      // Terminals only. A webapp identity (`chromium` + `^Slack$`) whose window
-      // is closed is an ORDINARY not-running app, and telling that user to
-      // relaunch with `--title` would be advice about the wrong thing.
-      if (!isTerminalClass(className)) continue;
       if (!matchesAnyPattern(client.class, identity.patterns)
           && !matchesAnyPattern(client.initialClass, identity.patterns)) continue;
-      windows.push({ client: client, className: className });
+      // Answered, not filtered on: whether this window is a terminal decides
+      // what ADVICE it can be given, and nothing else. See the note above.
+      windows.push({
+        client: client,
+        className: className,
+        isTerminal: isTerminalClass(className)
+      });
     }
     if (windows.length) out.push({ identity: identity, windows: windows });
   }
@@ -1524,26 +1543,41 @@ function awaitingTitleCandidates(clients, identities, resolve) {
   return out;
 }
 
-// A watched TITLE identity whose window is on screen but was not launched with
-// `--title`, said out loud with the exact command that fixes it.
+// A watched TITLE identity whose window's class is on screen and which still
+// matches nothing, said out loud — with the exact command that fixes it when
+// there is one to give.
 //
-// The human decision behind this (2026-08-19): when a bare terminal hosts one
-// unambiguous app, ticking it still CREATES the identity — the derivation is
-// right about what the app is, and the command it built is right about how to
-// start it — but the window in front of the user has `initialTitle: "foot"` and
-// so matches nothing. No row, no chip, nothing to untick, silently missing from
-// the next Record. Creating it and saying nothing would be the silent wrong
-// answer this project refuses to ship; refusing to create it would throw away a
-// correct derivation. So: create it, and say what is missing.
+// The human decision behind the terminal half (2026-08-19): when a bare
+// terminal hosts one unambiguous app, ticking it still CREATES the identity —
+// the derivation is right about what the app is, and the command it built is
+// right about how to start it — but the window in front of the user has
+// `initialTitle: "foot"` and so matches nothing. No row, no chip, nothing to
+// untick, silently missing from the next Record. Creating it and saying nothing
+// would be the silent wrong answer this project refuses to ship; refusing to
+// create it would throw away a correct derivation. So: create it, and say what
+// is missing.
 //
 // EVIDENCE, not a prediction, in the same spirit as engine.shadowedIdentities:
-// the line appears only while a live terminal window's own child process names
-// this identity's title, and it CLEARS the moment any window resolves to the
-// identity — which is exactly what relaunching with `--title` does.
+// the line appears only while a live window of the identity's own class is on
+// screen and nothing resolves to the identity, and it CLEARS the moment one
+// does — which is exactly what relaunching with `--title` does.
+//
+// TWO KINDS OF APP, TWO SENTENCES (tick s7l). The `--title` convention is a
+// terminal convention, and the relaunch line is only true about a terminal. A
+// hand-authored `^chromium$` + `^Gmail$` is in exactly the same situation —
+// watched, its class on screen, matching nothing — and the honest thing to say
+// about it names its title patterns and the class they are being compared
+// against, so the user can look at the two and see which is wrong. It does NOT
+// claim a relaunch would fix anything, because for a chromium window it would
+// not.
+//
+// The terminal line still asks for the /proc read (it is what names the app and
+// builds the command); the non-terminal one cannot and does not — there is no
+// child process to read, and the candidate itself is the whole evidence.
 //
 // `resolve` is the panel's ONE matcher (engine.matchClient bound to the watched
 // list), passed in the way appRows and the map models take it.
-function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree) {
+function awaitingTitleHint(clients, identities, resolve, argvByPid, procTree) {
   var argvMap = (argvByPid && typeof argvByPid === "object") ? argvByPid : {};
   var tree = (procTree && typeof procTree === "object") ? procTree : {};
 
@@ -1552,8 +1586,10 @@ function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree)
   for (var i = 0; i < candidates.length; i++) {
     var identity = candidates[i].identity;
     var windows = candidates[i].windows;
+    var said = false;
 
-    for (var w = 0; w < windows.length; w++) {
+    for (var w = 0; w < windows.length && !said; w++) {
+      if (!windows[w].isTerminal) continue;
       var className = windows[w].className;
       var client = windows[w].client;
       var pid = (client.pid === undefined || client.pid === null) ? "" : trim(String(client.pid));
@@ -1569,11 +1605,38 @@ function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree)
       lines.push('"' + identity.id + '" is watched, but this ' + className
         + ' window was not launched with --title, so nothing matches it yet.'
         + (command ? " Relaunch it as: " + command : ""));
-      break;
+      said = true;
+    }
+    if (said) continue;
+
+    // The non-terminal sentence. Reached only when no terminal window of this
+    // identity produced the line above, so a terminal whose /proc read has not
+    // come back yet is not suddenly told the wrong thing — it is told nothing,
+    // which is what it was told before.
+    for (var n = 0; n < windows.length && !said; n++) {
+      if (windows[n].isTerminal) continue;
+      lines.push('"' + identity.id + '" is watched, but no ' + windows[n].className
+        + ' window on screen matches its title patterns ('
+        + titlePatternList(identity.titlePatterns) + '), so nothing matches it yet.');
+      said = true;
     }
   }
 
   return joinLines(lines);
+}
+
+// The title patterns as the user would read them back out of the state file.
+// Quoted nowhere and joined with commas: this goes inside a parenthesis in a
+// sentence, and the patterns carry their own `^…$` punctuation already.
+function titlePatternList(patterns) {
+  var list = isArray(patterns) ? patterns : [];
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    if (typeof list[i] !== "string") continue;
+    var one = trim(list[i]);
+    if (one) out.push(one);
+  }
+  return out.join(", ");
 }
 
 // The same fact the hint states in a sentence, as a set of identity ids — so
@@ -4724,7 +4787,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
   // recording — if there is one — has never seen them either, because they were
   // created after the last Record and match nothing to record. So no loop above
   // can reach them, and without this pass the panel's only trace of them is the
-  // untitledTerminalHint sentence, which explains the situation but cannot undo
+  // awaitingTitleHint sentence, which explains the situation but cannot undo
   // it.
   //
   // Only with an identity list: without one there is nothing to enumerate, and
@@ -4740,6 +4803,9 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       // A second row for it would be the same tick offered twice.
       if (own(index.byIdentity, waiting.id)) continue;
       var waitingState = own(launch, waiting.id) || "";
+      // The class of the window that put this identity in the index — and so
+      // whether the `--title` sentence is true about it (tick s7l).
+      var waitingClass = own(awaiting, waiting.id) || "";
       entries.push({ place: UNPLACED, occurrence: 0, row: {
         // One window at most is ever waiting on one title, so this identity has
         // exactly one instance and spells its keys the bare single-window way.
@@ -4758,11 +4824,16 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         occurrence: 0,
         instances: 1,
         // WHY it is not running, not just that it is not: an ordinary closed app
-        // comes back when it is started again, and this one will not until the
-        // terminal hosting it carries a title of its own. The exact command is
-        // in the panel's own hint line (untitledTerminalHint) — saying it twice
-        // on a row that has no room for it would only crowd out the app's name.
-        position: "not running · will match once relaunched with --title",
+        // comes back when it is started again, and this one will not until
+        // something about it changes. WHICH thing depends on the app (tick s7l):
+        // a terminal needs a title of its own, and `--title` is how it gets one;
+        // a chromium window has no such convention, and the true thing to say is
+        // that its title patterns match nothing on screen. The exact command,
+        // where there is one, is in the panel's hint line (awaitingTitleHint) —
+        // saying it twice on a row with no room for it would crowd out the name.
+        position: isTerminalClass(waitingClass)
+          ? "not running · will match once relaunched with --title"
+          : "not running · no " + waitingClass + " window matches its title patterns",
         drifted: false,
         driftTo: "",
         mismatch: "",
@@ -5339,7 +5410,8 @@ if (typeof module !== "undefined") {
     insertionIndexFor: insertionIndexFor,
     tickRefusalReason: tickRefusalReason,
     tickRefusalHint: tickRefusalHint,
-    untitledTerminalHint: untitledTerminalHint,
+    awaitingTitleHint: awaitingTitleHint,
+    awaitingTitleCandidates: awaitingTitleCandidates,
     awaitingTitleIndex: awaitingTitleIndex,
     shadowNoticeFor: shadowNoticeFor,
     shadowedIdentityHint: shadowedIdentityHint,

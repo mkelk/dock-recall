@@ -3674,24 +3674,24 @@ test("the panel names the exact relaunch command until a matching window exists"
 
   // The bare window alone: nothing matches, and the panel says so with the
   // command that fixes it.
-  const said = panel.untitledTerminalHint([BARE_WINDOW], identities,
+  const said = panel.awaitingTitleHint([BARE_WINDOW], identities,
     resolver(identities), argvByPid, procTree);
   assert.ok(said.indexOf('"herdr" is watched') === 0, said);
   assert.ok(said.indexOf("Relaunch it as: foot --title=herdr herdr") !== -1, said);
 
   // It CLEARS the moment a window matches — which is exactly what relaunching
   // with --title does.
-  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW, TITLED_WINDOW], identities,
+  assert.strictEqual(panel.awaitingTitleHint([BARE_WINDOW, TITLED_WINDOW], identities,
     resolver(identities), argvByPid, procTree), "");
   // No evidence, no sentence: an app that is simply not running says nothing,
   // and neither does a terminal whose child names something else.
-  assert.strictEqual(panel.untitledTerminalHint([], identities, resolver(identities), {}, {}), "");
-  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW], identities,
+  assert.strictEqual(panel.awaitingTitleHint([], identities, resolver(identities), {}, {}), "");
+  assert.strictEqual(panel.awaitingTitleHint([BARE_WINDOW], identities,
     resolver(identities), argvByPid, panel.procTreeFromDump(procDump([
       { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["btop"] }] }
     ]))), "");
   // A class-only identity is not this problem and never gets the line.
-  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW],
+  assert.strictEqual(panel.awaitingTitleHint([BARE_WINDOW],
     [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }],
     resolver([{ id: "terminal", patterns: ["^foot$"], titlePatterns: [] }]), argvByPid, procTree), "");
 });
@@ -3748,11 +3748,21 @@ test("a title identity with no window yet still gets a row, and the row unticks 
   assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW, TITLED_WINDOW], identities,
     resolver(identities)), {}, "and it clears the moment a window matches");
 
-  // A webapp identity whose window is simply closed is an ordinary closed app,
-  // and `--title` is advice about the wrong thing.
-  const slack = [{ id: "slack", patterns: ["^chromium$"], titlePatterns: ["^Slack$"], launch: "" }];
+  // A webapp identity whose window is simply CLOSED is an ordinary closed app,
+  // and nothing here says a word about it — the condition still requires a live
+  // window of the identity's own class.
+  const slack = [{ id: "slack", patterns: ["^chrome-app.slack.com__x$"], titlePatterns: ["^Slack$"], launch: "" }];
   assert.deepStrictEqual(panel.awaitingTitleIndex(
     [makeClient({ class: "chromium", initialTitle: "News" })], slack, resolver(slack)), {});
+
+  // But a HAND-AUTHORED non-terminal title identity whose class IS on screen and
+  // still matches nothing is the same recoverable mis-tick a terminal's is, and
+  // since tick s7l it gets the same row. What it does not get is the `--title`
+  // advice, which is not true about a chromium window — see the s7l tests below.
+  const gmail = [{ id: "gmail", patterns: ["^chromium$"], titlePatterns: ["^Gmail$"], launch: "" }];
+  assert.deepStrictEqual(panel.awaitingTitleIndex(
+    [makeClient({ class: "chromium", initialTitle: "News" })], gmail, resolver(gmail)),
+    { gmail: "chromium" });
   // A class-only identity is not this problem either — it matches its terminal
   // already.
   const wide = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
@@ -3810,7 +3820,7 @@ test("the awaiting-title row and hint read patterns the way the MATCHER reads th
 
     assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW], identities, resolver(identities)),
       { herdr: "foot" }, pattern);
-    assert.ok(panel.untitledTerminalHint([BARE_WINDOW], identities,
+    assert.ok(panel.awaitingTitleHint([BARE_WINDOW], identities,
       resolver(identities), argvByPid, procTree).indexOf('"herdr" is watched') === 0, pattern);
   }
 
@@ -3818,7 +3828,7 @@ test("the awaiting-title row and hint read patterns the way the MATCHER reads th
   // that asks whether the identity claims the title the child process names.
   const cased = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^HERDR$"],
     launch: "foot --title=herdr herdr" }];
-  assert.ok(panel.untitledTerminalHint([BARE_WINDOW], cased,
+  assert.ok(panel.awaitingTitleHint([BARE_WINDOW], cased,
     resolver(cased), argvByPid, procTree).indexOf('"herdr" is watched') === 0);
 
   // And the two must AGREE. They had drifted ~20 lines apart: the hint took any
@@ -3828,7 +3838,7 @@ test("the awaiting-title row and hint read patterns the way the MATCHER reads th
   const scratch = Object.assign({}, BARE_WINDOW, { workspace: { id: -99, name: "special:scratch" } });
   const identities = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
     launch: "foot --title=herdr herdr" }];
-  const hinted = panel.untitledTerminalHint([scratch], identities,
+  const hinted = panel.awaitingTitleHint([scratch], identities,
     resolver(identities), argvByPid, procTree) !== "";
   const rowed = Object.keys(panel.awaitingTitleIndex([scratch], identities, resolver(identities))).length > 0;
   assert.strictEqual(hinted, true, "a scratchpad terminal is evidence");
@@ -5049,4 +5059,123 @@ test("Panel.qml clears refusedTick when the clients list says the window is gone
   // reassigned, which is the one moment a window can have gone away.
   assert.ok(/onLiveClientsChanged/.test(source),
     "Panel.qml has no hook on the client list, so a dead refusal is never noticed");
+});
+
+// ------------------------ the awaiting-title surface is not terminals-only
+//
+// Tick s7l / finding A12. The tick-1m4 gap re-opened outside the terminal case.
+//
+// awaitingTitleCandidates — the one place that decides which identities are
+// waiting on a title — filtered its windows through isTerminalClass. The
+// comment defending that filter was about the ADVICE ("telling that user to
+// relaunch with --title would be advice about the wrong thing"), and it is
+// right about the advice; it was applied to the wrong thing. What the filter
+// actually removed was the RECOVERY ROW.
+//
+// So a hand-authored `^chromium$` + `^Gmail$` — the README invites the hand
+// edit — matched no window while an ordinary chromium window sat on screen, and
+// had no chip, no row, and no way back except editing the state file. Exactly
+// the state 1m4 exists to make recoverable, one class of app further out.
+//
+// The filter moves rather than disappears: every candidate says whether its
+// window is a terminal, and the two places that give ADVICE branch on it. A
+// terminal is told how to relaunch; anything else is told the true thing —
+// its title patterns match no window of its class.
+
+const CHROMIUM_UNMATCHED = makeClient({
+  address: "0xb1", class: "chromium", initialClass: "chromium",
+  title: "News", initialTitle: "News", workspace: 2, pid: 4242
+});
+const CHROMIUM_GMAIL = makeClient({
+  address: "0xb2", class: "chromium", initialClass: "chromium",
+  title: "Gmail", initialTitle: "Gmail", workspace: 2, pid: 4243
+});
+const GMAIL_IDENTITY = [
+  { id: "gmail", patterns: ["^chromium$"], titlePatterns: ["^Gmail$"], launch: "omarchy-launch-browser" }
+];
+
+test("a non-terminal title identity is an awaiting-title candidate too", () => {
+  const candidates = panel.awaitingTitleCandidates([CHROMIUM_UNMATCHED],
+    GMAIL_IDENTITY, resolver(GMAIL_IDENTITY));
+  assert.strictEqual(candidates.length, 1, JSON.stringify(candidates));
+  assert.strictEqual(candidates[0].identity.id, "gmail");
+  assert.strictEqual(candidates[0].windows.length, 1);
+  assert.strictEqual(candidates[0].windows[0].className, "chromium");
+  assert.strictEqual(candidates[0].windows[0].isTerminal, false,
+    "the terminal question is answered on the candidate, not used to drop it");
+
+  // And it clears the instant a window matches, exactly as the terminal case does.
+  assert.deepStrictEqual(panel.awaitingTitleCandidates([CHROMIUM_UNMATCHED, CHROMIUM_GMAIL],
+    GMAIL_IDENTITY, resolver(GMAIL_IDENTITY)), []);
+  // No window of its class on screen is an ordinary not-running app, and stays
+  // one: the row is about a class that IS there and still matches nothing.
+  assert.deepStrictEqual(panel.awaitingTitleCandidates([], GMAIL_IDENTITY, resolver(GMAIL_IDENTITY)), []);
+
+  // The terminal candidate still says what it is.
+  const footIdentity = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
+  const footCandidates = panel.awaitingTitleCandidates([BARE_WINDOW], footIdentity, resolver(footIdentity));
+  assert.strictEqual(footCandidates.length, 1);
+  assert.strictEqual(footCandidates[0].windows[0].isTerminal, true);
+});
+
+test("the index and the recovery row reach a non-terminal identity", () => {
+  assert.deepStrictEqual(
+    panel.awaitingTitleIndex([CHROMIUM_UNMATCHED], GMAIL_IDENTITY, resolver(GMAIL_IDENTITY)),
+    { gmail: "chromium" });
+
+  const rows = panel.appRows([CHROMIUM_UNMATCHED], monitorsLaptop, resolver(GMAIL_IDENTITY),
+    null, null, GMAIL_IDENTITY, {});
+  const row = rows.find((r) => r.identityId === "gmail");
+  assert.ok(row, "no recovery row for the hand-authored title identity: " + JSON.stringify(rows));
+  assert.strictEqual(row.awaitingTitle, true);
+  assert.strictEqual(row.watched, true);
+  assert.strictEqual(row.clickable, true, "the row must untick, which is the whole point of it");
+
+  // THE HONEST SENTENCE. A chromium window has no --title convention, and a row
+  // that claimed one would send the user off to do something that cannot work.
+  assert.strictEqual(row.position.indexOf("--title"), -1, row.position);
+  assert.ok(/title pattern/i.test(row.position), row.position);
+
+  // The terminal row keeps the advice that IS true for it.
+  const footIdentity = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
+  const footRows = panel.appRows([BARE_WINDOW], monitorsLaptop, resolver(footIdentity),
+    null, null, footIdentity, {});
+  const footRow = footRows.find((r) => r.identityId === "herdr");
+  assert.ok(footRow, JSON.stringify(footRows));
+  assert.ok(footRow.position.indexOf("--title") !== -1, footRow.position);
+});
+
+test("the hint tells a non-terminal the truth, without the relaunch claim", () => {
+  const said = panel.awaitingTitleHint([CHROMIUM_UNMATCHED], GMAIL_IDENTITY,
+    resolver(GMAIL_IDENTITY), {}, {});
+  assert.ok(said, "the non-terminal candidate says nothing at all");
+  assert.ok(said.indexOf('"gmail"') === 0 || said.indexOf('"gmail" is watched') !== -1, said);
+  assert.strictEqual(said.indexOf("--title"), -1,
+    "the --title advice is terminal-specific and cannot be given about a chromium window");
+  // It names what the user can actually check: the pattern, and the class it
+  // is being compared against.
+  assert.ok(said.indexOf("^Gmail$") !== -1, said);
+  assert.ok(said.indexOf("chromium") !== -1, said);
+
+  // And it clears when a window matches.
+  assert.strictEqual(panel.awaitingTitleHint([CHROMIUM_UNMATCHED, CHROMIUM_GMAIL],
+    GMAIL_IDENTITY, resolver(GMAIL_IDENTITY), {}, {}), "");
+});
+
+test("Panel.qml supplies the same inputs to the renamed hint", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The learnings rule: a pure fix with no QML supplier does nothing. The
+  // inputs did not change here — the same client list, identity list and
+  // matcher — so what has to be checked is that the panel calls the function
+  // that now answers for both kinds of app.
+  assert.ok(/PanelModel\.awaitingTitleHint\(/.test(source),
+    "Panel.qml still calls the terminals-only hint");
+  assert.strictEqual(source.indexOf("untitledTerminalHint"), -1,
+    "the old name is still in Panel.qml, so one of the two is dead code");
+  const binding = source.slice(source.indexOf("PanelModel.awaitingTitleHint("));
+  assert.ok(binding.slice(0, 300).indexOf("root.liveClients") !== -1, binding.slice(0, 300));
+  assert.ok(binding.slice(0, 300).indexOf("Engine.matchClient") !== -1, binding.slice(0, 300));
 });

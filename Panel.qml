@@ -1285,12 +1285,19 @@ Item {
     return PanelModel.tickRefusalHint(pending.className, reason)
   }
 
-  // A watched title identity whose window is on screen but was not launched
-  // with --title, and the exact command that would fix it. Evidence-based and
-  // self-clearing, like shadowHint: it is gone the moment a window matches.
+  // A watched TITLE identity whose class is on screen and which still matches
+  // nothing, and — for a terminal — the exact command that would fix it.
+  // Evidence-based and self-clearing, like shadowHint: it is gone the moment a
+  // window matches.
+  //
+  // Since tick s7l this covers a hand-authored non-terminal title identity too
+  // (`^chromium$` + `^Gmail$`), with a sentence that names its title patterns
+  // instead of claiming a `--title` relaunch it has no convention for. The
+  // inputs are unchanged: the same client list, identity list and matcher this
+  // binding has always supplied.
   readonly property string untitledHint: {
     var list = root.identities
-    return PanelModel.untitledTerminalHint(root.liveClients, list,
+    return PanelModel.awaitingTitleHint(root.liveClients, list,
       function (client) { return Engine.matchClient(client, list) || "" },
       root.argvByPid, root.procTree)
   }
