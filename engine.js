@@ -691,6 +691,89 @@ function newAddressSince(clientsJson, before) {
   return "";
 }
 
+// WHAT A LAUNCH THAT PRODUCED NOTHING MAY CLAIM (tick ql5, finding A11).
+//
+// When the 10s wait gives up, the service says what DID appear instead. That
+// sentence used to be built out of class names alone:
+//
+//     launch of "herdr" produced no window within 10s — continuing without it
+//     (windows that did appear since the dispatch: foot)
+//     … reason: launch produced no window within 10s (saw foot instead)
+//
+// and Service.qml's own comment admitted the problem: since schema v4 an
+// identity constrains `initialTitle` as well, so `{^foot$ + ^herdr$}` does not
+// claim a bare `foot` window — and the window the launch just opened IS a foot
+// window. "saw foot instead" tells the user the wrong app started. Nothing
+// started wrong: the launch command lost its `--title`, the right program is
+// running in front of them, and the identity cannot see it. One reading sends
+// them to fix a launch command; the other sends them hunting a bug that is not
+// there.
+//
+// So the diagnosis asks the identity's own question. A NEW window whose class
+// this identity claims and whose title it does not is a title problem, and says
+// so with the patterns that did not match. Everything else keeps the wording it
+// had: a class that really is wrong is still "saw X instead" (the shared-
+// Chromium case, which this must not swallow), and nothing at all is still
+// nothing at all.
+//
+// Returns { classes, titleMismatch, detail, reason }:
+//   classes       — the new window classes, deduped, for a caller that wants them
+//   titleMismatch — the right class appeared under a title this identity rejects
+//   detail        — the parenthetical the WARN line ends with
+//   reason        — the outcome reason, which is what a user reads on a panel row
+function launchTimeoutDiagnosis(identity, clientsNow, before, seconds, want) {
+  var clients = clientsNow || [];
+  var known = addressSet(before);
+  var classes = newClassesSince(clients, before);
+  var secs = (typeof seconds === "number" && isFinite(seconds)) ? seconds : 0;
+  var wanted = (typeof want === "number" && want > 1) ? want : 1;
+  var base = "launch produced no window within " + secs + "s";
+  var waiting = wanted > 1 ? " (waiting for window " + wanted + " of this app)" : "";
+
+  var titlePatterns = patternList(identity && identity.titlePatterns);
+  var classPatterns = patternList(identity && identity.patterns);
+  var id = (identity && typeof identity.id === "string") ? identity.id : "";
+
+  // BOTH halves have to be true: a window that is new since the dispatch, of a
+  // class this identity claims, carrying a title it does not. Asked over the
+  // same fields clientMatchesIdentity reads, so the diagnosis and the matcher
+  // cannot disagree about why the window was skipped.
+  if (titlePatterns.length > 0 && classPatterns.length > 0) {
+    for (var i = 0; i < clients.length; i++) {
+      var client = clients[i];
+      if (!client) continue;
+      var address = String(client.address || "");
+      if (!address || own(known, address)) continue;
+      if (!anyPatternMatches(classPatterns, [client.class, client.initialClass])) continue;
+      if (anyPatternMatches(titlePatterns, [client.initialTitle])) continue;
+
+      var className = String(client.class || client.initialClass || "?");
+      var title = (typeof client.initialTitle === "string") ? client.initialTitle : "";
+      var titled = title ? 'titled "' + title + '"' : "with no title of its own";
+      var wants = titlePatterns.join(", ");
+      return {
+        classes: classes,
+        titleMismatch: true,
+        detail: waiting + " (a " + className + " window did appear " + titled
+          + ', but "' + id + '" claims only titles matching ' + wants
+          + " — its launch command has lost its --title)",
+        reason: base + " (a " + className + " window appeared " + titled
+          + ', which "' + id + '" does not claim: its title patterns are ' + wants + ")"
+      };
+    }
+  }
+
+  var appeared = classes.join(", ");
+  return {
+    classes: classes,
+    titleMismatch: false,
+    detail: waiting + (appeared
+      ? " (windows that did appear since the dispatch: " + appeared + ")"
+      : " (no new window appeared at all)"),
+    reason: base + (appeared ? " (saw " + appeared + " instead)" : "")
+  };
+}
+
 // How many windows of an identity are open right now.
 //
 // The number the launch coordinator holds out for: with a deficit of two, the
@@ -5163,6 +5246,7 @@ if (typeof module !== "undefined") {
     addressesOf: addressesOf,
     newClassesSince: newClassesSince,
     newAddressSince: newAddressSince,
+    launchTimeoutDiagnosis: launchTimeoutDiagnosis,
     liveWindowCount: liveWindowCount,
     launchDeficits: launchDeficits,
     launchDeficitFor: launchDeficitFor,

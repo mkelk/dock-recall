@@ -1581,18 +1581,6 @@ Item {
     return Engine.liveWindowCount(root.liveClients, identity, StateModel.identities(root.state))
   }
 
-  // The classes of the windows present now that were not in `before`, comma-
-  // joined for the log. Reads nothing: root.liveClients was refreshed by the
-  // poll that is about to give up.
-  //
-  // The dedupe moved to engine.newClassesSince in tick v29. It was keyed by
-  // window CLASS on a bare object, and a class is whatever the app calls
-  // itself: a window classed `constructor` was dropped, so a timed-out launch
-  // reported "no new window appeared at all" with the window on screen.
-  function launchedClassesSince(before) {
-    return Engine.newClassesSince(root.liveClients, before).join(", ")
-  }
-
   // Poll until the identity has `expected` windows open ANYWHERE (10s cap).
   // Anywhere, not on the target workspace: a cold Electron start can take
   // longer than the wait, and the next re-plan moves whatever it finds. The
@@ -1634,15 +1622,21 @@ Item {
         return
       }
       if (waitedMs >= root.launchTimeoutMs) {
-        var appeared = root.launchedClassesSince(before)
+        // WHAT DID APPEAR, and what that means for THIS identity (tick ql5).
+        // The wording used to be assembled here out of class names alone, which
+        // reported "saw foot instead" about a `{^foot$ + ^herdr$}` identity
+        // whose launch had merely lost its `--title` — the right program, in
+        // front of the user, described as the wrong one. The whole question is
+        // decidable from the identity, the client list and the dispatch-time
+        // baseline, so it is answered in engine.launchTimeoutDiagnosis and this
+        // renders the answer. Note it is asked about `root.liveClients`, not the
+        // filtered `clients`: the windows that DID appear are by definition the
+        // ones this identity did not claim.
+        var said = Engine.launchTimeoutDiagnosis(identity, root.liveClients, before,
+          root.launchTimeoutMs / 1000, want)
         root.warn("launch of \"" + identityId + "\" produced no window within "
-          + (root.launchTimeoutMs / 1000) + "s — continuing without it"
-          + (want > 1 ? " (waiting for window " + want + " of this app)" : "")
-          + (appeared
-            ? " (windows that did appear since the dispatch: " + appeared + ")"
-            : " (no new window appeared at all)"))
-        root.failAndCount(outcome, "launch produced no window within " + (root.launchTimeoutMs / 1000) + "s"
-          + (appeared ? " (saw " + appeared + " instead)" : ""))
+          + (root.launchTimeoutMs / 1000) + "s — continuing without it" + said.detail)
+        root.failAndCount(outcome, said.reason)
         done()
         return
       }

@@ -1991,3 +1991,117 @@ test("filling the deficit one window at a time converges", () => {
   assert.deepStrictEqual(counts, [3, 2, 1]);
   assert.deepStrictEqual(plan, []);
 });
+
+// -------------------------------- what a launch that produced nothing may claim
+//
+// Tick ql5 / finding A11. When a launch's 10s wait gives up, the service says
+// what DID appear instead. The sentence was built out of class names alone:
+//
+//     launch of "herdr" produced no window within 10s — continuing without it
+//     (windows that did appear since the dispatch: foot)
+//     … reason: launch produced no window within 10s (saw foot instead)
+//
+// which is a lie by omission for a title identity, and Service.qml's own comment
+// admitted it: since schema v4 an identity constrains `initialTitle` as well, so
+// `{^foot$ + ^herdr$}` does not claim a bare `foot` window — and the window the
+// launch opened IS a foot window. "saw foot instead" tells the user the wrong
+// app started. Nothing started wrong. The launch command lost its `--title`, the
+// right program is running in front of them, and the identity cannot see it.
+//
+// The diagnosis is a pure function of the identity, the client list and the
+// dispatch-time baseline. Service.qml renders it.
+
+const HERDR = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot herdr" };
+const EDITOR = { id: "editor", patterns: ["^code$"], titlePatterns: [], launch: "code" };
+
+test("a title identity's launch names the real situation, not 'saw foot instead'", () => {
+  const before = ["0x1"];
+  const now = [
+    makeClient({ address: "0x1", class: "chromium", initialTitle: "News" }),
+    makeClient({ address: "0x2", class: "foot", initialTitle: "foot" })
+  ];
+
+  const said = engine.launchTimeoutDiagnosis(HERDR, now, before, 10, 1);
+  assert.deepStrictEqual(said.classes, ["foot"]);
+  assert.strictEqual(said.titleMismatch, true,
+    "a window of the identity's own class appeared and its title is not claimed");
+
+  // The sentence names the class that DID appear, the title it carried, and the
+  // patterns that did not claim it.
+  assert.ok(said.detail.indexOf("foot") !== -1, said.detail);
+  assert.ok(said.detail.indexOf("^herdr$") !== -1, said.detail);
+  assert.ok(said.detail.indexOf("--title") !== -1,
+    "the one thing the user can act on is the missing --title: " + said.detail);
+  // And it does not say the thing that was false.
+  assert.strictEqual(said.detail.indexOf("instead"), -1, said.detail);
+  assert.strictEqual(said.reason.indexOf("saw foot instead"), -1, said.reason);
+  assert.ok(said.reason.indexOf("title") !== -1, said.reason);
+
+  // A window with NO initialTitle at all is the same situation, said the same
+  // way — a launch that lost --title often produces exactly this.
+  const untitled = engine.launchTimeoutDiagnosis(HERDR,
+    [makeClient({ address: "0x2", class: "foot" })], [], 10, 1);
+  assert.strictEqual(untitled.titleMismatch, true);
+});
+
+test("a class identity keeps the diagnosis it always had", () => {
+  const before = ["0x1"];
+  const now = [
+    makeClient({ address: "0x1", class: "chromium" }),
+    makeClient({ address: "0x2", class: "foot" }),
+    makeClient({ address: "0x3", class: "foot" })
+  ];
+
+  const said = engine.launchTimeoutDiagnosis(EDITOR, now, before, 10, 1);
+  assert.deepStrictEqual(said.classes, ["foot"], "deduped, and only what is new");
+  assert.strictEqual(said.titleMismatch, false);
+  assert.ok(said.detail.indexOf("windows that did appear since the dispatch: foot") !== -1, said.detail);
+  assert.ok(said.reason.indexOf("saw foot instead") !== -1, said.reason);
+});
+
+test("a title identity whose class did NOT appear is not a title problem", () => {
+  // The shared-Chromium case: the launch opened something else entirely. The
+  // title-aware branch must not swallow it — the class really is wrong.
+  const said = engine.launchTimeoutDiagnosis(HERDR,
+    [makeClient({ address: "0x9", class: "chrome-mail.google.com__" })], [], 10, 1);
+  assert.strictEqual(said.titleMismatch, false);
+  assert.ok(said.reason.indexOf("saw chrome-mail.google.com__ instead") !== -1, said.reason);
+});
+
+test("nothing appeared at all is still said plainly", () => {
+  const before = ["0x1"];
+  const now = [makeClient({ address: "0x1", class: "chromium" })];
+  for (const identity of [HERDR, EDITOR]) {
+    const said = engine.launchTimeoutDiagnosis(identity, now, before, 10, 1);
+    assert.deepStrictEqual(said.classes, []);
+    assert.strictEqual(said.titleMismatch, false);
+    assert.ok(said.detail.indexOf("no new window appeared at all") !== -1, said.detail);
+    assert.strictEqual(said.reason, "launch produced no window within 10s",
+      "the reason a verdict has always carried, unchanged when there is nothing to add");
+  }
+});
+
+test("the wait count and a missing identity survive the diagnosis", () => {
+  const now = [makeClient({ address: "0x2", class: "foot", initialTitle: "foot" })];
+  // A deficit of two says which window it was waiting for.
+  const second = engine.launchTimeoutDiagnosis(HERDR, now, [], 10, 2);
+  assert.ok(second.detail.indexOf("window 2 of this app") !== -1, second.detail);
+
+  // No identity at all (the state changed under the wait): no title claim can
+  // be made, and the class list is still the honest half.
+  const orphan = engine.launchTimeoutDiagnosis(null, now, [], 10, 1);
+  assert.strictEqual(orphan.titleMismatch, false);
+  assert.deepStrictEqual(orphan.classes, ["foot"]);
+  assert.ok(orphan.reason.indexOf("saw foot instead") !== -1, orphan.reason);
+});
+
+test("Service.qml renders the pure diagnosis rather than assembling one", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8");
+
+  assert.ok(/Engine\.launchTimeoutDiagnosis\(/.test(source),
+    "Service.qml still builds the launch diagnostic itself");
+  assert.strictEqual(source.indexOf('" (saw "'), -1,
+    "Service.qml still concatenates the class-only 'saw X instead' reason");
+});

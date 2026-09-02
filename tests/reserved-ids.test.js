@@ -250,6 +250,8 @@ test("matchLayout pairs a reserved id's recorded entry to its live window", () =
 //   Service.qml launchedClassesSince   `seen[name]` — window CLASS names, which
 //     are whatever the app calls itself. A launch that timed out reported "no
 //     new window appeared at all" while a `constructor`-classed one was there.
+//     (That caller folded into engine.launchTimeoutDiagnosis in tick ql5; the
+//     dedupe it reads is still engine.newClassesSince, pinned below.)
 //
 // The fix is not another guard in QML: none of this was QML's to decide. Each
 // is a pure function of a client list now, tested here, and the QML is a call.
@@ -347,7 +349,9 @@ test("the QML sites are wired to the pure answers and keep no map of their own",
     "Panel.qml still builds its own running-identity dedupe");
   assert.ok(/Engine\.identityIdsForAddresses\(/.test(serviceSource),
     "Service.qml still builds its own address→identity dedupe");
-  assert.ok(/Engine\.newClassesSince\(/.test(serviceSource),
+  // Since tick ql5 the launched-class list reaches Service.qml inside
+  // engine.launchTimeoutDiagnosis, which is where the class dedupe now runs.
+  assert.ok(/Engine\.launchTimeoutDiagnosis\(/.test(serviceSource),
     "Service.qml still builds its own launched-class dedupe");
 
   // The sweep's real claim: no bare-object map in either file is keyed by an
