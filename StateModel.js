@@ -172,13 +172,17 @@
 //   A v4 file read and written back is byte-identical to itself.
 //
 // Reading the future (the other direction, and it has no migration):
-//   A file whose version EXCEEDS this build's is read and run from, and is never
-//   written. There is no forward migration to run — this build cannot know what
-//   a later generation added — and the two halves above make the round trip
-//   destructive: normalizeIdentity drops the unknown fields, migrateVersion
-//   keeps the newer number, so any write would persist stripped content under a
-//   version that says nothing was stripped. `writeRefusal` is the single rule,
-//   and every writer of this file asks it before touching the disk.
+//   A file whose version EXCEEDS this build's is READ, and that is all: it is
+//   never written and it never drives a restore. There is no forward migration
+//   to run — this build cannot know what a later generation added — and the two
+//   halves above make BOTH the round trip and the restore unsound:
+//   normalizeIdentity drops the unknown fields, migrateVersion keeps the newer
+//   number, so any write would persist stripped content under a version that
+//   says nothing was stripped, and any restore would act on identity rules
+//   stripped back to whatever they meant before the newer schema narrowed them.
+//   `isFutureVersion` is the single question; `writeRefusal` and
+//   `restoreRefusal` are its two consequences, and every writer of this file and
+//   the one funnel that dispatches restores ask them (tick t03).
 //
 // Quirks the UI must know:
 //   - layouts is a MAP keyed by topologyKey, and Layout.topologyKey repeats that
@@ -761,6 +765,19 @@ function parseState(raw) {
   return { state: state, error: error, recovered: false, migrated: migrated };
 }
 
+// THE question, asked once. Both refusals below hang off it, so "is this file
+// from a generation we do not understand" can never get two different answers in
+// the same process. A version that is not a finite number is not from the future
+// — it is junk, and normalizeState has already replaced it with this build's.
+function isFutureVersion(state) {
+  return stateVersionOf(state) > STATE_VERSION;
+}
+
+function stateVersionOf(state) {
+  return state && typeof state.version === "number" && isFinite(state.version)
+    ? state.version : STATE_VERSION;
+}
+
 // MAY this state be written back to the file it came from? Returns null when it
 // may, and the REASON it may not when it may not. Every writer of the state file
 // — Service.qml's writeState, Panel.qml's writeState, scripts/record-current —
@@ -787,13 +804,47 @@ function parseState(raw) {
 // Pure and here rather than duplicated in two QML files, so the rule has one
 // definition and a test.
 function writeRefusal(state) {
-  var version = state && typeof state.version === "number" && isFinite(state.version)
-    ? state.version : STATE_VERSION;
-  if (version > STATE_VERSION) {
+  var version = stateVersionOf(state);
+  if (isFutureVersion(state)) {
     return "the state file is schema v" + version + ", newer than this build understands (v"
       + STATE_VERSION + ") — it is READ-ONLY, because writing it back would drop every field v"
       + version + " added while still stamping the file v" + version
       + ". Upgrade Dock Recall, or move the file aside, to make changes.";
+  }
+  return null;
+}
+
+// MAY this state DRIVE a restore? Returns null when it may, and the REASON it
+// may not when it may not. `requestRestore` — the single funnel every event,
+// settle pass, replayed request and manual trigger arrives at — asks this first.
+//
+// Same question as writeRefusal, opposite half of the same damage (tick t03,
+// finding A6). Protecting only the file was protecting the wrong thing:
+//
+//   - normalizeIdentity is a WHITELIST, so a v5 identity reaches memory with
+//     every field v5 added STRIPPED. A rule that v5 narrowed — to a profile, a
+//     title, a workspace — arrives here as the class-only rule it was BEFORE
+//     that narrowing existed;
+//   - a restore then acts on that broader rule: it CLAIMS windows the user
+//     scoped away from this identity, MOVES them, and LAUNCHES more of them.
+//
+// Reading the file is safe. Writing it is refused. Acting on it is neither: it
+// is the read's stripped-down conclusion applied to the user's live desktop, and
+// it is worse than the write, because a refused write costs one edit while a
+// wrong restore rearranges everything on screen.
+//
+// So a future-version file is INERT. The panel still shows what it can read, the
+// bar still reports drift, nothing is dispatched. Unlike `paused`, the manual
+// trigger does NOT override this: the user's button cannot make a stripped
+// identity list mean what the newer schema meant.
+function restoreRefusal(state) {
+  var version = stateVersionOf(state);
+  if (isFutureVersion(state)) {
+    return "the state file is schema v" + version + ", newer than this build understands (v"
+      + STATE_VERSION + ") — it is INERT: this build reads it, but every narrowing field v"
+      + version + " added is stripped on the way in, so restoring from it would claim, move and"
+      + " relaunch windows against rules broader than the ones in the file."
+      + " Upgrade Dock Recall, or move the file aside, to restore from it again.";
   }
   return null;
 }
@@ -1449,7 +1500,9 @@ if (typeof module !== "undefined") {
     normalizeGeometry: normalizeGeometry,
     migrateVersion: migrateVersion,
     parseState: parseState,
+    isFutureVersion: isFutureVersion,
     writeRefusal: writeRefusal,
+    restoreRefusal: restoreRefusal,
     serializeState: serializeState,
     layoutFor: layoutFor,
     hasLayoutFor: hasLayoutFor,

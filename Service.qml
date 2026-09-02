@@ -624,17 +624,20 @@ Item {
     } else if (result.error) {
       root.warn("state: " + result.error)
       // The only `error` that is not a recovery is a version from the future,
-      // and it has a consequence worth spelling out: the file still drives
-      // restores, but nothing may write it (tick 291). Said in the same words
-      // the refusals themselves use, so the log reads as one story.
+      // and it has two consequences worth spelling out: nothing may write the
+      // file (tick 291), and — since tick t03 — nothing may restore from it
+      // either. Both said in the same words the refusals themselves use, so the
+      // log reads as one story.
       var refusal = StateModel.writeRefusal(result.state)
       if (refusal) {
         root.warn("running READ-ONLY from this file — " + refusal)
+        root.warn("and INERT — " + StateModel.restoreRefusal(result.state))
         if (!root.futureVersionAnnounced) {
           root.futureVersionAnnounced = true
           root.notify("Dock Recall is read-only",
             "The state file is schema v" + result.state.version + "; this build understands v"
-              + StateModel.STATE_VERSION + ". Restores still run, but recording and edits are refused.")
+              + StateModel.STATE_VERSION + ". Recording, edits and restores are all refused"
+              + " until you upgrade the plugin or move the file aside.")
         }
       }
     } else if (result.migrated) {
@@ -739,6 +742,15 @@ Item {
     var manual = root.pendingRestoreManual
     root.pendingRestoreReason = ""
     root.pendingRestoreManual = false
+    // The file that finally loaded may be the one this build must not act on
+    // (tick t03). Dropped here rather than replayed into requestRestore's gate,
+    // so the log says "held request dropped" once instead of announcing a replay
+    // and refusing it on the next line.
+    var inert = StateModel.restoreRefusal(root.state)
+    if (inert) {
+      root.warn("dropping the held restore request (" + reason + ") — " + inert)
+      return
+    }
     root.log("state file is loaded — replaying the held restore request (" + reason + ")")
     // requestRestore now knows whether the tool is paused, which it could not
     // when the request arrived. An event-born request replayed into a paused
@@ -2693,6 +2705,26 @@ Item {
   //   - focus failover on an undock is untouched too — see handleHyprlandEvent.
   function requestRestore(reason, manual) {
     var byHand = manual === true
+
+    // THE INERT CONTRACT, and it sits ABOVE the pause contract because it is the
+    // stronger of the two (tick t03, finding A6). A state file from a schema
+    // generation this build does not understand is read, shown and never
+    // written — and, from here on, never acted on either. The read is lossy by
+    // construction: normalizeIdentity is a whitelist, so every field the newer
+    // schema added to an identity is gone by the time this function sees it, and
+    // a rule the user narrowed arrives as the broad one it used to be. Restoring
+    // from that claims, moves and RELAUNCHES windows against rules nobody wrote.
+    //
+    // `byHand` is deliberately not consulted: pausing is the user saying "not
+    // now", and their button rightly overrides it; this is the build saying "I
+    // cannot read this file properly", and no button changes that.
+    if (root.stateLoaded) {
+      var inert = StateModel.restoreRefusal(root.state)
+      if (inert) {
+        root.warn("not restoring (" + reason + ") — " + inert)
+        return
+      }
+    }
 
     if (root.stateLoaded && !byHand && StateModel.isPaused(root.state)) {
       root.log("paused — ignoring " + reason)

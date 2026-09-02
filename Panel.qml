@@ -331,7 +331,7 @@ Item {
     Engine.shadowedIdentities(root.liveClients, root.identities))
 
   // Why the state file cannot be written, when it cannot: a file from a newer
-  // schema is read and run from, but never written back (StateModel.writeRefusal
+  // schema is read and shown, but never written back (StateModel.writeRefusal
   // owns the rule and the reason).
   //
   // A PERSISTENT line rather than a message on the click that failed (tick sma).
@@ -341,6 +341,17 @@ Item {
   // earlier, on a desk that may have no notification daemon at all.
   readonly property string writeRefusalReason: {
     var refusal = root.stateLoaded ? StateModel.writeRefusal(root.stateModel) : null
+    return refusal ? String(refusal) : ""
+  }
+
+  // And why nothing will be RESTORED from it either (tick t03). The same
+  // question with the other consequence: the same file the panel may not write
+  // is also one the service may not act on, because the fields a newer schema
+  // used to narrow an identity are stripped on the way in. Said next to the
+  // read-only line, because a user who only reads "read-only" will reasonably
+  // expect their dock to keep putting windows back.
+  readonly property string restoreRefusalReason: {
+    var refusal = root.stateLoaded ? StateModel.restoreRefusal(root.stateModel) : null
     return refusal ? String(refusal) : ""
   }
 
@@ -2895,6 +2906,20 @@ Item {
               width: parent.width
               visible: root.writeRefusalReason !== ""
               text: "Read-only: " + root.writeRefusalReason
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // ...and the other half of the same condition: no restore will run
+            // from it either (tick t03). Separate line, because "read-only"
+            // reads as "your layouts are safe, you just cannot change them" —
+            // and the user needs to know the dock has stopped acting.
+            Text {
+              width: parent.width
+              visible: root.restoreRefusalReason !== ""
+              text: "Inert: " + root.restoreRefusalReason
               color: Color.urgent
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption

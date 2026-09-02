@@ -646,10 +646,105 @@ test("a Record, a panel edit and a pause toggle each leave a v5 file byte-identi
     assert.ok(reason.indexOf("v5") !== -1 && reason.indexOf("READ-ONLY") !== -1, reason);
   }
 
-  // And the file still WORKS: read-only is not disabled. The identity it names
-  // is live and a restore plans from it.
+  // The file is still READ correctly — the identity it names is materialized in
+  // memory and the panel can show it. What it may no longer do is DRIVE the
+  // desktop; see the restoreRefusal block below (tick t03).
   assert.strictEqual(state.identities(loaded).length, 1);
   assert.deepStrictEqual(state.identities(loaded)[0].titlePatterns, ["^scratch$"]);
+});
+
+// ------------------------------------------- a v5 file is INERT, not read-only
+//
+// Finding A6. Write protection alone was half a rule. `normalizeIdentity` is a
+// whitelist, so a v5 identity arrives in memory with every narrowing field v5
+// added STRIPPED — a `^chromium$` rule that v5 scoped to one profile, one
+// title, one workspace comes through as class-only. The old build then restored
+// from it: it claimed, moved and RELAUNCHED windows against rules far broader
+// than the ones the user wrote. Refusing the write while still acting on the
+// read protects the file and not the desktop, which is the wrong half.
+//
+// So: one predicate — `isFutureVersion` — and two consequences hanging off it.
+// The file is read (the panel shows what it can), it is never written, and it
+// dispatches NOTHING.
+
+test("isFutureVersion is the single question both refusals ask", () => {
+  assert.strictEqual(state.isFutureVersion(state.defaultState()), false);
+  assert.strictEqual(state.isFutureVersion(sampleState()), false, "a v1 file, upgraded on read");
+  assert.strictEqual(state.isFutureVersion({}), false,
+    "a version-less object is as old as they come");
+  assert.strictEqual(state.isFutureVersion(null), false, "nothing to refuse about nothing");
+  assert.strictEqual(state.isFutureVersion({ version: Number.NaN }), false,
+    "a version that is not a number is not from the future, it is junk");
+
+  const future = state.parseState(FUTURE_TEXT).state;
+  assert.strictEqual(state.isFutureVersion(future), true);
+
+  // The two refusals agree, always, because they ask the same question.
+  for (const candidate of [state.defaultState(), sampleState(), {}, null, future]) {
+    assert.strictEqual(
+      state.writeRefusal(candidate) === null,
+      state.restoreRefusal(candidate) === null,
+      "writeRefusal and restoreRefusal disagreed about " + JSON.stringify(candidate && candidate.version));
+  }
+});
+
+test("restoreRefusal makes a future-version file inert and says why", () => {
+  assert.strictEqual(state.restoreRefusal(state.defaultState()), null);
+  assert.strictEqual(state.restoreRefusal(sampleState()), null, "a v1 file, upgraded on read");
+  assert.strictEqual(state.restoreRefusal(null), null);
+
+  const future = state.parseState(FUTURE_TEXT).state;
+  const refusal = state.restoreRefusal(future);
+  assert.ok(refusal, "a v5 state may not drive a restore on a v4 build");
+  assert.ok(refusal.indexOf("v5") !== -1, "says which version the file is");
+  assert.ok(refusal.indexOf("v" + state.STATE_VERSION) !== -1, "and which one this build understands");
+  assert.ok(/INERT|no restore/i.test(refusal), "and what it means: nothing is dispatched");
+
+  // It survives the update helpers for the same reason writeRefusal does — the
+  // version travels with the state, so a caller can ask about the state it is
+  // holding rather than about the read it came from.
+  assert.ok(state.restoreRefusal(state.setPaused(future, true)));
+  assert.ok(state.restoreRefusal(state.upsertLayout(future, sampleLayout())));
+
+  // A v5 file with a perfectly good layout for the topology on screen is STILL
+  // inert: the layout is not the problem, the stripped identities are.
+  const withLayout = state.upsertLayout(future, sampleLayout());
+  assert.ok(state.hasLayoutFor(withLayout, LAPTOP_KEY),
+    "the layout is there and would otherwise be restored from");
+  assert.ok(state.restoreRefusal(withLayout));
+});
+
+test("Service.qml gates every restore path on restoreRefusal", () => {
+  const root = path.join(__dirname, "..");
+  const source = fs.readFileSync(path.join(root, "Service.qml"), "utf8");
+
+  // requestRestore is the single funnel — every event, every settle pass, every
+  // replayed request and the manual trigger arrive here. The gate belongs where
+  // the pause contract already lives.
+  const request = balancedBody(source, "function requestRestore(reason, manual) {", "Service.qml");
+  assert.ok(request.indexOf("StateModel.restoreRefusal(") !== -1,
+    "requestRestore never asks whether the file may drive a restore at all");
+  assert.ok(request.indexOf("StateModel.restoreRefusal(") < request.indexOf("root.cycleActive = true"),
+    "requestRestore asks after it has already started the cycle");
+
+  // Unlike `paused`, the manual trigger does NOT override this one: the user's
+  // button cannot make a stripped identity list safe to act on. The gate is the
+  // call and the refusal it guards — up to the `return` that ends it.
+  const gateStart = request.indexOf("StateModel.restoreRefusal(");
+  const gate = request.slice(gateStart, request.indexOf("return", gateStart) + "return".length);
+  assert.strictEqual(gate.indexOf("byHand"), -1,
+    "the inert gate has a manual escape hatch — a v5 file must be inert for the button too");
+
+  // And it comes BEFORE the pause contract, which does have that escape hatch:
+  // "I cannot read this file" outranks "not right now".
+  assert.ok(gateStart < request.indexOf("StateModel.isPaused("),
+    "the pause contract is consulted before the inert one");
+
+  // And the held request from before the file loaded is DROPPED, not replayed
+  // into a gate that will only refuse it a line later.
+  const flush = balancedBody(source, "function flushPendingRestore() {", "Service.qml");
+  assert.ok(flush.indexOf("StateModel.restoreRefusal(") !== -1,
+    "flushPendingRestore replays a held request against a file that may not be acted on");
 });
 
 test("the same three writes against a v4 file go through (the guard is not a blanket no)", () => {
