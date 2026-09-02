@@ -1118,6 +1118,28 @@ function isTerminalExecBoundary(word) {
   return false;
 }
 
+// The HOSTED command inside a terminal's own argv — the words that are the
+// program, not the terminal — or [] when the terminal was launched with none.
+//
+// The same boundary titleFromOwnArgv scans to, read for the other half of the
+// answer, so the two can never disagree about where the terminal's argv ends.
+// `--title <value>` is the one flag whose separate value has to be stepped
+// over; every other unknown flag's separate value ends the scan, which reports
+// a hosted command one word early (a `/x` rather than nothing). That is the
+// safe direction for every caller here — see titleFromOwnArgv.
+function hostedArgvOf(argv) {
+  var list = isArray(argv) ? argv : [];
+  var prefix = TERMINAL_TITLE_FLAG + "=";
+  for (var i = 1; i < list.length; i++) {
+    var word = typeof list[i] === "string" ? list[i] : "";
+    if (isTerminalExecBoundary(word)) return list.slice(i + 1);
+    if (word === TERMINAL_TITLE_FLAG) { i += 1; continue; }
+    if (word.slice(0, prefix.length) === prefix) continue;
+    if (word.charAt(0) !== "-") return list.slice(i);
+  }
+  return [];
+}
+
 // The value of the terminal's own `--title` flag, or "".
 //
 // Two spellings, because both are ordinary on a command line and the panel does
@@ -1224,8 +1246,19 @@ function terminalTickDerivation(className, ownArgv, node, initialTitle) {
     return out;
   }
 
+  // Case 2 rests entirely on the terminal having been launched WITH a command
+  // of its own: only then did the terminal set the title from that command, and
+  // only then is initialTitle evidence rather than whatever an interactive
+  // shell renamed the window to. `argv.length > 1` was a proxy for that and it
+  // is not one (tick q58) — `foot --working-directory=/x` carries only the
+  // terminal's own flags, and `foot fish` hosts a BARE SHELL, which is the
+  // wrapper isShellArgv exists to see through, not a command. Both used to
+  // write `^~/proj$` as a titlePattern: an identity that matches only while the
+  // shell sits in that directory, whose launch reopens a bare shell.
+  var hosted = hostedArgvOf(argv);
   var shown = trim(initialTitle);
-  if (argv.length > 1 && shown && shown.toLowerCase() !== trim(className).toLowerCase()) {
+  if (hosted.length && !isShellArgv(hosted)
+      && shown && shown.toLowerCase() !== trim(className).toLowerCase()) {
     out.command = launchCommandFromArgv(argv, className);
     if (!out.command) { out.reason = "unrunnable-command"; return out; }
     out.title = shown;

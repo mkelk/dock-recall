@@ -3444,6 +3444,40 @@ test("a terminal launched with a command of its own is named by its window title
     panel.terminalTickDerivation("foot", ["foot"], tree["900"], "user@host:~/git").title, "herdr");
 });
 
+test("a shell or flag-only argv never trusts a shell-retitled window title", () => {
+  // Tick q58. `argv.length > 1` was a proxy for "the terminal was launched with
+  // a command of its own", and it is not one: a terminal carrying only its own
+  // flags, or one whose command is a bare SHELL, is exactly the case the
+  // comment above the branch says must never be trusted — an interactive shell
+  // retitles the window to its working directory before it is mapped. What came
+  // out was a titlePattern matching only in that directory, on an identity
+  // whose launch reopens a bare shell.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory=/x"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" });
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "fish"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" });
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("alacritty", ["alacritty", "-e", "/usr/bin/bash"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" });
+
+  // And the refusal reaches the panel rather than a junk identity reaching the
+  // file: no titlePatterns, no `^~/proj$`.
+  for (const argv of [["foot", "--working-directory=/x"], ["foot", "fish"]]) {
+    assert.deepStrictEqual(
+      panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", argv, null, "~/proj")),
+      { refusal: "no-title", className: "foot" });
+  }
+
+  // A REAL hosted command is still trusted — that is the case the branch exists
+  // for, in both the exec-flag and the bare-trailing-command shapes.
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", ["foot", "-e", "btop"], null, "btop"),
+    { command: "foot -e btop", title: "btop", reason: "" });
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", ["foot", "btop"], null, "btop"),
+    { command: "foot btop", title: "btop", reason: "" });
+});
+
 test("no title travels with a command the panel refuses to run", () => {
   // Tick cjs. The invariant terminalChildDerivation states in as many words —
   // "the title travels only with a command that survived dispatchableCommand"
