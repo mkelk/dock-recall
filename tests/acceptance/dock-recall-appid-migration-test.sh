@@ -358,7 +358,7 @@ pass "no launch-timeout churn: 0 timeout WARNs, still 0 after ${CHURN_S}s"
 
 # The service never writes the file it merely migrated (see the header). This is
 # the plugin's OWN write path — StateModel.parseState + StateModel.serializeState
-# + temp-and-rename — which is byte for byte what Panel.writeState does when the
+# + temp-and-rename — the same serialization Panel.writeState writes when the
 # user records, edits or pauses. What it is NOT is a re-implementation of the
 # migration: parseState is the code under test.
 #

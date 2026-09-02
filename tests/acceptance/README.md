@@ -87,14 +87,23 @@ its output, so `run.sh` requires **all** of these lines and nothing less:
 ok - acceptance suite passed in 122s (artifacts in /tmp/omarchy-acceptance)
 ok - dock-recall round trip: record, undock, scatter, redock, restored
 ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
+ok - dock-recall undock-while-locked: guest prepared (dr-locked on ws 8 @ dr-lock-dock, session UNLOCKED)
 ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
 ```
 
 All of them, because any one alone is a lie. The suite's line on its own would
 go green if the test files never reached the guest and nothing dock-recall-shaped
 ran at all; a test's own line alone would mean the suite aborted somewhere after
-it. `run.sh` matches them literally (`grep -F`), so a change to any message is a
-loud failure rather than a quiet fuzzy match.
+it. `run.sh` matches them literally and **anchored to the start of the line**, so
+a change to any message is a loud failure rather than a quiet fuzzy match — and
+`not ok - <the same text>`, which contains the required substring, can never
+satisfy the gate for the test it belongs to.
+
+That list is one entry per staged in-guest `dock-recall-*-test.sh`, plus the
+host-driven locked scenario, plus the suite's own line, and `run.sh` checks that
+arithmetic against what `stage.sh` actually staged before it boots anything. A
+new test file that nobody added to the list stops the run rather than quietly
+not being required.
 
 A whole run takes about 5 minutes with `--reuse-base`; the suite itself is about
 two of those.
@@ -195,10 +204,10 @@ It then proves three things in sequence:
 2. **the write** — the migration persists at the next legitimate write, and none
    of the three (Record, a panel edit, a pause toggle) has an IPC surface a
    headless test can drive. So the test performs the plugin's own write path
-   itself: `StateModel.parseState` → `serializeState` → temp-and-rename, byte
-   for byte what `Panel.writeState` does. `parseState` is the code under test,
-   not a re-implementation of it. The file that lands is v4, subject emptied,
-   control verbatim.
+   itself: `StateModel.parseState` → `serializeState` → temp-and-rename, the
+   same serialization `Panel.writeState` writes. `parseState` is the code under
+   test, not a re-implementation of it. The file that lands is v4, subject
+   emptied, control verbatim.
 3. **the file the user is left with** — the persisted v4 file is reloaded by the
    live service (no second migration announced), a second dock event runs, and
    nothing strays and nothing times out.

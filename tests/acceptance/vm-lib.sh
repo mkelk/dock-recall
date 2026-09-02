@@ -41,7 +41,10 @@ DR_BASE_DIR="$DR_ISO_DIR/test-runs/$(basename "$DR_ISO_IMAGE" .iso)"
 DR_SSH_KEY="$DR_BASE_DIR/id_ed25519"
 DR_SSH_PORT="${DR_GUEST_SSH_PORT:-2222}"     # the harness's own default
 DR_GUEST_USER="omarchy"
-DR_GUEST_PASSWORD="omarchy"
+# Same knob the harness's own GUEST_PASSWORD is: the in-guest half and this host
+# half type into the same account, so they have to move together or the unlock
+# fails for a reason that looks like a broken lock.
+DR_GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
 DR_RUN_DIR=""
 DR_QEMU_PID=""
@@ -50,6 +53,22 @@ DR_QMP_SOCK=""
 # Locate the VM the harness left behind. Returns 1 (quietly, with a reason on
 # stderr) when there is none, so a caller can decide whether that is a failure
 # or simply nothing to clean up.
+#
+# WHICH VM, THOUGH. "The newest runs/ directory" is not the same claim as "the
+# one this invocation created". A VM killed past the harness's trap — kill -9, a
+# crashed terminal — leaves its directory behind AND can leave its qemu alive,
+# so the newest directory can name a VM from a session that ended hours ago.
+# Driving that one proves nothing about the code under test while looking
+# exactly like a pass. So discovery is pinned, in this order:
+#
+#   DR_RUN_DIR_OVERRIDE   the directory outright. run.sh reads it off the
+#                         harness's own "Artifacts: …" line, which is the
+#                         run directory this invocation actually created.
+#   DR_RUN_MIN_EPOCH      failing that, a floor: the directory must have been
+#                         touched at or after the moment this run started.
+#
+# With neither set (someone driving a VM they left running by hand) the old
+# newest-wins behaviour stands, because there is then no "this run" to pin to.
 dr_find_vm() {
   DR_RUN_DIR="${DR_RUN_DIR_OVERRIDE:-}"
   if [[ -z $DR_RUN_DIR ]]; then
@@ -57,6 +76,18 @@ dr_find_vm() {
     DR_RUN_DIR="${DR_RUN_DIR%/}"
   fi
   [[ -n $DR_RUN_DIR && -d $DR_RUN_DIR ]] || { echo "vm-lib: no run directory under $DR_BASE_DIR/runs" >&2; return 1; }
+
+  if [[ -z ${DR_RUN_DIR_OVERRIDE:-} && -n ${DR_RUN_MIN_EPOCH:-} ]]; then
+    local mtime
+    mtime=$(stat -c %Y "$DR_RUN_DIR" 2>/dev/null || echo 0)
+    if ((mtime < DR_RUN_MIN_EPOCH)); then
+      echo "vm-lib: no run directory from THIS run under $DR_BASE_DIR/runs — the newest one," >&2
+      echo "vm-lib:   $DR_RUN_DIR" >&2
+      echo "vm-lib: was last touched $((DR_RUN_MIN_EPOCH - mtime))s BEFORE this run started, so it is a leak from an" >&2
+      echo "vm-lib: earlier session rather than this one. Stop whatever qemu it left running and remove it." >&2
+      return 1
+    fi
+  fi
 
   [[ -f $DR_RUN_DIR/qemu.pid ]] || { echo "vm-lib: no $DR_RUN_DIR/qemu.pid" >&2; return 1; }
   DR_QEMU_PID=$(cat "$DR_RUN_DIR/qemu.pid")
@@ -71,9 +102,26 @@ dr_find_vm() {
   return 0
 }
 
+# socat is the only way in: every screendump and every keystroke this file sends
+# goes through it. A missing or failing socat used to be swallowed (`|| true`),
+# which is the most expensive way for this to break — the keystrokes silently do
+# not happen, the wrong-password control "passes" because nothing typed the
+# wrong password either, and the run fails much later as something else. So the
+# failure is now LOUD here, and the consumers preflight for socat outright
+# (undock-locked.sh, run.sh). The return stays 0 deliberately: callers treat a
+# nonzero as "the guest refused that keystroke", and turning an infrastructure
+# fault into that message would just move the misdiagnosis one line along.
 dr_qmp() {
-  printf '{"execute":"qmp_capabilities"}\n{"execute":%s}\n' "$1" |
-    timeout 10 socat -t 3 - "UNIX-CONNECT:$DR_QMP_SOCK" 2>/dev/null || true
+  local out status
+  out=$(printf '{"execute":"qmp_capabilities"}\n{"execute":%s}\n' "$1" |
+    timeout 10 socat -t 3 - "UNIX-CONNECT:$DR_QMP_SOCK" 2>&1)
+  status=$?
+  if ((status != 0)); then
+    echo "vm-lib: WARNING: QMP call FAILED (exit $status): ${1:0:100}" >&2
+    if [[ -n $out ]]; then echo "vm-lib: WARNING:   socat said: ${out//$'\n'/ }" >&2; fi
+    return 0
+  fi
+  printf '%s\n' "$out"
 }
 
 # A photograph of the emulated GPU's framebuffer. It does not go through the
@@ -86,7 +134,18 @@ dr_screendump() {
   dr_qmp "\"screendump\", \"arguments\": {\"filename\": \"$ppm\"}" >/dev/null
   sleep 1
   if [[ -s $ppm ]]; then
-    magick "$ppm" "$DR_RUN_DIR/$name.png" 2>/dev/null && echo "screendump: $DR_RUN_DIR/$name.png"
+    # The conversion used to fail completely silently (`2>/dev/null &&`), so a
+    # missing or unhappy `magick` read as "no screendumps were taken" — and the
+    # frame WAS captured, which is a confusing thing to have to work out later.
+    # A failed picture is not a failed scenario, so the run goes on; it just
+    # says so.
+    local conv
+    if conv=$(magick "$ppm" "$DR_RUN_DIR/$name.png" 2>&1); then
+      echo "screendump: $DR_RUN_DIR/$name.png"
+    else
+      echo "screendump: WARNING: the frame for $name was captured but CONVERTING it failed — no picture for this step" >&2
+      if [[ -n $conv ]]; then echo "screendump: WARNING:   magick said: ${conv//$'\n'/ }" >&2; fi
+    fi
   else
     echo "screendump: FAILED for $name (no frame)"
   fi

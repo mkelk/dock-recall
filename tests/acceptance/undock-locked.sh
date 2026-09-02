@@ -46,7 +46,7 @@
 #   ./tests/acceptance/undock-locked.sh          exit 0 = the scenario passed
 #
 # Environment: see vm-lib.sh (OMARCHY_ISO_DIR, OMARCHY_ISO_IMAGE,
-# DR_GUEST_SSH_PORT, DR_RUN_DIR_OVERRIDE).
+# DR_GUEST_SSH_PORT, GUEST_PASSWORD, DR_RUN_DIR_OVERRIDE, DR_RUN_MIN_EPOCH).
 
 set -uo pipefail
 
@@ -69,6 +69,21 @@ notok() {
   failures=$((failures + 1))
 }
 die() { notok "$1" "${2:-}"; summarize; exit 1; }
+
+# --------------------------------------------------------------- preflight
+
+# Everything this script does that an in-guest test could not do goes through
+# QMP, and every QMP call goes through socat: the screendumps, and above all the
+# keystrokes that type the password into the lock. Without socat those calls
+# would do nothing at all — and "nothing typed the wrong password" is
+# indistinguishable, from here, from "the lock rejected the wrong password". The
+# control that makes this whole scenario mean something would pass vacuously. So
+# it is a hard stop, before the VM is even located.
+command -v socat >/dev/null 2>&1 || {
+  echo "not ok - dock-recall undock while locked: socat is not installed" >&2
+  echo "  every QMP call — the screendumps, and the keystrokes that type the password into the lock — runs through socat; without it they would silently no-op and the wrong-password control would pass for the worst possible reason" >&2
+  exit 1
+}
 
 # ------------------------------------------------------------- find the VM
 
@@ -146,9 +161,18 @@ ok "prepared: $IDENTITY on ws $TARGET_WS @ $OUTPUT, with \"$PRIMARY\" as the sur
 dr_ssh_session "hyprctl dispatch 'hl.dsp.focus({ monitor = \"$OUTPUT\" })'" >/dev/null 2>&1
 sleep 1
 focused=$(dr_ssh_session "hyprctl monitors -j | jq -r 'first(.[]|select(.focused==true)|.name)//empty'" | tr -d '\r\n')
-[[ $focused == "$OUTPUT" ]] ||
-  note "WARNING: focus is on \"$focused\", not \"$OUTPUT\" — the failover branch may not be exercised"
-ok "focus parked on the output about to be removed (focused monitor: \"$focused\")"
+if [[ $focused == "$OUTPUT" ]]; then
+  ok "focus parked on the output about to be removed (focused monitor: \"$focused\")"
+else
+  # Not an assertion failure — an unfocused undock is still a real undock, and
+  # the run continues to a real verdict. But it is not a pass either: parking is
+  # what makes the failover branch reachable, and printing `ok - focus parked`
+  # right after a warning that it was not is the kind of contradiction a reader
+  # resolves in favour of the ok-line. So the ok-line is simply not printed.
+  note "WARNING: focus parking FAILED — focus is on \"$focused\", not \"$OUTPUT\". The undock below is"
+  note "WARNING: therefore of an UNFOCUSED output, so the failover branch will not be exercised and"
+  note "WARNING: \"focus intact\" is the only verdict this run can reach."
+fi
 
 # --------------------------------------------------------------- 1. lock
 
@@ -201,9 +225,27 @@ ok "the focused output was removed while the session was locked"
 log_text=$(dr_log)
 printf '%s\n' "$log_text" > "$DR_RUN_DIR/dock-recall-undock-locked-service.log"
 
-intact_line=$(printf '%s\n' "$log_text" | grep -F "removed; focus intact on" | tail -1)
-failover_line=$(printf '%s\n' "$log_text" | grep -F "removed and took focus with it" | tail -1)
-failover_ok=$(printf '%s\n' "$log_text" | grep -F "focus failover ok" | tail -1)
+# Pinned to THIS scenario's own output. The service logs the monitor's name into
+# both lines — `monitor "dr-lock-dock" removed; …` — and the log is a tail of
+# 6000 lines that has already seen the round trip's own dock and undock. A bare
+# `grep -F "removed; focus intact on"` matches ANY monitor's removal, so a line
+# left by an earlier scenario (or by the redock at the end of a previous run of
+# this one) could satisfy the gate for an undock that never reached a verdict.
+intact_line=$(printf '%s\n' "$log_text" | grep -F "\"$OUTPUT\" removed; focus intact on" | tail -1)
+failover_line=$(printf '%s\n' "$log_text" | grep -F "\"$OUTPUT\" removed and took focus with it" | tail -1)
+# The confirmation carries no monitor name (Service.qml: `focus failover ok`),
+# so it cannot be pinned the same way. It is pinned by POSITION instead: only a
+# confirmation logged after this run's own failover line confirms it. Otherwise
+# a "focus failover ok" from an earlier undock would vouch for a dispatch that
+# this one never got an answer to.
+failover_ok=""
+if [[ -n $failover_line ]]; then
+  failover_ok=$(printf '%s\n' "$log_text" |
+    awk -v k="\"$OUTPUT\" removed and took focus with it" '
+      index($0, k) { seen = 1; last = ""; next }
+      seen && index($0, "focus failover ok") { last = $0 }
+      END { if (last != "") print last }')
+fi
 
 if [[ -n $failover_line ]]; then
   ok "focus failover FIRED: ${failover_line#*\[dock-recall\] }"

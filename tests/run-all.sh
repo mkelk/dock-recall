@@ -141,26 +141,46 @@ node_fail=$(node_counts fail)
 total=0
 for s in "${seconds[@]}"; do total=$((total + s)); done
 
+# A skipped step is not a passed step, and the two lines a reader actually takes
+# away from this — the TOTAL row and the last line — used to say a bare PASS
+# either way. "PASS" over a run where the VM tier never ran is the single most
+# expensive sentence this file could print, so the skips are carried into both.
+skipped=0
+for r in "${results[@]}"; do [[ $r == SKIP ]] && skipped=$((skipped + 1)); done
+verdict() {
+  local word="$1"
+  if ((skipped > 0)); then printf '%s (%d skipped)' "$word" "$skipped"; else printf '%s' "$word"; fi
+}
+
 printf '\n'
 printf '=== dock-recall full-stack run ===\n'
 printf 'logs: %s\n' "$LOG_DIR"
 printf '\n'
-printf '%-2s %-48s %-7s %8s\n' '#' 'STEP' 'RESULT' 'SECONDS'
-printf '%s\n' "-----------------------------------------------------------------"
+printf '%-2s %-48s %-18s %8s\n' '#' 'STEP' 'RESULT' 'SECONDS'
+printf '%s\n' "----------------------------------------------------------------------------"
 for i in "${!names[@]}"; do
-  printf '%-2s %-48s %-7s %8s\n' "$((i + 1))" "${names[$i]}" "${results[$i]}" "${seconds[$i]}"
+  printf '%-2s %-48s %-18s %8s\n' "$((i + 1))" "${names[$i]}" "${results[$i]}" "${seconds[$i]}"
 done
-printf '%s\n' "-----------------------------------------------------------------"
-printf '%-2s %-48s %-7s %8s\n' '' 'TOTAL' "$( ((failed == 0)) && echo PASS || echo FAIL)" "$total"
+printf '%s\n' "----------------------------------------------------------------------------"
+printf '%-2s %-48s %-18s %8s\n' '' 'TOTAL' "$( ((failed == 0)) && verdict PASS || verdict FAIL)" "$total"
 printf '\n'
 [[ -n ${node_pass:-} ]] && printf 'node suite: %s tests passed, %s failed\n' "$node_pass" "${node_fail:-0}"
 
 if ((failed == 0)); then
-  printf 'dock-recall full stack: PASS\n'
+  printf 'dock-recall full stack: %s\n' "$(verdict PASS)"
+  if ((skipped > 0)); then
+    skip_list=""
+    for i in "${!names[@]}"; do
+      [[ ${results[$i]} == SKIP ]] || continue
+      skip_list+="${skip_list:+, }[$((i + 1))] ${names[$i]}"
+    done
+    printf '  skipped, and therefore NOT proven: %s\n' "$skip_list"
+  fi
   exit 0
 fi
 
-printf 'dock-recall full stack: FAIL (%d step(s))\n' "$failed"
+printf 'dock-recall full stack: FAIL (%d step(s)%s)\n' "$failed" \
+  "$( ((skipped > 0)) && printf ', %d skipped' "$skipped")"
 for i in "${!names[@]}"; do
   [[ ${results[$i]} == FAIL ]] && printf '  failed: %s  ->  %s\n' "${names[$i]}" "${notes[$i]}"
 done
