@@ -1320,6 +1320,74 @@ function tickRefusalHint(className, reason) {
   return head + body + tail;
 }
 
+// THE AWAITING-TITLE QUESTION, asked once (tick 7qe).
+//
+// Which watched TITLE identities have a live terminal window of their own class
+// on screen and nothing matching them? Two callers want two shapes of the
+// answer — untitledTerminalHint wants a sentence, awaitingTitleIndex wants a
+// row — and they asked it twice, ~20 lines apart, in code that had drifted
+// apart on both of the things it decides:
+//
+//   THE PATTERN TEST. Both compared `identity.patterns` to a freshly
+//   regenerated `derivePattern(className)` by exact string equality, while the
+//   MATCHER compiles the pattern case-insensitively (engine.compilePattern). A
+//   hand-edited `^Foot$` or `^(foot|footclient)$` — the README invites the hand
+//   edit — keeps matching, recording and restoring, and lost only the hint and
+//   the row: the one moment the user needs a way back from a mis-tick. So the
+//   test is the matcher's, over the same two class fields engine.matchClient
+//   reads.
+//
+//   THE MAPPABILITY RULE. The hint took any live client; the row took only an
+//   isMappable one, so a terminal on a SPECIAL workspace got the sentence and no
+//   row to undo the tick with. The permissive rule wins: isMappable answers "does
+//   this window belong on the MAP", and that is a different question — a
+//   scratchpad terminal is on screen, is tickable, and is exactly the shape the
+//   README's `--title` advice is most often used for. Nothing here is placed
+//   anywhere, so having no slot costs the window nothing.
+//
+// Returns [{ identity, windows: [{ client, className }] }] — every candidate
+// window per identity, in client order, because the row wants the first and the
+// hint wants the first whose child process names the identity's title.
+function awaitingTitleCandidates(clients, identities, resolve) {
+  var list = isArray(identities) ? identities : [];
+  var live = isArray(clients) ? clients : [];
+  var resolver = typeof resolve === "function" ? resolve : function () { return ""; };
+
+  var satisfied = {};
+  for (var c = 0; c < live.length; c++) {
+    var matched = trim(resolver(live[c]));
+    if (matched) satisfied[matched] = true;
+  }
+
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var identity = list[i];
+    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
+    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
+    // A class-only identity is not this problem: it already matches its
+    // terminal.
+    if (!titles.length) continue;
+    if (own(satisfied, identity.id)) continue;
+
+    var windows = [];
+    for (var w = 0; w < live.length; w++) {
+      var client = live[w];
+      if (!client) continue;
+      var className = trim(client.class) || trim(client.initialClass);
+      // Terminals only. A webapp identity (`chromium` + `^Slack$`) whose window
+      // is closed is an ORDINARY not-running app, and telling that user to
+      // relaunch with `--title` would be advice about the wrong thing.
+      if (!isTerminalClass(className)) continue;
+      if (!matchesAnyPattern(client.class, identity.patterns)
+          && !matchesAnyPattern(client.initialClass, identity.patterns)) continue;
+      windows.push({ client: client, className: className });
+    }
+    if (windows.length) out.push({ identity: identity, windows: windows });
+  }
+
+  return out;
+}
+
 // A watched TITLE identity whose window is on screen but was not launched with
 // `--title`, said out loud with the exact command that fixes it.
 //
@@ -1340,36 +1408,26 @@ function tickRefusalHint(className, reason) {
 // `resolve` is the panel's ONE matcher (engine.matchClient bound to the watched
 // list), passed in the way appRows and the map models take it.
 function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree) {
-  var list = isArray(identities) ? identities : [];
-  var live = isArray(clients) ? clients : [];
   var argvMap = (argvByPid && typeof argvByPid === "object") ? argvByPid : {};
   var tree = (procTree && typeof procTree === "object") ? procTree : {};
 
-  var satisfied = {};
-  for (var c = 0; c < live.length; c++) {
-    var matched = (typeof resolve === "function") ? trim(resolve(live[c])) : "";
-    if (matched) satisfied[matched] = true;
-  }
-
+  var candidates = awaitingTitleCandidates(clients, identities, resolve);
   var lines = [];
-  for (var i = 0; i < list.length; i++) {
-    var identity = list[i];
-    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
-    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
-    if (!titles.length) continue;
-    if (own(satisfied, identity.id)) continue;
+  for (var i = 0; i < candidates.length; i++) {
+    var identity = candidates[i].identity;
+    var windows = candidates[i].windows;
 
-    for (var w = 0; w < live.length; w++) {
-      var client = live[w];
-      if (!client) continue;
-      var className = trim(client.class) || trim(client.initialClass);
-      if (!isTerminalClass(className)) continue;
-      if (!patternListHas(identity.patterns, derivePattern(className))) continue;
+    for (var w = 0; w < windows.length; w++) {
+      var className = windows[w].className;
+      var client = windows[w].client;
       var pid = (client.pid === undefined || client.pid === null) ? "" : trim(String(client.pid));
       if (!pid) continue;
       var answer = terminalChildDerivation(className, argvMap[pid], tree[pid]);
       if (!answer.title) continue;
-      if (!patternListHas(titles, deriveTitlePattern(answer.title))) continue;
+      // The MATCHER's question again: would this identity's title patterns claim
+      // the title the child process names? A regenerated pattern compared by
+      // string equality answered no for every hand edit.
+      if (!matchesAnyPattern(answer.title, identity.titlePatterns)) continue;
 
       var command = trim(identity.launch) || answer.command;
       lines.push('"' + identity.id + '" is watched, but this ' + className
@@ -1396,50 +1454,22 @@ function untitledTerminalHint(clients, identities, resolve, argvByPid, procTree)
 // a live TERMINAL window of the identity's own class is on screen and nothing
 // resolves to the identity, and it is gone the moment a window matches.
 //
-// Two things the hint asks for and this deliberately does not:
+// The ONE thing the hint asks for and this deliberately does not: the /proc
+// read. The row has to survive a panel frame whose cmdline map has not come
+// back yet (it is refreshed on every open), and a row that blinks out while the
+// user is reaching for it is worse than a row that says one sentence less. What
+// the child process is called does not change the answer: the identity is on
+// the watched list either way, and either way it matches nothing.
 //
-//   the /proc read — the row has to survive a panel frame whose cmdline map has
-//   not come back yet (it is refreshed on every open), and a row that blinks
-//   out while the user is reaching for it is worse than a row that says one
-//   sentence less. What the child process is called does not change the answer:
-//   the identity is on the watched list either way, and either way it matches
-//   nothing.
-//
-//   non-terminal classes — a webapp identity (`chromium` + `^Slack$`) whose
-//   window is simply closed is an ORDINARY not-running app, and telling that
-//   user to relaunch with `--title` would be advice about the wrong thing. The
-//   terminal case is the one where "not running" and "not titled" cannot be
-//   told apart, and where the same relaunch is the fix for both.
+// Everything else — which identities are in the question, which windows count,
+// and how a pattern is read — is awaitingTitleCandidates, shared with the hint
+// so the two can never again disagree about the same fact.
 function awaitingTitleIndex(clients, identities, resolve) {
-  var list = isArray(identities) ? identities : [];
-  var live = isArray(clients) ? clients : [];
-  var resolver = typeof resolve === "function" ? resolve : function () { return ""; };
-
-  var satisfied = {};
-  for (var c = 0; c < live.length; c++) {
-    var matched = trim(resolver(live[c]));
-    if (matched) satisfied[matched] = true;
-  }
-
+  var candidates = awaitingTitleCandidates(clients, identities, resolve);
   var out = {};
-  for (var i = 0; i < list.length; i++) {
-    var identity = list[i];
-    if (!identity || typeof identity.id !== "string" || !identity.id) continue;
-    var titles = isArray(identity.titlePatterns) ? identity.titlePatterns : [];
-    if (!titles.length) continue;
-    if (own(satisfied, identity.id)) continue;
-
-    for (var w = 0; w < live.length; w++) {
-      var client = live[w];
-      if (!isMappable(client)) continue;
-      var className = trim(client.class) || trim(client.initialClass);
-      if (!isTerminalClass(className)) continue;
-      if (!patternListHas(identity.patterns, derivePattern(className))) continue;
-      out[identity.id] = className;
-      break;
-    }
+  for (var i = 0; i < candidates.length; i++) {
+    out[candidates[i].identity.id] = candidates[i].windows[0].className;
   }
-
   return out;
 }
 

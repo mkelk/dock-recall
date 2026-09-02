@@ -3743,6 +3743,52 @@ test("the panel knows which pids to read and which window a tick is about", () =
   assert.strictEqual(panel.clientForTick(clients, "", "nothing-here"), null);
 });
 
+test("the awaiting-title row and hint read patterns the way the MATCHER reads them", () => {
+  // Tick 7qe. Both asked `patternListHas(identity.patterns,
+  // derivePattern(className))` — exact string equality against a freshly
+  // regenerated pattern — while the matcher compiles the pattern
+  // case-insensitively (engine.js compilePattern). A hand-edited pattern is
+  // invited by the README, and every one of these keeps matching, recording and
+  // restoring; only the row and the hint fell silent, which is precisely when
+  // the user has no way back from a mis-tick.
+  const argvByPid = { "268861": ["foot"] };
+  const procTree = panel.procTreeFromDump(procDump([
+    { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["herdr"] }] }
+  ]));
+
+  for (const pattern of ["^Foot$", "^(foot|footclient)$", "^foot$"]) {
+    const identities = [{ id: "herdr", patterns: [pattern], titlePatterns: ["^herdr$"],
+      launch: "foot --title=herdr herdr" }];
+    // The matcher is happy with all three — that is the whole point.
+    assert.strictEqual(engine.clientMatchesIdentity(TITLED_WINDOW, identities[0]), true, pattern);
+
+    assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW], identities, resolver(identities)),
+      { herdr: "foot" }, pattern);
+    assert.ok(panel.untitledTerminalHint([BARE_WINDOW], identities,
+      resolver(identities), argvByPid, procTree).indexOf('"herdr" is watched') === 0, pattern);
+  }
+
+  // A hand-edited TITLE pattern is read the same way, by the half of the hint
+  // that asks whether the identity claims the title the child process names.
+  const cased = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^HERDR$"],
+    launch: "foot --title=herdr herdr" }];
+  assert.ok(panel.untitledTerminalHint([BARE_WINDOW], cased,
+    resolver(cased), argvByPid, procTree).indexOf('"herdr" is watched') === 0);
+
+  // And the two must AGREE. They had drifted ~20 lines apart: the hint took any
+  // live client, the row took only an isMappable one, so a terminal on a
+  // special workspace — a scratchpad, the shape the README's --title advice is
+  // most often used for — got the sentence and no row to undo the tick with.
+  const scratch = Object.assign({}, BARE_WINDOW, { workspace: { id: -99, name: "special:scratch" } });
+  const identities = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr" }];
+  const hinted = panel.untitledTerminalHint([scratch], identities,
+    resolver(identities), argvByPid, procTree) !== "";
+  const rowed = Object.keys(panel.awaitingTitleIndex([scratch], identities, resolver(identities))).length > 0;
+  assert.strictEqual(hinted, true, "a scratchpad terminal is evidence");
+  assert.strictEqual(rowed, hinted, "and the row says what the hint says");
+});
+
 test("an unwatched row carries the address of the window it was built from", () => {
   // A row is one line per class but a tick is about one window: two foot
   // windows can host two different apps, so a row click and a chip click have
