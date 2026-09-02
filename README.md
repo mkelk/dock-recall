@@ -283,8 +283,9 @@ inside a ±2 px tolerance and tiled windows scored by intersection-over-union.
 Underneath that, every state the desktop can be in has a defined behaviour and a
 test that pins it — including the ones the plugin deliberately refuses, which are
 written down as refusals rather than left as gaps. `tests/` is where that
-contract lives: 768 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
-which drives the installed plugin end to end against a headless output.
+contract lives: 768 tests over real `hyprctl` fixtures, plus
+`tests/sandbox-dock.sh`, which drives the plugin end to end — launch, restore,
+no-op — inside a nested Hyprland the desktop it runs on never sees.
 
 The behaviour has also been through a physical checklist on a real ultrawide over
 a dock — cold dock, dock with the desktop deliberately scattered, undock,
@@ -301,13 +302,30 @@ fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 node --test 'tests/**/*.test.js'   # 768 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml
+./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
 ./scripts/dev-install --restart    # install this working tree and restart the shell
-./tests/sim-dock.sh                # end-to-end: fake topology, record, restore, verify
 ```
 
-`sim-dock.sh` drives the installed plugin with a headless output and its own
-scratch windows, backs your real state file up and restores it byte-for-byte
-afterwards. `scripts/bench` measures restore quality — shape and ratio
+**`tests/sandbox-dock.sh` is the end-to-end gate.** It starts a second Hyprland
+as a window parked on a special workspace nothing ever opens, hosts this working
+tree's `Service.qml` and `Panel.qml` in a second Quickshell pointed at it, and
+runs the three cases there: LAUNCH a missing app onto the recorded
+workspace/monitor, put a SCATTERED window back, then do nothing at all. Every
+path the plugin writes is redirected into a `mktemp` HOME, and the script ends by
+asserting the live session is untouched — same active window, same monitors,
+same visible workspaces, and a byte-identical
+`~/.local/state/omarchy/dock-recall.json`. It needs no permission and no quiet
+moment: run it from any working tree, in parallel, while you work. Exit 0 is the
+gate; a failure keeps the sandbox directory and prints its path.
+
+`tests/sim-dock.sh` is the same three cases against **your live session**, and it
+is on-request only — it creates a headless output on your real desktop and moves
+real windows, so **ask the human first**, run it alone, and never from two
+working trees at once. Reach for it only when the sandbox cannot answer the
+question: anything about your actual monitors, your actual `omarchy-shell`, or
+the installed plugin rather than this tree.
+
+`scripts/bench` measures restore quality — shape and ratio
 intersection-over-union across recorded rounds — for when a change to the
 placement planner needs a number rather than an opinion.
 

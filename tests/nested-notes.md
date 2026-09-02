@@ -208,3 +208,26 @@ keeps it either way.
 `tests/sim-dock.sh`'s shared-singleton constraint. The Tier B gate runs from any
 worktree, in parallel, while the user works. The live gate stays for what only a
 real session can answer, and needs the human's go-ahead.
+
+## The case set the gate actually runs
+
+Three, sim-dock's own, unchanged in substance:
+
+1. **LAUNCH** — `output create headless sbx-test` in the nested instance; the
+   service launches `foot --app-id=dr-sim` onto ws 9 on that output. The foot
+   window opens *inside* the nested compositor, because the launch goes out
+   through the sandbox plugin's own dispatch.
+2. **SCATTER** — the window is dispatched to ws 1 on the nested instance's other
+   output, the trigger file is touched, and it has to come back.
+3. **IDEMPOTENCY** — one more trigger: `converged, 0 ops` must go up and
+   `pass N iteration M` must not move at all.
+
+Each case waits on the log's `restore cycle done` marker before the next begins,
+so no case is ever scored against a queued rerun of its predecessor. Nothing
+sleeps-then-asserts. A whole run is about a minute.
+
+Two runs back to back, both `ALL PASS`, exit 0, no orphan Hyprland or Quickshell
+process and no leftover sandbox directory. The trap was exercised on a forced
+mid-run failure as well: both children died, the dead instance's socket
+directory was removed, the exit status was preserved, and the sandbox directory
+was kept with its path printed.

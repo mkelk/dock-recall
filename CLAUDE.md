@@ -30,7 +30,10 @@ keep current. Which ones apply:
   behaviour — an already-instantiated panel serves stale code after a plain
   hot-reload, and a hot-reloaded **service** runs QML but its `Process` and
   `FileView` never fire.
-- Engine or service touched: `./tests/sim-dock.sh`.
+- Engine or service touched: `./tests/sandbox-dock.sh` — the nested-compositor
+  gate. It runs alongside the live session without disturbing it, so it needs
+  no permission and no quiet moment. `./tests/sim-dock.sh` is the same cases
+  against the real desktop and is **on request only**: ask the human first.
 - Before any shell restart: `omarchy-shell lock isLocked` must be `false`. A
   restart kills the lock screen, because `omarchy.lock` runs inside the same
   Quickshell process. If the session looks locked or wedged, stop and report.

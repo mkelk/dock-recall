@@ -90,6 +90,24 @@ sim_placed() {
 
 trigger() { date +%s.%N > "$SBOX/home/.local/state/omarchy/dock-recall.trigger"; }
 
+# wait_for_cycle <timeout> <cycle-done count before the event> — the log's own
+# completion marker is what says a cycle (all three settle passes) is over, so
+# the next case starts on a quiet service instead of racing a queued rerun.
+wait_for_cycle() {
+  poll "$1" bash -c "[[ \$(sed 's/\x1b\[[0-9;]*m//g' '$SBOX/qs.log' | grep -cF 'restore cycle done' || true) -gt $2 ]]"
+}
+
+diagnostics() {
+  echo "--- last [dock-recall] log lines ---"
+  sb_log | tail -25
+  echo "--- nested clients (class $APP_ID) ---"
+  nested clients -j | jq -c --arg c "$APP_ID" '[.[]|select(.class==$c)|{address,class,workspace:.workspace.id,monitor}]'
+  echo "--- nested monitors ---"
+  nested monitors all -j | jq -c '[.[]|{id,name}]'
+  echo "--- nested workspaces ---"
+  nested workspaces -j | jq -c '[.[]|{id,monitor}]'
+}
+
 kill_wait() {   # kill_wait <pid> — TERM, then KILL if it will not go
   local pid="$1"
   kill -0 "$pid" 2>/dev/null || return 0
@@ -363,22 +381,81 @@ nested output remove "$OUTPUT" >/dev/null
 poll 15 bash -c "! HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl monitors all -j | jq -e --arg n '$OUTPUT' 'any(.[]; .name==\$n)' >/dev/null"
 sleep 3
 
-# ------------------------------------------------------- 4. the loop, proven
+# =================================================================== THE CASES
+#
+# sim-dock's three, unchanged in substance: the plugin must LAUNCH what is
+# missing, put back what is SCATTERED, and then do NOTHING. Each case waits for
+# the cycle it started to finish before the next one begins, so a case is never
+# scored against a queued rerun of its predecessor — polled on the log's own
+# cycle-done marker rather than a fixed sleep, because the settle passes make
+# every timing variable.
 
-echo "=== loop proof: dock event -> plugin -> nested compositor ==="
+echo "=== case 1: LAUNCH ==="
 
-ops_before=$(sb_count "restore cycle done")
+cycles_before=$(sb_count "restore cycle done")
 nested output create headless "$OUTPUT" >/dev/null
 
 if poll 40 sim_placed; then
-  pass "$APP_ID launched onto ws $TARGET_WS on $OUTPUT inside the nested compositor"
+  pass "case 1 LAUNCH — $APP_ID launched onto ws $TARGET_WS on $OUTPUT"
 else
-  fail "$APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $TARGET_WS on monitor $(monitor_id "$OUTPUT"))"
-  sb_log | tail -25
+  fail "case 1 LAUNCH — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $TARGET_WS on monitor $(monitor_id "$OUTPUT"))"
+  diagnostics
+fi
+wait_for_cycle 40 "$cycles_before" || note "warning: the dock cycle never logged its completion"
+
+# ------------------------------------------------------------------ 2. SCATTER
+
+echo "=== case 2: SCATTER ==="
+
+addr=$(sim_field address)
+if [[ -z $addr ]]; then
+  fail "case 2 SCATTER — no $APP_ID window to scatter"
+else
+  # Both dispatches go to the NESTED instance: the focus this takes is the
+  # nested compositor's, not the user's.
+  nested dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null
+  nested dispatch "hl.dsp.window.move({ workspace = \"$SCATTER_WS\", follow = false })" >/dev/null
+  if poll 10 bash -c "[[ \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl clients -j | jq -r --arg c '$APP_ID' 'first(.[]|select(.class==\$c)|.workspace.id)//empty') == $SCATTER_WS ]]"; then
+    note "scattered to ws $(sim_ws)"
+  else
+    note "warning: the scatter dispatch left $APP_ID on ws $(sim_ws)"
+  fi
+
+  cycles_before=$(sb_count "restore cycle done")
+  trigger
+  if poll 40 sim_placed; then
+    pass "case 2 SCATTER — $APP_ID back on ws $TARGET_WS on $OUTPUT"
+  else
+    fail "case 2 SCATTER — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)'"
+    diagnostics
+  fi
+  wait_for_cycle 40 "$cycles_before" || note "warning: the scatter cycle never logged its completion"
 fi
 
-poll 40 bash -c "[[ \$(sed 's/\x1b\[[0-9;]*m//g' '$SBOX/qs.log' | grep -cF 'restore cycle done' || true) -gt $ops_before ]]" \
-  || note "warning: no cycle-done line after the dock event"
+# -------------------------------------------------------------- 3. IDEMPOTENCY
+
+echo "=== case 3: IDEMPOTENCY ==="
+
+converged_before=$(sb_count "converged, 0 ops")
+iterations_before=$(sb_count " iteration ")
+cycles_before=$(sb_count "restore cycle done")
+
+trigger
+if wait_for_cycle 40 "$cycles_before"; then
+  converged_after=$(sb_count "converged, 0 ops")
+  iterations_after=$(sb_count " iteration ")
+  if (( converged_after > converged_before )) && (( iterations_after == iterations_before )); then
+    pass "case 3 IDEMPOTENCY — the pass after the marker converged with 0 ops and planned nothing"
+  else
+    fail "case 3 IDEMPOTENCY — converged lines +$((converged_after - converged_before)), iteration lines +$((iterations_after - iterations_before))"
+    diagnostics
+  fi
+else
+  fail "case 3 IDEMPOTENCY — no restore cycle completed within 40s of the trigger"
+  diagnostics
+fi
+
+# ------------------------------------------------------------------- evidence
 
 echo "--- [dock-recall] evidence from the SANDBOX shell ($SBOX/qs.log) ---"
 sb_log | tail -20
@@ -386,7 +463,7 @@ echo "---"
 
 # The state the plugin wrote is in the temp HOME, and only there.
 if [[ -s $STATE ]]; then
-  pass "sandbox state file written: $STATE ($(wc -c < "$STATE") bytes, version $(jq -r .version "$STATE"))"
+  pass "sandbox state written to the temp HOME only: $STATE ($(wc -c < "$STATE") bytes, version $(jq -r .version "$STATE"))"
 else
   fail "no sandbox state file at $STATE"
 fi
