@@ -313,10 +313,14 @@ function identityClaimsSame(identity, pattern, titlePattern) {
 
 // Build the Identity a freshly ticked window needs.
 //
-// Returns null when an identity claiming the same thing is ALREADY on the list
-// — see identityClaimsSame above for what "the same thing" means — because
-// adding a second identity for it would record the same window twice and make
-// matchClient's answer depend on list order.
+// Returns `{ refusal: "already-watched" }` when an identity claiming the same
+// thing is ALREADY on the list — see identityClaimsSame above for what "the
+// same thing" means — because adding a second identity for it would record the
+// same window twice and make matchClient's answer depend on list order.
+//
+// Null is reserved for "there is no proposal to make at all": a class that
+// derives no pattern. Everything else that declines carries a reason, because
+// the panel has to be able to say which of the two happened.
 //
 // A colliding id (Chromium's second webapp on a domain already claimed) gets a
 // numeric suffix rather than being merged: two ids that look alike are a
@@ -364,12 +368,29 @@ function suggestIdentity(className, identities, derivation) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string") continue;
     taken[identity.id] = true;
-    if (identityClaimsSame(identity, pattern, titlePattern)) return null;
+    // A duplicate is a REFUSAL, not a null (tick v5c, finding A7).
+    //
+    // It used to answer null, on the reasoning that ticking something already
+    // watched is a harmless no-op. It is a no-op; it was not harmless, because
+    // the panel could not tell "nothing to add" from "nothing to say". The
+    // click fell through every gate — no refusal, an unchanged list, a
+    // byte-identical write that returns TRUE — and the panel logged
+    // `watching "foot" — 3 identities` about an identity it had not created,
+    // naming the CLASS because there was no added identity to name.
+    //
+    // The click is most often this: a terminal running `herdr` that was started
+    // without `--title`, on a desk where `{^foot$ + ^herdr$}` is already
+    // watched. The window matches nothing, so it offers a chip; the app is
+    // already claimed, so there is nothing to add; and the one thing that would
+    // help — relaunch it under the title the identity looks for — is exactly
+    // what a refusal reason gets said for.
+    if (identityClaimsSame(identity, pattern, titlePattern)) {
+      return { refusal: "already-watched" };
+    }
   }
 
-  // The refusal comes AFTER the duplicate guard on purpose: ticking something
-  // already watched is a no-op whatever its class, and answering "refused"
-  // there would be a complaint about a click that changed nothing.
+  // The terminal refusal comes AFTER the duplicate guard, and still does: when
+  // both are true the duplicate is the more specific truth about the CLICK.
   // A refusal carries the reason and nothing else. It used to repeat the class
   // back as well, and no caller ever read it: every one of them — the panel's
   // refusal line included — already has the class it just passed in.
@@ -1394,6 +1415,20 @@ function tickRefusalHint(className, reason) {
 
   var head = 'Not watching this ' + name + ' window yet: ';
   var body;
+  if (why === "already-watched") {
+    // The one refusal that is not about a terminal being unreadable, so it gets
+    // its own head, its own body and its own tail (tick v5c). The app is not
+    // unknown — it is on the list. What is wrong is the WINDOW: it does not
+    // match the rule that claims it, which for a terminal means it was started
+    // without the title that rule looks for.
+    var already = 'This ' + name + ' window is already covered: an app on the watched list claims'
+      + ' exactly it, and this particular window does not match that rule.';
+    return isTerminalClass(name)
+      ? already + ' Relaunch it as ' + name + ' --title=<name> <command> and it will be claimed'
+        + ' on sight; ticking it again cannot add anything, because there is nothing to add.'
+      : already + ' Nothing is added by ticking it again. Check the rule’s title patterns'
+        + ' against this window’s title — the state file is hand-editable.';
+  }
   if (why === "not-read") {
     body = "the panel is still reading what this terminal is running. Press it again in a moment.";
   } else if (why === "several-children") {

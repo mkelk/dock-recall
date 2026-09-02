@@ -153,7 +153,9 @@ test("a new identity never invents a launch command", () => {
 
 test("ticking something already watched is a no-op, not a duplicate", () => {
   const existing = [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }];
-  assert.strictEqual(panel.suggestIdentity("foot", existing), null);
+  // A refusal rather than null since tick v5c: "nothing to add" is a fact the
+  // panel has to be able to SAY, or the click reports a success it did not have.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", existing), { refusal: "already-watched" });
 });
 
 // ------------------------------------------------------------ toggle watched
@@ -3305,9 +3307,10 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
     launch: "foot --title=herdr herdr"
   });
 
-  // The same PAIR already on the list is the same rule, so nothing is added.
+  // The same PAIR already on the list is the same rule, so nothing is added —
+  // and since tick v5c that is said out loud rather than answered with null.
   const watchedHerdr = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
-  assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, herdr), null);
+  assert.deepStrictEqual(panel.suggestIdentity("foot", watchedHerdr, herdr), { refusal: "already-watched" });
 
   // A different title on the same class is a different rule.
   assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, btop).id, "btop");
@@ -3318,9 +3321,9 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   // other reason, that a terminal's class names no app (tick gpq).
   assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr).refusal, "not-read");
 
-  // The class-only guard still answers as it always did.
-  assert.strictEqual(panel.suggestIdentity("foot",
-    [{ id: "terminal", patterns: ["^foot$"], launch: "" }]), null);
+  // The class-only guard still answers the same FACT, now with a reason.
+  assert.deepStrictEqual(panel.suggestIdentity("foot",
+    [{ id: "terminal", patterns: ["^foot$"], launch: "" }]), { refusal: "already-watched" });
 
   // An id collision is still suffixed rather than merged.
   const takenId = [{ id: "herdr", patterns: ["^something-else$"], launch: "" }];
@@ -3585,9 +3588,10 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
   assert.deepStrictEqual(panel.suggestIdentity("chromium", []),
     { id: "chromium", patterns: ["^chromium$"], launch: "" });
 
-  // Already watched is a no-op, not a refusal: the click changed nothing.
-  assert.strictEqual(panel.suggestIdentity("foot",
-    [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }]), null);
+  // Already watched is a no-op — and since tick v5c a no-op the panel can SAY,
+  // because a silent one logged a success line for a click that changed nothing.
+  assert.deepStrictEqual(panel.suggestIdentity("foot",
+    [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }]), { refusal: "already-watched" });
 
   // And the panel has a sentence for it, naming the way out.
   const said = panel.tickRefusalHint("foot", "several-children");
@@ -4877,4 +4881,91 @@ test("Panel.qml reads the derivation through the guarded lookup and nowhere else
   }
   assert.ok(/PanelModel\.singleLaunchRepair\(/.test(source),
     "Panel.qml no longer routes a row's Learn through the guarded repair");
+});
+
+// ------------------------------------------- a duplicate tick is a VISIBLE no-op
+//
+// Tick v5c / finding A7. Click a chip whose window matches nothing, on an app an
+// identity on the list ALREADY claims — the ordinary way to get there is a
+// terminal running `herdr` that was started without `--title`, while
+// `{^foot$ + ^herdr$}` is watched — and every gate said yes to a click that
+// changed nothing:
+//
+//   suggestIdentity      returned null (the duplicate guard, before the
+//                        terminal refusal, deliberately)
+//   tickRefusalReason    therefore returned "" — no refusal to report
+//   toggleWatchedIdentities returned the unchanged list
+//   writeState           returned TRUE, because the bytes were identical and a
+//                        byte-identical write is a successful write
+//   the log              said: watching "foot" — 3 identities
+//
+// with `createdId` falling back to the CLASS because nothing had been added.
+// The user is told they are now watching foot; they are not, the window still
+// matches nothing, and the one thing that would have helped — relaunch it under
+// the title the identity looks for — was never said.
+//
+// null was the wrong answer. "Nothing to add" and "nothing to say" are not the
+// same fact, and the panel had no way to tell them apart.
+
+const WATCHED_HERDR = [
+  { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title=herdr herdr" }
+];
+
+test("suggestIdentity says already-watched instead of answering null", () => {
+  const herdr = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+
+  const answer = panel.suggestIdentity("foot", WATCHED_HERDR, herdr);
+  assert.deepStrictEqual(answer, { refusal: "already-watched" },
+    "a duplicate proposal must be a refusal with a reason, not a silent null");
+
+  // The class-only duplicate answers the same way — the fact is the same one.
+  assert.deepStrictEqual(
+    panel.suggestIdentity("chromium", [{ id: "browser", patterns: ["^chromium$"], launch: "" }]),
+    { refusal: "already-watched" });
+
+  // And it is the DUPLICATE that wins over the terminal refusal, as it always
+  // did: the more specific truth about the click is that it changes nothing.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", WATCHED_HERDR, herdr).refusal, "already-watched");
+});
+
+test("the list is still left exactly as it was", () => {
+  const herdr = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+  const after = panel.toggleWatchedIdentities(WATCHED_HERDR, "foot", "", herdr, engine.couldShadow);
+  assert.deepStrictEqual(after, WATCHED_HERDR, "a refusal must never change the list");
+  assert.notStrictEqual(after, WATCHED_HERDR, "and must still hand back a copy");
+  assert.strictEqual(panel.addedIdentity(WATCHED_HERDR, after), null);
+});
+
+test("tickRefusalReason and its hint carry already-watched to the panel", () => {
+  const herdr = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+  assert.strictEqual(panel.tickRefusalReason("foot", WATCHED_HERDR, herdr), "already-watched");
+
+  const hint = panel.tickRefusalHint("foot", "already-watched");
+  assert.ok(hint, "already-watched has no sentence, so the panel would say nothing");
+  assert.ok(/already/i.test(hint), hint);
+  // The one thing it must NOT say is the thing every other terminal refusal
+  // says — that nothing names the app inside it. Something did: it is on the
+  // list already.
+  assert.strictEqual(hint.indexOf("nothing about it names the app"), -1, hint);
+  // A terminal still gets the relaunch advice, because that IS the fix here.
+  assert.ok(hint.indexOf("--title=") !== -1, hint);
+
+  // A non-terminal class gets the same fact without the terminal-only advice.
+  const browserHint = panel.tickRefusalHint("chromium", "already-watched");
+  assert.ok(browserHint, browserHint);
+  assert.strictEqual(browserHint.indexOf("--title="), -1,
+    "a chromium window has no --title convention to relaunch under");
+});
+
+test("Panel.qml reserves the success line for a list that actually changed", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The fallback that produced the lie: `added ? added.id : chip.className`.
+  assert.strictEqual(source.indexOf("added ? added.id : chip.className"), -1,
+    "Panel.qml still names the clicked CLASS when nothing was added");
+  // And there is a branch that says so out loud instead.
+  assert.ok(/no change/.test(source),
+    "Panel.qml has no honest no-op line for a click that changed nothing");
 });

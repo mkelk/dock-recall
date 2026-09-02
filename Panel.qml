@@ -1346,12 +1346,23 @@ Item {
       // that was clicked — a title identity (foot hosting btop) creates an id
       // unrelated to the class ticked, and even the ordinary case (ticking
       // md.obsidian.Obsidian creates id "obsidian") reads clearer this way.
-      // `added` falls back to the class only in the defensive case where the
-      // toggle added nothing (chip.identityId is already handled above).
-      var createdId = added ? added.id : chip.className
-      root.log((chip.identityId ? "unwatched \"" + chip.identityId + "\"" : "watching \"" + createdId + "\"")
-        + " — " + next.length + " identities"
-        + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
+      //
+      // THE SUCCESS LINE IS FOR A LIST THAT CHANGED (tick v5c). It used to fall
+      // back to `chip.className` when `added` was null, which is how a duplicate
+      // tick came to log `watching "foot" — 3 identities` about an identity
+      // nobody created: the refusal above now catches that case, and this branch
+      // is the belt to its braces. A byte-identical write returns true, so
+      // "the write succeeded" has never been the same claim as "something
+      // changed", and only `added` can tell them apart.
+      if (chip.identityId) {
+        root.log("unwatched \"" + chip.identityId + "\" — " + next.length + " identities")
+      } else if (added) {
+        root.log("watching \"" + added.id + "\" — " + next.length + " identities"
+          + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
+      } else {
+        root.log("no change: the tick on \"" + chip.className
+          + "\" added nothing — the watched list still has " + next.length + " identities")
+      }
     }
     // A newly ticked app whose launch could NOT be derived here has an empty one
     // by construction; go and find out what would start it while its window is
