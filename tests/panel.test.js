@@ -4969,3 +4969,84 @@ test("Panel.qml reserves the success line for a list that actually changed", () 
   assert.ok(/no change/.test(source),
     "Panel.qml has no honest no-op line for a click that changed nothing");
 });
+
+// ------------------------------------------- a refusal dies with its window
+//
+// Tick 8rw / finding A10. `refusedTick` is `{ className, address }` — the
+// QUESTION a refused tick asked, kept so the hint can re-ask it against the live
+// desktop every frame and clear itself the moment the answer changes. That
+// self-clearing is the design, and it had one hole: nothing ever asked whether
+// the WINDOW was still there.
+//
+// The re-ask goes through clientForTick, which falls back to the first window of
+// the same CLASS when the address is gone. That fallback is right for a tick —
+// a list row can predate a refresh and the class is all that is left. It is
+// wrong for a refusal, and wrong in two different ways:
+//
+//   - the refused terminal closes and another foot window is open: the hint
+//     re-derives against a DIFFERENT window and tells the user about a terminal
+//     they never clicked;
+//   - the refused terminal closes and no foot window is left: clientForTick
+//     answers null, the derivation is null, the reason stays "not-read", and the
+//     panel says "still reading… press it again in a moment" forever, about a
+//     window that is gone.
+//
+// So the question is asked separately, and it is a question about identity, not
+// about derivation: is this refusal still about a window that exists?
+
+const REFUSED_FOOT = { className: "foot", address: "0xf1" };
+
+test("refusalStillLive is false the moment the refused window closes", () => {
+  const refused = makeClient({ address: "0xf1", class: "foot" });
+  const other = makeClient({ address: "0xf2", class: "foot" });
+  const unrelated = makeClient({ address: "0xc1", class: "chromium" });
+
+  assert.strictEqual(panel.refusalStillLive([refused, unrelated], REFUSED_FOOT), true);
+
+  // THE CLASS-FALLBACK CASE. Another window of the same class is on screen and
+  // is emphatically not the one that was refused.
+  assert.strictEqual(panel.refusalStillLive([other, unrelated], REFUSED_FOOT), false,
+    "a sibling window of the same class kept the refusal alive");
+
+  // THE ADDRESS-GONE CASE. Nothing of that class is left at all.
+  assert.strictEqual(panel.refusalStillLive([unrelated], REFUSED_FOOT), false);
+  assert.strictEqual(panel.refusalStillLive([], REFUSED_FOOT), false);
+
+  // An address that came back with a different class is a reused address, not
+  // the window that was clicked.
+  const reused = makeClient({ address: "0xf1", class: "chromium" });
+  assert.strictEqual(panel.refusalStillLive([reused], REFUSED_FOOT), false);
+
+  // initialClass counts, the way it does everywhere a class is compared.
+  const byInitial = makeClient({ address: "0xf1", class: "", initialClass: "foot" });
+  assert.strictEqual(panel.refusalStillLive([byInitial], REFUSED_FOOT), true);
+});
+
+test("a refusal with no address is about the class, and lives while the class does", () => {
+  // A chip can carry no address (chip.address || ""). Then the class IS the
+  // whole question, and there is no sibling to confuse it with.
+  const classOnly = { className: "foot", address: "" };
+  assert.strictEqual(panel.refusalStillLive([makeClient({ address: "0xf9", class: "foot" })], classOnly), true);
+  assert.strictEqual(panel.refusalStillLive([makeClient({ address: "0xc1", class: "chromium" })], classOnly), false);
+});
+
+test("nothing at all is not a live refusal", () => {
+  const clients = [makeClient({ address: "0xf1", class: "foot" })];
+  for (const value of [null, undefined, {}, { className: "" }, { className: "   " }, "foot", 7]) {
+    assert.strictEqual(panel.refusalStillLive(clients, value), false, JSON.stringify(value));
+  }
+  assert.strictEqual(panel.refusalStillLive(null, REFUSED_FOOT), false);
+});
+
+test("Panel.qml clears refusedTick when the clients list says the window is gone", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  assert.ok(/PanelModel\.refusalStillLive\(/.test(source),
+    "Panel.qml never asks whether the refusal is still about a live window");
+  // The natural signal: the refusal is re-checked whenever the client list is
+  // reassigned, which is the one moment a window can have gone away.
+  assert.ok(/onLiveClientsChanged/.test(source),
+    "Panel.qml has no hook on the client list, so a dead refusal is never noticed");
+});

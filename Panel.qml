@@ -1249,11 +1249,34 @@ Item {
   // was only "the /proc read has not come back" clears itself the moment it
   // does, and one that was "this terminal runs two things" stays up for as long
   // as that is true.
+  //
+  // It also dies with its window (tick 8rw). The re-ask alone could not do
+  // that: it resolves through PanelModel.clientForTick, whose class fallback
+  // would re-derive the hint against a DIFFERENT foot window, or — with no
+  // window of the class left — leave the reason at "not-read" and offer "press
+  // it again in a moment" forever about a terminal that is closed.
   property var refusedTick: null
+
+  // The one moment a refused window can have gone away is the moment a fresh
+  // client list lands, so that is where the question is asked. A signal handler
+  // and not a binding: this CLEARS state rather than deriving any, and a
+  // binding that wrote to its own dependency's neighbour would be the harder
+  // thing to reason about.
+  onLiveClientsChanged: {
+    if (root.refusedTick && !PanelModel.refusalStillLive(root.liveClients, root.refusedTick)) {
+      root.log("the window that refused a tick (\"" + root.refusedTick.className
+        + "\") is gone — clearing the refusal")
+      root.refusedTick = null
+    }
+  }
 
   readonly property string tickRefusalHint: {
     var pending = root.refusedTick
     if (!pending) return ""
+    // Belt to the handler's braces (tick 8rw): the clear above is what removes
+    // the state, and this is what keeps a sentence about a closed window off
+    // the screen in whatever frame sits between the two.
+    if (!PanelModel.refusalStillLive(root.liveClients, pending)) return ""
     // Referenced so the hint re-evaluates when either read lands.
     var argv = root.argvByPid
     var tree = root.procTree

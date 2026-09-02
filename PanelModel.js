@@ -1661,6 +1661,49 @@ function clientForTick(clients, address, className) {
   return fallback;
 }
 
+// Is a recorded tick refusal still about a window that EXISTS?
+//
+// `refusal` is the panel's `refusedTick`: `{ className, address }`, the question
+// a refused tick asked rather than the sentence it produced. The panel re-asks
+// that question against the live desktop every frame, so a refusal that was
+// only "the /proc read has not come back" clears itself the moment it does.
+//
+// This is the check that re-ask was missing (tick 8rw, finding A10). The re-ask
+// resolves its window through clientForTick, which falls back to the first
+// window of the same CLASS when the address is gone. That fallback is correct
+// for a TICK — a list row can predate a refresh, and the class is all that is
+// left to work with — and wrong for a REFUSAL, in two directions:
+//
+//   - another window of the same class is open: the hint silently re-derives
+//     against a window the user never clicked, and reports on it;
+//   - no window of that class is left: clientForTick answers null, the
+//     derivation is null, the reason stays "not-read", and the panel offers
+//     "press it again in a moment" forever about a window that is gone.
+//
+// So the refusal's own liveness is a separate question with a separate answer.
+// An ADDRESS makes it exact: that window, and only that window — and its class
+// must still be the one that was refused, because an address can be reused. No
+// address (a chip that carried none) makes the class the whole question, and
+// then any window of the class is the one it was always about.
+function refusalStillLive(clients, refusal) {
+  var list = isArray(clients) ? clients : [];
+  if (!refusal || typeof refusal !== "object" || isArray(refusal)) return false;
+  var name = trim(refusal.className);
+  if (!name) return false;
+  var wanted = trim(refusal.address);
+  for (var i = 0; i < list.length; i++) {
+    var client = list[i];
+    if (!client) continue;
+    var sameClass = trim(client.class) === name || trim(client.initialClass) === name;
+    if (wanted) {
+      if (trim(client.address) === wanted) return sameClass;
+    } else if (sameClass) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // argv -> a shell command that would start it again, or "".
 //
 // `className` is the class of the WINDOW the pid was read from, and is used
@@ -5336,6 +5379,7 @@ if (typeof module !== "undefined") {
     terminalTickDerivation: terminalTickDerivation,
     terminalPids: terminalPids,
     clientForTick: clientForTick,
+    refusalStillLive: refusalStillLive,
     backfillLaunchCommands: backfillLaunchCommands,
     learnableCount: learnableCount,
     launchAutofillIndex: launchAutofillIndex,
