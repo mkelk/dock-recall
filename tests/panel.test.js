@@ -3480,6 +3480,46 @@ test("a shell or flag-only argv never trusts a shell-retitled window title", () 
     { command: "foot btop", title: "btop", reason: "" });
 });
 
+test("a flag's SPACE-separated value is never a hosted command", () => {
+  // Tick 3bp. The two spellings of one flag answered differently. `foot
+  // --working-directory=/x` refused (the test above pins it); `foot
+  // --working-directory /x` produced `{command: "foot --working-directory /x",
+  // title: "~/proj"}` — the same junk identity, from the same launch, because
+  // hostedArgvOf stopped its scan at the unknown flag and handed the flag's
+  // VALUE (`/x`) to the case-2 gate as a hosted command. The gate reads a
+  // hosted command as "the terminal set this window's title", and the title it
+  // then trusted was one an interactive shell had written: `^~/proj$` matches
+  // only while that shell sits in that directory, and the launch reopens a bare
+  // shell.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" },
+    "the space spelling refuses exactly as the = spelling does");
+
+  // The two spellings now agree, which is the whole point of the repair.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x"], null, "~/proj"),
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory=/x"], null, "~/proj"));
+
+  // And the refusal reaches the panel instead of the identity reaching the file.
+  assert.deepStrictEqual(
+    panel.suggestIdentity("foot", [],
+      panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x"], null, "~/proj")),
+    { refusal: "no-title" });
+
+  // A flag with a separate value does not hide a REAL hosted command sitting
+  // behind it: the value is consumed, the command after it is still found.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x", "btop"], null, "btop"),
+    { command: "foot --working-directory /x btop", title: "btop", reason: "" });
+
+  // Nor does it disturb the terminal's OWN --title in its separate-value
+  // spelling, which case 1 reads before this question is ever asked.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--title", "herdr", "herdr"], null, "~/proj"),
+    { command: "foot --title herdr herdr", title: "herdr", reason: "" });
+});
+
 test("no title travels with a command the panel refuses to run", () => {
   // Tick cjs. The invariant terminalChildDerivation states in as many words —
   // "the title travels only with a command that survived dispatchableCommand"

@@ -283,7 +283,7 @@ inside a ±2 px tolerance and tiled windows scored by intersection-over-union.
 Underneath that, every state the desktop can be in has a defined behaviour and a
 test that pins it — including the ones the plugin deliberately refuses, which are
 written down as refusals rather than left as gaps. `tests/` is where that
-contract lives: 765 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
+contract lives: 766 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
 which drives the installed plugin end to end against a headless output.
 
 The behaviour has also been through a physical checklist on a real ultrawide over
@@ -298,7 +298,7 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 765 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 766 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml
 ./scripts/dev-install --restart    # install this working tree and restart the shell

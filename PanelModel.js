@@ -1110,8 +1110,17 @@ function terminalChildDerivation(className, ownArgv, node) {
 
 // The words that END the terminal's own argv: everything after one of them
 // belongs to the HOSTED command. `-e` is the exec flag TERMINAL_FAMILY records
-// for alacritty and ghostty, `--` is the universal end-of-options marker, and
-// `--hold` takes the command on the terminals that spell it.
+// for alacritty and ghostty, and `--` is the universal end-of-options marker.
+//
+// `--hold` is here for a DIFFERENT reason, and the comment that said it "takes
+// the command on the terminals that spell it" was simply wrong (tick 3bp): foot,
+// kitty and alacritty all document `--hold` as "remain open after the child
+// process exits", a plain flag taking no value and hosting nothing. It is kept
+// in this list as a deliberately conservative boundary — on foot and kitty a
+// hosted command is a BARE trailing word, so it does sit after `--hold` when
+// there is one, and stopping here means a `--title` written after `--hold` is
+// REFUSED rather than misread as the terminal's own. A lost title is a refusal
+// the user can see; a stolen one is a wrong identity in their file.
 var TERMINAL_EXEC_BOUNDARIES = ["-e", "--", "--hold"];
 
 function isTerminalExecBoundary(word) {
@@ -1124,21 +1133,47 @@ function isTerminalExecBoundary(word) {
 // The HOSTED command inside a terminal's own argv — the words that are the
 // program, not the terminal — or [] when the terminal was launched with none.
 //
-// The same boundary titleFromOwnArgv scans to, read for the other half of the
-// answer, so the two can never disagree about where the terminal's argv ends.
-// `--title <value>` is the one flag whose separate value has to be stepped
-// over; every other unknown flag's separate value ends the scan, which reports
-// a hosted command one word early (a `/x` rather than nothing). That is the
-// safe direction for every caller here — see titleFromOwnArgv.
+// It scans to the same boundaries titleFromOwnArgv does, so the two can never
+// disagree about where the terminal's argv ends. They differ on exactly one
+// thing, and they have to: what to do with the word after an UNKNOWN flag.
+//
+// Neither can know which unknown flags take a SEPARATE value — a terminal's
+// `--working-directory /x` and its `--fullscreen btop` are the same shape on the
+// way in. So each resolves that ambiguity in the direction that is safe FOR ITS
+// OWN CALLER, and the claim that early-stopping was "the safe direction for
+// every caller here" was false in one of them (tick 3bp):
+//
+//   titleFromOwnArgv stops at the word and answers "". Its caller writes the
+//   answer into a titlePattern, so a lost title is a refusal the user can see
+//   and fix, and a stolen one is a wrong identity in their file. Stopping is
+//   safe there.
+//
+//   HERE, stopping is the unsafe direction. The caller is the case-2 gate in
+//   terminalTickDerivation, which reads a non-empty answer as "the terminal was
+//   launched with a command, so the title on this window is one the TERMINAL
+//   set" — and then trusts that title. Stopping reported `foot
+//   --working-directory /x` as hosting `/x`, and the gate trusted a title an
+//   interactive SHELL had written: `^~/proj$`, matching only while that shell
+//   sits in that directory, on an identity whose launch reopens a bare shell.
+//   The `=` spelling of the very same flag refuses it (tick q58); the space
+//   spelling wrote it.
+//
+// THE RULE, then: a flag CONSUMES the word after it unless that word is itself
+// a flag, or the flag already carries its value with an `=`. `--title herdr` was
+// always read that way; every flag is now. The cost is `foot --fullscreen btop`,
+// where `btop` really is the hosted command but is consumed as a value and the
+// answer comes back [] — one word late, so the gate refuses a window it could
+// have named. That is the safe direction for THIS caller: a refusal the panel
+// says out loud, rather than a window title trusted on evidence it never had.
 function hostedArgvOf(argv) {
   var list = isArray(argv) ? argv : [];
-  var prefix = TERMINAL_TITLE_FLAG + "=";
   for (var i = 1; i < list.length; i++) {
     var word = typeof list[i] === "string" ? list[i] : "";
     if (isTerminalExecBoundary(word)) return list.slice(i + 1);
-    if (word === TERMINAL_TITLE_FLAG) { i += 1; continue; }
-    if (word.slice(0, prefix.length) === prefix) continue;
     if (word.charAt(0) !== "-") return list.slice(i);
+    if (word.indexOf("=") !== -1) continue;
+    var next = typeof list[i + 1] === "string" ? list[i + 1] : "";
+    if (next && next.charAt(0) !== "-") i += 1;
   }
   return [];
 }
