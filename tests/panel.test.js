@@ -745,7 +745,9 @@ test("a broken launch joins the repairable set and is re-derived on a press", ()
 
   const requests = identities.map((i) => (
     { identityId: i.id, patterns: i.patterns, className: "", pid: "", argv: null }));
-  const derived = panel.deriveLaunchMap(requests, REAL_DESKTOP_FILES, {});
+  // `.commands` is the half these cases are about; `.refusals` has its own
+  // tests below.
+  const derived = panel.launchDerivation(requests, REAL_DESKTOP_FILES, {}).commands;
   assert.deepStrictEqual(derived, {
     obsidian: "/usr/bin/obsidian",
     whatsapp: "omarchy-launch-webapp https://web.whatsapp.com/",
@@ -831,7 +833,7 @@ test("the running window wins, and the desktop file catches everything else", ()
   ];
   const windowsByPid = { "99": 1, "4242": 2 };
 
-  assert.deepStrictEqual(panel.deriveLaunchMap(requests, DESKTOP_FILES, windowsByPid), {
+  assert.deepStrictEqual(panel.launchDerivation(requests, DESKTOP_FILES, windowsByPid).commands, {
     terminal: "foot --title 'My Notes'",
     "mail-google": 'omarchy-launch-webapp "https://mail.google.com/mail/u/0/#inbox"',
     "mail-2": 'omarchy-launch-webapp "https://mail.google.com/mail/u/0/#inbox"'
@@ -858,7 +860,7 @@ test("the plain browser window learns its OWN desktop file, never the process ar
   // chromium.desktop, %U stripped — a command that really does open a window
   // of class `chromium`, which is what the launch wait is watching for.
   assert.deepStrictEqual(
-    panel.deriveLaunchMap(requests, DESKTOP_FILES, panel.windowCountByPid(clients)),
+    panel.launchDerivation(requests, DESKTOP_FILES, panel.windowCountByPid(clients)).commands,
     {
       chromium: "/usr/bin/chromium",
       "mail-google": 'omarchy-launch-webapp "https://mail.google.com/mail/u/0/#inbox"'
@@ -883,7 +885,7 @@ test("a shared pid stops argv derivation for a NON-browser host process too", ()
 
   // Falls through to foot.desktop, which launches a real terminal.
   assert.deepStrictEqual(
-    panel.deriveLaunchMap(requests, DESKTOP_FILES, panel.windowCountByPid(clients)),
+    panel.launchDerivation(requests, DESKTOP_FILES, panel.windowCountByPid(clients)).commands,
     { terminal: "foot" });
 
   // And the single-window case is untouched: one pid, one window, so the
@@ -894,7 +896,7 @@ test("a shared pid stops argv derivation for a NON-browser host process too", ()
     pid: "700", argv: ["foot", "--working-directory", "/home/u/My Notes"]
   }];
   assert.deepStrictEqual(
-    panel.deriveLaunchMap(flags, DESKTOP_FILES, panel.windowCountByPid(alone)),
+    panel.launchDerivation(flags, DESKTOP_FILES, panel.windowCountByPid(alone)).commands,
     { terminal: "foot --working-directory '/home/u/My Notes'" });
 });
 
@@ -927,7 +929,7 @@ test("a running Electron app learns its desktop file, never its rewritten cmdlin
     }
   ];
 
-  const derived = panel.deriveLaunchMap(requests, REAL_DESKTOP_FILES, panel.windowCountByPid(clients));
+  const derived = panel.launchDerivation(requests, REAL_DESKTOP_FILES, panel.windowCountByPid(clients)).commands;
   assert.deepStrictEqual(derived, {
     // obsidian.desktop, found through the fuzzy StartupWMClass — a command that
     // really does start Obsidian.

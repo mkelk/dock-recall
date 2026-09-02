@@ -999,7 +999,4 @@ test("planHasFocusOps names BOTH ops that need the keyboard, and no others", () 
   assert.strictEqual(runnable[0], plan[0], "the ops are the same objects, never rebuilt");
   assert.equal(plan.length, 4, "the full plan is untouched — the no-progress check reads it");
   assert.deepEqual(engine.planWithoutFocusOps(null), []);
-  // The narrower question is still asked by the group machinery, and is still
-  // only about group joins.
-  assert.equal(engine.planHasGroupJoins([{ kind: "split" }]), false);
 });

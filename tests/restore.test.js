@@ -427,57 +427,16 @@ test("an ungrouped pair plans the moves first, then the group in tab order", () 
   // The group op is last and lists addresses in RECORDED TAB ORDER
   // (foot, then chromium) — not the order the moves happened in.
   assert.deepStrictEqual(ops[2], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [] });
-});
 
-// --- what a LOCKED session may execute (tick 97e) ----------------------------
-
-test("planHasGroupJoins names the group join specifically, not every op that needs the keyboard", () => {
-  const clients = twoWindowGroupClients();
-  const layout = engine.buildLayout(clients, monitorsLaptop, IDENTITIES, AT);
-  const scattered = [
-    makeClient({ address: "0xbbb", class: "chromium", workspace: 5 }),
-    makeClient({ address: "0xaaa", class: "foot", workspace: 6 }),
-    makeClient({ address: "0xccc", class: "code", workspace: 3 })
-  ];
-  const plan = engine.planRestore(scattered, monitorsLaptop, layout, IDENTITIES);
-  assert.deepStrictEqual(plan.map((o) => o.kind), ["move", "move", "group"]);
-  assert.strictEqual(engine.planHasGroupJoins(plan), true);
-
-  // Every other kind is focus-independent — each names its subject and the
-  // compositor honours the selector (live-verified, engine's opToCommand block).
-  // `ungroup` included: a dissolve is a whole-group toggle, not an into_group.
-  for (const kind of ["move", "workspace-monitor", "ungroup", "floating", "geometry", "swap", "divider", "launch"]) {
-    assert.strictEqual(engine.planHasGroupJoins([{ kind: kind }]), false, kind + " must not defer");
-  }
-  assert.strictEqual(engine.planHasGroupJoins([]), false);
-  assert.strictEqual(engine.planHasGroupJoins(null), false);
-  assert.strictEqual(engine.planHasGroupJoins([null]), false);
-});
-
-test("planWithoutGroupJoins keeps the order and leaves the original plan alone", () => {
-  const clients = twoWindowGroupClients();
-  const layout = engine.buildLayout(clients, monitorsLaptop, IDENTITIES, AT);
-  const scattered = [
-    makeClient({ address: "0xbbb", class: "chromium", workspace: 5 }),
-    makeClient({ address: "0xaaa", class: "foot", workspace: 6 }),
-    makeClient({ address: "0xccc", class: "code", workspace: 3 })
-  ];
-  const plan = engine.planRestore(scattered, monitorsLaptop, layout, IDENTITIES);
-
-  const runnable = engine.planWithoutGroupJoins(plan);
+  // And on a REAL plan, the lock gate (tick 97e) sees the join and defers only
+  // it: a group join needs the keyboard focus, and under an ext-session-lock
+  // there is no window to focus. The predicates' own edge cases are pinned in
+  // tests/refinement.test.js.
+  assert.strictEqual(engine.planHasFocusOps(ops), true);
+  const runnable = engine.planWithoutFocusOps(ops);
   assert.deepStrictEqual(runnable.map((o) => o.kind), ["move", "move"]);
-  // The ops themselves are the SAME objects — nothing is rebuilt, so nothing
-  // can be rebuilt differently.
-  assert.strictEqual(runnable[0], plan[0]);
-  // …and the full plan is untouched: it is still what the no-progress check
-  // compares against.
-  assert.strictEqual(plan.length, 3);
-  assert.strictEqual(engine.planHasGroupJoins(runnable), false);
-
-  // A plan of nothing but joins leaves nothing to run — the service ends the
-  // pass there rather than dispatching zero ops and re-planning for ever.
-  assert.deepStrictEqual(engine.planWithoutGroupJoins([{ kind: "group", addresses: [] }]), []);
-  assert.deepStrictEqual(engine.planWithoutGroupJoins(null), []);
+  assert.strictEqual(runnable[0], ops[0], "the ops are the same objects, never rebuilt");
+  assert.strictEqual(ops.length, 3, "and the full plan is untouched — no-progress reads it");
 });
 
 test("a group in the wrong tab order is regrouped without any move", () => {

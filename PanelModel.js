@@ -388,7 +388,7 @@ function suggestIdentity(className, identities, derivation) {
   // launch: "" for the class case, because THIS function is pure and
   // synchronous and a truthful launch command can only be read off the running
   // process or a desktop file — I/O the caller has to do. The field is filled
-  // in a moment later by the panel's derivation pass (deriveLaunchMap /
+  // in a moment later by the panel's derivation pass (launchDerivation /
   // backfillLaunchCommands below), never guessed from the class here.
   //
   // The user-found bug this comment used to describe as a feature: an identity
@@ -1532,7 +1532,7 @@ function clientForTick(clients, address, className) {
 //
 // `className` is the class of the WINDOW the pid was read from, and is used
 // only for the browser-family check above; pass "" when there is no window in
-// the picture. The structural shared-pid guard lives in deriveLaunchMap, which
+// the picture. The structural shared-pid guard lives in launchDerivation, which
 // is where the client list is in scope.
 function launchCommandFromArgv(argv, className) {
   var list = isArray(argv) ? argv : [];
@@ -2118,16 +2118,6 @@ function launchDerivation(requests, desktopFiles, windowsByPid, procTree) {
   return { commands: commands, refusals: refusals };
 }
 
-// Returns { identityId: command } carrying only the ones that were answered.
-function deriveLaunchMap(requests, desktopFiles, windowsByPid, procTree) {
-  return launchDerivation(requests, desktopFiles, windowsByPid, procTree).commands;
-}
-
-// Returns { identityId: reason } for the identities derivation REFUSED.
-function launchRefusalIndex(requests, desktopFiles, windowsByPid, procTree) {
-  return launchDerivation(requests, desktopFiles, windowsByPid, procTree).refusals;
-}
-
 // What a press would write, per identity: { identityId: command }.
 //
 // The ONE place that decides whether a stored launch may be replaced, so the
@@ -2346,7 +2336,7 @@ function addedIdentity(before, after) {
 //                derivable for a bare terminal is the terminal, and offering to
 //                learn that would be a repair that opens an empty prompt.
 //
-// `refusals` is optional ({ identityId: reason }, from launchRefusalIndex);
+// `refusals` is optional ({ identityId: reason }, from launchDerivation);
 // without it this answers exactly what it answered before tick dwv.
 function launchStateIndex(identities, launchMap, refusals) {
   var list = isArray(identities) ? identities : [];
@@ -2989,17 +2979,6 @@ function driftIndex(driftReport) {
   var apps = (driftReport && isArray(driftReport.apps)) ? driftReport.apps : [];
   for (var i = 0; i < apps.length; i++) {
     if (apps[i] && typeof apps[i].identityId === "string") index[apps[i].identityId] = apps[i];
-  }
-  return index;
-}
-
-// Index a verdict table (engine.verdictsFor, or the copy the service published
-// into the status file) by identity id, for the same reason driftIndex exists.
-function verdictIndex(verdicts) {
-  var index = {};
-  var list = isArray(verdicts) ? verdicts : [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && typeof list[i].identityId === "string") index[list[i].identityId] = list[i];
   }
   return index;
 }
@@ -5211,9 +5190,7 @@ if (typeof module !== "undefined") {
     shellWords: shellWords,
     launchLooksBroken: launchLooksBroken,
     launchRepairIndex: launchRepairIndex,
-    deriveLaunchMap: deriveLaunchMap,
     launchDerivation: launchDerivation,
-    launchRefusalIndex: launchRefusalIndex,
     procTreeFromDump: procTreeFromDump,
     isTerminalClass: isTerminalClass,
     terminalExecFlag: terminalExecFlag,
@@ -5265,7 +5242,6 @@ if (typeof module !== "undefined") {
     REFUSAL_TAGS: REFUSAL_TAGS,
     chipTooltipText: chipTooltipText,
     rowTooltipText: rowTooltipText,
-    verdictIndex: verdictIndex,
     verdictIndexByOccurrence: verdictIndexByOccurrence,
     driftIndexByAddress: driftIndexByAddress,
     occurrenceOf: occurrenceOf,

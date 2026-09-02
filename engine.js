@@ -4403,17 +4403,21 @@ function isRefinementPlan(plan) {
 
 // Does this plan contain work that needs the KEYBOARD FOCUS to land?
 //
-// Exactly one op kind does: `group`. The rebuild runs through `into_group`,
-// which IGNORES its window selector and acts on the focused window (live-
-// verified, learnings § Dispatch selector traps) — so the service focuses each
-// member in turn and reads the tab order back. Every other op names its subject
-// and is focus-independent: moves, workspace moves, the whole-group `group.
-// toggle` an `ungroup` dispatches, the float toggle, resize/move, swaps.
+// Two op kinds do. `group`: the rebuild runs through `into_group`, which
+// IGNORES its window selector and acts on the focused window (live-verified,
+// learnings § Dispatch selector traps), so the service focuses each member in
+// turn and reads the tab order back. `split` (tick uk5): `togglesplit` takes no
+// window selector at all — it flips the FOCUSED window's parent node, so a
+// locked session would flip whatever the compositor was left holding, on a
+// workspace the user cannot see. Every other op names its subject and is
+// focus-independent: moves, workspace moves, the whole-group `group.toggle` an
+// `ungroup` dispatches, the float toggle, resize/move, swaps.
 //
 // The service asks because of the LOCKED SESSION (state-matrix §7, tick 97e):
 // under an ext-session-lock there is no window to focus, so a rebuild attempted
-// there assembles in whatever order the compositor was left in. The joins are
-// deferred to the unlock instead, and the rest of the plan runs normally.
+// there assembles in whatever order the compositor was left in. Those ops are
+// deferred to the unlock instead, replayed by the same idempotent re-plan, and
+// the rest of the plan runs normally.
 //
 // A choreographed move (`splitParent`) also borrows the focus, and it is NOT
 // counted here on purpose: it is a fidelity refinement, not a correctness one —
@@ -4424,26 +4428,6 @@ function isRefinementPlan(plan) {
 //
 // A property of the PLAN, in engine.js rather than in the service, because the
 // plan is engine.js's vocabulary and this has to be testable in node.
-function planHasGroupJoins(plan) {
-  var list = plan || [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && list[i].kind === "group") return true;
-  }
-  return false;
-}
-
-// The same question, asked of every op kind that needs the keyboard — which is
-// what the lock gate actually cares about, and since tick uk5 there are two of
-// them. `split` joined `group` because `togglesplit` takes no window selector
-// at all: it flips the FOCUSED window's parent node, so a locked session (no
-// window to focus) would flip whatever the compositor was left holding, on a
-// workspace the user cannot see. Deferred to the unlock, exactly like a join,
-// and replayed by the same idempotent re-plan.
-//
-// `planHasGroupJoins` is kept beside it rather than replaced: "which ops need
-// focus" and "which ops are group joins" are two questions. The service now
-// asks only the first — both lock-gate call sites below use the focus-ops
-// variant — but the group-joins query survives as tested public API.
 function planHasFocusOps(plan) {
   var list = plan || [];
   for (var i = 0; i < list.length; i++) {
@@ -4462,19 +4446,6 @@ function planWithoutFocusOps(plan) {
   for (var i = 0; i < list.length; i++) {
     var kind = list[i] && list[i].kind;
     if (kind === "group" || kind === "split") continue;
-    out.push(list[i]);
-  }
-  return out;
-}
-
-// The same plan with the group joins taken out — what a LOCKED session can
-// safely execute. Returns a new array; the input is never mutated, because the
-// full plan is still what the no-progress check compares against.
-function planWithoutGroupJoins(plan) {
-  var list = plan || [];
-  var out = [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && list[i].kind === "group") continue;
     out.push(list[i]);
   }
   return out;
@@ -5087,8 +5058,6 @@ if (typeof module !== "undefined") {
     TILED_REFINEMENT_TARGET_IOU: TILED_REFINEMENT_TARGET_IOU,
     TILED_REFINEMENT_MAX_NUDGES: TILED_REFINEMENT_MAX_NUDGES,
     isRefinementPlan: isRefinementPlan,
-    planHasGroupJoins: planHasGroupJoins,
-    planWithoutGroupJoins: planWithoutGroupJoins,
     planHasFocusOps: planHasFocusOps,
     planWithoutFocusOps: planWithoutFocusOps,
     opAddressesOf: opAddressesOf,
