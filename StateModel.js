@@ -155,8 +155,16 @@
 //   distinguish "absent" from "empty", exactly as they never have to for
 //   `patterns: []` or
 //   `launch: ""`, both of which have always been written whether the file said
-//   so or not. Everything an identity DID say is carried through untouched: the
-//   upgrade is purely additive, and pinned as such by tests/state.test.js.
+//   so or not.
+//
+//   THE ONE THING v4 TAKES AWAY (tick j8o): a migrated `launch` that forces a
+//   window class NO pattern of its own identity claims — the signature of v3's
+//   retired `--app-id` backfill — is EMPTIED. It is the first non-additive step
+//   in the chain, and the reason is that the alternative is worse: the command
+//   cannot be repaired downstream and restoring it spawns stray windows for
+//   ever. See migratedLaunch, which owns the rule and the discriminator.
+//   Everything else an identity said is carried through untouched, and all of
+//   it is pinned by tests/state.test.js.
 //
 //   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 in one read — because
 //   normalizeLayout writes the v2 and v3 fields and normalizeIdentity writes the
@@ -348,30 +356,113 @@ function normalizePatterns(value) {
   return patterns;
 }
 
+// The window class an `--app-id` flag in a launch command FORCES, or null when
+// the command names no such flag at all. `""` — the flag with nothing after it
+// — is a found flag with no class, which is not the same answer as "absent".
+//
+// Whitespace splitting is enough here and quoting is deliberately not parsed:
+// this is a DETECTOR for a command shape one retired code path wrote, and that
+// path never quoted the flag or its value. A hand-written command that hides
+// `--app-id` inside a quoted argument reads as absent, which leaves it alone —
+// the safe direction for a field the user may have typed.
+function forcedAppIdClass(launch) {
+  if (typeof launch !== "string") return null;
+  var words = launch.replace(/^\s+|\s+$/g, "").split(/\s+/);
+  var prefix = "--app-id=";
+  for (var i = 0; i < words.length; i++) {
+    if (words[i] === "--app-id") return i + 1 < words.length ? words[i + 1] : "";
+    if (words[i].slice(0, prefix.length) === prefix) return words[i].slice(prefix.length);
+  }
+  return null;
+}
+
+// Does any of this identity's own patterns claim that class? Case-insensitive
+// and never throwing, because that is what the MATCHER does (engine.js
+// compilePattern): a pattern that cannot compile simply never matches, and
+// asking a different question here than the matcher asks would neutralize a
+// launch the running plugin is perfectly happy with. The two-line duplication
+// of compilePattern is the same dual node/QML loading constraint that has
+// `isArray` and `own` in all three modules.
+function patternsClaimClass(patterns, className) {
+  if (typeof className !== "string" || !className) return false;
+  for (var i = 0; i < patterns.length; i++) {
+    var re = null;
+    try {
+      re = new RegExp(patterns[i], "i");
+    } catch (e) {
+      re = null;
+    }
+    if (re && re.test(className)) return true;
+  }
+  return false;
+}
+
+// v3 -> v4, and the one part of the upgrade that is not purely additive.
+//
+// v3's launch backfill auto-derived terminal launches as
+// `<terminal> --app-id=<identity-id> <command>`: it forced a window class per
+// identity so a class pattern could claim the window. That mechanism is retired
+// — the terminals disagree about `--app-id` versus `--class` and alacritty has
+// neither, so the derivation spells `--title` now (see TERMINAL_FAMILY in
+// PanelModel.js) — but a 0.2.0 file still carries what it wrote, against an
+// identity whose patterns say `^foot$`. Restoring it spawns a class-`herdr`
+// window `^foot$` can never claim: strays per dock event plus a launch timeout,
+// forever, and nothing downstream repairs it (launchLooksBroken passes a
+// multi-word command; launchRepairIndex never overwrites a runnable non-empty
+// launch). Migration is the only place this data can be dealt with.
+//
+// The discriminator is the IDENTITY, not the flag. `/usr/bin/foot
+// --app-id=scratchpad` against `^scratchpad$` — the v1 fixture's scratchpad — is
+// a correct hand-written launch, and forcing a class the identity's own patterns
+// claim is exactly how a scratchpad terminal is pinned. Only a forced class NO
+// pattern of the identity claims is the retired mechanism's signature.
+//
+// Neutralize means EMPTIED, not "strip the flag down to something runnable".
+// Stripping is a guess this module cannot make: `alacritty --app-id=top top`
+// minus the flag is `alacritty top`, which alacritty rejects (it needs `-e`),
+// and the terminal shapes live in PanelModel, which this file must not depend
+// on. Empty is the one repair the EXISTING machinery genuinely supports —
+// launchRepairIndex's first case ("the field is EMPTY and something was
+// derived") offers the relearn, and identitiesNeedingLaunch puts the row in
+// front of the user. A stripped-but-wrong command would be non-empty and
+// runnable, which is precisely the shape neither of them will ever touch.
+function migratedLaunch(launch, patterns) {
+  var forced = forcedAppIdClass(launch);
+  if (forced === null) return launch;
+  return patternsClaimClass(patterns, forced) ? launch : "";
+}
+
 // An identity without an id cannot be referred to by a layout, so it is
 // dropped; everything else is repaired to its default.
-function normalizeIdentity(value) {
+//
+// `migrating` is true only when the FILE was an older schema generation. A file
+// already at this generation was written by a build that no longer derives
+// `--app-id`, so anything spelling it there was typed by hand, and a hand edit
+// of the launch field is a decision this module does not overrule.
+function normalizeIdentity(value, migrating) {
   if (!value || typeof value !== "object") return null;
   var id = typeof value.id === "string" ? value.id : "";
   if (!id) return null;
+  var patterns = normalizePatterns(value.patterns);
+  var launch = typeof value.launch === "string" ? value.launch : "";
   return {
     id: id,
-    patterns: normalizePatterns(value.patterns),
+    patterns: patterns,
     // v4. Same coercion as `patterns` — same repair semantics, same "a typo
     // costs you the pattern, never the identity" — and always written, even
     // when empty, so nothing downstream has to tell absent from empty. An
     // identity from a v3 file gains it here; that IS the v3 -> v4 migration.
     titlePatterns: normalizePatterns(value.titlePatterns),
-    launch: typeof value.launch === "string" ? value.launch : ""
+    launch: migrating ? migratedLaunch(launch, patterns) : launch
   };
 }
 
-function normalizeIdentities(value) {
+function normalizeIdentities(value, migrating) {
   var out = [];
   var seen = {};
   if (!isArray(value)) return out;
   for (var i = 0; i < value.length; i++) {
-    var identity = normalizeIdentity(value[i]);
+    var identity = normalizeIdentity(value[i], migrating);
     if (!identity) continue;
     // A duplicate id would make identityById ambiguous and record the same
     // window twice. First wins, consistent with the rest of the engine.
@@ -514,8 +605,9 @@ function normalizeLayouts(value) {
 
 // The version this state should be WRITTEN back as.
 //
-// Anything at or below the current generation is UPGRADED: every migration is
-// additive and lossless (see the Migration note in the schema block), so a v1
+// Anything at or below the current generation is UPGRADED: the whole chain runs
+// in one pass (see the Migration note in the schema block — additive throughout
+// bar v4's one deliberate subtraction, migratedLaunch), so a v1
 // file that has been read is already a current-generation object in memory —
 // the whole chain runs in one pass — and claiming otherwise on the way back out
 // would be a lie about its own shape.
@@ -530,6 +622,14 @@ function migrateVersion(value) {
   return value > STATE_VERSION ? value : STATE_VERSION;
 }
 
+// Is this an OLDER generation than the one this build writes — the thing an
+// upgrade is performed ON? The same predicate parseState reports as `migrated`,
+// said once so the two can never disagree about which reads are migrations. A
+// version-less object counts: nothing has written one since v1.
+function isOlderVersion(value) {
+  return typeof value !== "number" || value < STATE_VERSION;
+}
+
 // Turn anything at all into a state object this codebase can work with.
 function normalizeState(value) {
   if (!value || typeof value !== "object" || isArray(value)) return defaultState();
@@ -539,7 +639,11 @@ function normalizeState(value) {
     // pausing is a file from before the switch existed, and the tool has always
     // been active. Only an explicit `true` pauses.
     paused: value.paused === true,
-    identities: normalizeIdentities(value.identities),
+    // The v4 migration is the first that is not purely additive — see
+    // migratedLaunch — so the identities need to know whether this read IS a
+    // migration. Every other caller of normalizeIdentities is a WRITE path and
+    // passes nothing, which is the same as "no".
+    identities: normalizeIdentities(value.identities, isOlderVersion(value.version)),
     layouts: normalizeLayouts(value.layouts)
   };
 }
@@ -555,8 +659,9 @@ function normalizeState(value) {
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
 //               upgraded (v1 -> v2 -> v3 -> v4, as far as it has to go, in the
-//               one pass). Not an error and not a recovery: nothing was lost
-//               and nothing was invented. The service logs it once and the next
+//               one pass). Not an error and not a recovery: nothing was
+//               invented, and the only thing dropped is the one v4 subtracts on
+//               purpose (migratedLaunch). The service logs it once and the next
 //               write persists the upgraded shape.
 function parseState(raw) {
   var text = typeof raw === "string" ? raw : "";

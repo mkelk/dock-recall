@@ -1009,6 +1009,105 @@ test("the upgraded v3 file plans and scores exactly as it did before", () => {
   );
 });
 
+// ------------------------- schema v4: neutralizing the retired --app-id launch
+
+// Tick j8o. v3's launch backfill wrote terminal launches as
+// `<terminal> --app-id=<identity-id> <command>` — it forced a window class per
+// identity so a class pattern could claim the window. The mechanism is retired
+// (see TERMINAL_FAMILY in PanelModel.js: no terminal family agrees on the flag,
+// and the derivation now spells the title instead), but a 0.2.0 state file
+// still carries what it wrote. Migration is where that data has to be dealt
+// with, because nothing downstream can: launchLooksBroken passes a multi-word
+// command and launchRepairIndex never overwrites a runnable non-empty launch,
+// so the stray-window restore runs forever with no repair path.
+
+test("a v3 --app-id launch the identity's own patterns cannot claim is neutralized", () => {
+  // The exact shape the backfill wrote, with the identity it wrote it for: the
+  // forced class is `herdr`, and `^foot$` is the only pattern the identity has.
+  // On restore this spawns a class-`herdr` window nothing ever claims.
+  const text = JSON.stringify({
+    version: 3,
+    paused: false,
+    identities: [{ id: "herdr", patterns: ["^foot$"], launch: "foot --app-id=herdr herdr" }],
+    layouts: {}
+  }, null, 2) + "\n";
+
+  const result = state.parseState(text);
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
+  assert.strictEqual(result.migrated, true);
+  assert.strictEqual(result.state.version, 4);
+
+  const migrated = result.state.identities[0];
+  assert.notStrictEqual(migrated.launch, "foot --app-id=herdr herdr",
+    "the broken command must never survive the migration verbatim");
+  assert.strictEqual(migrated.launch, "",
+    "and it is EMPTIED, which is the one repair launchRepairIndex reaches");
+  assert.deepStrictEqual(migrated.patterns, ["^foot$"], "nothing else about the identity moves");
+  assert.deepStrictEqual(migrated.titlePatterns, []);
+});
+
+test("--app-id spelled as two words, and with no value, is neutralized too", () => {
+  const result = state.parseState(JSON.stringify({
+    version: 3,
+    identities: [
+      { id: "herdr", patterns: ["^foot$"], launch: "foot --app-id herdr herdr" },
+      { id: "top", patterns: ["^alacritty$"], launch: "alacritty --app-id=top top" },
+      { id: "bare", patterns: ["^foot$"], launch: "foot --app-id" }
+    ],
+    layouts: {}
+  }));
+  assert.deepStrictEqual(result.state.identities.map((i) => i.launch), ["", "", ""]);
+});
+
+test("a hand-written --app-id launch the identity's patterns DO claim survives", () => {
+  // The v1 fixture's scratchpad: `/usr/bin/foot --app-id=scratchpad` against
+  // `^scratchpad$`. Forcing a class the identity's own patterns claim is how a
+  // scratchpad terminal is supposed to be pinned, and it works. The
+  // discriminator is the identity, not the flag.
+  const result = state.parseState(JSON.stringify({
+    version: 3,
+    identities: [
+      { id: "scratchpad", patterns: ["^scratchpad$"], launch: "/usr/bin/foot --app-id=scratchpad" },
+      // Case-insensitively, the way the matcher reads it (engine.js compilePattern).
+      { id: "notes", patterns: ["^Notes$"], launch: "foot --app-id=notes notes" }
+    ],
+    layouts: {}
+  }));
+  assert.deepStrictEqual(result.state.identities.map((i) => i.launch),
+    ["/usr/bin/foot --app-id=scratchpad", "foot --app-id=notes notes"]);
+});
+
+test("the version bump is unchanged for a v3 file whose launches are clean", () => {
+  // The neutralization is the ONLY thing v4 adds to an identity beyond
+  // titlePatterns — a file with no --app-id anywhere migrates exactly as before.
+  const text = syntheticV3Text();
+  const before = JSON.parse(text);
+  const result = state.parseState(text);
+  assert.strictEqual(result.migrated, true);
+  assert.strictEqual(result.state.version, 4);
+  before.identities.forEach((identity, i) => {
+    assert.strictEqual(result.state.identities[i].launch, identity.launch, identity.id);
+  });
+});
+
+test("a v4 file's --app-id launch is the USER's and is never touched", () => {
+  // Only a MIGRATED file carries the retired mechanism's data. A file already at
+  // this generation was written by a build that no longer derives the flag, so
+  // anything spelling it there was typed by hand — and a hand edit of the launch
+  // field is a decision this module does not overrule.
+  const text = JSON.stringify({
+    version: 4,
+    paused: false,
+    identities: [{ id: "herdr", patterns: ["^foot$"], titlePatterns: [], launch: "foot --app-id=herdr herdr" }],
+    layouts: {}
+  }, null, 2) + "\n";
+  const result = state.parseState(text);
+  assert.strictEqual(result.migrated, false);
+  assert.strictEqual(result.state.identities[0].launch, "foot --app-id=herdr herdr");
+  assert.strictEqual(state.serializeState(result.state), text, "and the v4 file is still a fixed point");
+});
+
 // ------------------------------------------------- live-read: hyprctl reads
 
 // The failure these close: a read that did not succeed used to arrive as an
