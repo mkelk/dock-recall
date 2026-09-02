@@ -19,6 +19,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const engine = require("../engine.js");
 const state = require("../StateModel.js");
@@ -229,6 +231,134 @@ test("matchLayout pairs a reserved id's recorded entry to its live window", () =
     ? (matched.clientByEntry[i] && matched.clientByEntry[i].address)
     : null);
   assert.deepStrictEqual(addresses.slice().sort(), ["0xc0", "0xc1"]);
+});
+
+// ----------------------------------------------- the maps that were still QML
+//
+// Tick v29 / finding A8. The 8hp sweep fixed every map node could reach and
+// stopped at the QML boundary, so three bare-object dedupes keyed by exactly
+// these strings survived in Panel.qml and Service.qml — where a node test
+// cannot see them and `own()` was never called:
+//
+//   Panel.qml runningIdentityIds       `seen[id]`   — identity ids. An app whose
+//     class is `Constructor` derives the id `constructor`; the map answered
+//     "already seen" the first time it was seen, so the chip said NOT RUNNING
+//     about a window sitting right there.
+//   Service.qml identitiesForAddresses `seen[id]`   — the same, on the path that
+//     turns an op's window addresses into the app names a verdict reports. The
+//     app vanished from its own restore diagnostics.
+//   Service.qml launchedClassesSince   `seen[name]` — window CLASS names, which
+//     are whatever the app calls itself. A launch that timed out reported "no
+//     new window appeared at all" while a `constructor`-classed one was there.
+//
+// The fix is not another guard in QML: none of this was QML's to decide. Each
+// is a pure function of a client list now, tested here, and the QML is a call.
+
+const RUNNING_IDENTITIES = [
+  { id: "constructor", patterns: ["^Constructor$"] },
+  { id: "terminal", patterns: ["^foot$"] }
+];
+
+test("runningIdentityIds does not drop an identity whose id is an Object.prototype key", () => {
+  for (const id of RESERVED) {
+    const identities = [{ id: id, patterns: ["^Thing$"] }, { id: "terminal", patterns: ["^foot$"] }];
+    const clients = [
+      makeClient({ address: "0x1", class: "Thing" }),
+      makeClient({ address: "0x2", class: "foot" })
+    ];
+    assert.deepStrictEqual(engine.runningIdentityIds(clients, identities), [id, "terminal"],
+      id + " was deduped away the first time it was seen");
+  }
+});
+
+test("runningIdentityIds still dedupes, keeps first-seen order and skips unmatched windows", () => {
+  const clients = [
+    makeClient({ address: "0x1", class: "foot" }),
+    makeClient({ address: "0x2", class: "Constructor" }),
+    makeClient({ address: "0x3", class: "Constructor" }),
+    makeClient({ address: "0x4", class: "nothing-watches-this" }),
+    makeClient({ address: "0x5", class: "foot" })
+  ];
+  assert.deepStrictEqual(engine.runningIdentityIds(clients, RUNNING_IDENTITIES),
+    ["terminal", "constructor"]);
+  assert.deepStrictEqual(engine.runningIdentityIds([], RUNNING_IDENTITIES), []);
+  assert.deepStrictEqual(engine.runningIdentityIds(clients, []), []);
+  assert.deepStrictEqual(engine.runningIdentityIds(null, null), []);
+});
+
+test("identityIdsForAddresses does not drop a reserved id either", () => {
+  const clients = [
+    makeClient({ address: "0xaa", class: "Constructor" }),
+    makeClient({ address: "0xbb", class: "foot" }),
+    makeClient({ address: "0xcc", class: "Constructor" })
+  ];
+  // Two addresses of the same app, plus one of another, plus an address of no
+  // window at all — the shape a multi-address op hands in.
+  assert.deepStrictEqual(
+    engine.identityIdsForAddresses(clients, ["0xaa", "0xcc", "0xbb", "0xff"], RUNNING_IDENTITIES),
+    ["constructor", "terminal"]);
+  assert.deepStrictEqual(engine.identityIdsForAddresses(clients, [], RUNNING_IDENTITIES), []);
+  assert.deepStrictEqual(engine.identityIdsForAddresses(null, null, null), []);
+});
+
+test("newClassesSince lists a class named after an Object.prototype key", () => {
+  const before = ["0x1"];
+  const after = [
+    makeClient({ address: "0x1", class: "foot" }),
+    makeClient({ address: "0x2", class: "constructor" }),
+    makeClient({ address: "0x3", class: "constructor" }),
+    makeClient({ address: "0x4", class: "toString" })
+  ];
+  // The window that predates the dispatch is not "new"; the two that are share
+  // a class and are named once.
+  assert.deepStrictEqual(engine.newClassesSince(after, before), ["constructor", "toString"]);
+
+  // Nothing new at all is the empty list — the caller's "no new window appeared
+  // at all" branch depends on being able to tell that from a dropped name.
+  assert.deepStrictEqual(engine.newClassesSince([after[0]], before), []);
+  assert.deepStrictEqual(engine.newClassesSince(null, null), []);
+
+  // A window with no class of its own falls back to initialClass.
+  assert.deepStrictEqual(
+    engine.newClassesSince([makeClient({ address: "0x9", class: "", initialClass: "valueOf" })], []),
+    ["valueOf"]);
+});
+
+test("addressesOf and newAddressSince are the launch wait's two halves", () => {
+  const before = [makeClient({ address: "0x1", class: "foot" })];
+  const addresses = engine.addressesOf(before);
+  assert.deepStrictEqual(addresses, ["0x1"]);
+
+  const after = before.concat([makeClient({ address: "0x2", class: "foot" })]);
+  assert.strictEqual(engine.newAddressSince(after, addresses), "0x2");
+  // Every match predates the dispatch: the honest answer is "", not a window
+  // the user opened an hour ago.
+  assert.strictEqual(engine.newAddressSince(before, addresses), "");
+  assert.strictEqual(engine.newAddressSince(null, null), "");
+  assert.deepStrictEqual(engine.addressesOf(null), []);
+});
+
+test("the QML sites are wired to the pure answers and keep no map of their own", () => {
+  const root = path.join(__dirname, "..");
+  const panelSource = fs.readFileSync(path.join(root, "Panel.qml"), "utf8");
+  const serviceSource = fs.readFileSync(path.join(root, "Service.qml"), "utf8");
+
+  assert.ok(/Engine\.runningIdentityIds\(/.test(panelSource),
+    "Panel.qml still builds its own running-identity dedupe");
+  assert.ok(/Engine\.identityIdsForAddresses\(/.test(serviceSource),
+    "Service.qml still builds its own address→identity dedupe");
+  assert.ok(/Engine\.newClassesSince\(/.test(serviceSource),
+    "Service.qml still builds its own launched-class dedupe");
+
+  // The sweep's real claim: no bare-object map in either file is keyed by an
+  // identity id or a window class any more. `seen[…]` is the shape all three
+  // had, and a new one would be a new instance of the same bug.
+  for (const [name, source] of [["Panel.qml", panelSource], ["Service.qml", serviceSource]]) {
+    for (const line of source.split("\n")) {
+      assert.ok(!/\bseen\[(id|name|identityId|className)\]/.test(line),
+        name + " still dedupes an identity or class key on a bare object: " + line.trim());
+    }
+  }
 });
 
 // -------------------------------------------------- the one that does NOT hold

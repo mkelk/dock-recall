@@ -204,17 +204,14 @@ Item {
     return Engine.matchClient(client, StateModel.identities(root.state)) || ""
   }
 
+  // The apps behind an op's window addresses — what turns an op ("move these
+  // two addresses") into the verdict a user reads ("Slack could not join its
+  // group"). Pure since tick v29, for the reason the panel's chip list is: the
+  // dedupe here was a bare `{}` keyed by identity id, so an app whose id is an
+  // Object.prototype key was dropped and its own restore verdict named nothing.
   function identitiesForAddresses(addresses) {
-    var list = addresses || []
-    var ids = []
-    var seen = ({})
-    for (var i = 0; i < list.length; i++) {
-      var id = root.identityForAddress(list[i])
-      if (!id || seen[id]) continue
-      seen[id] = true
-      ids.push(id)
-    }
-    return ids
+    return Engine.identityIdsForAddresses(root.liveClients, addresses,
+      StateModel.identities(root.state))
   }
 
   // Open the ledger entry for one op. The record is handed to whoever executes
@@ -1552,7 +1549,7 @@ Item {
     // would see the FIRST window and stop waiting the moment it was dispatched.
     // The `fn` step runs immediately before its own dispatch, when
     // root.liveClients is the read the previous wait just refreshed.
-    var ctx = ({ before: ({}), expected: 1, serial: 0 })
+    var ctx = ({ before: [], expected: 1, serial: 0 })
 
     // NOT counted here: a dispatched `exec_cmd` is a hope, not a launch. The
     // count lands in waitForIdentity, once a window has actually shown up.
@@ -1561,7 +1558,7 @@ Item {
         // What was already on screen when we dispatched. Free: no new read. It
         // exists so a failed launch can name the windows that DID turn up (see
         // waitForIdentity), and so the wait knows what "one more" means.
-        ctx.before = root.addressSet(root.liveClients)
+        ctx.before = Engine.addressesOf(root.liveClients)
         ctx.expected = root.liveWindowCountFor(op.identityId) + 1
         // This op's own effect key. Taken here, once per launch op, so the
         // count in the toast is a count of launches and not of app names.
@@ -1584,48 +1581,16 @@ Item {
     return Engine.liveWindowCount(root.liveClients, identity, StateModel.identities(root.state))
   }
 
-  // { "<address>": true } for a client list.
-  function addressSet(clients) {
-    var set = ({})
-    var list = clients || []
-    for (var i = 0; i < list.length; i++) {
-      var address = list[i] ? String(list[i].address || "") : ""
-      if (address) set[address] = true
-    }
-    return set
-  }
-
-  // The classes of the windows present now that were not in `before`, deduped
-  // and comma-joined. Reads nothing: root.liveClients was refreshed by the poll
-  // that is about to give up.
+  // The classes of the windows present now that were not in `before`, comma-
+  // joined for the log. Reads nothing: root.liveClients was refreshed by the
+  // poll that is about to give up.
   //
-  // This is the line that turns "launch produced no window" from a dead end
-  // into a diagnosis: the launch command worked and opened SOMETHING, it just
-  // was not a window the identity claims (the shared-Chromium bug wrote
-  // `--app=…gmail` as chromium's launch, so the window that appeared was
-  // chrome-mail.google.com…, and the WARN now says so).
-  //
-  // CLASSES are what it can list, and since schema v4 an identity can also
-  // constrain `initialTitle` — so a window of the right class whose title is
-  // wrong shows up here looking correct. That is exactly the terminal case: a
-  // launch that lost its `--title` opens a `foot` window the `{^foot$ +
-  // ^herdr$}` identity does not claim, and this line will report "foot".
+  // The dedupe moved to engine.newClassesSince in tick v29. It was keyed by
+  // window CLASS on a bare object, and a class is whatever the app calls
+  // itself: a window classed `constructor` was dropped, so a timed-out launch
+  // reported "no new window appeared at all" with the window on screen.
   function launchedClassesSince(before) {
-    var seen = ({})
-    var out = []
-    var known = before || ({})
-    var list = root.liveClients || []
-    for (var i = 0; i < list.length; i++) {
-      var client = list[i]
-      if (!client) continue
-      var address = String(client.address || "")
-      if (!address || known[address]) continue
-      var name = String(client.class || client.initialClass || "?")
-      if (seen[name]) continue
-      seen[name] = true
-      out.push(name)
-    }
-    return out.join(", ")
+    return Engine.newClassesSince(root.liveClients, before).join(", ")
   }
 
   // Poll until the identity has `expected` windows open ANYWHERE (10s cap).
@@ -1645,25 +1610,7 @@ Item {
   readonly property int launchPollMs: 500
   readonly property int launchTimeoutMs: 10000
 
-  // The address of the window this launch actually opened: the one matching
-  // client that was NOT already on screen when the command was dispatched.
-  // "" when every match predates the dispatch, which is the honest answer when
-  // the wait was satisfied by a window somebody else opened.
-  //
-  // Naming clients[length - 1] instead — hyprctl's own listing order, which is
-  // neither creation order nor stable — could put a window the user has had
-  // open for an hour into a line that reads "launched foo -> 0x…".
-  function newAddressSince(clients, before) {
-    var known = before || ({})
-    var list = clients || []
-    for (var i = list.length - 1; i >= 0; i--) {
-      var address = list[i] ? String(list[i].address || "") : ""
-      if (address && !known[address]) return address
-    }
-    return ""
-  }
-
-  // `before` is the address set from dispatch time (stepsForLaunch): it names
+  // `before` is the address list from dispatch time (stepsForLaunch): it names
   // the window this launch opened on success, and the windows that turned up
   // instead on failure.
   //
@@ -1679,7 +1626,7 @@ Item {
         : []
       if (clients.length >= want) {
         root.noteEffect("launch", identityId + "#" + (typeof serial === "number" ? serial : 0))
-        var opened = root.newAddressSince(clients, before)
+        var opened = Engine.newAddressSince(clients, before)
         root.log("launched " + identityId + " -> "
           + (opened || (clients[clients.length - 1].address + " (unconfirmed)"))
           + (want > 1 ? " (window " + want + " of " + want + " so far)" : ""))

@@ -205,18 +205,13 @@ Item {
 
   readonly property var badge: PanelModel.badgeFor(StateModel.glyphState(root.badgeStatus), root.badgeStatus)
 
-  readonly property var runningIdentityIds: {
-    var ids = []
-    var seen = ({})
-    var list = root.identities
-    for (var i = 0; i < root.liveClients.length; i++) {
-      var id = Engine.matchClient(root.liveClients[i], list)
-      if (!id || seen[id]) continue
-      seen[id] = true
-      ids.push(id)
-    }
-    return ids
-  }
+  // Which watched apps have a window on screen. Pure since tick v29: the loop
+  // that used to live here deduped on a bare `{}` keyed by identity id, so an
+  // app whose class is `Constructor` (id `constructor`) was discarded as a
+  // duplicate the first time it was seen and its chip read "not running" with
+  // the window right there.
+  readonly property var runningIdentityIds:
+    Engine.runningIdentityIds(root.liveClients, root.identities)
 
   readonly property int mapWidth: Math.max(Style.space(240), mapSurface.width - mapSurface.contentLeftInset - mapSurface.contentRightInset)
   // The map is laid out by WIDTH now — monitor sections share the panel's

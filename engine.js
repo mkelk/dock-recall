@@ -553,6 +553,144 @@ function clientsFor(clientsJson, identity, identities) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// THE QUESTIONS THE SHELL USED TO ANSWER ITSELF
+// ---------------------------------------------------------------------------
+//
+// Tick v29 / finding A8. Each of these was a loop with a bare-object dedupe map
+// inside a QML file, and each map was keyed by exactly the strings the 8hp
+// sweep exists for — an identity id, or a window's class name. `seen[id]` on a
+// bare object is truthy for `constructor`, `toString`, `valueOf`,
+// `hasOwnProperty` and the rest whether or not anything was put there, so the
+// FIRST sighting of such an app was discarded as a duplicate:
+//
+//   - the panel's chip said "not running" about a window on screen;
+//   - a restore verdict named no app at all for the op that moved it;
+//   - a timed-out launch said "no new window appeared" with the window there.
+//
+// 8hp fixed every map node could reach and stopped at the QML boundary. The
+// answer was not to hand QML another guard: none of these is a question with
+// anything for a view to decide. They are pure functions of a client list, they
+// live here, and the shell calls them.
+
+// Which watched identities have at least one window on screen, in the order
+// their first window appears. Windows matching nothing are skipped.
+function runningIdentityIds(clientsJson, identities) {
+  var clients = clientsJson || [];
+  var list = identities || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < clients.length; i++) {
+    var id = matchClient(clients[i], list);
+    if (!id || own(seen, id)) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+// The apps behind a set of window addresses, deduped, in the order the
+// addresses were given. An address naming no live window contributes nothing:
+// the read it came from may be a moment old, and an op whose window has since
+// closed is an op about no app rather than about a mystery one.
+function identityIdsForAddresses(clientsJson, addresses, identities) {
+  var clients = clientsJson || [];
+  var wanted = addresses || [];
+  var list = identities || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < wanted.length; i++) {
+    var address = String(wanted[i] || "");
+    if (!address) continue;
+    var client = null;
+    for (var c = 0; c < clients.length; c++) {
+      if (clients[c] && String(clients[c].address || "") === address) { client = clients[c]; break; }
+    }
+    if (!client) continue;
+    var id = matchClient(client, list);
+    if (!id || own(seen, id)) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+// Every window ADDRESS in a client list. The baseline a launch takes at
+// dispatch time, so the wait afterwards can tell the window it opened from the
+// windows that were already there.
+function addressesOf(clientsJson) {
+  var clients = clientsJson || [];
+  var out = [];
+  for (var i = 0; i < clients.length; i++) {
+    var address = clients[i] ? String(clients[i].address || "") : "";
+    if (address) out.push(address);
+  }
+  return out;
+}
+
+// An address lookup set for the two functions below. Addresses are hex and can
+// never collide with an Object.prototype key, but the reads go through `own`
+// anyway: an unguarded lookup here would be one more thing a later reader has
+// to reason about rather than recognise.
+function addressSet(before) {
+  var known = {};
+  var list = before || [];
+  for (var i = 0; i < list.length; i++) {
+    var address = String(list[i] || "");
+    if (address) known[address] = true;
+  }
+  return known;
+}
+
+// The CLASSES of the windows present now that were not in `before`, deduped, in
+// the order they appear.
+//
+// This is the line that turns "launch produced no window" from a dead end into
+// a diagnosis: the launch command worked and opened SOMETHING, it just was not
+// a window the identity claims (the shared-Chromium bug wrote `--app=…gmail` as
+// chromium's launch, so the window that appeared was chrome-mail.google.com…).
+//
+// Classes are all it can list, and since schema v4 an identity can also
+// constrain `initialTitle` — so a window of the right class whose title is
+// wrong shows up here looking correct. That is the terminal case: a launch that
+// lost its `--title` opens a `foot` window the `{^foot$ + ^herdr$}` identity
+// does not claim, and this reports "foot".
+function newClassesSince(clientsJson, before) {
+  var clients = clientsJson || [];
+  var known = addressSet(before);
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < clients.length; i++) {
+    var client = clients[i];
+    if (!client) continue;
+    var address = String(client.address || "");
+    if (!address || own(known, address)) continue;
+    var name = String(client.class || client.initialClass || "?");
+    if (own(seen, name)) continue;
+    seen[name] = true;
+    out.push(name);
+  }
+  return out;
+}
+
+// The address of the window a launch actually opened: the one client that was
+// NOT on screen when the command was dispatched. "" when every candidate
+// predates the dispatch, which is the honest answer when the wait was satisfied
+// by a window somebody else opened.
+//
+// Searched from the end because hyprctl's own listing order is neither creation
+// order nor stable — naming clients[length - 1] outright could put a window the
+// user has had open for an hour into a line reading "launched foo -> 0x…".
+function newAddressSince(clientsJson, before) {
+  var clients = clientsJson || [];
+  var known = addressSet(before);
+  for (var i = clients.length - 1; i >= 0; i--) {
+    var address = clients[i] ? String(clients[i].address || "") : "";
+    if (address && !own(known, address)) return address;
+  }
+  return "";
+}
+
 // How many windows of an identity are open right now.
 //
 // The number the launch coordinator holds out for: with a deficit of two, the
@@ -5018,6 +5156,13 @@ if (typeof module !== "undefined") {
     claimantsCover: claimantsCover,
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
+    // The four the QML files used to answer with a bare-object dedupe of their
+    // own (tick v29). Exported for the shell as much as for the tests.
+    runningIdentityIds: runningIdentityIds,
+    identityIdsForAddresses: identityIdsForAddresses,
+    addressesOf: addressesOf,
+    newClassesSince: newClassesSince,
+    newAddressSince: newAddressSince,
     liveWindowCount: liveWindowCount,
     launchDeficits: launchDeficits,
     launchDeficitFor: launchDeficitFor,
