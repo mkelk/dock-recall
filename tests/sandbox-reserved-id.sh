@@ -37,13 +37,22 @@ set -uo pipefail
 
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+source "$LIB_DIR/sandbox-lib.sh"
+
+# AFTER the source, and that is not a style choice. sandbox-lib.sh assigns
+# `APP_ID="${DR_SANDBOX_APP_ID:-dr-sim}"` unconditionally (tick 66x, so an
+# ambient `APP_ID` from a shell rc cannot silently reconfigure the gate), so a
+# scenario's own value only survives if it is set afterwards — which is what
+# sandbox-dock.sh does. Set above the source, this file's `Constructor` was
+# overwritten with `dr-sim` and the run died at the deriveIdentityId check
+# below, which is exactly the check that exists to catch a scenario no longer
+# testing what it says.
+#
 # The window class the whole scenario hangs off, and the id it derives to.
 APP_ID="Constructor"
 STRAY_ID="strayclass"
 STRAY_CLASS="toString"
 STRAY_WS=8
-
-source "$LIB_DIR/sandbox-lib.sh"
 
 # Not assumed — asked. If deriveIdentityId ever stopped producing `constructor`
 # from `Constructor` this scenario would be seeding a hand edit and quietly

@@ -306,7 +306,48 @@ qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml
 ./scripts/dev-install --restart    # install this working tree and restart the shell
 ```
 
-**`tests/sandbox-dock.sh` is the end-to-end gate.** It starts a second Hyprland
+### `./tests/run-all.sh` — the pre-release gate
+
+One command for the whole stack, cheapest tier first, and **every step runs even
+after one fails**: the point of a pre-release pass is to learn everything that is
+wrong in one sitting, not one thing per run. It prints a table and exits nonzero
+if anything did. A real run of it, 2026-09-02:
+
+```
+#  STEP                                             RESULT   SECONDS
+-----------------------------------------------------------------
+1  node --test 'tests/**/*.test.js'                 PASS           0
+2  omarchy plugin validate .                        PASS           0
+3  qmllint (syntax) on the three QML files          PASS           0
+4  tests/sandbox-dock.sh                            PASS          31
+5  tests/sandbox-future-version.sh --both           PASS          65
+6  tests/sandbox-reserved-id.sh                     PASS          35
+7  tests/acceptance/run.sh                          PASS         329
+-----------------------------------------------------------------
+   TOTAL                                            PASS         460
+
+node suite: 805 tests passed, 0 failed
+dock-recall full stack: PASS
+```
+
+That last line is why the count above says 805: the summary reads the suite's
+own footer, so the number in this file and the number the tests report can be
+compared rather than trusted. About eight minutes, all of it headless. Step 7
+needs `OMARCHY_ISO_HOST` (see
+[`tests/acceptance/PROVISIONING.md`](tests/acceptance/PROVISIONING.md)), and
+per-step logs land in a directory the summary names —
+`DR_RUN_ALL_LOG_DIR` picks it, `DR_RUN_ALL_SKIP="4 5"` skips tiers that are
+known-unavailable on a machine (a skipped step reports SKIP and never a pass).
+
+What it deliberately does **not** run is `tests/sim-dock.sh`, or anything else
+that drives the live session. Steps 4–6 park a second Hyprland on a special
+workspace and assert your desk is untouched, and step 7 is a VM with
+`-display none`; the live session is a venue to ask a human for, never a step in
+an unattended gate.
+
+**`tests/sandbox-dock.sh` is the end-to-end gate you run while you work** — the
+one `run-all.sh` calls as step 4, and the one worth running on its own after any
+engine or service change. It starts a second Hyprland
 as a window parked on a special workspace nothing ever opens, hosts this working
 tree's `Service.qml` and `Panel.qml` in a second Quickshell pointed at it, and
 runs the three cases there: LAUNCH a missing app onto the recorded
