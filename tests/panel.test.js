@@ -3444,6 +3444,41 @@ test("a terminal launched with a command of its own is named by its window title
     panel.terminalTickDerivation("foot", ["foot"], tree["900"], "user@host:~/git").title, "herdr");
 });
 
+test("no title travels with a command the panel refuses to run", () => {
+  // Tick cjs. The invariant terminalChildDerivation states in as many words —
+  // "the title travels only with a command that survived dispatchableCommand"
+  // — was not held by the two cases that read the terminal's OWN argv. A
+  // refused command left `command: ""` and handed the title over anyway, and
+  // `launch: ""` is the schema's NEVER-LAUNCH marker: the tick wrote a
+  // titlePatterns identity that can never be started, as a silent success, and
+  // the restore that discovered it was months away.
+  const flagged = ["foot", "--title=herdr", "herdr", "]]"];
+  assert.strictEqual(panel.launchCommandFromArgv(flagged, "foot"), "",
+    "dispatchableCommand refuses this argv");
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", flagged, null, "herdr"),
+    { command: "", title: "", reason: "unrunnable-command" });
+
+  // Case 2 reads the same argv for its command, so it fails the same way.
+  const shown = ["foot", "-e", "herdr", "]]"];
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", shown, null, "herdr"),
+    { command: "", title: "", reason: "unrunnable-command" });
+
+  // And it is LOUD: the refusal reaches the panel as a sentence, instead of a
+  // tick mark over an identity that will never come back.
+  for (const argv of [flagged, shown]) {
+    const derived = panel.terminalTickDerivation("foot", argv, null, "herdr");
+    assert.deepStrictEqual(panel.suggestIdentity("foot", [], derived),
+      { refusal: "unrunnable-command", className: "foot" });
+    assert.strictEqual(panel.tickRefusalReason("foot", [], derived), "unrunnable-command");
+    const hint = panel.tickRefusalHint("foot", "unrunnable-command");
+    assert.ok(hint.indexOf("cannot be turned into a command that runs") !== -1, hint);
+  }
+
+  // A runnable argv is untouched by any of it.
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", ["foot", "--title=herdr", "herdr"], null, "herdr"),
+    { command: "foot --title=herdr herdr", title: "herdr", reason: "" });
+});
+
 test("a terminal tick that cannot name its app refuses, and never writes the catch-all", () => {
   // THE OTHER HALF OF THE BLOCKER. Every one of these used to answer
   // {id:"foot", patterns:["^foot$"]}: an identity claiming every terminal on

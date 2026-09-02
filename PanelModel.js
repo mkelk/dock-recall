@@ -1195,8 +1195,17 @@ function titleFromOwnArgv(argv) {
 //
 // `reason` is "" for a non-terminal (there is no question here), "not-read"
 // when the /proc read has not come back, "no-title" when the terminal's own
-// command line names no title and its children could not be asked, and
-// otherwise whatever terminalChildDerivation refused with.
+// command line names no title and its children could not be asked,
+// "unrunnable-command" when the argv that named the title cannot be turned back
+// into a runnable command, and otherwise whatever terminalChildDerivation
+// refused with.
+//
+// THE INVARIANT, in both argv cases (tick cjs): a title travels only with a
+// command that survived dispatchableCommand — the same rule
+// terminalChildDerivation states and holds. It was not held here, and
+// `launch: ""` is the schema's NEVER-LAUNCH marker, so a refused command wrote
+// a titlePatterns identity that can never be started, as a silent success. A
+// refusal is the only honest answer, and this project makes it out loud.
 function terminalTickDerivation(className, ownArgv, node, initialTitle) {
   var out = { command: "", title: "", reason: "" };
   if (!isTerminalClass(className)) return out;
@@ -1209,15 +1218,17 @@ function terminalTickDerivation(className, ownArgv, node, initialTitle) {
 
   var flagged = titleFromOwnArgv(argv);
   if (flagged) {
-    out.title = flagged;
     out.command = launchCommandFromArgv(argv, className);
+    if (!out.command) { out.reason = "unrunnable-command"; return out; }
+    out.title = flagged;
     return out;
   }
 
   var shown = trim(initialTitle);
   if (argv.length > 1 && shown && shown.toLowerCase() !== trim(className).toLowerCase()) {
-    out.title = shown;
     out.command = launchCommandFromArgv(argv, className);
+    if (!out.command) { out.reason = "unrunnable-command"; return out; }
+    out.title = shown;
     return out;
   }
 
@@ -1259,6 +1270,11 @@ function tickRefusalHint(className, reason) {
     body = "it is not running anything yet — just a shell.";
   } else if (why === "unreadable-child") {
     body = "the command line of the program inside it could not be read.";
+  } else if (why === "unrunnable-command") {
+    // It DID name the app — the refusal is about the command that would bring
+    // it back. Saying so is the difference between a user who relaunches the
+    // window the documented way and one who presses the tick again forever.
+    body = "the command line it was started with cannot be turned into a command that runs.";
   } else {
     body = "nothing about it names the app inside it.";
   }
