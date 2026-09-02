@@ -43,10 +43,23 @@ else
 fi
 chmod +x "$STAGE/test/acceptance"
 
-# Only our test file is staged, so only it runs — the omarchy suite's own tests
-# are not this repository's gate and would only make the loop longer.
-cp "$REPO_ROOT/tests/acceptance/dock-recall-roundtrip-test.sh" \
-   "$STAGE/test/acceptance.d/dock-recall-roundtrip-test.sh"
+# Only our own test files are staged, so only they run — the omarchy suite's own
+# tests are not this repository's gate and would only make the loop longer.
+#
+# The runner globs `*-test.sh` and runs them in SORTED order inside ONE boot, so
+# the file names carry the ordering:
+#
+#   dock-recall-appid-migration-test.sh   the v3 --app-id upgrade
+#   dock-recall-roundtrip-test.sh         record / undock / scatter / redock
+#
+# One boot for all of them because the expensive part is the boot, not the test;
+# each file installs the plugin and restarts the shell for itself, and each
+# starts by removing the state file, so nothing an earlier scenario left behind
+# can explain a later one.
+for test_file in "$REPO_ROOT"/tests/acceptance/dock-recall-*-test.sh; do
+  [[ -f $test_file ]] || continue
+  cp "$test_file" "$STAGE/test/acceptance.d/$(basename "$test_file")"
+done
 
 # The plugin itself, as the guest will install it: the repo root IS the plugin
 # folder, minus git metadata.

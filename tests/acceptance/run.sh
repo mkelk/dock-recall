@@ -12,15 +12,16 @@
 # three of those checks fail for reasons that have nothing to do with this
 # plugin — so `omarchy-iso-test` exits 1 on a perfectly green dock-recall run.
 # Its exit code is therefore useless as a gate. What is not useless is the
-# output: the suite prints one line when it passes and this test prints one line
-# when IT passes, and both are unambiguous. This script requires BOTH:
+# output: the suite prints one line when it passes and each test prints one line
+# when IT passes, and all of them are unambiguous. This script requires ALL of:
 #
 #   ok - acceptance suite passed in <n>s (artifacts in …)   ← the suite's own
 #   ok - dock-recall round trip: record, undock, scatter, redock, restored
+#   ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
 #
-# Requiring both matters. The suite line alone would go green if our test file
-# never reached the guest and nothing ran; our line alone would mean the suite
-# aborted after us. Neither is a pass.
+# Requiring all of them matters. The suite line alone would go green if our test
+# files never reached the guest and nothing ran; a test's own line alone would
+# mean the suite aborted after it. Neither is a pass.
 #
 # Environment:
 #   OMARCHY_ISO_HOST      host holding ~/git/omarchy (the fork carrying the
@@ -40,10 +41,14 @@ REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 ISO_DIR="${OMARCHY_ISO_DIR:-$HOME/git/omarchy-iso}"
 ISO_IMAGE="${OMARCHY_ISO_IMAGE:-release/omarchy-4.0.1.iso}"
 
-# The two lines that constitute a pass. Kept as literals, matched with grep -F:
-# a fuzzy match here would be a gate that goes green on the wrong output.
-SUITE_OK="ok - acceptance suite passed"
-TEST_OK="ok - dock-recall round trip: record, undock, scatter, redock, restored"
+# The lines that constitute a pass. Kept as literals, matched with grep -F: a
+# fuzzy match here would be a gate that goes green on the wrong output, and a
+# changed message is meant to be a loud failure rather than a quiet miss.
+REQUIRED_OK=(
+  "ok - acceptance suite passed"
+  "ok - dock-recall round trip: record, undock, scatter, redock, restored"
+  "ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable"
+)
 
 STAGE=""
 cleanup() {
@@ -102,27 +107,21 @@ harness_status=${PIPESTATUS[0]}
 # Strip the harness's colour escapes so grep -F sees what a human reads.
 plain() { sed 's/\x1b\[[0-9;]*m//g' "$LOG"; }
 
-suite_line=$(plain | grep -F "$SUITE_OK" | tail -1)
-test_line=$(plain | grep -F "$TEST_OK" | tail -1)
-
 echo
 echo "=== dock-recall acceptance verdict ==="
 echo "harness exit code: $harness_status (not the gate — see the header of this file)"
 echo "log: $LOG"
 
 missing=0
-if [[ -n $suite_line ]]; then
-  echo "  found: ${suite_line# }"
-else
-  echo "  MISSING: \"$SUITE_OK …\" — the in-guest acceptance suite did not report a pass"
-  missing=1
-fi
-if [[ -n $test_line ]]; then
-  echo "  found: ${test_line# }"
-else
-  echo "  MISSING: \"$TEST_OK\" — the dock-recall round trip did not report a pass"
-  missing=1
-fi
+for want in "${REQUIRED_OK[@]}"; do
+  line=$(plain | grep -F "$want" | tail -1)
+  if [[ -n $line ]]; then
+    echo "  found: ${line# }"
+  else
+    echo "  MISSING: \"$want\""
+    missing=1
+  fi
+done
 
 if (( missing == 0 )); then
   echo "dock-recall acceptance: PASS"

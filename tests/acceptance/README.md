@@ -15,9 +15,14 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | | |
 |---|---|
 | `run.sh` | **the entrypoint** — stage, boot, run, and answer in an exit code |
-| `dock-recall-roundtrip-test.sh` | the test, written in the harness's `*-test.sh` style |
+| `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
+| `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
 | `stage.sh` | builds the directory the harness pushes into the guest |
 | `PROVISIONING.md` | what has to exist on the host, and where |
+
+The in-guest runner globs `*-test.sh` and runs them **in sorted order inside one
+boot**, so the file names carry the ordering. `stage.sh` says which order and
+why.
 
 ## Running it
 
@@ -25,17 +30,18 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 OMARCHY_ISO_HOST=<the host holding ~/git/omarchy> ./tests/acceptance/run.sh
 ```
 
-That is the whole gate. **Exit 0 means the round trip passed inside the VM**;
-exit 1 says which of the two required lines was missing and prints every
+That is the whole gate. **Exit 0 means every scenario passed inside the VM**;
+exit 1 says which of the required lines was missing and prints every
 `not ok -` from the run. It stages, pins `PATH=/usr/bin:$PATH`, and passes
-`--reuse-base --no-preview`, so none of those can be forgotten. About 3 minutes,
+`--reuse-base --no-preview`, so none of those can be forgotten. About 5 minutes,
 entirely headless.
 
 Results land in `~/git/omarchy-iso/test-runs/omarchy-4.0.1/runs/<timestamp>/`:
 `serial.log`, the harness's own console captures, and `omarchy-acceptance/` with
-this test's screenshots and `dock-recall-service.log` — the `[dock-recall]`
-lines the service itself emitted during the run. `run.sh` also keeps the
-harness's own output at the `log:` path it prints.
+the tests' screenshots, the state files each scenario seeded and migrated, and
+`dock-recall-*-service.log` — the `[dock-recall]` lines the service itself
+emitted during the run. `run.sh` also keeps the harness's own output at the
+`log:` path it prints.
 
 The underlying invocation, for when something needs to be run by hand:
 
@@ -72,21 +78,22 @@ not ok - universal clipboard test opens Chromium
 
 That is what turns the harness's exit code red, and it is why
 `omarchy-iso-test`'s own status can never be the gate. What *is* unambiguous is
-its output, so `run.sh` requires **both** of these lines and nothing less:
+its output, so `run.sh` requires **all** of these lines and nothing less:
 
 ```
-ok - acceptance suite passed in 18s (artifacts in /tmp/omarchy-acceptance)
+ok - acceptance suite passed in 122s (artifacts in /tmp/omarchy-acceptance)
 ok - dock-recall round trip: record, undock, scatter, redock, restored
+ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
 ```
 
-Both, because either one alone is a lie. The suite's line on its own would go
-green if the test file never reached the guest and nothing dock-recall-shaped
-ran at all; this test's line on its own would mean the suite aborted somewhere
-after us. `run.sh` matches them literally (`grep -F`), so a change to either
-message is a loud failure rather than a quiet fuzzy match.
+All of them, because any one alone is a lie. The suite's line on its own would
+go green if the test files never reached the guest and nothing dock-recall-shaped
+ran at all; a test's own line alone would mean the suite aborted somewhere after
+it. `run.sh` matches them literally (`grep -F`), so a change to any message is a
+loud failure rather than a quiet fuzzy match.
 
-A whole run takes about 2.5 minutes with `--reuse-base`; the suite itself is
-under 20 seconds of that.
+A whole run takes about 5 minutes with `--reuse-base`; the suite itself is about
+two of those.
 
 ## How the plugin reaches the guest
 
@@ -145,6 +152,62 @@ read out of `StateModel.STATE_VERSION` rather than typed in, which is the part
 that would otherwise rot: a seed declaring an older version is read as a
 migration, and v4's migration is not purely additive (it can rewrite `launch`),
 so a stale number would quietly change what the test believes it seeded.
+
+## What the v3 `--app-id` upgrade test asserts
+
+`dock-recall-appid-migration-test.sh` is the end-to-end proof of finding A1. A
+0.2.0 state file carries launch commands the retired backfill wrote —
+`<terminal> --app-id=<identity-id> <command>` — which force a window class the
+identity's own patterns can never claim. Restoring one spawns a stray window per
+dock event plus a 10-second launch timeout, forever. The fix is in the v3 → v4
+migration: `StateModel.migratedLaunch` EMPTIES a launch whose forced class no
+pattern of the identity claims, and leaves every other launch alone.
+
+The node suite pins that rule against fixtures. This test asks the question the
+fixtures cannot — *does a real v3 file, read by a real service, on a real dock
+event, converge?* — with two identities, because the discriminator is the
+identity and not the flag:
+
+| | patterns | launch | must become |
+|---|---|---|---|
+| subject | `^foot$` | `foot --app-id=herdr herdr` | `""` |
+| control | `^scratchpad$` | `/usr/bin/foot --app-id=scratchpad` | byte-identical |
+
+The seed's `version` is **hardcoded 3**, which is the one place this directory
+does not read `StateModel.STATE_VERSION`: the file *is* a v3 file, and reading
+the current version would silently stop testing anything the day v5 lands. What
+the test does read out of `StateModel` is that 3 is genuinely in the past, so a
+future bump makes the seed staler rather than inert.
+
+It then proves three things in sequence:
+
+1. **the service, on the v3 file** — its own log announces the upgrade; no
+   `herdr` window appears at any point across 45 seconds of polling; no launch
+   is dispatched for the subject at all and `--app-id=herdr` appears nowhere in
+   the log; and the launch-timeout count is 0 and still 0 thirty seconds later.
+   The file on disk is asserted **still v3**, because that is a contract too:
+   the service upgrades in memory and never rewrites a file nobody asked it to
+   change.
+2. **the write** — the migration persists at the next legitimate write, and none
+   of the three (Record, a panel edit, a pause toggle) has an IPC surface a
+   headless test can drive. So the test performs the plugin's own write path
+   itself: `StateModel.parseState` → `serializeState` → temp-and-rename, byte
+   for byte what `Panel.writeState` does. `parseState` is the code under test,
+   not a re-implementation of it. The file that lands is v4, subject emptied,
+   control verbatim.
+3. **the file the user is left with** — the persisted v4 file is reloaded by the
+   live service (no second migration announced), a second dock event runs, and
+   nothing strays and nothing times out.
+
+Assertion (d), that an emptied launch is not a dead end, is checked through
+`PanelModel`: `identitiesNeedingLaunch` lists the subject and not the control,
+and `launchRepairIndex` offers the subject a derived command while leaving the
+control's runnable one alone. Empty is precisely the shape the repair machinery
+supports; a stripped-but-wrong command would be non-empty and runnable, which is
+what neither of them will ever touch.
+
+Both seeded and migrated state files are copied into the artifacts directory, so
+the migration is auditable after the VM is gone.
 
 ## Guest packages
 
