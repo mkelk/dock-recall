@@ -1105,6 +1105,19 @@ function terminalChildDerivation(className, ownArgv, node) {
   return out;
 }
 
+// The words that END the terminal's own argv: everything after one of them
+// belongs to the HOSTED command. `-e` is the exec flag TERMINAL_FAMILY records
+// for alacritty and ghostty, `--` is the universal end-of-options marker, and
+// `--hold` takes the command on the terminals that spell it.
+var TERMINAL_EXEC_BOUNDARIES = ["-e", "--", "--hold"];
+
+function isTerminalExecBoundary(word) {
+  for (var i = 0; i < TERMINAL_EXEC_BOUNDARIES.length; i++) {
+    if (TERMINAL_EXEC_BOUNDARIES[i] === word) return true;
+  }
+  return false;
+}
+
 // The value of the terminal's own `--title` flag, or "".
 //
 // Two spellings, because both are ordinary on a command line and the panel does
@@ -1117,13 +1130,33 @@ function terminalChildDerivation(className, ownArgv, node) {
 // things to different terminals, and a wrong guess here writes a titlePattern
 // that matches nothing. `--title` is the one flag the whole family agrees on,
 // and it is the flag this plugin tells the user to use.
+//
+// The scan STOPS at the terminal's command boundary (tick qkz). It used to run
+// to the end of argv, so `alacritty -e watch --title x` handed back `x` — the
+// flag of the program the terminal is RUNNING, read as the terminal's own. The
+// identity that came out promised a window title alacritty never sets: a
+// permanent awaiting-title ghost, and the log affirmed the tick.
+//
+// Two boundaries, because the family has two shapes. An explicit exec word
+// (TERMINAL_EXEC_BOUNDARIES) ends it for alacritty and ghostty; foot and kitty
+// take a BARE trailing command (TERMINAL_FAMILY exec ""), so for them the first
+// word that is not a flag is the boundary.
+//
+// The one thing this cannot know is which UNKNOWN flags take a separate value:
+// `foot --working-directory /x --title=herdr` stops at `/x` and answers "". That
+// is the safe direction on purpose — a lost title is a refusal the user can see
+// and fix, a stolen one is a wrong identity written into their file.
 function titleFromOwnArgv(argv) {
   var list = isArray(argv) ? argv : [];
   var prefix = TERMINAL_TITLE_FLAG + "=";
-  for (var i = 0; i < list.length; i++) {
+  // From 1: argv[0] is the terminal binary, and it is never a flag, so the
+  // bare-word boundary below would end the scan on it.
+  for (var i = 1; i < list.length; i++) {
     var word = typeof list[i] === "string" ? list[i] : "";
+    if (isTerminalExecBoundary(word)) return "";
     if (word.slice(0, prefix.length) === prefix) return trim(word.slice(prefix.length));
     if (word === TERMINAL_TITLE_FLAG && i + 1 < list.length) return trim(list[i + 1]);
+    if (word.charAt(0) !== "-") return "";
   }
   return "";
 }

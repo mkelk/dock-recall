@@ -3397,6 +3397,32 @@ test("a window already launched with --title proposes that title", () => {
   assert.strictEqual(panel.titleFromOwnArgv(["foot", "-T", "herdr"]), "");
 });
 
+test("a --title belonging to the HOSTED command is never read as the terminal's", () => {
+  // Tick qkz. The scan ran to the end of argv, so the flag of the program the
+  // terminal is RUNNING was read as the terminal's own. `watch --title x` is an
+  // ordinary command line, and the identity it produced promised a window
+  // titled `x` that alacritty never sets — a permanent awaiting-title ghost,
+  // with the log affirming the tick.
+  assert.strictEqual(panel.titleFromOwnArgv(["alacritty", "-e", "watch", "--title", "x"]), "",
+    "-e is where the terminal's own argv ends");
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("alacritty", ["alacritty", "-e", "watch", "--title", "x"], null, "Alacritty"),
+    { command: "", title: "", reason: "no-title" });
+
+  // foot and kitty take a BARE trailing command (TERMINAL_FAMILY exec ""), so
+  // their boundary is the first word that is not a flag.
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "watch", "--title", "x"]), "");
+  assert.strictEqual(panel.titleFromOwnArgv(["kitty", "--hold", "watch", "--title=x"]), "");
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "--", "watch", "--title=x"]), "");
+
+  // The terminal's OWN --title still reads, before and after other flags of its
+  // own, in both spellings — that is the flow the README documents.
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "--title=herdr", "herdr"]), "herdr");
+  assert.strictEqual(panel.titleFromOwnArgv(["alacritty", "--title", "herdr", "-e", "herdr"]), "herdr");
+  assert.strictEqual(
+    panel.titleFromOwnArgv(["foot", "--working-directory=/x", "--title=herdr", "herdr"]), "herdr");
+});
+
 test("a terminal launched with a command of its own is named by its window title", () => {
   // `foot -e btop` sets no --title, but foot titled the window from the command
   // and initialTitle is fixed at map time. That IS evidence about this window.
