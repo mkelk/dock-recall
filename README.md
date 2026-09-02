@@ -221,8 +221,9 @@ with, and the line disappears the moment a window matches.
 
 It only does this when the answer is **unambiguous — exactly one child**. A
 terminal running two things, a shell with two jobs, a shell inside a shell, a
-terminal sitting at an empty prompt, or one whose child's command line cannot be
-read is refused out loud: the tick writes nothing, the panel says which of those
+terminal sitting at an empty prompt, one whose child's command line cannot be
+read, or one whose own command line cannot be turned back into a command that
+runs is refused out loud: the tick writes nothing, the panel says which of those
 it was and what to relaunch with, and nothing is guessed. It will **not** fall
 back to a bare `^foot$` — an identity that claims every terminal and can only
 ever start one of them is a worse answer than none. If you do want every terminal
@@ -282,7 +283,7 @@ inside a ±2 px tolerance and tiled windows scored by intersection-over-union.
 Underneath that, every state the desktop can be in has a defined behaviour and a
 test that pins it — including the ones the plugin deliberately refuses, which are
 written down as refusals rather than left as gaps. `tests/` is where that
-contract lives: 756 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
+contract lives: 765 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
 which drives the installed plugin end to end against a headless output.
 
 The behaviour has also been through a physical checklist on a real ultrawide over
@@ -297,7 +298,7 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 756 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 765 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml
 ./scripts/dev-install --restart    # install this working tree and restart the shell
