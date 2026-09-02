@@ -17,6 +17,9 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `run.sh` | **the entrypoint** — stage, boot, run, and answer in an exit code |
 | `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
 | `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
+| `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
+| `undock-locked.sh` | the locked scenario's host half — QMP keyboard and screendumps |
+| `vm-lib.sh` | reaching a VM the harness left running (sourced, not run) |
 | `stage.sh` | builds the directory the harness pushes into the guest |
 | `PROVISIONING.md` | what has to exist on the host, and where |
 
@@ -84,6 +87,7 @@ its output, so `run.sh` requires **all** of these lines and nothing less:
 ok - acceptance suite passed in 122s (artifacts in /tmp/omarchy-acceptance)
 ok - dock-recall round trip: record, undock, scatter, redock, restored
 ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
+ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
 ```
 
 All of them, because any one alone is a lie. The suite's line on its own would
@@ -208,6 +212,83 @@ what neither of them will ever touch.
 
 Both seeded and migrated state files are copied into the artifacts directory, so
 the migration is auditable after the VM is gone.
+
+## What the undock-while-locked scenario asserts
+
+This is the one `tests/nested-notes.md` left open. Tick sug closed
+DONE_WITH_CONCERNS: the undock focus failover's *detection* reads the right
+thing and its *repair dispatch* works, but the repair branch has never fired,
+because the state it targets — a lock surface holding keyboard focus on an
+output that is disappearing — cannot be reproduced in a nested compositor. The
+note names exactly what would close it: lock the session, remove the focused
+output, and read the `[dock-recall]` log for one of
+
+```
+[dock-recall] monitor "<name>" removed; focus intact on "<other>"
+```
+
+or
+
+```
+[dock-recall] monitor "<name>" removed and took focus with it — failing over to "<other>"
+[dock-recall] focus failover ok
+```
+
+Either is a real answer, and which one appears is a finding rather than a
+verdict: the first says the compositor re-homed focus itself and the service
+correctly did nothing, the second is the branch that has never run. What is *not*
+an answer is neither line, or a session that cannot be unlocked afterwards.
+
+### Why it is split in two
+
+An in-guest test can lock (`omarchy-system-lock`, which routes to
+`omarchy-shell lock lock` — the lock that lives inside the Quickshell process)
+and can undock, and both keep working over SSH while the session is locked. What
+it cannot do is **unlock**: a session lock takes keyboard input from the seat,
+and the base image ships nothing that can type into it. The keyboard that can is
+the emulated one, behind QMP, on the host.
+
+**The screendumps are not the proof.** Measured 2026-09-02: this guest's
+virtio-vga framebuffer goes on showing the desktop — bar, clock ticking — while
+`omarchy-shell lock isLocked` says `true` and Hyprland reports a `LOCK` blocker.
+A picture of that screen would look unlocked and would be wrong. So the lock is
+established three other ways, and the third is the one that matters: the
+decisive query, the compositor's own blocker, and a deliberately **wrong**
+password that leaves the session locked before the right one releases it. That
+control is what turns "a lock released" into "the emulated keyboard was read by
+an authenticating password prompt". The screendumps are kept as run artifacts,
+not as evidence.
+
+So `dock-recall-undock-locked-prepare-test.sh` runs inside the suite and stops
+where the session is: plugin live, one watched window on a fake dock, a layout
+recorded, **nothing locked**. `run.sh` then passes `--keep-running` and drives
+the rest from the host through `undock-locked.sh`:
+
+1. park focus on the output that is about to vanish — undocking an *unfocused*
+   monitor is the case `tests/nested-focus.sh` already covered, and can only
+   ever produce the "focus intact" half of the answer;
+2. lock, and prove it: `omarchy-shell lock isLocked` must answer `true` — the
+   decisive query, the same one `Service.qml` uses, because `loginctl`'s
+   `LockedHint` is blind to this lock — *and* Hyprland must report a `LOCK`
+   blocker. If either is missing the run stops there and says so, rather than
+   proceeding with a scenario that would be theatre;
+3. remove the focused output while locked, and read the service's verdict
+   verbatim out of its own log;
+4. type a **wrong** password and assert the session stays locked, then the real
+   one and assert it releases; then prove the session *acts* and not merely
+   reports: `hl.dsp.focus` must answer `ok`;
+5. scatter the window, redock, and assert the recorded layout comes back — the
+   scatter for the same reason the round trip scatters.
+
+QMP screendumps land in the harness's run directory as
+`success-dock-recall-locked-01-locked.png`, `-02-post-undock`,
+`-03-post-unlock` and `-04-post-redock`, with `failure-…` variants at whichever
+step gave up. The `[dock-recall]` log is copied out beside them as
+`dock-recall-undock-locked-service.log`.
+
+The VM that `--keep-running` leaves behind is stopped by `run.sh`'s EXIT trap on
+every path out — `vm-lib.sh` owns that, and is a library rather than a copy in
+each caller precisely so the teardown cannot drift.
 
 ## Guest packages
 

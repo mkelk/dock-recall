@@ -19,9 +19,17 @@
 #   ok - dock-recall round trip: record, undock, scatter, redock, restored
 #   ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
 #
+#   ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
+#
 # Requiring all of them matters. The suite line alone would go green if our test
 # files never reached the guest and nothing ran; a test's own line alone would
 # mean the suite aborted after it. Neither is a pass.
+#
+# The last of those does not come from the in-guest suite at all. Its scenario
+# has to type a password into a session lock, which no in-guest tool can do — so
+# the harness runs with `--keep-running` and this script then drives the
+# still-live VM through `undock-locked.sh`, over QMP. Turning that VM off again
+# is this script's EXIT trap, on every path out.
 #
 # Environment:
 #   OMARCHY_ISO_HOST      host holding ~/git/omarchy (the fork carrying the
@@ -48,11 +56,18 @@ REQUIRED_OK=(
   "ok - acceptance suite passed"
   "ok - dock-recall round trip: record, undock, scatter, redock, restored"
   "ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable"
+  "ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored"
 )
+
+source "$REPO_ROOT/tests/acceptance/vm-lib.sh"
 
 STAGE=""
 cleanup() {
   local status=$?
+  # The VM outlives the harness on purpose (--keep-running, so the locked
+  # scenario can reach its keyboard over QMP), which means NOTHING else will
+  # stop it. This trap is the only thing that will, on every path out.
+  dr_poweroff >/dev/null 2>&1
   if [[ -n $STAGE && -d $STAGE ]]; then
     if [[ ${DR_ACCEPTANCE_KEEP:-0} == 1 ]]; then
       echo "staging directory kept: $STAGE"
@@ -94,13 +109,25 @@ fi
 # PATH=/usr/bin:$PATH: the Android SDK ships a 2017 qemu-img that shadows the
 #   system one and has no -F, which the harness needs for the overlay. Pinned
 #   here so a caller cannot forget it. (PROVISIONING.md § the qemu-img PATH trap)
-echo "=== omarchy-iso harness (headless, ~3 min) ==="
+# --keep-running: the last in-guest test leaves the guest set up for the
+#   undock-while-locked scenario, whose remaining half needs the VM's KEYBOARD —
+#   a session lock takes input from the seat and no in-guest tool can type into
+#   it, so the password goes in over QMP from here. The trap above owns turning
+#   the VM off again.
+echo "=== omarchy-iso harness (headless, ~4 min) ==="
 (
   cd "$ISO_DIR" || exit 1
   PATH=/usr/bin:$PATH ./bin/omarchy-iso-test "$ISO_IMAGE" \
-    --reuse-base --no-preview --sync-omarchy "$STAGE" 2>&1
+    --reuse-base --no-preview --keep-running --sync-omarchy "$STAGE" 2>&1
 ) | tee "$LOG"
 harness_status=${PIPESTATUS[0]}
+
+# ------------------------------------------- the host-driven locked scenario
+
+echo
+echo "=== undock while locked (host-driven, over QMP) ==="
+"$REPO_ROOT/tests/acceptance/undock-locked.sh" 2>&1 | tee -a "$LOG"
+locked_status=${PIPESTATUS[0]}
 
 # ----------------------------------------------------------------- the verdict
 
@@ -110,6 +137,7 @@ plain() { sed 's/\x1b\[[0-9;]*m//g' "$LOG"; }
 echo
 echo "=== dock-recall acceptance verdict ==="
 echo "harness exit code: $harness_status (not the gate — see the header of this file)"
+echo "undock-while-locked exit code: $locked_status"
 echo "log: $LOG"
 
 missing=0

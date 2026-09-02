@@ -49,8 +49,15 @@ chmod +x "$STAGE/test/acceptance"
 # The runner globs `*-test.sh` and runs them in SORTED order inside ONE boot, so
 # the file names carry the ordering:
 #
-#   dock-recall-appid-migration-test.sh   the v3 --app-id upgrade
-#   dock-recall-roundtrip-test.sh         record / undock / scatter / redock
+#   dock-recall-appid-migration-test.sh          the v3 --app-id upgrade
+#   dock-recall-roundtrip-test.sh                record / undock / scatter / redock
+#   dock-recall-undock-locked-prepare-test.sh    the locked scenario's setup
+#
+# The last one is last on purpose: it prepares the guest and stops, leaving the
+# rest of its scenario to undock-locked.sh — a HOST script that reaches the VM's
+# keyboard over QMP, which is the only way to type into a session lock. Anything
+# running after it in the suite would be running against a desk it deliberately
+# left arranged.
 #
 # One boot for all of them because the expensive part is the boot, not the test;
 # each file installs the plugin and restarts the shell for itself, and each

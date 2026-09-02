@@ -231,3 +231,58 @@ process and no leftover sandbox directory. The trap was exercised on a forced
 mid-run failure as well: both children died, the dead instance's socket
 directory was removed, the exit status was preserved, and the sandbox directory
 was kept with its path printed.
+
+---
+
+# 2026-09-02 — Layer 5: undock while genuinely LOCKED, in a VM
+
+Run: `tests/acceptance/run.sh` (host half: `tests/acceptance/undock-locked.sh`,
+in-guest setup: `dock-recall-undock-locked-prepare-test.sh`). Guest: Omarchy
+4.0.1 from the ISO, Hyprland 0.56, headless QEMU driven over QMP.
+
+This closes the gap the 2026-08-15 section left open. It names the two lines to
+look for; the run produced the **first** of them:
+
+    [dock-recall] monitor "dr-lock-dock" removed; focus intact on "Virtual-1"
+
+Focus was parked on `dr-lock-dock` before the lock (`focused: true` on it in the
+probe below), the session was locked, and that output was then removed. Hyprland
+re-homed focus onto the survivor by itself, exactly as it did unlocked in the
+nested run — so the service's check correctly did nothing, and the restore cycle
+that followed reported `0 ops`.
+
+**So the repair branch STILL has not fired, and now we know more about why.** It
+is not that the nested sandbox was too weak: on Hyprland 0.56 the compositor
+re-homes focus on the removal of a focused output *even while an
+ext-session-lock is up*. The freeze the failover was written against does not
+reproduce on this version. What is now proven is the whole detection path under a
+real lock, and that the repair is not needed here; what remains unproven is the
+repair dispatch in a real freeze, and there is no longer an obvious way to
+produce one.
+
+## The lock was real — and the screen is not how you know
+
+The QMP screendump of the guest's virtio-vga head goes on showing the **desktop**
+while the session is locked: bar drawn, clock ticking, the first-run dialog still
+on screen. A picture of that frame looks unlocked and would be wrong. Nor does
+`hyprctl layers` help — the Quattro lock is an `ext-session-lock` surface, not a
+layer, so it appears in no namespace list. Probed while locked:
+
+    --- omarchy-shell lock isLocked ---   true
+    --- omarchy-hyprland-session-locked --- exit=0
+    --- monitors: solitaryBlockedBy ---
+    [{"name":"Virtual-1","focused":false,"solitaryBlockedBy":["LOCK","WINDOWED","CANDIDATE"]},
+     {"name":"dr-lock-dock","focused":true,"solitaryBlockedBy":["LOCK","WINDOWED","CANDIDATE"]}]
+    --- layer namespaces ---
+    ["omarchy-background","omarchy-bar","omarchy-notifications"]
+
+`LOCK` on every monitor is the compositor saying it holds a session lock. The
+decisive check, though, is the **wrong-password control**: typing
+`definitelynotthepassword` over QMP left `isLocked` at `true`, and the real
+password then released it. That is what turns "a lock released" into "an
+authenticating password prompt read the emulated keyboard" — and it is the only
+one of these signals that could not be produced by anything else.
+
+**Rule for future runs:** never treat a VM screendump as evidence that a session
+is locked. Use `omarchy-shell lock isLocked` plus the `LOCK` blocker, and prove
+the input path with a wrong password before the right one.
