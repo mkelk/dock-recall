@@ -706,6 +706,69 @@ function dispatchableCommand(command) {
   return text;
 }
 
+// A launch command that may be WRITTEN to the state file, or "".
+//
+// dispatchableCommand asks whether a string survives the trip to
+// `hl.dsp.exec_cmd`. This asks the question before that one: is this a command
+// at all? It exists because of tick tnm (finding A9), where the answer was no
+// and every gate downstream said yes.
+//
+// The panel's row repair read its derivation map with a bare bracket lookup.
+// The map is keyed by identity id, and `map["constructor"]` on a bare object
+// does not answer undefined on a key miss — it answers with the `Object`
+// constructor. `if (!command)` let it through, and `String(Object)` is
+// `function Object() { [native code] }`, which contains no `]]` and no control
+// character, so dispatchableCommand happily returned it and the state file
+// gained:
+//
+//     "launch": "function Object() { [native code] }"
+//
+// The lookup is own-guarded now, which stops that particular value at source.
+// This is the second rule, and it is the one that generalises: a launch command
+// is a STRING, and it is not JavaScript source. Anything else reaching a write
+// is the shape of a bug — a map miss, a function that got copied where a string
+// was meant, a value out of a hand-edited file — and the right answer to a
+// value the panel cannot explain is to write nothing.
+var FUNCTION_SOURCE = /^\s*(function\b|class\b|async\b|\(\s*[A-Za-z0-9_$,\s]*\)\s*=>)/;
+
+function learnableLaunch(value) {
+  // Not a string: a function, an object, a number, `Object` itself. There is no
+  // coercion here on purpose — String(anything) always produces SOMETHING, and
+  // producing something is exactly how the junk got written.
+  if (typeof value !== "string") return "";
+  var command = dispatchableCommand(value);
+  if (!command) return "";
+  // A string that IS JavaScript source. Belt and braces on top of the type
+  // check: a value that took the scenic route through a template or a log line
+  // arrives as a string and would otherwise pass everything above.
+  if (FUNCTION_SOURCE.test(command)) return "";
+  if (command.indexOf("[native code]") !== -1) return "";
+  return command;
+}
+
+// The one-identity repair a panel ROW performs, as a map the backfill accepts —
+// or null when there is nothing to learn.
+//
+// A row's "Learn launch" is the footer button narrowed to one app, so it goes
+// through the same repair rule and can never write what the button would have
+// refused. What it adds is the two guards above: the lookup is `own`, so a key
+// miss on a reserved id is a miss, and the value is `learnableLaunch`, so a
+// map entry that is not a runnable command is not written.
+//
+// `__proto__` answers null here and that is correct: `own` cannot find it (a
+// write to a bare object stores nothing under it), so the derivation genuinely
+// has no command for it. See the reserved-id note in StateModel.js for why that
+// key is a documented limit rather than a repairable case.
+function singleLaunchRepair(commands, identityId) {
+  var id = typeof identityId === "string" ? identityId : "";
+  if (!id) return null;
+  var command = learnableLaunch(own(commands, id));
+  if (!command) return null;
+  var one = {};
+  one[id] = command;
+  return one;
+}
+
 // ------------------------------------------------------- the running process
 
 // Split the output of `tr '\0' '\n' < /proc/PID/cmdline` into argv.
@@ -5204,6 +5267,8 @@ if (typeof module !== "undefined") {
     shadowedIdentityHint: shadowedIdentityHint,
     shellQuoteArg: shellQuoteArg,
     dispatchableCommand: dispatchableCommand,
+    learnableLaunch: learnableLaunch,
+    singleLaunchRepair: singleLaunchRepair,
     parseProcCmdline: parseProcCmdline,
     isBrowserFamilyClass: isBrowserFamilyClass,
     windowCountByPid: windowCountByPid,

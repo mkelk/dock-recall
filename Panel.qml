@@ -1450,17 +1450,23 @@ Item {
   // all of them at once.
   //
   // Routed through the same repair rule as the button, so a row can never write
-  // something the button would have refused: the map is filtered to this one
-  // identity and the backfill decides whether the stored value may be replaced.
+  // something the button would have refused: PanelModel.singleLaunchRepair
+  // filters the derivation map to this one identity and the backfill decides
+  // whether the stored value may be replaced.
+  //
+  // The lookup used to be `root.derivedLaunch[identityId]` right here, and for
+  // the id `constructor` on a KEY MISS — which is exactly when a row offers a
+  // repair — a bare bracket lookup answers with the `Object` constructor rather
+  // than undefined. `if (!command)` let it past, and the state file gained
+  // `"launch": "function Object() { [native code] }"` (tick tnm). Both halves of
+  // the answer are pure now: the guarded lookup and the check on the value.
   function learnLaunchFor(identityId) {
-    var command = root.derivedLaunch[identityId]
-    if (!command) return
-    var one = ({})
-    one[identityId] = command
+    var one = PanelModel.singleLaunchRepair(root.derivedLaunch, identityId)
+    if (!one) return
     if (!PanelModel.learnableCount(root.identities, one)) return
     if (root.writeState(StateModel.setIdentities(root.stateModel,
         PanelModel.backfillLaunchCommands(root.identities, one)))) {
-      root.log("learned launch for \"" + identityId + "\": " + command)
+      root.log("learned launch for \"" + identityId + "\": " + PanelModel.own(one, identityId))
     }
   }
 

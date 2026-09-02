@@ -4774,3 +4774,107 @@ test("the whole path: a catch-all in front is detected and explained", () => {
     { command: "foot", title: "", reason: "no-child" }, engine.couldShadow);
   assert.deepStrictEqual(ticked, before, "refused: a class-only terminal identity is not written");
 });
+
+// ------------------------------------------ what a row's Learn button may write
+//
+// Tick tnm / finding A9. `learnLaunchFor(identityId)` read
+// `root.derivedLaunch[identityId]` with a bare bracket lookup on a bare object,
+// and the derivation map is keyed by identity id. For the id `constructor` on a
+// KEY MISS — an app with no derivable launch, which is precisely when the row's
+// repair offer is on screen — that lookup does not answer undefined. It answers
+// `Object`, the constructor function, which is truthy; the guard fell through,
+// and `String(Object)` went into the state file as the app's launch command:
+//
+//     "launch": "function Object() { [native code] }"
+//
+// The row is reachable in that state because `launchRepairable` is a paint-time
+// snapshot: the row can be stale by the time it is clicked.
+//
+// Two rules, and both belong here rather than in the QML that fires them: the
+// lookup is own-guarded, and the VALUE is checked before it is written. The
+// second is what makes the first a rule rather than a patch — a launch command
+// is a string that survives the dispatch, and anything else is the shape of a
+// bug, whatever produced it.
+
+test("learnableLaunch refuses everything that is not a runnable command string", () => {
+  // The value the bug actually produced, and its whole family.
+  assert.strictEqual(panel.learnableLaunch(Object), "");
+  assert.strictEqual(panel.learnableLaunch(Object.prototype.toString), "");
+  assert.strictEqual(panel.learnableLaunch(Object.prototype.hasOwnProperty), "");
+  assert.strictEqual(panel.learnableLaunch(String(Object)), "",
+    "the same value as a string is still not a command");
+  assert.strictEqual(panel.learnableLaunch("function Object() { [native code] }"), "");
+
+  // Nothing, and things that are not strings.
+  for (const value of [undefined, null, "", "   ", 0, 7, true, {}, [], Object.prototype]) {
+    assert.strictEqual(panel.learnableLaunch(value), "", JSON.stringify(value) + " was accepted");
+  }
+
+  // The Lua-dispatch rule still applies, unchanged: this is the same gate every
+  // other producer of a launch command returns through.
+  assert.strictEqual(panel.learnableLaunch("foot --title=x]]"), "");
+  assert.strictEqual(panel.learnableLaunch("foot\nbtop"), "");
+
+  // And a real command comes back trimmed and intact.
+  assert.strictEqual(panel.learnableLaunch("  foot --app-id=herdr herdr  "), "foot --app-id=herdr herdr");
+  assert.strictEqual(panel.learnableLaunch("omarchy-launch-browser"), "omarchy-launch-browser");
+});
+
+test("singleLaunchRepair answers nothing for a reserved id the derivation never mentioned", () => {
+  // THE BUG, at its own altitude: the map is empty, so there is nothing to
+  // learn — and the answer must say so rather than hand back Object.
+  assert.strictEqual(panel.singleLaunchRepair({}, "constructor"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "toString"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "hasOwnProperty"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "valueOf"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "__proto__"), null);
+
+  // A map that DOES mention it answers with a one-entry map, ready for the
+  // backfill — the reserved id is not the problem, the missing key was.
+  assert.deepStrictEqual(panel.singleLaunchRepair({ constructor: "foot --app-id=Constructor" }, "constructor"),
+    { constructor: "foot --app-id=Constructor" });
+
+  // Ordinary ids, ordinary answers.
+  assert.deepStrictEqual(panel.singleLaunchRepair({ herdr: "foot herdr", other: "x" }, "herdr"),
+    { herdr: "foot herdr" });
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot herdr" }, "other"), null);
+  assert.strictEqual(panel.singleLaunchRepair(null, "herdr"), null);
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot herdr" }, ""), null);
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot herdr" }, null), null);
+
+  // A stored value that is junk is refused at the write, not merely at the
+  // lookup: the map is user-adjacent (it is built from /proc and .desktop
+  // files), so "the key existed" is not the same as "the value may be written".
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot ]] herdr" }, "herdr"), null);
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "   " }, "herdr"), null);
+});
+
+test("the one-entry repair is exactly what the backfill accepts", () => {
+  const identities = [
+    { id: "constructor", patterns: ["^Constructor$"], titlePatterns: [], launch: "" },
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }
+  ];
+  const one = panel.singleLaunchRepair({ constructor: "foot --app-id=Constructor" }, "constructor");
+  assert.strictEqual(panel.learnableCount(identities, one), 1);
+
+  const after = panel.backfillLaunchCommands(identities, one);
+  assert.strictEqual(after[0].launch, "foot --app-id=Constructor");
+  assert.strictEqual(after[1].launch, "", "the other identity is untouched by a one-row repair");
+});
+
+test("Panel.qml reads the derivation through the guarded lookup and nowhere else", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The shape the bug had. Any bare bracket lookup on the derivation map is a
+  // reopening of it, whatever the key expression. Comment lines are skipped —
+  // the fix's own comment quotes the line it removed, and it should.
+  for (const line of source.split("\n")) {
+    if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+    assert.ok(!/root\.derivedLaunch\s*\[/.test(line),
+      "Panel.qml still reads root.derivedLaunch with a bare bracket lookup: " + line.trim());
+  }
+  assert.ok(/PanelModel\.singleLaunchRepair\(/.test(source),
+    "Panel.qml no longer routes a row's Learn through the guarded repair");
+});
