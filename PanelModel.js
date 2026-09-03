@@ -1871,7 +1871,7 @@ function desktopExecCommand(execLine) {
 // value shadow the entry's.
 function parseDesktopEntry(text) {
   var lines = String(text === undefined || text === null ? "" : text).split("\n");
-  var entry = { name: "", exec: "", startupWMClass: "", type: "", hidden: false };
+  var entry = { name: "", exec: "", startupWMClass: "", type: "", hidden: false, icon: "" };
   var inEntry = false;
 
   for (var i = 0; i < lines.length; i++) {
@@ -1894,6 +1894,7 @@ function parseDesktopEntry(text) {
     else if (key === "StartupWMClass" && !entry.startupWMClass) entry.startupWMClass = trim(value);
     else if (key === "Type" && !entry.type) entry.type = trim(value);
     else if (key === "Hidden") entry.hidden = trim(value).toLowerCase() === "true";
+    else if (key === "Icon" && !entry.icon) entry.icon = trim(value);
   }
 
   return entry;
@@ -3242,6 +3243,37 @@ function chipLabelVisible(width, minWidth) {
   var n = Number(width);
   if (!isFinite(n)) return false;
   return n >= positiveOr(minWidth, CHIP_LABEL_MIN_WIDTH);
+}
+
+// Cutoffs for chipTreatment, human-ratified against actual rendered chips
+// rather than derived from any formula — hence named constants, the same way
+// CHIP_MIN_WIDTH/CHIP_MIN_HEIGHT are, instead of literals buried in the function.
+var CHIP_PILL_MIN_WIDTH = 140;
+var CHIP_PILL_MIN_HEIGHT = 56;
+var CHIP_BADGE_MIN_WIDTH = 56;
+var CHIP_BADGE_MIN_HEIGHT = 40;
+var CHIP_VEILED_MIN_WIDTH = 24;
+var CHIP_VEILED_MIN_HEIGHT = 16;
+
+// Which of four drawings a chip earns, from its actual DRAWN pixel size.
+//
+// STANDALONE on purpose: this takes the chip's size AFTER chipRectsForCanvas
+// (or whatever else placed it) has already decided it, rather than being baked
+// into chipFor()'s output or into chipRectsForCanvas itself. Panel.qml has two
+// render paths — the canvas one, which calls chipRectsForCanvas, and a fallback
+// stacked path that never does — and a treatment carried on the model would be
+// silently absent on the second path. Asking at draw time is correct on both.
+//
+// Both axes must clear a tier's cutoffs together: a chip wide enough for "pill"
+// but too short is a "badge", not a pill stretched thin.
+function chipTreatment(width, height) {
+  var w = Number(width);
+  var h = Number(height);
+  if (!isFinite(w) || !isFinite(h)) return "field";
+  if (w >= CHIP_PILL_MIN_WIDTH && h >= CHIP_PILL_MIN_HEIGHT) return "pill";
+  if (w >= CHIP_BADGE_MIN_WIDTH && h >= CHIP_BADGE_MIN_HEIGHT) return "badge";
+  if (w >= CHIP_VEILED_MIN_WIDTH && h >= CHIP_VEILED_MIN_HEIGHT) return "veiled";
+  return "field";
 }
 
 // ---------------------------------------------------------------------------
@@ -5550,11 +5582,18 @@ if (typeof module !== "undefined") {
     monitorSectionWidths: monitorSectionWidths,
     chipRectsForCanvas: chipRectsForCanvas,
     chipLabelVisible: chipLabelVisible,
+    chipTreatment: chipTreatment,
     MAP_BOX_MIN_WIDTH: MAP_BOX_MIN_WIDTH,
     MAP_BOX_MAX_WIDTH: MAP_BOX_MAX_WIDTH,
     CHIP_MIN_WIDTH: CHIP_MIN_WIDTH,
     CHIP_MIN_HEIGHT: CHIP_MIN_HEIGHT,
     CHIP_LABEL_MIN_WIDTH: CHIP_LABEL_MIN_WIDTH,
+    CHIP_PILL_MIN_WIDTH: CHIP_PILL_MIN_WIDTH,
+    CHIP_PILL_MIN_HEIGHT: CHIP_PILL_MIN_HEIGHT,
+    CHIP_BADGE_MIN_WIDTH: CHIP_BADGE_MIN_WIDTH,
+    CHIP_BADGE_MIN_HEIGHT: CHIP_BADGE_MIN_HEIGHT,
+    CHIP_VEILED_MIN_WIDTH: CHIP_VEILED_MIN_WIDTH,
+    CHIP_VEILED_MIN_HEIGHT: CHIP_VEILED_MIN_HEIGHT,
     wrapTooltip: wrapTooltip,
     placementLabel: placementLabel,
     livePlacementLabel: livePlacementLabel,

@@ -542,6 +542,35 @@ test("only the [Desktop Entry] group is read, never a [Desktop Action]", () => {
   assert.strictEqual(entry.type, "Application");
 });
 
+test("parseDesktopEntry keeps Icon=, defaulting to empty and ignoring locale-suffixed keys", () => {
+  // FOOT_DESKTOP is real and declares no Icon= at all.
+  assert.strictEqual(panel.parseDesktopEntry(FOOT_DESKTOP).icon, "");
+  // WHATSAPP_DESKTOP and OBSIDIAN_DESKTOP are copied verbatim from files that
+  // do declare one.
+  assert.strictEqual(panel.parseDesktopEntry(WHATSAPP_DESKTOP).icon, "whatsapp");
+  assert.strictEqual(panel.parseDesktopEntry(OBSIDIAN_DESKTOP).icon, "obsidian");
+
+  // Icon[de] names the same field in another language; the plain key is the
+  // one this file wants — exactly the convention Name[de] already follows.
+  const localized = [
+    "[Desktop Entry]",
+    "Type=Application",
+    "Exec=thing",
+    "Icon[de]=ding",
+    "Icon=thing-icon",
+    ""
+  ].join("\n");
+  assert.strictEqual(panel.parseDesktopEntry(localized).icon, "thing-icon");
+
+  // The five fields this function already returned are untouched by the addition.
+  const entry = panel.parseDesktopEntry(FOOT_DESKTOP);
+  assert.strictEqual(entry.name, "Foot");
+  assert.strictEqual(entry.exec, "foot");
+  assert.strictEqual(entry.startupWMClass, "foot");
+  assert.strictEqual(entry.type, "Application");
+  assert.strictEqual(entry.hidden, false);
+});
+
 test("a webapp identity finds its desktop file through StartupWMClass", () => {
   // The two halves of one fact: the entry records the bare host, Chromium
   // synthesizes the class with its own prefix and a per-profile tail.
@@ -1427,12 +1456,81 @@ test("chip rects take the map model's slots as they come", () => {
   });
 });
 
+// ------------------------------------------------- clamping at canvas edges
+//
+// The three cases above (floor, barrier, real overlap) all sit well inside the
+// canvas. These three sit AT its edges, where chipRectsForCanvas's own defensive
+// clamp (never mind the barrier math) is what keeps a chip on-screen.
+
+test("a malformed off-canvas rect is clamped onto the canvas, never drawn negative", () => {
+  // rx/ry below 0 and rw/rh that would spill further past — a stale or buggy
+  // fraction rect must still land ON the canvas, at the floor, not at a
+  // negative x/y no delegate can draw.
+  const [r] = panel.chipRectsForCanvas([{ rx: -0.5, ry: -0.4, rw: 0.66, rh: 0.6 }], 100, 50);
+  assert.strictEqual(r.x, 0);
+  assert.strictEqual(r.y, 0);
+  assert.strictEqual(r.width, panel.CHIP_MIN_WIDTH);
+  assert.strictEqual(r.height, panel.CHIP_MIN_HEIGHT);
+});
+
+test("a chip against the true right/bottom edge grows toward the floor without spilling past the canvas", () => {
+  // A lone sliver a hair from the far corner: there is no neighbour to barrier
+  // against, only the canvas edge itself, so the floor must grow BACKWARDS
+  // (left, up) rather than push x + width past what the canvas can draw.
+  const [r] = panel.chipRectsForCanvas([{ rx: 0.99, ry: 0.98, rw: 0.005, rh: 0.02 }], 100, 50);
+  assert.strictEqual(r.x + r.width, 100, "the floor grows left here, never past the right edge");
+  assert.strictEqual(r.y + r.height, 50, "and up, never past the bottom edge");
+  assert.strictEqual(r.width, panel.CHIP_MIN_WIDTH);
+  assert.strictEqual(r.height, panel.CHIP_MIN_HEIGHT);
+});
+
+test("a fraction rect that claims past the canvas edge is cropped, not drawn oversize", () => {
+  // rx 0.5 + rw 0.7 claims out to 120% of the canvas — the real window is not
+  // that big, the fraction is stale, and the chip must still end exactly at
+  // the edge with no floor involved (the cropped size is already above it).
+  const [r] = panel.chipRectsForCanvas([{ rx: 0.5, ry: 0.3, rw: 0.7, rh: 0.5 }], 100, 50);
+  assert.strictEqual(r.x, 50);
+  assert.strictEqual(r.width, 50);
+  assert.strictEqual(r.y, 15);
+  assert.strictEqual(r.height, 25);
+});
+
 test("a chip too narrow for a label loses the label, not the tooltip", () => {
   assert.strictEqual(panel.chipLabelVisible(20), false);
   assert.strictEqual(panel.chipLabelVisible(40), true);
   assert.strictEqual(panel.chipLabelVisible(NaN), false);
   // A fused tab group divides its pill: three tabs in a 90 px slot get 30 each.
   assert.strictEqual(panel.chipLabelVisible(90 / 3), false);
+});
+
+// -------------------------------------------------- chip treatment (drawn size)
+
+test("chipTreatment picks a tier from the chip's DRAWN size, checking both axes independently", () => {
+  // Both dimensions must clear a tier's cutoffs — a wide-but-short chip is not
+  // a pill just because it is wide, and a tall-but-narrow one is not a badge
+  // just because it is tall.
+  assert.strictEqual(panel.chipTreatment(140, 56), "pill");
+  assert.strictEqual(panel.chipTreatment(139, 56), "badge", "one px under the pill WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(140, 55), "badge", "one px under the pill HEIGHT cutoff");
+  assert.strictEqual(panel.chipTreatment(300, 55), "badge", "wide but short: no pill");
+  assert.strictEqual(panel.chipTreatment(139, 200), "badge", "tall but narrow: no pill either");
+
+  assert.strictEqual(panel.chipTreatment(56, 40), "badge");
+  assert.strictEqual(panel.chipTreatment(55, 40), "veiled", "one px under the badge WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(56, 39), "veiled", "one px under the badge HEIGHT cutoff");
+
+  assert.strictEqual(panel.chipTreatment(24, 16), "veiled");
+  assert.strictEqual(panel.chipTreatment(23, 16), "field", "one px under the veiled WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(24, 15), "field", "one px under the veiled HEIGHT cutoff");
+});
+
+test("chipTreatment never throws on a degenerate size — it answers field", () => {
+  assert.strictEqual(panel.chipTreatment(0, 0), "field");
+  assert.strictEqual(panel.chipTreatment(-10, -10), "field");
+  assert.strictEqual(panel.chipTreatment(200, -5), "field");
+  assert.strictEqual(panel.chipTreatment("wide", 100), "field");
+  assert.strictEqual(panel.chipTreatment(undefined, undefined), "field");
+  assert.strictEqual(panel.chipTreatment(NaN, 100), "field");
 });
 
 test("the real laptop fixture maps to one monitor with its workspaces", () => {
