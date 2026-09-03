@@ -306,6 +306,27 @@ The honest limit: an app whose desktop entry really does say
 `Icon=application-x-executable` reports `iconResolved: false`. It is drawing the
 generic icon, which is what the flag is about.
 
+### The treatment ladder
+
+`treatment` is which of four drawings a chip earned — `pill` (icon and name),
+`badge` (the icon alone), `veiled` (the content veiled, the icon centred),
+`field` (the colour field alone). The panel asks `PanelModel.chipTreatment` with
+the size it **drew** at, which is why the function is standalone rather than
+baked into the model: the fallback path never calls `chipRectsForCanvas`, so a
+treatment carried on the model would be silently wrong there.
+
+The test does not merely check the word is one of four. It **re-derives** the
+tier from the `width` and `height` reported beside it, using the ratified
+cutoffs restated in `jq`, for every chip on both paths. A panel that asked
+`chipTreatment` with the wrong numbers reports a tier its own geometry does not
+earn, and that is the failure this catches. The cutoffs therefore live in two
+places on purpose — a test that imported the answer would agree with a wrong
+one.
+
+`chipLabelVisible` is gone. It decided the label on width alone, and two
+thresholds disagreeing about whether a chip has room for its name is what the
+ladder exists to end.
+
 ### The fields that are exact from the first tick
 
 `key`, `monitorName`, `renderPath`, `placed`, `width` and `height`, because every

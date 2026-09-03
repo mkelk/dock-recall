@@ -1975,21 +1975,22 @@ Item {
   //         "placed": true | false | null,
   //         "width": 214, "height": 120,
   //         "iconSource": "file:///usr/share/icons/…/obsidian.svg" | null,
-  //         "iconResolved": true | false | null }
+  //         "iconResolved": true | false | null,
+  //         "treatment": "pill" | "badge" | "veiled" | "field" | null }
   //     ]
   //   }
   //
   // ABSENT vs `null`, and the difference is the contract:
   //
   //   absent  — the panel has nothing to say about this key at all. Either the
-  //             tick that computes it has not landed yet (fillState, treatment,
-  //             badgeValue: they are NOT here, rather than here as null), or the
-  //             thing it describes does not exist (`recordedAt` when this
-  //             topology has no recording).
+  //             tick that computes it has not landed yet (fillState, badgeValue:
+  //             they are NOT here, rather than here as null), or the thing it
+  //             describes does not exist (`recordedAt` when this topology has no
+  //             recording).
   //   null    — computed, and the answer is genuinely empty. `recordedAt: null`
   //             is a recording that carries NO timestamp; renderPath/placed/
-  //             width/height/iconSource/iconResolved are null while the delegate
-  //             has not drawn yet.
+  //             width/height/iconSource/iconResolved/treatment are null while
+  //             the delegate has not drawn yet.
   //
   // So a consumer asks `has("k")` first and only then looks at the value, and a
   // later tick ADDS its key to the objects below rather than un-nulling one.
@@ -2121,7 +2122,12 @@ Item {
               // app's own or the generic executable fallback. Both from the
               // delegate, for the reason the four above are.
               iconSource: root.reported(report, "iconSource"),
-              iconResolved: root.reported(report, "iconResolved")
+              iconResolved: root.reported(report, "iconResolved"),
+              // Which of the four drawings this chip earned. Reproducible from
+              // the width and height beside it — PanelModel.chipTreatment is
+              // the one that decides — which is what makes a disagreement here
+              // a real finding rather than two guesses.
+              treatment: root.reported(report, "treatment")
             })
           }
         }
@@ -3149,17 +3155,49 @@ Item {
                                           readonly property bool iconResolved: root.iconResolvedOf(
                                             chipTab.modelData.identityId, chipTab.modelData.className)
 
-                                          // The size this chip actually got, in
-                                          // pixels, AFTER every floor and every
-                                          // tab-group division — chipTab.width
-                                          // is one TAB's share, which is the
-                                          // width chipLabelVisible already
-                                          // branches on and the width
-                                          // PanelModel.chipTreatment will be
-                                          // asked about. Reported unrounded: a
-                                          // consumer reproducing the treatment
-                                          // has to be handed the same number the
-                                          // panel used, not a tidied one.
+                                          // WHICH OF FOUR DRAWINGS THIS CHIP
+                                          // EARNS, from the size it actually
+                                          // got. The ladder:
+                                          //
+                                          //   pill    icon and name together on
+                                          //           a ground
+                                          //   badge   the icon alone, no text
+                                          //   veiled  the content veiled, the
+                                          //           icon centred on it
+                                          //   field   the colour field alone
+                                          //
+                                          // Asked with the DRAWN width and
+                                          // height, not with anything off the
+                                          // model, and that is the whole reason
+                                          // PanelModel.chipTreatment is a
+                                          // standalone function: the fallback
+                                          // stacked path never calls
+                                          // chipRectsForCanvas, so a treatment
+                                          // carried on the model would be
+                                          // silently wrong on it. Asking at
+                                          // draw time is right on both paths.
+                                          //
+                                          // chipTab.width is one TAB's share —
+                                          // a fused tab group divides its
+                                          // rectangle between its members, and
+                                          // three tabs in one pill each earn
+                                          // their own tier.
+                                          //
+                                          // This SUPERSEDES chipLabelVisible,
+                                          // which decided the label on width
+                                          // alone. Two thresholds disagreeing
+                                          // about whether a chip has room for
+                                          // its name is exactly the confusion
+                                          // the ladder exists to end, so the old
+                                          // one is gone rather than left beside
+                                          // this.
+                                          readonly property string treatment:
+                                            PanelModel.chipTreatment(chipTab.width, chipTab.height)
+
+                                          // Reported unrounded: a consumer
+                                          // reproducing the treatment has to be
+                                          // handed the same numbers the panel
+                                          // used, not tidied ones.
                                           function reportRender() {
                                             root.reportChipRender(chipTab.modelData.key, {
                                               renderPath: chipTab.renderPath,
@@ -3174,13 +3212,23 @@ Item {
                                               // — so the fallback stack cannot
                                               // quietly draw something else.
                                               iconSource: chipTab.iconSource,
-                                              iconResolved: chipTab.iconResolved
+                                              iconResolved: chipTab.iconResolved,
+                                              // The tier the drawing below
+                                              // branches on, from the same
+                                              // property those bindings read —
+                                              // so a consumer can reproduce it
+                                              // with chipTreatment(width,
+                                              // height) on the two numbers
+                                              // reported beside it, and a
+                                              // disagreement is a real one.
+                                              treatment: chipTab.treatment
                                             })
                                           }
                                           onRenderPathChanged: chipTab.reportRender()
                                           onPlacedChanged: chipTab.reportRender()
                                           onIconSourceChanged: chipTab.reportRender()
                                           onIconResolvedChanged: chipTab.reportRender()
+                                          onTreatmentChanged: chipTab.reportRender()
                                           // The Flow's first pass runs before its
                                           // width is known and the rects settle a
                                           // frame or two later, so the size has to
@@ -3197,6 +3245,26 @@ Item {
                                           // there is no second code path for it.
                                           width: chipRow.width / chipSlot.modelData.chips.length
                                           height: chipRow.height
+
+                                          // THE VEIL, and it is a layer rather
+                                          // than a colour: it sits over
+                                          // everything the chip's own rectangle
+                                          // draws and under everything the
+                                          // content draws, so a centred icon
+                                          // reads against a quietened ground.
+                                          // Today that ground is the chip's
+                                          // colour field; in the next epic it is
+                                          // the window's captured picture, and
+                                          // the veil is what stops a busy
+                                          // screenshot from swallowing the icon.
+                                          // Declared FIRST so the content paints
+                                          // on top of it — QML draws siblings in
+                                          // document order.
+                                          Rectangle {
+                                            anchors.fill: parent
+                                            visible: chipTab.treatment === "veiled"
+                                            color: Util.alpha(Color.popups.background, 0.55)
+                                          }
 
                                           // Tab divider. Only between members,
                                           // never at the ends — the pill's own
@@ -3220,85 +3288,147 @@ Item {
                                             width: Math.max(Style.space(8), chipTab.width - Style.space(8))
                                             spacing: Style.space(2)
 
-                                            // THE ICON. Sized from the chip, not
-                                            // from a constant: a chip is whatever
-                                            // the window's own rectangle scaled
-                                            // to, from the 16×10 floor up to a
-                                            // fullscreen window's whole
-                                            // workspace, and one fixed icon size
-                                            // would be a smear on the first and a
-                                            // stamp on the last. Capped at the
-                                            // kit's large icon so a big chip does
-                                            // not turn into a poster, floored at
-                                            // 8 px because below that an icon is
-                                            // noise — and hidden outright when
-                                            // even that does not fit, which is
-                                            // the same judgement chipLabel makes
-                                            // about its own text.
+                                            // THE LADDER'S TOP THREE TIERS, one
+                                            // shape. `pill` draws the ground and
+                                            // the name beside the icon; `badge`
+                                            // and `veiled` draw the same icon
+                                            // with the ground and the name off,
+                                            // which leaves the icon centred by
+                                            // the Column it sits in. `field`
+                                            // draws none of it and the chip is
+                                            // its colour rectangle alone.
+                                            //
+                                            // One shape rather than three
+                                            // branches because the difference
+                                            // between the tiers is genuinely how
+                                            // much of this is switched on — and
+                                            // because a later epic fills a
+                                            // capture underneath without
+                                            // touching any of it.
                                             //
                                             // Both render paths get here: this is
                                             // ONE delegate, and only its slot's
                                             // x/y/width/height branch on
                                             // `positioned`. The stacked fallback
-                                            // rows draw this Image too.
-                                            Image {
-                                              id: chipIcon
-                                              readonly property real side: Math.max(8,
-                                                Math.min(Style.font.iconLarge,
-                                                  Math.min(chipTab.width, chipTab.height) * 0.5))
-                                              visible: chipTab.iconSource !== ""
-                                                && chipTab.width >= chipIcon.side + Style.space(2)
-                                                && chipTab.height >= chipIcon.side + Style.space(2)
-                                              width: chipIcon.side
-                                              height: chipIcon.side
-                                              anchors.horizontalCenter: parent.horizontalCenter
-                                              fillMode: Image.PreserveAspectFit
-                                              smooth: true
-                                              // Decoded at PHYSICAL pixels — a
-                                              // logical-size decode leaves PNG
-                                              // icons upscaled and blurry on
-                                              // HiDPI, which is the one thing an
-                                              // icon may not be. Copied from the
-                                              // shell's own app rows.
-                                              sourceSize.width: width * Screen.devicePixelRatio
-                                              sourceSize.height: height * Screen.devicePixelRatio
-                                              // Never blocks the map's layout
-                                              // pass on a disk read: a workspace
-                                              // full of chips is a workspace full
-                                              // of icon loads.
-                                              asynchronous: true
-                                              source: chipTab.iconSource
-                                            }
+                                            // rows draw all of this too — which
+                                            // is exactly why the tier is asked
+                                            // for with the drawn size rather than
+                                            // carried on the model.
+                                            Rectangle {
+                                              id: chipPill
+                                              readonly property bool isPill: chipTab.treatment === "pill"
+                                              readonly property real padX: chipPill.isPill ? Style.space(6) : 0
+                                              readonly property real padY: chipPill.isPill ? Style.space(3) : 0
 
-                                            Text {
-                                              id: chipLabel
-                                              // Under ~40 px the label is one
-                                              // elided letter and a smear, and it
-                                              // makes a small chip look like a
-                                              // broken one. It comes off; the chip
-                                              // keeps its hover, its click and its
-                                              // tooltip, which is where the whole
-                                              // story was already.
-                                              visible: PanelModel.chipLabelVisible(chipTab.width, Style.space(40))
-                                              width: parent.width
-                                              horizontalAlignment: Text.AlignHCenter
-                                              // The label is what survives a small
-                                              // chip; the whole story is in the
-                                              // tooltip.
-                                              elide: Text.ElideRight
-                                              maximumLineCount: 1
-                                              // The bare arrow is what the chip
-                                              // said before there was room to say
-                                              // WHERE. When the tag is up it says
-                                              // that in full, and repeating the
-                                              // arrow on the name would be the
-                                              // same sign twice.
-                                              text: (chipTab.modelData.drifted && !chipTag.visible)
-                                                ? chipTab.modelData.name + " →"
-                                                : chipTab.modelData.name
-                                              color: chipTab.modelData.watched ? root.foreground : root.faintForeground
-                                              font.family: root.fontFamily
-                                              font.pixelSize: Style.font.caption
+                                              visible: chipTab.treatment !== "field"
+                                              anchors.horizontalCenter: parent.horizontalCenter
+                                              width: Math.min(parent.width, pillRow.implicitWidth + chipPill.padX * 2)
+                                              height: pillRow.implicitHeight + chipPill.padY * 2
+                                              radius: height / 2
+                                              // The ground exists to keep the
+                                              // name legible over whatever is
+                                              // behind it. Translucent, and the
+                                              // popup's own background rather
+                                              // than a hue of its own: it must
+                                              // read as the panel quietening a
+                                              // patch of the chip, not as a
+                                              // second state to decode.
+                                              color: chipPill.isPill
+                                                ? Util.alpha(Color.popups.background, 0.72) : "transparent"
+
+                                              Row {
+                                                id: pillRow
+                                                anchors.centerIn: parent
+                                                spacing: chipLabel.visible ? Style.space(4) : 0
+
+                                                // THE ICON. Sized from the chip,
+                                                // not from a constant: a chip is
+                                                // the window's own rectangle
+                                                // scaled, from the 16×10 floor up
+                                                // to a fullscreen window's whole
+                                                // workspace, and one fixed size
+                                                // would be a smear on the first
+                                                // and a stamp on the last. Capped
+                                                // at the kit's large icon so a big
+                                                // chip does not become a poster,
+                                                // floored at 8 px because below
+                                                // that an icon is noise — and the
+                                                // half-of-the-shorter-side rule
+                                                // is what keeps it inside a chip
+                                                // at any tier without a second
+                                                // fit test of its own. The LADDER
+                                                // decides whether it is drawn at
+                                                // all.
+                                                Image {
+                                                  id: chipIcon
+                                                  readonly property real side: Math.max(8,
+                                                    Math.min(Style.font.iconLarge,
+                                                      Math.min(chipTab.width, chipTab.height) * 0.5))
+                                                  visible: chipTab.iconSource !== ""
+                                                  width: chipIcon.side
+                                                  height: chipIcon.side
+                                                  anchors.verticalCenter: parent.verticalCenter
+                                                  fillMode: Image.PreserveAspectFit
+                                                  smooth: true
+                                                  // Decoded at PHYSICAL pixels — a
+                                                  // logical-size decode leaves PNG
+                                                  // icons upscaled and blurry on
+                                                  // HiDPI, which is the one thing
+                                                  // an icon may not be. Copied from
+                                                  // the shell's own app rows.
+                                                  sourceSize.width: width * Screen.devicePixelRatio
+                                                  sourceSize.height: height * Screen.devicePixelRatio
+                                                  // Never blocks the map's layout
+                                                  // pass on a disk read: a
+                                                  // workspace full of chips is a
+                                                  // workspace full of icon loads.
+                                                  asynchronous: true
+                                                  source: chipTab.iconSource
+                                                }
+
+                                                Text {
+                                                  id: chipLabel
+                                                  // The name is the top tier and
+                                                  // only the top tier. Below it
+                                                  // the label was one elided
+                                                  // letter and a smear, which made
+                                                  // a small chip look like a
+                                                  // broken one; the chip keeps its
+                                                  // hover, its click and its
+                                                  // tooltip, which is where the
+                                                  // whole story was already.
+                                                  visible: chipPill.isPill
+                                                  // Whatever is left after the
+                                                  // icon and the padding, and
+                                                  // never more than the text
+                                                  // wants — a Row gives a Text no
+                                                  // width of its own, and one with
+                                                  // a negative width elides to
+                                                  // nothing at all rather than to
+                                                  // one letter.
+                                                  width: Math.max(0, Math.min(chipLabel.implicitWidth,
+                                                    chipContent.width - chipPill.padX * 2
+                                                      - (chipIcon.visible ? chipIcon.width + pillRow.spacing : 0)))
+                                                  anchors.verticalCenter: parent.verticalCenter
+                                                  // The label is what survives a
+                                                  // small chip; the whole story is
+                                                  // in the tooltip.
+                                                  elide: Text.ElideRight
+                                                  maximumLineCount: 1
+                                                  // The bare arrow is what the chip
+                                                  // said before there was room to say
+                                                  // WHERE. When the tag is up it says
+                                                  // that in full, and repeating the
+                                                  // arrow on the name would be the
+                                                  // same sign twice.
+                                                  text: (chipTab.modelData.drifted && !chipTag.visible)
+                                                    ? chipTab.modelData.name + " →"
+                                                    : chipTab.modelData.name
+                                                  color: chipTab.modelData.watched ? root.foreground : root.faintForeground
+                                                  font.family: root.fontFamily
+                                                  font.pixelSize: Style.font.caption
+                                                }
+                                              }
                                             }
 
                                             // THE TAG PILL: one line the chip can
@@ -3322,13 +3452,17 @@ Item {
                                             // one click, and the refusal is a line
                                             // in the tooltip either way.
                                             //
-                                            // It rides the LABEL's visibility
-                                            // threshold rather than inventing a
-                                            // second one — a chip too small for its
-                                            // own name is far too small for a tag —
-                                            // and it also has to FIT, because an
+                                            // It rides the LABEL's visibility —
+                                            // and therefore the ladder's top tier
+                                            // — rather than inventing a threshold
+                                            // of its own: a chip too small for its
+                                            // own name is far too small for a tag.
+                                            // It also has to FIT, because an
                                             // elided tag is a worse signal than no
-                                            // tag at all.
+                                            // tag at all. The height clause stays:
+                                            // a pill-tier chip has the width for a
+                                            // tag by construction, but a tag under
+                                            // a name needs the room for two lines.
                                             Rectangle {
                                               id: chipTag
                                               readonly property bool isDrift: (chipTab.modelData.driftTag || "") !== ""

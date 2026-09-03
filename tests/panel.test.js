@@ -1619,12 +1619,24 @@ test("a fraction rect that claims past the canvas edge is cropped, not drawn ove
   assert.strictEqual(r.height, 25);
 });
 
-test("a chip too narrow for a label loses the label, not the tooltip", () => {
-  assert.strictEqual(panel.chipLabelVisible(20), false);
-  assert.strictEqual(panel.chipLabelVisible(40), true);
-  assert.strictEqual(panel.chipLabelVisible(NaN), false);
-  // A fused tab group divides its pill: three tabs in a 90 px slot get 30 each.
-  assert.strictEqual(panel.chipLabelVisible(90 / 3), false);
+test("the label threshold is the ladder's top tier and nothing else", () => {
+  // chipLabelVisible is GONE. It decided the label on width alone, which is a
+  // second threshold to disagree with the one the ladder already applies, and
+  // the panel now draws a name exactly when chipTreatment says "pill".
+  assert.strictEqual(panel.chipLabelVisible, undefined);
+  assert.strictEqual(panel.CHIP_LABEL_MIN_WIDTH, undefined);
+
+  // The cases that test asked about, answered by the ladder instead. A chip too
+  // narrow for a name is not a pill, so it has none — and it keeps its hover,
+  // its click and its tooltip, where the whole story already was.
+  assert.notStrictEqual(panel.chipTreatment(20, 60), "pill");
+  // A fused tab group divides its pill: three tabs in a 90 px slot get 30 each,
+  // and 30 px is not a pill however tall the slot is.
+  assert.notStrictEqual(panel.chipTreatment(90 / 3, 60), "pill");
+  // Width alone was never enough: the old threshold called 140 px a label at
+  // any height, and a 140x20 chip has nowhere to put one.
+  assert.notStrictEqual(panel.chipTreatment(140, 20), "pill");
+  assert.strictEqual(panel.chipTreatment(140, 56), "pill");
 });
 
 // -------------------------------------------------- chip treatment (drawn size)
@@ -1646,6 +1658,21 @@ test("chipTreatment picks a tier from the chip's DRAWN size, checking both axes 
   assert.strictEqual(panel.chipTreatment(24, 16), "veiled");
   assert.strictEqual(panel.chipTreatment(23, 16), "field", "one px under the veiled WIDTH cutoff");
   assert.strictEqual(panel.chipTreatment(24, 15), "field", "one px under the veiled HEIGHT cutoff");
+});
+
+test("a chip at the chipRectsForCanvas floor earns the field treatment", () => {
+  // The floor is a real state, not a degenerate one: chipRectsForCanvas grows
+  // every resolved rect to at least CHIP_MIN_WIDTH x CHIP_MIN_HEIGHT, so a
+  // terminal occupying 8% of an ultrawide really is drawn at exactly this size.
+  // It is a clickable rectangle with a tooltip and nothing else on it — no
+  // room for an icon, let alone a name — and the ladder has to say so.
+  assert.strictEqual(
+    panel.chipTreatment(panel.CHIP_MIN_WIDTH, panel.CHIP_MIN_HEIGHT), "field");
+  // Which is only true because the floor sits BELOW the veiled cutoff. If a
+  // future floor were raised past it, the tier at the floor changes with it and
+  // this line is where that shows up.
+  assert.ok(panel.CHIP_MIN_WIDTH < panel.CHIP_VEILED_MIN_WIDTH
+    || panel.CHIP_MIN_HEIGHT < panel.CHIP_VEILED_MIN_HEIGHT);
 });
 
 test("chipTreatment never throws on a degenerate size — it answers field", () => {

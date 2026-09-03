@@ -3119,9 +3119,6 @@ var MAP_SECTION_MIN_WIDTH = 112;
 // every chip to the full width of its workspace.
 var CHIP_MIN_WIDTH = 16;
 var CHIP_MIN_HEIGHT = 10;
-// Under this a label is one elided letter and a smear of antialiasing; the chip
-// keeps its hover, its click and its tooltip, and loses only the text.
-var CHIP_LABEL_MIN_WIDTH = 40;
 
 function positiveOr(value, fallback) {
   var n = Number(value);
@@ -3346,15 +3343,6 @@ function resolveSpan(from, to, lowLimit, highLimit, want) {
   var a = Math.round(start);
   var b = Math.round(end);
   return { start: a, size: Math.max(1, b - a) };
-}
-
-// Is there room for the chip's label, or does it come off and leave the chip to
-// its tooltip? `width` is one TAB's width — a fused tab group divides its
-// rectangle between its members, and three tabs in one pill each get a third.
-function chipLabelVisible(width, minWidth) {
-  var n = Number(width);
-  if (!isFinite(n)) return false;
-  return n >= positiveOr(minWidth, CHIP_LABEL_MIN_WIDTH);
 }
 
 // Cutoffs for chipTreatment, human-ratified against actual rendered chips
@@ -5698,13 +5686,11 @@ if (typeof module !== "undefined") {
     workspaceGridLayout: workspaceGridLayout,
     monitorSectionWidths: monitorSectionWidths,
     chipRectsForCanvas: chipRectsForCanvas,
-    chipLabelVisible: chipLabelVisible,
     chipTreatment: chipTreatment,
     MAP_BOX_MIN_WIDTH: MAP_BOX_MIN_WIDTH,
     MAP_BOX_MAX_WIDTH: MAP_BOX_MAX_WIDTH,
     CHIP_MIN_WIDTH: CHIP_MIN_WIDTH,
     CHIP_MIN_HEIGHT: CHIP_MIN_HEIGHT,
-    CHIP_LABEL_MIN_WIDTH: CHIP_LABEL_MIN_WIDTH,
     CHIP_PILL_MIN_WIDTH: CHIP_PILL_MIN_WIDTH,
     CHIP_PILL_MIN_HEIGHT: CHIP_PILL_MIN_HEIGHT,
     CHIP_BADGE_MIN_WIDTH: CHIP_BADGE_MIN_WIDTH,

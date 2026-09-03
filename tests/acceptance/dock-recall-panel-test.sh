@@ -215,9 +215,23 @@ CHIP_MIN_H=10
 # The half both views must satisfy: there is at least one chip, every chip
 # carries a non-empty key, a distinct one, one of the two render paths and the
 # geometry it drew with, a positioned chip really was placed and really has a
-# size, an icon source that is NEVER empty and a flag saying whether that source
-# is the app's own icon — and no chip disagrees with the workspace it says it is
-# on, ON ITS OWN MONITOR, about which path drew it.
+# size, an icon source that is NEVER empty, a flag saying whether that source is
+# the app's own icon, and one of the four treatments — and no chip disagrees
+# with the workspace it says it is on, ON ITS OWN MONITOR, about which path drew
+# it.
+#
+# THE TREATMENT IS RECOMPUTED HERE, not merely required to be one of four words.
+# The cutoffs below are PanelModel.chipTreatment's, restated in jq on purpose:
+# the panel reports the tier it drew with and the width and height it drew at,
+# and this re-derives the tier from those two numbers. A panel that asked
+# chipTreatment with the wrong numbers — the model's instead of the drawn ones,
+# say, which is exactly the mistake the fallback path invites — reports a tier
+# its own geometry does not earn, and that is what this catches. Every chip on
+# every path, so neither the positioned nor the stacked branch can drift.
+#
+# If the ratified cutoffs ever change, they change in two places: PanelModel and
+# here. That is deliberate — a test that imported the answer would agree with a
+# wrong answer.
 #
 # The empty-source clause is not pedantry: AppLibrary.iconSource cannot answer
 # empty, because it falls back to application-x-executable, so an empty string
@@ -240,7 +254,14 @@ STATE_SHAPE='
         and (.placed|type) == "boolean"
         and (.width|type) == "number" and (.height|type) == "number"
         and (.iconSource|type) == "string" and (.iconSource|length) > 0
-        and (.iconResolved|type) == "boolean")]|length) == (.chips|length)
+        and (.iconResolved|type) == "boolean"
+        and (.treatment == "pill" or .treatment == "badge"
+             or .treatment == "veiled" or .treatment == "field"))]|length) == (.chips|length)
+  and ([.chips[]|select(.treatment != (
+        if .width >= 140 and .height >= 56 then "pill"
+        elif .width >= 56 and .height >= 40 then "badge"
+        elif .width >= 24 and .height >= 16 then "veiled"
+        else "field" end))]|length) == 0
   and ((.chips|map(.key)|unique|length) == (.chips|length))
   and ([.chips[]|select(.renderPath == "positioned"
         and (.placed == false or .width < $minw or .height < $minh))]|length) == 0
@@ -601,6 +622,14 @@ noicon_icon=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$NOICON_ADDRESS" \
 pass "POSITIONED icons: the entry's own icon on the seeded chip ($seeded_icon)"
 pass "POSITIONED icons: the generic executable icon on a class no file claims ($noicon_icon)"
 
+# The ladder, on the positioned path. Every chip has been checked against
+# chipTreatment's own cutoffs by the poll; this says what the tiers came out as,
+# so a run whose chips all landed in one tier is visible in the log rather than
+# looking like coverage it is not.
+live_tiers=$(printf '%s' "$LIVE_JSON" | jq -r \
+  '[.chips[]|"\(.treatment) \(.width|floor)x\(.height|floor)"]|join(", ")')
+pass "POSITIONED treatments, each matching chipTreatment(width, height): $live_tiers"
+
 # The Recorded tab's date, which the dated-header tick asserts on, is the
 # recording's own — not the tab's, and not the clock's. And it is PRESENT: an
 # absent recordedAt is the payload's way of saying this topology has no
@@ -641,6 +670,10 @@ pass "recorded map over IPC: $recorded_chips chip(s), $recorded_fallback on the 
 recorded_icon=$(printf '%s' "$RECORDED_JSON" | jq -r \
   'first(.chips[]|select(.iconResolved == true)|"\(.key) → \(.iconSource)")//"absent"')
 pass "FALLBACK icons: a stacked chip resolves its identity's icon ($recorded_icon)"
+
+recorded_tiers=$(printf '%s' "$RECORDED_JSON" | jq -r \
+  '[.chips[]|"\(.treatment) \(.width|floor)x\(.height|floor)"]|join(", ")')
+pass "FALLBACK treatments, each matching chipTreatment(width, height): $recorded_tiers"
 
 # The two views are the two paths, and they are not the same chips: a payload
 # that reported one constant for renderPath would have failed one of the two
