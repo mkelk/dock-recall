@@ -1816,10 +1816,21 @@ Item {
   // that had BOUND that property would be left holding a menu it can no longer
   // reopen. `overflowOpen` is this object's truth; the popup follows it.
   function openOverflow() {
-    // Fresh every opening: the rows are reported by delegates that live only
-    // while the popup is up, and a row left over from a previous opening would
-    // let the payload list a layout this menu never drew.
-    root.overflowRowReports = ({})
+    // NOT reset here (tick be1): the row delegates are declared directly as
+    // Popup.contentItem children, so QML instantiates them once, the moment
+    // the Repeater's model first goes non-empty — the SAME instant on every
+    // panel session, whether or not the menu has ever been opened — and they
+    // are never destroyed by closing the popup, only by their row leaving the
+    // model (which recreates the whole Repeater, per-row names included, and
+    // re-fires Component.onCompleted for every surviving row too). A wipe here
+    // raced that: it fired on every open, but the delegates that would refill
+    // it fire only once, so the SECOND open (and the acceptance gate's very
+    // first, because the delegates already existed by the time this ever ran)
+    // found the store empty and stayed that way. "A shut menu lists nothing"
+    // is still true — panelState() only reads overflowRowReports while
+    // root.overflowOpen is true, and only for names the CURRENT
+    // overflowModel.rows still names (see panelState() below) — so nothing
+    // here needs to clear the store for that guarantee to hold.
     root.overflowOpen = true
     root.focusSection = "overflow"
     root.overflowCursor = PanelModel.firstEnabledActionId(root.overflowModel.actions)
@@ -2132,13 +2143,15 @@ Item {
   }
 
   // The overflow menu's rows, by name, written by the delegates that draw them.
-  // The popup's delegates exist only while it is open, which is exactly the
-  // claim: "the menu still lists the recorded layouts" is about rows that were
-  // drawn, not about a model that could have been.
-  //
-  // Reassigned (not merged) on every open, so a row from a previous opening can
-  // never appear in a payload taken during this one. Safe to reassign here —
-  // this runs on a click or an IPC call, never inside a layout pass.
+  // Unlike the chip/row registries this is NOT scoped to "while the popup is
+  // up" (tick be1 found that assumption false: the delegates are declared as
+  // direct Popup.contentItem children, so QML creates them once, whenever the
+  // Repeater's model first goes non-empty, and never destroys them merely
+  // because the popup closes). Same discipline as chipRenderReports/rowReports
+  // instead: never reset, and panelState() below iterates the MODEL
+  // (overflowModel.rows) and looks a report up by name, so a name the current
+  // model does not carry can never enter the payload even though the store
+  // itself is never cleared.
   property var overflowRowReports: ({})
   function reportOverflowRow(name, report) {
     root.mergeRenderReport(root.overflowRowReports, name, report)
@@ -2254,13 +2267,22 @@ Item {
     // the pause switch (its own position) and the status badge (text and tone).
     var header = root.headerReports["header"] || null
 
-    // The overflow menu's rows, and ONLY while it is open — the delegates that
-    // report them are destroyed with the popup, so a list reported over a shut
-    // menu would be a memory, not a drawing.
+    // The overflow menu's rows, and ONLY while it is open — the store itself
+    // (tick be1) is never cleared, since its delegates outlive the popup being
+    // closed, so visibility here is what keeps a shut menu reporting nothing.
+    // Iterated from the MODEL, same discipline chips/rows use above: a name
+    // the current overflowModel.rows does not carry (a forgotten layout whose
+    // delegate has not been destroyed yet, or one the store still remembers
+    // under a name no row has any more) can never enter the payload, and a
+    // name the model DOES carry but no delegate has reported yet (a fresh row,
+    // this same tick) is skipped rather than reported half-drawn.
     var layouts = []
     if (root.overflowOpen) {
-      for (var name in root.overflowRowReports) {
-        var row = root.overflowRowReports[name]
+      var menuRows = root.overflowModel.rows
+      for (var mi = 0; mi < menuRows.length; mi++) {
+        var menuRowModel = menuRows[mi]
+        if (!menuRowModel) continue
+        var row = root.overflowRowReports[menuRowModel.name] || null
         if (row) layouts.push({ name: row.name, current: !!row.current })
       }
     }

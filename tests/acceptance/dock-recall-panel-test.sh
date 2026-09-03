@@ -76,10 +76,12 @@
 #                  is the only channel a glance uses, and this test drives Pause
 #                  over IPC to watch the switch and the badge move together.
 #   overflowOpen,— the overflow menu, and its rows as its DELEGATES drew them.
-#   overflowLayouts They exist only while the popup is up, so a shut menu lists
-#                  nothing however many layouts are on disk — which is what
-#                  makes a non-empty list evidence of drawing rather than of a
-#                  model.
+#   overflowLayouts A shut menu lists nothing however many layouts are on disk
+#                  — not because the delegates come and go with the popup
+#                  (tick be1: they do not; they live for the whole panel
+#                  session), but because the payload only reads their reports
+#                  while overflowOpen is true — which is what makes a non-empty
+#                  list evidence of drawing rather than of a model.
 #   rows         — the app list, every row on the shell's Ui/Toggle. appRows
 #                  builds THREE states and all three are required: an unwatched
 #                  live window, a watched identity, and a recorded-but-unwatched
@@ -1056,10 +1058,12 @@ fi
 resumed_badge=$(panel_state_json | jq -r '"\(.badgeText)/\(.badgeTone)"')
 pass "and back: paused=false, and the badge is the desk again ($resumed_badge)"
 
-# THE OVERFLOW MENU. `overflowLayouts` is reported by the row DELEGATES, which
-# exist only while the popup is up — so a non-empty list is a claim about rows
-# that were drawn, and a shut menu reports none however many layouts are on
-# disk. This topology is recorded, so exactly one row is the current one.
+# THE OVERFLOW MENU. `overflowLayouts` is reported by the row DELEGATES and
+# gated on `overflowOpen` at read time (tick be1: the delegates themselves live
+# for the whole panel session, not just while the popup is up — a shut menu
+# reports none because panelState() only reads their reports while
+# overflowOpen is true, not because the delegates come and go). This topology
+# is recorded, so exactly one row is the current one.
 overflow_answer=$(omarchy-shell "$IPC_TARGET" setOverflow open 2>&1)
 if [[ $overflow_answer != "open" ]]; then
   diagnostics
@@ -1072,8 +1076,17 @@ overflow_listed() {
 }
 if ! poll 20 overflow_listed; then
   diagnostics
+  # Named per clause (tick be1: the three conjuncts printed nothing on the
+  # gate run that first exercised this assertion) — replay the numbers below
+  # rather than re-deriving them from the raw payload above.
+  overflow_conjuncts=$(panel_state_json | jq -c '{
+    overflowOpen,
+    overflowLayoutsLength: (.overflowLayouts|length),
+    currentCount: ([.overflowLayouts[]|select(.current == true)]|length)
+  }' 2>&1)
   fail "the overflow menu lists the recorded layouts" \
-    "after setOverflow open, the payload never reported drawn layout rows with exactly one marked current"
+    "after setOverflow open, the payload never reported drawn layout rows with exactly one marked current
+       (overflowOpen, overflowLayouts length, and the current count): $overflow_conjuncts"
 fi
 overflow_rows=$(panel_state_json | jq -r \
   '[.overflowLayouts[]|"\(.name)\(if .current then " (current)" else "" end)"]|join(", ")')
@@ -1136,8 +1149,10 @@ link_dark() {
     and ([.rows[]|select(.linked == true)]|length) == 0
     and ([.chips[]|select(.linked == true)]|length) == 0' >/dev/null
 }
-poll 20 link_dark ||
+if ! poll 20 link_dark; then
+  diagnostics
   fail "the link goes out again" "after hoverLink none, something is still reported as linked"
+fi
 pass "and it goes out again on both surfaces"
 
 # TICKING A ROW. Ui/Toggle's clicked() calls root.toggleChip(row) and nothing
@@ -1205,8 +1220,10 @@ pass "and unticking puts both back — the list and the map never disagree"
 # ---------------------------------------------------------- 8. leave it closed
 
 omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
-poll 20 panel_layer_absent ||
+if ! poll 20 panel_layer_absent; then
+  diagnostics
   fail "panel dismissed" "the panel's layer '$PANEL_NAMESPACE' is still mapped"
+fi
 pass "panel dismissed; the desk is back for the tests after this one"
 
 capture_service_log
