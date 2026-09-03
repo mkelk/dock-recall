@@ -248,6 +248,13 @@ service_ready() { dr_log | grep -qF "service-ready"; }
 # below is reached exactly once and cannot match an earlier line.
 state_loaded() { dr_log | grep -qF "state loaded: $1 identities, $2 layouts"; }
 
+# Panel.qml's own account of its desktop-file scan (refreshDerivations),
+# which is what iconNameIndex is built from — every iconSource/iconResolved
+# assertion below is reading its answer. The scan starts only once the panel
+# opens (it is logged "on the way IN, not only on success"), so this can only
+# be polled AFTER the summon step, never before it.
+desktop_scanned() { dr_log | grep -qE 'scanned [0-9]+ desktop files for launch commands'; }
+
 plugin_state() {
   omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }'
 }
@@ -802,6 +809,23 @@ if ! poll 30 panel_layer_present; then
 fi
 screenshot "success-dock-recall-panel-01-open"
 pass "panel summoned and its layer '$PANEL_NAMESPACE' is mapped"
+
+# The icon assertions on both maps below (iconSource/iconResolved, on chips
+# AND rows) all key on ONE scan: PanelModel.iconNameIndex is built from
+# root.desktopFiles, and that array is empty until Panel.qml's own scan lands
+# — which starts only now, on this summon (refreshDerivations), and not
+# before it. The budget is sized for a COLD VM, not this sandbox: the sandbox
+# has only a handful of .desktop files and would never exercise the wait,
+# while the guest this test actually runs against ships ~87 of them across
+# four directories, each read as its own grep in a bash loop, on a disk cache
+# that has not warmed up yet. 90s covers that with room to spare; a warm guest
+# clears it in well under a second.
+if ! poll 90 desktop_scanned; then
+  diagnostics
+  fail "the desktop-file scan completed (panel IPC)" \
+    "no 'scanned <n> desktop files for launch commands' from the service after the panel opened — the icon and desktop-entry assertions below would be reading a still-empty desktopFiles"
+fi
+pass "desktop-file scan completed; icon lookups below are reading its answer"
 
 # ------------------------------------------------- 5. the LIVE map, over IPC
 
