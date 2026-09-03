@@ -835,8 +835,22 @@ pass "desktop-file scan completed; icon lookups below are reading its answer"
 # numbers in the pass lines are the numbers that passed.
 if ! poll 30 capture_live_state; then
   diagnostics
+  # Named per clause rather than left as "the shape failed": capture_live_state
+  # is one jq predicate over chips, rows AND workspaces, but this message used
+  # to describe only the chip and workspace clauses — so a ROW clause failing
+  # (tick sm1: a row's iconResolved disagreeing with its own chip's) printed a
+  # paragraph about chips that were fine, and a full gate cycle went to a
+  # wrong diagnosis before anyone thought to suspect the row side at all. If
+  # you are reading this because the run failed, replay $LIVE_JSON (or the
+  # last payload in the diagnostics above) against each clause in
+  # capture_live_state with jq to find the one that is false; do not assume
+  # it is a chip clause just because the chip clauses are listed first below.
   fail "panel IPC reports the live map" \
-    "no live payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, each carrying a non-empty iconSource and a treatment its own width and height earn, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved and fill=watched with edge=drift, $NOICON_ADDRESS reporting the generic icon unresolved and fill=unwatched, and exactly one workspace badge filled (see the raw payload above)"
+    "no live payload from '$IPC_TARGET state' satisfied the shape:
+       CHIPS — uniquely-keyed, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, each carrying a non-empty iconSource and a treatment its own width and height earn, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved and fill=watched with edge=drift, $NOICON_ADDRESS reporting the generic icon unresolved and fill=unwatched;
+       ROWS — all three of appRows' states present at once (watched/live, unwatched/live, ghost/recorded); the watched non-ghost row AND the ghost row (which has no window class, so this pins the identity-side fallback) both reporting $ICON_URL resolved; the no-entry window's row, found through its chip's own linkKey, reporting the generic icon unresolved with a non-empty source;
+       WORKSPACES — exactly one workspace badge filled
+       (see the raw payload above)"
 fi
 printf '%s\n' "$LIVE_JSON" > "$ARTIFACTS/dock-recall-panel-state-live.json" 2>/dev/null || true
 

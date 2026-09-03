@@ -4313,6 +4313,19 @@ Item {
                     })
                   }
                   onIconSourceChanged: appRow.reportRender()
+                  // This was the bug (sm1): the desktop-file scan that resolves
+                  // an icon lands AFTER open(), so both properties start out ""/
+                  // false and are re-evaluated once the scan completes. `report
+                  // Render()` above is called from `onIconSourceChanged`, and on
+                  // that pass `iconSource`'s own notification fires and runs its
+                  // handler BEFORE `iconResolved`'s pending re-evaluation is
+                  // forced — so the report captured iconSource's fresh value
+                  // beside iconResolved's stale pre-scan one. `iconResolvedOf`
+                  // itself was never wrong; nothing told this delegate to report
+                  // again once ITS value changed. The chip's identical property
+                  // (line ~3664) has always carried this handler, which is why
+                  // only the row's payload showed the disagreement.
+                  onIconResolvedChanged: appRow.reportRender()
                   onLinkedChanged: appRow.reportRender()
                   onModelDataChanged: appRow.reportRender()
                   Component.onCompleted: appRow.reportRender()
