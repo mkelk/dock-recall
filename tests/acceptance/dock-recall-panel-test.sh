@@ -80,6 +80,20 @@
 #                  nothing however many layouts are on disk — which is what
 #                  makes a non-empty list evidence of drawing rather than of a
 #                  model.
+#   rows         — the app list, every row on the shell's Ui/Toggle. appRows
+#                  builds THREE states and all three are required: an unwatched
+#                  live window, a watched identity, and a recorded-but-unwatched
+#                  GHOST — which needs an identity that is never launched, so
+#                  the seed carries one. Each row reports its icon the way its
+#                  chip does; the ghost has no window and so no window class, so
+#                  its resolved icon also pins the identity fallback on the list
+#                  side.
+#   linkKey,     — the row-to-chip pairing, on BOTH surfaces. One key, and
+#   linked         everything answering to it lights up whichever direction the
+#                  pointer came from. Driven here by setting `hoveredLinkKey`,
+#                  which is exactly what a hover sets — a virtual pointer is a
+#                  live-session rig, and this increment does not touch the live
+#                  session.
 #   watched      — asserted against the window this test actually seeded, not
 #                  merely required to be present. The live map draws every
 #                  mappable client whether it is watched or not, so a payload in
@@ -170,6 +184,7 @@ GHOST_IDENTITY="dr-ghost"
 GHOST_CLASS="dock-recall-never-launched"
 DESKTOP_DIR="$HOME/.local/share/applications"
 DESKTOP_FILE="$DESKTOP_DIR/dock-recall-panel-test.desktop"
+GHOST_DESKTOP_FILE="$DESKTOP_DIR/dock-recall-ghost-test.desktop"
 
 # The panel's own layer, declared in Panel.qml (WlrLayershell.namespace).
 PANEL_NAMESPACE="mkelk-dock-recall"
@@ -351,6 +366,14 @@ STATE_SHAPE='
   and (.badgeTone == "ok" or .badgeTone == "muted"
        or .badgeTone == "accent" or .badgeTone == "urgent")
   and (.overflowOpen|type) == "boolean" and (.overflowLayouts|type) == "array"
+  and (.rows|type) == "array" and (.rows|length) > 0
+  and ([.rows[]|select((.key|type) == "string" and (.key|length) > 0
+        and (.name|type) == "string" and (.name|length) > 0
+        and (.watched|type) == "boolean" and (.ghost|type) == "boolean"
+        and (.iconSource|type) == "string" and (.iconSource|length) > 0
+        and (.iconResolved|type) == "boolean"
+        and (.linkKey|type) == "string" and (.linked|type) == "boolean")]|length) == (.rows|length)
+  and ((.rows|map(.key)|unique|length) == (.rows|length))
 '
 
 # The two view predicates below CAPTURE what they validated. The payload used to
@@ -396,6 +419,28 @@ capture_live_state() {
     # The workspace the user is standing on is on the live map, and its badge is
     # the filled one.
     and ([.workspaces[]|select(.badgeFocused == true)]|length) == 1
+    # THE APP LIST, all THREE row states at once. appRows builds three and a run
+    # that exercised only the watched one would miss two: the seeded app is a
+    # watched identity, the no-entry window is an unwatched live one, and the
+    # identity that was never launched is a recorded GHOST.
+    and ([.rows[]|select(.watched == true and .ghost == false)]|length) >= 1
+    and ([.rows[]|select(.watched == false and .ghost == false)]|length) >= 1
+    and ([.rows[]|select(.ghost == true)]|length) >= 1
+    # The two whose apps have desktop entries resolve their OWN icon — the ghost
+    # among them, which has no window and so no window class, so its row also
+    # pins the identity fallback on the list side.
+    and ([.rows[]|select(.watched == true and .ghost == false
+          and .iconResolved == true and .iconSource == $icon)]|length) >= 1
+    and ([.rows[]|select(.ghost == true
+          and .iconResolved == true and .iconSource == $icon)]|length) == 1
+    # And the window no desktop file claims draws the generic icon on its row
+    # exactly as on its chip: never empty, never claimed as its own. The row is
+    # found through the LINK KEY its chip reports, which is the pairing the
+    # hover uses — so this clause is also the structural half of "a row and its
+    # chips are the same app".
+    and ([$state.chips[]|select(.key == $noicon)|.linkKey] as $link
+         | [.rows[]|select(.linkKey == $link[0]
+             and .iconResolved == false and (.iconSource|length) > 0)]|length) == 1
   ' >/dev/null
 }
 
@@ -464,7 +509,7 @@ cleanup() {
   # The desktop entry is this test's fiction too — it claims foot's window class
   # for an app that is not foot — and the tests that share this boot scan the
   # same directory.
-  rm -f "$DESKTOP_FILE" 2>/dev/null
+  rm -f "$DESKTOP_FILE" "$GHOST_DESKTOP_FILE" 2>/dev/null
   # And take the seed with us. Everything this test writes to the state file is
   # its own fiction — an identity matching a window it just killed, and a layout
   # with no geometry at all — and the tests that share this boot read the same
@@ -549,7 +594,21 @@ Exec=foot --title=$APP_TITLE
 StartupWMClass=$APP_CLASS
 Icon=$ICON_PATH
 DESKTOP
-pass "desktop entry for $APP_CLASS naming Icon=$ICON_PATH (panel IPC)"
+
+# And one for the app that is never launched. Its identity is watched and
+# recorded, so it draws a GHOST row and a ghost chip — and neither has a window,
+# which means neither has a window class either. Giving it an entry is what
+# lets those two prove the lookup falls back to the IDENTITY's own patterns: an
+# icon resolved by class alone would report nothing for a ghost.
+cat > "$GHOST_DESKTOP_FILE" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Dock Recall Ghost Test
+Exec=foot --app-id=$GHOST_CLASS
+StartupWMClass=$GHOST_CLASS
+Icon=$ICON_PATH
+DESKTOP
+pass "desktop entries for $APP_CLASS and $GHOST_CLASS naming Icon=$ICON_PATH (panel IPC)"
 
 # ------------------------------------------------------------ 2. run the app
 
@@ -781,6 +840,13 @@ live_badges=$(printf '%s' "$LIVE_JSON" | jq -r \
   '[.workspaces[]|"\(.monitorName)/\(.badgeValue)\(if .badgeFocused then " (focused)" else "" end)"]|join(", ")')
 pass "POSITIONED workspace badges: $live_badges"
 
+# The app list. All three of appRows' row states are required by the poll; this
+# says which row came out as which, so a run in which one state never appeared
+# would be visible rather than merely passing a ">= 1".
+live_rows=$(printf '%s' "$LIVE_JSON" | jq -r \
+  '[.rows[]|"\(.name) watched=\(.watched) ghost=\(.ghost) icon=\(if .iconResolved then "own" else "generic" end)"]|join(", ")')
+pass "app list rows, all three states on Ui/Toggle: $live_rows"
+
 # The Recorded tab's date, which the dated-header tick asserts on, is the
 # recording's own — not the tab's, and not the clock's. And it is PRESENT: an
 # absent recordedAt is the payload's way of saying this topology has no
@@ -957,6 +1023,113 @@ if ! poll 20 overflow_gone; then
     "after setOverflow closed, the payload still reported drawn layout rows"
 fi
 pass "and a shut menu reports no rows — the list is what was drawn, not what is on disk"
+
+# ------------------------------- 7b. ticking a row, and the row-to-chip link
+#
+# THE LINK first, because it is what the tick below is then found through.
+#
+# One key, and everything that answers to it lights up on BOTH surfaces at once.
+# Driven by setting the key rather than by a pointer: `hoveredLinkKey` is exactly
+# what a hover on either surface sets, and a virtual pointer is a live-session
+# rig this increment does not use.
+seeded_link=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$APP_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|.linkKey)//empty')
+[[ -n $seeded_link ]] ||
+  fail "the seeded chip reports a link key (panel IPC)" "no linkKey on the chip keyed $APP_ADDRESS"
+
+hover_answer=$(omarchy-shell "$IPC_TARGET" hoverLink "$seeded_link" 2>&1)
+if [[ $hover_answer != "$seeded_link" ]]; then
+  diagnostics
+  fail "panel IPC can light a link" "hoverLink answered '$hover_answer', expected '$seeded_link'"
+fi
+
+link_lit() {
+  panel_state_json | jq -e --arg link "$seeded_link" '
+    .hoveredLinkKey == $link
+    and ([.rows[]|select(.linkKey == $link and .linked == true)]|length) == 1
+    and ([.chips[]|select(.linkKey == $link and .linked == true)]|length) >= 1
+    and ([.rows[]|select(.linkKey != $link and .linked == true)]|length) == 0
+    and ([.chips[]|select(.linkKey != $link and .linked == true)]|length) == 0' >/dev/null
+}
+if ! poll 20 link_lit; then
+  diagnostics
+  fail "hovering an app lights its row AND its chips, and nothing else" \
+    "with hoveredLinkKey '$seeded_link', the payload did not report exactly that row and its chips linked"
+fi
+pass "the row-to-chip link still pairs them: '$seeded_link' lights its row and its chips, and nothing else"
+
+cleared=$(omarchy-shell "$IPC_TARGET" hoverLink none 2>&1)
+[[ $cleared == "none" ]] || fail "panel IPC clears the link" "hoverLink none answered '$cleared'"
+link_dark() {
+  panel_state_json | jq -e '.hoveredLinkKey == ""
+    and ([.rows[]|select(.linked == true)]|length) == 0
+    and ([.chips[]|select(.linked == true)]|length) == 0' >/dev/null
+}
+poll 20 link_dark ||
+  fail "the link goes out again" "after hoverLink none, something is still reported as linked"
+pass "and it goes out again on both surfaces"
+
+# TICKING A ROW. Ui/Toggle's clicked() calls root.toggleChip(row) and nothing
+# else, and `toggleRow` is that call on the row carrying a given key — pressing
+# the widget itself would need the same virtual pointer this venue does not have.
+#
+# The row ticked is the NO-ENTRY window, not the seeded one: unticking the seeded
+# app would delete the identity its recorded layout names, and ticking it back
+# would mint a new id rather than restore `dr-panel`. This one is unwatched to
+# begin with, so the round trip really is a round trip.
+#
+# The proof is that both surfaces move in ONE query. The row's `watched` and the
+# chip's `fillState` are written by two different delegates reporting
+# independently, so a payload in which only one of them changed is a real split
+# between the list and the map — which is exactly what a row that stopped
+# driving toggleChip would look like.
+noicon_link=$(panel_state_json | jq -r --arg addr "$NOICON_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|.linkKey)//empty')
+noicon_row_key=$(panel_state_json | jq -r --arg link "$noicon_link" \
+  'first(.rows[]|select(.linkKey == $link)|.key)//empty')
+if [[ -z $noicon_row_key ]]; then
+  diagnostics
+  fail "the no-entry window has a row of its own (panel IPC)" \
+    "no row reports the link key '$noicon_link' that its chip does"
+fi
+
+tick_answer=$(omarchy-shell "$IPC_TARGET" toggleRow "$noicon_row_key" 2>&1)
+if [[ $tick_answer != "toggled" ]]; then
+  diagnostics
+  fail "panel IPC ticks a row" "toggleRow '$noicon_row_key' answered '$tick_answer'"
+fi
+
+# Found through the CHIP's key, which is the window address and does not change
+# — the row's own key and link key both do, because a ticked window stops being
+# a class row and becomes an identity row.
+row_and_chip() {
+  panel_state_json | jq -e --arg addr "$NOICON_ADDRESS" --arg want "$1" '
+    [.chips[]|select(.key == $addr)] as $c
+    | ($c|length) == 1
+    and $c[0].fillState == $want
+    and ([.rows[]|select(.linkKey == $c[0].linkKey
+          and .watched == ($want == "watched"))]|length) == 1' >/dev/null
+}
+if ! poll 20 row_and_chip watched; then
+  diagnostics
+  fail "ticking a row moves the row AND its chip" \
+    "after toggleRow '$noicon_row_key', the payload never reported that row watched with its chip filled as watched in the same query"
+fi
+pass "a tick through the row flips its own watched flag and its chip's fill together"
+
+reticked_key=$(panel_state_json | jq -r --arg addr "$NOICON_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|.linkKey) as $l | first(.rows[]|select(.linkKey == $l)|.key)//empty')
+untick_answer=$(omarchy-shell "$IPC_TARGET" toggleRow "$reticked_key" 2>&1)
+if [[ $untick_answer != "toggled" ]]; then
+  diagnostics
+  fail "panel IPC unticks a row" "toggleRow '$reticked_key' answered '$untick_answer'"
+fi
+if ! poll 20 row_and_chip unwatched; then
+  diagnostics
+  fail "unticking puts both back" \
+    "after unticking '$reticked_key', the row and its chip did not both go back to unwatched"
+fi
+pass "and unticking puts both back — the list and the map never disagree"
 
 # ---------------------------------------------------------- 8. leave it closed
 

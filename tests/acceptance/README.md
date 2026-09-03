@@ -242,6 +242,8 @@ omarchy-shell dock-recall state                  # the payload below
 omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknown" | "no-recording"
 omarchy-shell dock-recall setPaused on           # "paused" | "active" | "unknown" | "no-state"
 omarchy-shell dock-recall setOverflow open       # "open" | "closed" | "unknown"
+omarchy-shell dock-recall toggleRow <row key>    # "toggled" | "not-clickable" | "no-row" | "unknown"
+omarchy-shell dock-recall hoverLink <link key>   # the key now hovered, or "none"
 ```
 
 `setPaused` answers the position the switch is **in afterwards**, which is not
@@ -401,6 +403,38 @@ glance uses. The six are enumerated in `tests/panel.test.js`; the VM drives
 while the popup is up. A shut menu therefore lists nothing however many layouts
 are on disk, and a non-empty list is evidence that rows were drawn rather than
 that a model could have produced them.
+
+### The app list
+
+Every row is the shell's `Ui/Toggle` — the *labeled* one, which wraps a
+`ToggleSwitch` with `interactive: false` so the row owns the click. The icon and
+the right-hand launch hint and placement text sit outside it, because `Toggle`
+gives its label whatever width is left after the switch and there is no way to
+reach in past that.
+
+`PanelModel.appRows` builds **three** row states and the test requires all three:
+an unwatched live window, a watched identity, and a recorded-but-unwatched
+**ghost**. The ghost needs a watched identity that is never launched, which is
+why the seed carries a second one — a run exercising only watched rows misses
+two thirds of this.
+
+`toggleRow` calls exactly what `Toggle`'s `clicked()` calls. It ticks the
+**no-entry** window rather than the seeded one: unticking the seeded app would
+delete the identity its recorded layout names, and ticking it back would mint a
+new id rather than restore it. The assertion is that the row's `watched` and the
+chip's `fillState` move **in one query** — they are written by two different
+delegates reporting independently, so a payload in which only one changed is a
+real split between the list and the map.
+
+### The row-to-chip link
+
+`linkKey` is on chips and rows; `linked` says whether that surface is lit right
+now. One key, and everything answering to it lights up whichever direction the
+pointer came from. `hoverLink` sets `hoveredLinkKey`, which is exactly what a
+hover on either surface sets — driving a real pointer would need a
+`zwlr_virtual_pointer_v1` client, which is a live-session rig this increment does
+not use. The test requires that the key lights its row *and* its chips **and
+nothing else**, then that clearing it darkens both.
 
 ### The fields that are exact from the first tick
 

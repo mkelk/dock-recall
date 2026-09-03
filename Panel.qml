@@ -1980,6 +1980,12 @@ Item {
   //     "badgeTone": "ok" | "muted" | "accent" | "urgent" | null,
   //     "overflowOpen": false,
   //     "overflowLayouts": [ { "name": "Laptop", "current": false } ],
+  //     "hoveredLinkKey": "",
+  //     "rows": [
+  //       { "key": "obsidian", "name": "Obsidian", "watched": true,
+  //         "ghost": false, "iconSource": "file:///…", "iconResolved": true,
+  //         "linkKey": "id:obsidian", "linked": false }
+  //     ],
   //     "workspaces": [
   //       { "id": 7, "name": "7", "monitorName": "eDP-1",
   //         "renderPath": "positioned" | "fallback" | null,
@@ -1995,7 +2001,8 @@ Item {
   //         "iconResolved": true | false | null,
   //         "treatment": "pill" | "badge" | "veiled" | "field" | null,
   //         "fillState": "watched" | "ghost" | "unwatched" | null,
-  //         "edgeTone": "drift" | "hover" | "watched" | "quiet" | null }
+  //         "edgeTone": "drift" | "hover" | "watched" | "quiet" | null,
+  //         "linkKey": "id:obsidian" | null, "linked": false | null }
   //     ]
   //   }
   //
@@ -2088,6 +2095,15 @@ Item {
     root.mergeRenderReport(root.headerReports, "header", report)
   }
 
+  // The app list's rows, by the row key appRows already makes unique across its
+  // three states (unwatched live, watched identity, recorded ghost). Same
+  // discipline as the chips: the delegate writes, panelState iterates the MODEL
+  // and looks entries up, so a stale row can never enter the payload.
+  property var rowReports: ({})
+  function reportRow(key, report) {
+    root.mergeRenderReport(root.rowReports, key, report)
+  }
+
   // The overflow menu's rows, by name, written by the delegates that draw them.
   // The popup's delegates exist only while it is open, which is exactly the
   // claim: "the menu still lists the recorded layouts" is about rows that were
@@ -2174,6 +2190,9 @@ Item {
               // is fillState "watched" and edgeTone "drift" at once.
               fillState: root.reported(report, "fillState"),
               edgeTone: root.reported(report, "edgeTone"),
+              // The row-to-chip link, from the chip's side.
+              linkKey: root.reported(report, "linkKey"),
+              linked: root.reported(report, "linked"),
               // Which of the four drawings this chip earned. Reproducible from
               // the width and height beside it — PanelModel.chipTreatment is
               // the one that decides — which is what makes a disagreement here
@@ -2183,6 +2202,25 @@ Item {
           }
         }
       }
+    }
+
+    // The app list, iterated off the MODEL exactly as the chips are — a report
+    // for a row that is no longer in appRows cannot reach the payload.
+    var rows = []
+    var rowModel = root.appRows || []
+    for (var r = 0; r < rowModel.length; r++) {
+      var rowKey = rowModel[r].key
+      var rowReport = root.rowReports[rowKey] || null
+      rows.push({
+        key: rowKey,
+        name: root.reported(rowReport, "name"),
+        watched: root.reported(rowReport, "watched"),
+        ghost: root.reported(rowReport, "ghost"),
+        iconSource: root.reported(rowReport, "iconSource"),
+        iconResolved: root.reported(rowReport, "iconResolved"),
+        linkKey: root.reported(rowReport, "linkKey"),
+        linked: root.reported(rowReport, "linked")
+      })
     }
 
     // The header, from the three items that drew it: the hero (title and meta),
@@ -2216,8 +2254,11 @@ Item {
       badgeTone: root.reported(header, "badgeTone"),
       overflowOpen: root.overflowOpen,
       overflowLayouts: layouts,
+      // What the panel is hovering, and therefore what is lit on both surfaces.
+      hoveredLinkKey: root.hoveredLinkKey,
       workspaces: workspaces,
-      chips: chips
+      chips: chips,
+      rows: rows
     }
 
     // The recording this topology has, whichever map is on screen: "when was
@@ -2272,6 +2313,47 @@ Item {
       if (!root.stateLoaded) return "no-state"
       root.setPaused(want === "on" || want === "true")
       return root.paused ? "paused" : "active"
+    }
+
+    // Tick a row, the way its Toggle does. Ui/Toggle's clicked() calls
+    // root.toggleChip(row) and nothing else, so this is that call on the row
+    // carrying this key — pressing the widget itself would need a virtual
+    // pointer, which is a live-session rig this increment does not use.
+    //
+    // The row is looked up in appRows rather than taken from the caller, so a
+    // key that no longer names a row answers "no-row" instead of acting on
+    // something else; and a row the panel cannot act on answers so rather than
+    // pretending.
+    function toggleRow(key: string): string {
+      var want = String(key || "")
+      if (!want) return "unknown"
+      var list = root.appRows || []
+      for (var i = 0; i < list.length; i++) {
+        if (String(list[i].key) !== want) continue
+        if (list[i].clickable === false) return "not-clickable"
+        root.toggleChip(list[i])
+        return "toggled"
+      }
+      return "no-row"
+    }
+
+    // The row-to-chip link, driven without a pointer. `hoveredLinkKey` is what
+    // a hover on either surface sets, and everything that answers to the key
+    // lights up in whichever direction the pointer came from — so setting it
+    // directly is the same act the pointer performs, and it is the only way this
+    // venue can watch a row and its chips light up together (a virtual pointer
+    // is a live-session rig, and this increment does not touch the live
+    // session).
+    //
+    // Answers the key that is actually hovered afterwards.
+    function hoverLink(key: string): string {
+      var want = String(key || "")
+      if (want === "" || want === "none") {
+        root.hoveredLinkKey = ""
+        return "none"
+      }
+      root.setHoveredLink(want)
+      return root.hoveredLinkKey
     }
 
     // The overflow menu, opened and closed by the panel's own verbs so the
@@ -3618,7 +3700,15 @@ Item {
                                               // reports the same pair, which is
                                               // what the screen shows.
                                               fillState: chipSlot.fillState,
-                                              edgeTone: chipSlot.edgeTone
+                                              edgeTone: chipSlot.edgeTone,
+                                              // The chip's half of the row-to-
+                                              // chip link: the key it answers
+                                              // to, and whether it is answering
+                                              // right now. `linkHovered` is per
+                                              // SLOT because a fused tab group
+                                              // lights up as one pill.
+                                              linkKey: String(chipTab.modelData.linkKey || ""),
+                                              linked: chipSlot.linkHovered
                                             })
                                           }
                                           onRenderPathChanged: chipTab.reportRender()
@@ -3635,6 +3725,7 @@ Item {
                                             target: chipSlot
                                             function onFillStateChanged() { chipTab.reportRender() }
                                             function onEdgeToneChanged() { chipTab.reportRender() }
+                                            function onLinkHoveredChanged() { chipTab.reportRender() }
                                           }
                                           // The Flow's first pass runs before its
                                           // width is known and the rects settle a
@@ -4074,9 +4165,30 @@ Item {
             PanelSeparator { foreground: root.foreground }
 
             // ------------------------------------------------ the flat list
+            //
+            // Every row is the shell's Ui/Toggle: the LABELED one, which wraps a
+            // ToggleSwitch with `interactive: false` so the ROW owns the click.
+            // That is the component this list wanted — a hand-drawn teal square
+            // that had to be clicked through the row around it was a checkbox
+            // reimplemented, without the kit's fill, border, focus ring or
+            // keyboard.
+            //
+            // Around it, unchanged in role: the app's icon on the left (same
+            // resolution path as the chips), and on the right the launch hint
+            // and the placement text with its drift colouring. They sit OUTSIDE
+            // the Toggle rather than inside it because Toggle gives its label
+            // whatever width is left after the switch, and there is no way to
+            // reach in past that — anchoring them to the row and the Toggle to
+            // them keeps every width derived rather than guessed.
+            //
+            // THREE ROW STATES come out of PanelModel.appRows and all three draw
+            // here: an unwatched live window (unchecked, clickable), a watched
+            // identity (checked), and a recorded-but-unwatched GHOST (dimmed,
+            // and `clickable: false` when there is no pattern left to re-watch
+            // from).
             Column {
               width: parent.width
-              spacing: 0
+              spacing: Style.space(4)
 
               Repeater {
                 model: root.appRows
@@ -4086,7 +4198,7 @@ Item {
                   required property var modelData
 
                   width: parent.width
-                  height: rowLabel.implicitHeight + Style.space(10)
+                  height: rowToggle.implicitHeight
                   opacity: appRow.modelData.ghost ? 0.6 : 1.0
 
                   // Is the pointer on this app — here, or on one of its chips
@@ -4097,16 +4209,39 @@ Item {
                     PanelModel.rowTooltipText(appRow.modelData),
                     root.chipTooltipColumns)
 
-                  // Declared FIRST so it sits behind the row's own content: the
-                  // list's half of the link, and the same hover fill the map
-                  // uses, so the two surfaces answer a hover in one language.
-                  Rectangle {
-                    anchors.fill: parent
-                    visible: appRow.linked
-                    color: Style.hoverFillFor(root.foreground, Color.accent)
-                    radius: Style.cornerRadius
-                  }
+                  // The app's icon, resolved exactly as a chip's is — identity
+                  // first, class second, so a ghost row (which has no window and
+                  // therefore no class) still finds its own.
+                  readonly property string iconSource: root.iconSourceOf(
+                    appRow.modelData.identityId, appRow.modelData.className)
+                  readonly property bool iconResolved: root.iconResolvedOf(
+                    appRow.modelData.identityId, appRow.modelData.className)
 
+                  // What this row DREW, read back over IPC. Keyed by the row's
+                  // own key, which appRows already makes unique across all three
+                  // states.
+                  function reportRender() {
+                    root.reportRow(appRow.modelData.key, {
+                      name: String(appRow.modelData.name),
+                      watched: appRow.modelData.watched === true,
+                      ghost: appRow.modelData.ghost === true,
+                      iconSource: appRow.iconSource,
+                      iconResolved: appRow.iconResolved,
+                      // The row's half of the row-to-chip link: the key it
+                      // answers to, and whether it is answering right now.
+                      linkKey: String(appRow.modelData.linkKey || ""),
+                      linked: appRow.linked
+                    })
+                  }
+                  onIconSourceChanged: appRow.reportRender()
+                  onLinkedChanged: appRow.reportRender()
+                  onModelDataChanged: appRow.reportRender()
+                  Component.onCompleted: appRow.reportRender()
+
+                  // The link's list-side listener stays on the ROW rather than
+                  // moving into the Toggle: it has to cover the icon and the
+                  // placement text too, and it has to keep working on a row the
+                  // Toggle itself is disabled on.
                   HoverHandler {
                     id: rowHover
                     onHoveredChanged: {
@@ -4121,32 +4256,50 @@ Item {
                     }
                   }
 
-                  // The checkbox mirrors the chip: same state, same click.
-                  Rectangle {
-                    id: rowBox
-                    width: Style.space(11)
-                    height: Style.space(11)
-                    radius: Math.max(1, Math.round(width * 0.25))
-                    color: appRow.modelData.watched ? Color.accent : "transparent"
-                    border.width: 1
-                    border.color: appRow.modelData.watched ? Color.accent : root.faintForeground
+                  Image {
+                    id: rowIcon
+                    width: Style.font.iconLarge
+                    height: Style.font.iconLarge
                     anchors.left: parent.left
+                    anchors.leftMargin: Style.spacing.rowPaddingX
                     anchors.verticalCenter: parent.verticalCenter
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    // Decoded at physical pixels, for the reason the chip icon
+                    // is: an upscaled PNG is the one thing an icon may not be.
+                    sourceSize.width: width * Screen.devicePixelRatio
+                    sourceSize.height: height * Screen.devicePixelRatio
+                    asynchronous: true
+                    source: appRow.iconSource
                   }
 
-                  Text {
-                    id: rowLabel
-                    text: appRow.modelData.name
-                    color: appRow.modelData.watched ? root.foreground : root.faintForeground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: appRow.modelData.watched
-                    elide: Text.ElideRight
-                    anchors.left: rowBox.right
+                  Toggle {
+                    id: rowToggle
+                    anchors.left: rowIcon.right
                     anchors.leftMargin: Style.space(8)
                     anchors.right: rowLaunch.left
                     anchors.rightMargin: Style.space(8)
                     anchors.verticalCenter: parent.verticalCenter
+
+                    label: appRow.modelData.name
+                    checked: appRow.modelData.watched === true
+                    // The list has no keyboard cursor of its own — the panel's
+                    // walks the chips — so `hasCursor` carries the LINK instead.
+                    // It drives the same hover fill the map uses, which is what
+                    // the hand-drawn Rectangle behind this row used to do: one
+                    // language for one hover, now the kit's.
+                    hasCursor: appRow.linked
+                    // A row the panel cannot act on does not offer to be
+                    // clicked: the "recorded · no longer watched" row has no
+                    // pattern left to re-watch from (PanelModel.appRows explains
+                    // why), and its predecessor's ticked box and dead click were
+                    // the review finding this replaces.
+                    enabled: appRow.modelData.clickable !== false
+                    foreground: root.foreground
+                    accent: Color.accent
+                    fontFamily: root.fontFamily
+                    titleSize: Style.font.caption
+                    onClicked: root.toggleChip(appRow.modelData)
                   }
 
                   // What Restore can and cannot do for this app, in three
@@ -4200,9 +4353,10 @@ Item {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     elide: Text.ElideRight
-                    width: Math.min(implicitWidth, Math.round(appRow.width * 0.62))
+                    width: Math.min(implicitWidth, Math.round(appRow.width * 0.45))
                     horizontalAlignment: Text.AlignRight
                     anchors.right: parent.right
+                    anchors.rightMargin: Style.spacing.rowPaddingX
                     anchors.verticalCenter: parent.verticalCenter
 
                     HoverHandler { id: rowWhereHover }
@@ -4233,34 +4387,17 @@ Item {
                     }
                   }
 
-                  // A row the panel cannot act on does not offer to be
-                  // clicked: the "recorded · no longer watched" row has no
-                  // pattern left to re-watch from (PanelModel.appRows explains
-                  // why), and its predecessor's ticked box and dead click were
-                  // the review finding this replaces.
-                  MouseArea {
-                    anchors.fill: parent
-                    enabled: appRow.modelData.clickable !== false
-                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                    onClicked: root.toggleChip(appRow.modelData)
-                  }
-
-                  // Declared AFTER the row-wide area so it wins the click:
-                  // pressing "learn launch" must not also untick the app.
+                  // "learn launch" is its own click, and it sits OUTSIDE the
+                  // Toggle now — so it no longer has to be declared after a
+                  // row-wide MouseArea to win against it. Pressing it must not
+                  // also untick the app, and with the toggle's click confined to
+                  // the toggle that is structural rather than an ordering trick.
                   MouseArea {
                     anchors.fill: rowLaunch
                     enabled: appRow.modelData.launchRepairable === true
                     visible: enabled
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.learnLaunchFor(appRow.modelData.identityId)
-                  }
-
-                  Rectangle {
-                    anchors.bottom: parent.bottom
-                    width: parent.width
-                    height: 1
-                    color: root.faintForeground
-                    opacity: 0.25
                   }
                 }
               }
