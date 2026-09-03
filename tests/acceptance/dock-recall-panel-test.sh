@@ -64,6 +64,22 @@
 #                  monitor has an active workspace and only the focused monitor
 #                  is in front of the user, so a second means the focus rule
 #                  leaked across monitors.
+#   headerTitle, — the PanelHero's own two strings. headerTitle is what the hero
+#   headerMeta     was HANDED, topologyName is what the panel computed, and they
+#                  agree by construction — so a hero that stopped being given
+#                  one shows up as a disagreement rather than as a blank line
+#                  nobody looks at. headerMeta must contain the badge word AND
+#                  end in a watched count.
+#   paused,      — the Pause switch's own position, and the badge that follows
+#   badgeText,     it. The badge did NOT move into PanelHero's `detail` pill,
+#   badgeTone      whose border is one fixed colour: four tones over six states
+#                  is the only channel a glance uses, and this test drives Pause
+#                  over IPC to watch the switch and the badge move together.
+#   overflowOpen,— the overflow menu, and its rows as its DELEGATES drew them.
+#   overflowLayouts They exist only while the popup is up, so a shut menu lists
+#                  nothing however many layouts are on disk — which is what
+#                  makes a non-empty list evidence of drawing rather than of a
+#                  model.
 #   watched      — asserted against the window this test actually seeded, not
 #                  merely required to be present. The live map draws every
 #                  mappable client whether it is watched or not, so a payload in
@@ -270,6 +286,16 @@ CHIP_MIN_H=10
 # against `watched` is what stops a panel reporting a fill it did not draw:
 # watched and unwatched are the map's own flag, and the fill has to follow it.
 #
+# THE HEADER is a PanelHero now, and three clauses say it did not lose anything
+# in the move. `headerTitle` is what the hero was HANDED and `topologyName` is
+# what the panel computed, so they agree by construction and a header that
+# stopped being given one shows up as a disagreement. `headerMeta` has to
+# contain the badge word AND end in a watched count, which is the whole of the
+# status line the hero carries. And `badgeTone` is still one of four — the badge
+# deliberately did NOT move into the hero own `detail` pill, whose border is one
+# fixed colour, because four tones over six states is the only channel a glance
+# uses (PanelModel.badgeFor, enumerated in tests/panel.test.js).
+#
 # THE BADGES: every workspace says what its number badge reads, and it must be
 # that workspace's own name. At most one badge is the filled one — every monitor
 # has an active workspace and only the focused monitor is in front of the user,
@@ -317,6 +343,14 @@ STATE_SHAPE='
   and ([.chips[] as $c | $state.workspaces[]
         | select(.id == $c.workspaceId and .monitorName == $c.monitorName
                  and .renderPath != $c.renderPath)]|length) == 0
+  and .headerTitle == .topologyName
+  and (.headerMeta|type) == "string" and (.headerMeta|contains($state.badgeText))
+  and (.headerMeta|test("[0-9]+ apps? watched$"))
+  and (.paused|type) == "boolean"
+  and (.badgeText|type) == "string" and (.badgeText|length) > 0
+  and (.badgeTone == "ok" or .badgeTone == "muted"
+       or .badgeTone == "accent" or .badgeTone == "urgent")
+  and (.overflowOpen|type) == "boolean" and (.overflowLayouts|type) == "array"
 '
 
 # The two view predicates below CAPTURE what they validated. The payload used to
@@ -831,7 +865,100 @@ if ! poll 30 capture_live_state; then
 fi
 pass "the live map is intact after a round trip through the recorded view"
 
-# ---------------------------------------------------------- 7. leave it closed
+# ------------------------------------- 7. the header: hero, Pause, overflow
+#
+# LAST on purpose. Pausing the tool changes what the badge says, and every
+# assertion above wanted the badge the seeded desk earns; running this first
+# would have made the drifted badge unreachable without a second wait for it to
+# come back.
+
+header_line=$(printf '%s' "$LIVE_JSON" | jq -r \
+  '"\(.headerTitle) | \(.headerMeta) | badge \(.badgeText)/\(.badgeTone)"')
+pass "the header is a PanelHero carrying the topology, the status line and the badge: $header_line"
+
+# PAUSE, driven the way a finger drives the switch — through the panel's own
+# setPaused, which is the one place that re-reads the file before writing and
+# refuses a write that would be rejected.
+was_paused=$(printf '%s' "$LIVE_JSON" | jq -r '.paused')
+if [[ $was_paused != "false" ]]; then
+  diagnostics
+  fail "the tool starts un-paused (panel IPC)" "the payload reports paused=$was_paused before anything touched it"
+fi
+
+pause_answer=$(omarchy-shell "$IPC_TARGET" setPaused on 2>&1)
+if [[ $pause_answer != "paused" ]]; then
+  diagnostics
+  fail "panel IPC pauses the tool" "setPaused on answered '$pause_answer'"
+fi
+
+# The switch's own position AND the badge that follows from it. `Paused` outranks
+# `Drifted` on the badge for the same reason it does on the bar glyph: a repair
+# that is not going to happen is not news.
+paused_seen() {
+  panel_state_json | jq -e '.paused == true and .badgeText == "Paused" and .badgeTone == "muted"' >/dev/null
+}
+if ! poll 20 paused_seen; then
+  diagnostics
+  fail "the paused switch and the paused badge agree" \
+    "after setPaused on, the payload never reported paused=true with badge Paused/muted"
+fi
+pass "Pause flips the reported switch position and the badge follows it (Paused/muted)"
+
+resume_answer=$(omarchy-shell "$IPC_TARGET" setPaused off 2>&1)
+if [[ $resume_answer != "active" ]]; then
+  diagnostics
+  fail "panel IPC un-pauses the tool" "setPaused off answered '$resume_answer'"
+fi
+active_seen() {
+  panel_state_json | jq -e '.paused == false and .badgeText != "Paused"' >/dev/null
+}
+if ! poll 20 active_seen; then
+  diagnostics
+  fail "the switch goes back" "after setPaused off, the payload never reported paused=false again"
+fi
+resumed_badge=$(panel_state_json | jq -r '"\(.badgeText)/\(.badgeTone)"')
+pass "and back: paused=false, and the badge is the desk again ($resumed_badge)"
+
+# THE OVERFLOW MENU. `overflowLayouts` is reported by the row DELEGATES, which
+# exist only while the popup is up — so a non-empty list is a claim about rows
+# that were drawn, and a shut menu reports none however many layouts are on
+# disk. This topology is recorded, so exactly one row is the current one.
+overflow_answer=$(omarchy-shell "$IPC_TARGET" setOverflow open 2>&1)
+if [[ $overflow_answer != "open" ]]; then
+  diagnostics
+  fail "panel IPC opens the overflow menu" "setOverflow open answered '$overflow_answer'"
+fi
+overflow_listed() {
+  panel_state_json | jq -e '.overflowOpen == true
+    and (.overflowLayouts|length) > 0
+    and ([.overflowLayouts[]|select(.current == true)]|length) == 1' >/dev/null
+}
+if ! poll 20 overflow_listed; then
+  diagnostics
+  fail "the overflow menu lists the recorded layouts" \
+    "after setOverflow open, the payload never reported drawn layout rows with exactly one marked current"
+fi
+overflow_rows=$(panel_state_json | jq -r \
+  '[.overflowLayouts[]|"\(.name)\(if .current then " (current)" else "" end)"]|join(", ")')
+screenshot "success-dock-recall-panel-03-overflow"
+pass "the overflow menu opens and lists its recorded layouts: $overflow_rows"
+
+closed_answer=$(omarchy-shell "$IPC_TARGET" setOverflow closed 2>&1)
+if [[ $closed_answer != "closed" ]]; then
+  diagnostics
+  fail "panel IPC closes the overflow menu" "setOverflow closed answered '$closed_answer'"
+fi
+overflow_gone() {
+  panel_state_json | jq -e '.overflowOpen == false and (.overflowLayouts|length) == 0' >/dev/null
+}
+if ! poll 20 overflow_gone; then
+  diagnostics
+  fail "a shut overflow menu lists nothing" \
+    "after setOverflow closed, the payload still reported drawn layout rows"
+fi
+pass "and a shut menu reports no rows — the list is what was drawn, not what is on disk"
+
+# ---------------------------------------------------------- 8. leave it closed
 
 omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
 poll 20 panel_layer_absent ||

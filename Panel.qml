@@ -1790,6 +1790,10 @@ Item {
   // that had BOUND that property would be left holding a menu it can no longer
   // reopen. `overflowOpen` is this object's truth; the popup follows it.
   function openOverflow() {
+    // Fresh every opening: the rows are reported by delegates that live only
+    // while the popup is up, and a row left over from a previous opening would
+    // let the payload list a layout this menu never drew.
+    root.overflowRowReports = ({})
     root.overflowOpen = true
     root.focusSection = "overflow"
     root.overflowCursor = PanelModel.firstEnabledActionId(root.overflowModel.actions)
@@ -1969,6 +1973,13 @@ Item {
   //     "topologyName": "Laptop + Dell U2720Q",
   //     "showRecorded": false,
   //     "recordedAt": "2026-09-03T09:12:44.101Z" | null,   // ABSENT if none
+  //     "headerTitle": "Laptop + Dell U2720Q" | null,
+  //     "headerMeta": "In sync · 3 apps watched" | null,
+  //     "paused": false | null,
+  //     "badgeText": "In sync" | null,
+  //     "badgeTone": "ok" | "muted" | "accent" | "urgent" | null,
+  //     "overflowOpen": false,
+  //     "overflowLayouts": [ { "name": "Laptop", "current": false } ],
   //     "workspaces": [
   //       { "id": 7, "name": "7", "monitorName": "eDP-1",
   //         "renderPath": "positioned" | "fallback" | null,
@@ -2067,6 +2078,29 @@ Item {
     root.mergeRenderReport(root.chipRenderReports, key, report)
   }
 
+  // The header is one instance rather than a repeater, so its store has one
+  // key. It reports through the same merge as the chips do — the hero, the
+  // pause switch and the status badge each write their own fields without
+  // knowing about the others, and the payload says what those three DREW rather
+  // than re-reading the properties behind them.
+  property var headerReports: ({})
+  function reportHeader(report) {
+    root.mergeRenderReport(root.headerReports, "header", report)
+  }
+
+  // The overflow menu's rows, by name, written by the delegates that draw them.
+  // The popup's delegates exist only while it is open, which is exactly the
+  // claim: "the menu still lists the recorded layouts" is about rows that were
+  // drawn, not about a model that could have been.
+  //
+  // Reassigned (not merged) on every open, so a row from a previous opening can
+  // never appear in a payload taken during this one. Safe to reassign here —
+  // this runs on a click or an IPC call, never inside a layout pass.
+  property var overflowRowReports: ({})
+  function reportOverflowRow(name, report) {
+    root.mergeRenderReport(root.overflowRowReports, name, report)
+  }
+
   function reportWorkspaceRender(key, report) {
     root.mergeRenderReport(root.workspaceRenderReports, key, report)
   }
@@ -2151,9 +2185,37 @@ Item {
       }
     }
 
+    // The header, from the three items that drew it: the hero (title and meta),
+    // the pause switch (its own position) and the status badge (text and tone).
+    var header = root.headerReports["header"] || null
+
+    // The overflow menu's rows, and ONLY while it is open — the delegates that
+    // report them are destroyed with the popup, so a list reported over a shut
+    // menu would be a memory, not a drawing.
+    var layouts = []
+    if (root.overflowOpen) {
+      for (var name in root.overflowRowReports) {
+        var row = root.overflowRowReports[name]
+        if (row) layouts.push({ name: row.name, current: !!row.current })
+      }
+    }
+
     var payload = {
       topologyName: root.topologyName,
       showRecorded: root.showRecorded,
+      // The hero's own two strings. `headerTitle` is what PanelHero was handed;
+      // `topologyName` above is what the panel computed. They are the same
+      // sentence by construction, and the pair is what shows a header that
+      // stopped being given it.
+      headerTitle: root.reported(header, "title"),
+      headerMeta: root.reported(header, "meta"),
+      // The pause switch's position, as the switch drew it.
+      paused: root.reported(header, "paused"),
+      // The status badge, whose TONE is four-valued and load-bearing.
+      badgeText: root.reported(header, "badgeText"),
+      badgeTone: root.reported(header, "badgeTone"),
+      overflowOpen: root.overflowOpen,
+      overflowLayouts: layouts,
       workspaces: workspaces,
       chips: chips
     }
@@ -2192,6 +2254,40 @@ Item {
       if (!root.recordedLayout) return "no-recording"
       root.showRecorded = true
       return "recorded"
+    }
+
+    // The Pause switch, driven the way a finger drives it. Through
+    // root.setPaused and nothing else: that function is the ONE place that
+    // re-reads the state file before writing, refuses a write that would be
+    // rejected, and logs the change — an IPC path that set the flag directly
+    // would be a second writer with none of that.
+    //
+    // Answers the position the switch is IN afterwards, which is not always the
+    // one that was asked for: a read-only state file refuses the write and the
+    // switch stays where it was. A caller comparing the answer to its request
+    // learns that without reading a log.
+    function setPaused(value: string): string {
+      var want = String(value || "").toLowerCase()
+      if (want !== "on" && want !== "off" && want !== "true" && want !== "false") return "unknown"
+      if (!root.stateLoaded) return "no-state"
+      root.setPaused(want === "on" || want === "true")
+      return root.paused ? "paused" : "active"
+    }
+
+    // The overflow menu, opened and closed by the panel's own verbs so the
+    // popup and root.overflowOpen cannot disagree — the same reason summon and
+    // hide stay the shell's.
+    function setOverflow(value: string): string {
+      var want = String(value || "").toLowerCase()
+      if (want === "open") {
+        root.openOverflow()
+        return "open"
+      }
+      if (want === "closed" || want === "close") {
+        root.closeOverflow()
+        return "closed"
+      }
+      return "unknown"
     }
   }
 
@@ -2332,55 +2428,144 @@ Item {
             spacing: Style.space(12)
 
             // ------------------------------------------------ header
+            //
+            // The shell's own PanelHero, not a hand-rolled row of anchors. It
+            // owns the icon-title-meta layout and, crucially, RESERVES the
+            // trailing control's width itself — the hand-rolled version chained
+            // four anchors right-to-left and every addition to the row was
+            // another link in that chain.
+            //
+            // What did NOT move into it: the status badge. PanelHero's `detail`
+            // pill is a fixed accent-bordered slip, and this badge's TONE is
+            // load-bearing — ok, muted, accent and urgent are four different
+            // kinds of news (PanelModel.badgeFor), and flattening them to one
+            // border colour would throw away the only channel a glance uses.
+            // So the badge keeps its own pill, and the hero ends where it
+            // begins.
             Item {
               width: parent.width
-              implicitHeight: Math.max(topologyLabel.implicitHeight, badgePill.implicitHeight)
+              implicitHeight: Math.max(heroBox.implicitHeight, badgePill.implicitHeight,
+                overflowButton.implicitHeight)
 
-              Text {
-                id: topologyLabel
-                text: root.topologyName
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.title
-                font.bold: true
-                elide: Text.ElideRight
+              // The monitor glyph: a screen and a stand, outlined, in the
+              // panel's own foreground. The same idea as the mini monitors in
+              // the overflow menu below, at hero size — this panel is about
+              // which SCREENS you are sitting at, and the title beside it is a
+              // topology name.
+              Component {
+                id: heroMonitorGlyph
+
+                Item {
+                  implicitWidth: Style.font.display
+                  implicitHeight: Style.font.display
+
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.top: parent.top
+                    anchors.topMargin: Math.round(parent.height * 0.14)
+                    width: parent.width
+                    height: Math.round(parent.height * 0.60)
+                    radius: Math.max(1, Style.space(2))
+                    color: "transparent"
+                    border.width: Math.max(1, Style.space(1))
+                    border.color: root.foreground
+                  }
+
+                  Rectangle {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: Math.round(parent.height * 0.14)
+                    width: Math.round(parent.width * 0.5)
+                    height: Math.max(1, Style.space(1))
+                    color: root.foreground
+                  }
+                }
+              }
+
+              // PAUSE, as a real switch rather than a button whose label had to
+              // name the act to avoid reading as a status line. A switch has no
+              // label to get wrong: it is ON when the tool is working, which is
+              // the only polarity it can carry (PanelModel.pauseSwitchChecked).
+              //
+              // The tooltip still carries the consequence, because "off" does
+              // not say WHICH monitor changes stop being acted on.
+              Component {
+                id: heroPauseControl
+
+                ToggleSwitch {
+                  id: pauseSwitch
+                  checked: PanelModel.pauseSwitchChecked(root.paused)
+                  // A panel that has not read the state file yet must not offer
+                  // to write it.
+                  interactive: root.stateLoaded
+                  opacity: root.stateLoaded ? 1.0 : 0.45
+                  hasCursor: root.focusSection === "pause"
+                  foreground: root.foreground
+                  accent: Color.accent
+                  onToggled: root.setPaused(!root.paused)
+
+                  // What the switch DREW, reported the way every chip reports
+                  // its own drawing — `paused` in the payload is this control's
+                  // position, not a second read of the flag behind it.
+                  function reportRender() {
+                    root.reportHeader({ paused: !pauseSwitch.checked })
+                  }
+                  onCheckedChanged: pauseSwitch.reportRender()
+                  Component.onCompleted: pauseSwitch.reportRender()
+
+                  HoverHandler { id: pauseHover }
+
+                  PanelToolTip {
+                    visible: pauseHover.hovered
+                    text: PanelModel.wrapTooltip(PanelModel.pauseTooltip(root.paused))
+                    fontFamily: root.fontFamily
+                  }
+                }
+              }
+
+              // PanelHero binds its own `width` to its parent, which is how the
+              // shell uses it everywhere — so it gets a parent of exactly the
+              // width it should have rather than a pair of anchors fighting
+              // that binding.
+              Item {
+                id: heroBox
                 anchors.left: parent.left
                 anchors.right: badgePill.left
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
-              }
+                implicitHeight: hero.implicitHeight
 
-              // The on/off switch, right beside the badge it explains: the
-              // badge says "Paused" and this is the thing that made it say so.
-              // Labelled with the ACT, not the state — a control reading
-              // "Paused" beside a badge reading "Paused" is a status line
-              // pretending to be a button.
-              Button {
-                id: pauseButton
-                anchors.right: overflowButton.left
-                anchors.rightMargin: Style.space(10)
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.paused ? "Activate" : "Pause"
-                tooltipText: PanelModel.wrapTooltip(PanelModel.pauseTooltip(root.paused))
-                bordered: true
-                // Emphasized while paused: switching the tool back on is the
-                // one action that changes what everything else in this panel
-                // means, and it should not look like a secondary control.
-                active: root.paused
-                accent: Color.accent
-                hasCursor: root.focusSection === "pause"
-                onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(pauseButton)
-                enabled: root.stateLoaded
-                opacity: root.stateLoaded ? 1.0 : 0.45
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                onClicked: root.setPaused(!root.paused)
+                PanelHero {
+                  id: hero
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  title: root.topologyName
+                  meta: PanelModel.headerMeta(root.badge.text, root.watchedCount)
+                  iconComponent: heroMonitorGlyph
+                  trailingControl: heroPauseControl
+
+                  // The keyboard cursor's "pause" section lives inside the
+                  // trailing control, and the hero is what has to be on screen
+                  // for it to be reachable.
+                  Connections {
+                    target: root
+                    function onFocusSectionChanged() {
+                      if (root.focusSection === "pause") root.ensureCursorVisible(heroBox)
+                    }
+                  }
+
+                  function reportRender() {
+                    root.reportHeader({ title: hero.title, meta: hero.meta })
+                  }
+                  onTitleChanged: hero.reportRender()
+                  onMetaChanged: hero.reportRender()
+                  Component.onCompleted: hero.reportRender()
+                }
               }
 
               BorderSurface {
                 id: badgePill
-                anchors.right: pauseButton.left
+                anchors.right: overflowButton.left
                 anchors.rightMargin: Style.space(10)
                 anchors.verticalCenter: parent.verticalCenter
                 implicitWidth: badgeText.implicitWidth + Style.space(16)
@@ -2388,6 +2573,21 @@ Item {
                 radius: Style.cornerRadius
                 color: Style.hoverFillFor(root.toneColor(root.badge.tone), root.toneColor(root.badge.tone))
                 borderSpec: Border.controlSpec("normal", root.toneColor(root.badge.tone), root.toneColor(root.badge.tone))
+
+                // The badge's two values, from the pill that drew them. The
+                // TONE is the point: four of them (ok, muted, accent, urgent)
+                // for six states, and it is what makes "In sync" and "Restore
+                // failed" different kinds of news at a glance rather than two
+                // strings. Reported so the move into PanelHero can be shown not
+                // to have flattened it.
+                function reportRender() {
+                  root.reportHeader({ badgeText: root.badge.text, badgeTone: root.badge.tone })
+                }
+                Component.onCompleted: badgePill.reportRender()
+                Connections {
+                  target: root
+                  function onBadgeChanged() { badgePill.reportRender() }
+                }
 
                 Text {
                   id: badgeText
@@ -2486,6 +2686,15 @@ Item {
                         width: menuColumn.width
                         implicitHeight: Math.max(glyphRow.implicitHeight,
                           rowText.implicitHeight + Style.space(2))
+
+                        // This row, as the menu drew it. Read back over IPC, so
+                        // "the overflow still lists the recorded layouts"
+                        // is a claim about rows that exist rather than about a
+                        // model that could have produced them.
+                        Component.onCompleted: root.reportOverflowRow(menuRow.modelData.name, {
+                          name: String(menuRow.modelData.name),
+                          current: menuRow.modelData.current === true
+                        })
 
                         // The mini monitor glyph: one outlined rectangle per
                         // screen, three at most, accented on the desk you are

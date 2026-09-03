@@ -240,13 +240,28 @@ Summon it first:
 omarchy-shell shell summon mkelk.dock-recall '{}'
 omarchy-shell dock-recall state                  # the payload below
 omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknown" | "no-recording"
+omarchy-shell dock-recall setPaused on           # "paused" | "active" | "unknown" | "no-state"
+omarchy-shell dock-recall setOverflow open       # "open" | "closed" | "unknown"
 ```
+
+`setPaused` answers the position the switch is **in afterwards**, which is not
+always the one asked for: a read-only state file refuses the write and the switch
+stays where it was. It goes through the panel's own `setPaused`, the one place
+that re-reads the file before writing — an IPC path that set the flag directly
+would be a second writer with none of that discipline.
 
 ```json
 {
   "topologyName": "Laptop + Dell U2720Q",
   "showRecorded": false,
   "recordedAt": "2026-09-03T09:12:44.101Z",
+  "headerTitle": "Laptop + Dell U2720Q",
+  "headerMeta": "Drifted (1) · 3 apps watched",
+  "paused": false,
+  "badgeText": "Drifted (1)",
+  "badgeTone": "accent",
+  "overflowOpen": false,
+  "overflowLayouts": [],
   "workspaces": [
     { "id": 7, "name": "7", "monitorName": "eDP-1", "renderPath": "positioned",
       "badgeValue": "7", "badgeFocused": true }
@@ -363,6 +378,29 @@ all, and `PanelModel.focusedWorkspaceKey` answers `""` rather than guessing.
 The badge shows the **live** desk's focus on both maps. On the recorded map that
 is the point: the recording says where the windows belong, and "you are standing
 here" is the one thing about it that has to come from now.
+
+### The header
+
+The header is the shell's `Ui/PanelHero`: a monitor glyph, the topology name as
+`title`, the status line as `meta`, and a `Ui/ToggleSwitch` for Pause as its
+`trailingControl` — the hero reserves that space itself, which the hand-rolled
+chain of right-to-left anchors it replaces did not.
+
+`headerTitle` and `headerMeta` are what the hero was **handed**; `topologyName`
+is what the panel computed. They agree by construction, which is what makes a
+disagreement worth failing on.
+
+The status badge deliberately did **not** move into the hero's `detail` pill.
+That pill has one fixed border colour, and `PanelModel.badgeFor` maps six states
+onto four tones — `ok`, `muted`, `accent`, `urgent` — which is the only channel a
+glance uses. The six are enumerated in `tests/panel.test.js`; the VM drives
+`setPaused` and watches the switch position and the badge move together, because
+`Paused` outranks `Drifted` on the badge exactly as it does on the bar glyph.
+
+`overflowLayouts` is reported by the menu's row **delegates**, which exist only
+while the popup is up. A shut menu therefore lists nothing however many layouts
+are on disk, and a non-empty list is evidence that rows were drawn rather than
+that a model could have produced them.
 
 ### The fields that are exact from the first tick
 

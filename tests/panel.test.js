@@ -3068,6 +3068,53 @@ test("an open panel's badge prefers its own fresher drift, and only that", () =>
   assert.strictEqual(state.statusPatchFor("", layout, drift), null);
 });
 
+// ------------------------------------------------------------ the PanelHero
+
+test("every badge state keeps its own tone, and the four tones are four", () => {
+  // ENUMERATED, not spot-checked. The badge moved into the header beside a
+  // PanelHero whose own `detail` pill has ONE fixed border colour, and the
+  // reason it did not move INTO that pill is this table: four tones over six
+  // states, and the tone is the only channel a glance uses. A regression that
+  // flattened them would still produce six correct strings.
+  const cases = [
+    ["restoring", {}, "Restoring…", "accent"],
+    ["paused", {}, "Paused", "muted"],
+    ["hollow", {}, "Not recorded", "muted"],
+    ["failed", {}, "Restore failed", "urgent"],
+    ["drifted", { driftCount: 4 }, "Drifted (4)", "accent"],
+    ["ok", {}, "In sync", "ok"]
+  ];
+  for (const [glyphState, status, text, tone] of cases) {
+    assert.deepStrictEqual(panel.badgeFor(glyphState, status), { text, tone },
+      `badge for glyph state ${glyphState}`);
+  }
+  const tones = new Set(cases.map(([, , , tone]) => tone));
+  assert.deepStrictEqual([...tones].sort(), ["accent", "muted", "ok", "urgent"]);
+  // An unknown glyph state from a newer service reads as the quiet default
+  // rather than as nothing at all.
+  assert.deepStrictEqual(panel.badgeFor("something-new", {}), { text: "In sync", tone: "ok" });
+});
+
+test("the hero meta line carries the state AND the count", () => {
+  assert.strictEqual(panel.headerMeta("In sync", 3), "In sync · 3 apps watched");
+  assert.strictEqual(panel.headerMeta("Drifted (1)", 1), "Drifted (1) · 1 app watched");
+  // The case the count exists for: "In sync" over an empty watched list is a
+  // true statement about nothing.
+  assert.strictEqual(panel.headerMeta("In sync", 0), "In sync · 0 apps watched");
+  // No badge yet (a panel that has read no status) still says the half it knows.
+  assert.strictEqual(panel.headerMeta("", 2), "2 apps watched");
+  assert.strictEqual(panel.headerMeta(null, null), "0 apps watched");
+  assert.strictEqual(panel.headerMeta("In sync", -4), "In sync · 0 apps watched");
+});
+
+test("the pause switch is ON when the tool is working", () => {
+  // The only polarity a switch with no label can carry: `paused` is the flag,
+  // and a switch that was on while the tool was off would be the control lying
+  // about itself.
+  assert.strictEqual(panel.pauseSwitchChecked(false), true);
+  assert.strictEqual(panel.pauseSwitchChecked(true), false);
+});
+
 test("Record says why it is unavailable while a restore is in flight", () => {
   assert.strictEqual(panel.recordBlockedHint(false), "");
   const hint = panel.recordBlockedHint(true);

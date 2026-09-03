@@ -5389,6 +5389,30 @@ function recordTooltip(watchedCount, topologyName, restoring) {
     + ". This replaces the previous recording for it.";
 }
 
+// The hero's meta line: what the tool thinks of this desk, and how much of it
+// it is holding.
+//
+// It repeats the badge's word on purpose. The badge is one word carrying a
+// TONE, which is the channel a glance actually uses and the only thing that
+// says "in sync" and "restore failed" are different kinds of news; the meta
+// line is the sentence, and the count is the half the badge has never had room
+// for. "In sync" over an empty watched list is a true statement about nothing,
+// and that is exactly the case the count makes visible.
+function headerMeta(badgeText, watchedCount) {
+  var state = trim(badgeText);
+  var count = Number(watchedCount);
+  if (!isFinite(count) || count < 0) count = 0;
+  var apps = count === 1 ? "1 app watched" : count + " apps watched";
+  return state ? state + " · " + apps : apps;
+}
+
+// The header switch. It is ON when the tool is WORKING, which is the only
+// polarity a switch with no label can carry: `paused` is the flag, and a switch
+// that was on while the tool was off would be the control lying about itself.
+function pauseSwitchChecked(paused) {
+  return !paused;
+}
+
 // The header switch. Labelled with the ACT, so the tooltip carries the
 // consequence.
 function pauseTooltip(paused) {
@@ -5780,6 +5804,8 @@ if (typeof module !== "undefined") {
     mayManualRestore: mayManualRestore,
     restoreTooltip: restoreTooltip,
     recordTooltip: recordTooltip,
+    headerMeta: headerMeta,
+    pauseSwitchChecked: pauseSwitchChecked,
     pauseTooltip: pauseTooltip,
     learnLaunchTooltip: learnLaunchTooltip,
     viewToggleTooltip: viewToggleTooltip,
