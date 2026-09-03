@@ -18,6 +18,7 @@
 #   ok - acceptance suite passed in <n>s (artifacts in …)   ← the suite's own
 #   ok - dock-recall round trip: record, undock, scatter, redock, restored
 #   ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
+#   ok - dock-recall panel IPC: chips keyed and reported on both render paths, …
 #   ok - dock-recall undock-while-locked: guest prepared (…)
 #
 #   ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
@@ -66,6 +67,7 @@ REQUIRED_OK=(
   "ok - acceptance suite passed"
   "ok - dock-recall round trip: record, undock, scatter, redock, restored"
   "ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable"
+  "ok - dock-recall panel IPC: chips keyed and reported on both render paths, positioned and fallback"
   "ok - dock-recall undock-while-locked: guest prepared"
   "ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored"
 )

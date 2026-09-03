@@ -1866,6 +1866,169 @@ Item {
 
   Component.onCompleted: ensureStateDirProc.running = true
 
+  // --------------------------------------------------------------------- IPC
+
+  // What the panel computed, asked from outside it.
+  //
+  //   omarchy-shell dock-recall state                 the JSON below
+  //   omarchy-shell dock-recall setView live|recorded which map is showing
+  //
+  // Two audiences. `omarchy-shell` gets a way to drive this panel's view the
+  // way it drives the first-party ones (plugins/panels/network/Panel.qml owns
+  // its own handler for the same kind of reason). And the acceptance VM gets
+  // the only evidence that venue can honestly produce: it cannot prove a pixel
+  // was rasterized, so the standard is that the panel COMPUTED and BOUND the
+  // right value to the right chip, read back through here.
+  //
+  // The handler lives inside the panel component, and the shell's panel loader
+  // instantiates that only while the panel is OPEN — so the `dock-recall`
+  // target exists only while the panel is up. Summon it first
+  // (`omarchy-shell shell summon mkelk.dock-recall '{}'`); opening and closing
+  // stay the shell's verbs rather than being duplicated here, so the loader's
+  // open-set and this panel can never disagree about whether it is up.
+  //
+  // The payload:
+  //
+  //   {
+  //     "topologyName": "Laptop + Dell U2720Q",
+  //     "showRecorded": false,
+  //     "recordedAt": "2026-09-03T09:12:44.101Z" | null,
+  //     "workspaces": [
+  //       { "id": 7, "name": "7", "badgeValue": null,
+  //         "renderPath": "positioned" | "fallback" | null }
+  //     ],
+  //     "chips": [
+  //       { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
+  //         "iconSource": null, "iconResolved": null, "watched": true,
+  //         "fillState": null, "treatment": null,
+  //         "renderPath": "positioned" | "fallback" | null }
+  //     ]
+  //   }
+  //
+  // `null` is "no answer yet": the fields the rest of increment 06-bwf fills in
+  // (icons, the treatment ladder, the watched fill, the workspace badge) report
+  // null until the tick that computes them lands, and every one of them is
+  // added to the objects above rather than beside them.
+  //
+  // `key` and `renderPath` are exact from the start, because every later
+  // assertion keys on them. And `renderPath` is the one field that is NOT read
+  // off the model here: it is reported by the delegate that actually drew the
+  // chip, from the same `positioned` flag its x/y/width/height branch on. The
+  // map has two layouts and the fallback one has hidden a broken model before
+  // (.tick/learnings.md, "QML/JS boundary"), so a second derivation from the
+  // model would be able to agree with the model while the screen did something
+  // else.
+
+  // chip key -> { renderPath }, workspace key -> { renderPath }, written by
+  // the delegates. Mutated in place rather than reassigned: these are a
+  // side-channel for the IPC to read on demand, never a binding source, and
+  // reassigning would re-run the map's bindings from inside the map's own
+  // layout pass.
+  property var chipRenderReports: ({})
+  property var workspaceRenderReports: ({})
+
+  // Workspace ids are unique per desk in practice, but a stale recording can
+  // name the same id under two monitors, so the monitor is part of the key.
+  function workspaceRenderKey(monitorName, workspaceId) {
+    return String(monitorName) + "/" + String(workspaceId)
+  }
+
+  // Merge rather than replace, so a later tick can report its own fields from
+  // its own handler without knowing who else reports on the same chip.
+  function mergeRenderReport(store, key, report) {
+    if (!key) return
+    var current = store[String(key)] || {}
+    for (var field in report) current[field] = report[field]
+    store[String(key)] = current
+  }
+
+  function reportChipRender(key, report) {
+    root.mergeRenderReport(root.chipRenderReports, key, report)
+  }
+
+  function reportWorkspaceRender(key, report) {
+    root.mergeRenderReport(root.workspaceRenderReports, key, report)
+  }
+
+  // The map as the panel has it, chip by chip. A projection of mapModel plus
+  // what the delegates reported — deliberately thin, because everything with a
+  // right answer in it was already decided by PanelModel.
+  function panelState() {
+    var chips = []
+    var workspaces = []
+    var monitors = (root.mapModel && root.mapModel.monitors) ? root.mapModel.monitors : []
+
+    for (var m = 0; m < monitors.length; m++) {
+      var box = monitors[m]
+      var list = box.workspaces || []
+      for (var w = 0; w < list.length; w++) {
+        var workspace = list[w]
+        var wsReport = root.workspaceRenderReports[
+          root.workspaceRenderKey(box.name, workspace.id)] || null
+        workspaces.push({
+          id: workspace.id,
+          name: String(workspace.name),
+          badgeValue: null,
+          renderPath: wsReport ? wsReport.renderPath : null
+        })
+
+        var slots = workspace.slots || []
+        for (var s = 0; s < slots.length; s++) {
+          var members = slots[s].chips || []
+          for (var c = 0; c < members.length; c++) {
+            var chip = members[c]
+            var report = root.chipRenderReports[chip.key] || null
+            chips.push({
+              key: chip.key,
+              name: chip.name,
+              workspaceId: workspace.id,
+              iconSource: null,
+              iconResolved: null,
+              watched: !!chip.watched,
+              fillState: null,
+              treatment: null,
+              renderPath: report ? report.renderPath : null
+            })
+          }
+        }
+      }
+    }
+
+    return {
+      topologyName: root.topologyName,
+      showRecorded: root.showRecorded,
+      // The recording this topology has, whichever map is on screen: "when was
+      // this recorded" is a fact about the layout, not about the tab.
+      recordedAt: (root.recordedLayout && root.recordedLayout.recordedAt)
+        ? String(root.recordedLayout.recordedAt) : null,
+      workspaces: workspaces,
+      chips: chips
+    }
+  }
+
+  IpcHandler {
+    target: "dock-recall"
+
+    function state(): string {
+      return JSON.stringify(root.panelState())
+    }
+
+    // Same guard the Recorded button carries: nothing recorded for this
+    // topology means there is no recorded map to show, and the toggle dims
+    // rather than flipping to an empty one.
+    function setView(view: string): string {
+      var want = String(view || "").toLowerCase()
+      if (want === "live") {
+        root.showRecorded = false
+        return "live"
+      }
+      if (want !== "recorded") return "unknown"
+      if (!root.recordedLayout) return "no-recording"
+      root.showRecorded = true
+      return "recorded"
+    }
+  }
+
   // ------------------------------------------------------------------ window
 
   // Put the panel on the monitor that has focus. Without this it lands on
@@ -2462,6 +2625,20 @@ Item {
                               readonly property bool positioned: workspaceSlot.modelData.fallback !== true
                               readonly property int slotCount: workspaceSlot.modelData.slots.length
 
+                              // Which of the two layouts this workspace drew
+                              // with, said by the delegate that branches on it
+                              // rather than derived a second time from the
+                              // model. Read back over IPC — see root.panelState.
+                              readonly property string renderPath: workspaceSlot.positioned ? "positioned" : "fallback"
+                              readonly property string renderKey: root.workspaceRenderKey(
+                                monitorRect.modelData.name, workspaceSlot.modelData.id)
+                              function reportRender() {
+                                root.reportWorkspaceRender(workspaceSlot.renderKey,
+                                  { renderPath: workspaceSlot.renderPath })
+                              }
+                              onRenderPathChanged: workspaceSlot.reportRender()
+                              Component.onCompleted: workspaceSlot.reportRender()
+
                               // The drawing area, inside the border and under the
                               // "ws N" label.
                               readonly property real canvasWidth: Math.max(1, workspaceFlow.grid.boxW
@@ -2784,6 +2961,20 @@ Item {
                                           readonly property string tipText: PanelModel.wrapTooltip(
                                             PanelModel.chipTooltipText(chipTab.modelData),
                                             root.chipTooltipColumns)
+
+                                          // Which layout drew THIS chip. The
+                                          // same flag its slot's x, y, width
+                                          // and height branch on, reported from
+                                          // inside the delegate that applied
+                                          // it — see root.panelState.
+                                          readonly property string renderPath: workspaceSlot.positioned
+                                            ? "positioned" : "fallback"
+                                          function reportRender() {
+                                            root.reportChipRender(chipTab.modelData.key,
+                                              { renderPath: chipTab.renderPath })
+                                          }
+                                          onRenderPathChanged: chipTab.reportRender()
+                                          Component.onCompleted: chipTab.reportRender()
 
                                           // The tab strip divides the slot's
                                           // rectangle evenly; a solo chip is

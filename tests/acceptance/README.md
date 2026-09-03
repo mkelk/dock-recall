@@ -17,6 +17,7 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `run.sh` | **the entrypoint** — stage, boot, run, and answer in an exit code |
 | `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
 | `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
+| `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
 | `undock-locked.sh` | the locked scenario's host half — QMP keyboard and screendumps |
 | `vm-lib.sh` | reaching a VM the harness left running (sourced, not run) |
@@ -87,6 +88,7 @@ its output, so `run.sh` requires **all** of these lines and nothing less:
 ok - acceptance suite passed in 122s (artifacts in /tmp/omarchy-acceptance)
 ok - dock-recall round trip: record, undock, scatter, redock, restored
 ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
+ok - dock-recall panel IPC: chips keyed and reported on both render paths, positioned and fallback
 ok - dock-recall undock-while-locked: guest prepared (dr-locked on ws 8 @ dr-lock-dock, session UNLOCKED)
 ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
 ```
@@ -221,6 +223,77 @@ what neither of them will ever touch.
 
 Both seeded and migrated state files are copied into the artifacts directory, so
 the migration is auditable after the VM is gone.
+
+## What the panel IPC test asserts
+
+`dock-recall-panel-test.sh` is the first test here that opens the **panel**.
+Everything else watches the service — the state file, `hyprctl`, the
+`[dock-recall]` log — and the round trip's notes above say why it avoided the
+panel: it had no IPC to ask.
+
+It has one now. `Panel.qml` registers an `IpcHandler` on the target
+`dock-recall`, and because the shell's panel loader instantiates the component
+only while the panel is open, **that target exists only while the panel is up**.
+Summon it first:
+
+```bash
+omarchy-shell shell summon mkelk.dock-recall '{}'
+omarchy-shell dock-recall state                  # the payload below
+omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknown" | "no-recording"
+```
+
+```json
+{
+  "topologyName": "Laptop + Dell U2720Q",
+  "showRecorded": false,
+  "recordedAt": "2026-09-03T09:12:44.101Z",
+  "workspaces": [
+    { "id": 7, "name": "7", "badgeValue": null, "renderPath": "positioned" }
+  ],
+  "chips": [
+    { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
+      "iconSource": null, "iconResolved": null, "watched": true,
+      "fillState": null, "treatment": null, "renderPath": "positioned" }
+  ]
+}
+```
+
+`null` is "no answer yet": the fields the rest of increment 06-bwf fills in
+report null until the tick that computes them lands, and each is added to the
+objects above rather than beside them. `key` and `renderPath` are exact from the
+first tick, because every later assertion keys on them.
+
+**Why a query rather than a picture.** This venue cannot prove a pixel was
+rasterized — there are no golden images, no Pillow on host or guest, and the
+locked scenario measured the emulated framebuffer showing a normal desktop while
+the session was genuinely locked. So the standard is bind-level: the panel
+reports the values it *computed and bound*, and this test asserts on them the way
+every other test here asserts. It cannot catch a purely rasterization-layer bug
+(a theme override, zero opacity, a broken image codec). That is the accepted
+limit of the venue, decided by a human at the start of the increment.
+
+**Both render paths, in one panel session.** `Panel.qml` draws a workspace
+either absolutely-positioned or as the stacked fallback, and the fallback branch
+never calls `chipRectsForCanvas` at all — the learnings record it engaging
+silently and hiding a broken model for two live rounds. The test reaches each
+the way a user does:
+
+| view | how it gets there | path |
+|---|---|---|
+| Live | real windows carry `at`/`size` | `positioned` |
+| Recorded | the seeded layout has **no** `at`/`size`, the shape of a v1 recording | `fallback` |
+
+and then requires, in each view, that every chip carries a non-empty key and one
+of the two paths, that no chip disagrees with its own workspace about which path
+drew it, and that the two views do not report the same chip keys. `renderPath`
+is reported by the delegate that drew the chip, from the same `positioned` flag
+its x, y, width and height branch on — not derived a second time from the model,
+which could agree with the model while the screen did something else.
+
+Both payloads are copied into the artifacts directory as
+`dock-recall-panel-state-live.json` and `-recorded.json`, and the panel is
+dismissed on the way out however the test ends: its layer holds keyboard focus
+exclusively, and the tests after it want the desk back.
 
 ## What the undock-while-locked scenario asserts
 
