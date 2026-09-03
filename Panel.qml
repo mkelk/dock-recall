@@ -432,6 +432,65 @@ Item {
   readonly property var launchRefusals: root.launchDerivation.refusals
   readonly property int learnableLaunches: PanelModel.learnableCount(root.identities, root.derivedLaunch)
 
+  // -------------------------------------------------------------------- icons
+  //
+  // A chip that is an outlined rectangle with a truncated word in it makes three
+  // terminals three identical boxes. The icon is what tells them apart at a
+  // glance, and it is the one thing the desktop already knows about every app.
+  //
+  // TWO HALVES, and the split is the architectural rule. Which desktop entry
+  // describes this app, and what NAME it gives its icon, is a fact about the
+  // files on disk: pure, testable, PanelModel's (iconNameIndex). Turning that
+  // name into something an Image can draw is the shell's, through
+  // shell.appLibrary.iconSource — only the shell knows the icon theme, and only
+  // it keeps the contextual app/device index that stops a name like "zoom"
+  // resolving to an action icon instead of the app. We do not reimplement
+  // either half.
+  readonly property var appLibrary: root.shell ? root.shell.appLibrary : null
+
+  // The generic executable icon, resolved through the same call every real icon
+  // goes through. iconSource NEVER answers empty — it falls back to
+  // application-x-executable — so "did this resolve?" cannot be asked of the
+  // source alone, and this is what it is compared against.
+  //
+  // An empty name is the shortest way to ask for exactly that fallback (see
+  // AppLibrary.iconSource's first line). If the theme has no such icon either,
+  // this is "" and every unresolved chip's source is "" too, so the two still
+  // agree — the panel then draws nothing rather than a wrong picture, and still
+  // reports iconResolved false.
+  //
+  // The honest limit: an app whose desktop entry really does say
+  // `Icon=application-x-executable` reports unresolved. It is drawing the
+  // generic icon, which is what the flag is about.
+  readonly property string genericIconSource: root.appLibrary
+    ? String(root.appLibrary.iconSource("")) : ""
+
+  // identity id / window class -> icon NAME, for the whole panel frame. One
+  // pass over the desktop dump rather than one per chip; see
+  // PanelModel.iconNameIndex.
+  readonly property var iconNames: PanelModel.iconNameIndex(
+    root.identities, root.liveClients, root.desktopFiles)
+
+  function iconNameOf(identityId, className) {
+    return PanelModel.iconNameFor(root.iconNames, identityId, className)
+  }
+
+  // What an Image should draw for this app. Always something: a name that
+  // resolves, or the generic executable icon.
+  function iconSourceOf(identityId, className) {
+    if (!root.appLibrary) return ""
+    return String(root.appLibrary.iconSource(root.iconNameOf(identityId, className)))
+  }
+
+  // Did the app's own icon resolve, or is this the generic executable fallback?
+  // Reported per chip and per row, because "every watched app shows its icon"
+  // is not a claim a non-empty source can support on its own.
+  function iconResolvedOf(identityId, className) {
+    var source = root.iconSourceOf(identityId, className)
+    if (!source) return false
+    return source !== root.genericIconSource
+  }
+
   // -------------------------------------------------------- keyboard cursor
   //
   // Three focus sections — the chips, then the two footer buttons — because
@@ -748,6 +807,13 @@ Item {
 
     root.refresh()
     root.refreshDerivations()
+    // The shell's icon index is built once at startup and never re-scans on its
+    // own, so an app installed since then has no icon until somebody asks. The
+    // menu asks when it opens; so do we, for the same reason and at the same
+    // moment — this is a rescan of the theme directories, not of our own state.
+    if (root.appLibrary && typeof root.appLibrary.refreshIcons === "function") {
+      root.appLibrary.refreshIcons()
+    }
     root.opened = true
     root.log("panel opened (focus=" + (root.focusRequest || "chips") + ")")
     // The window is instantiated hidden, so `focus: true` inside it is
@@ -893,9 +959,14 @@ Item {
     + ' [ -f "$f" ] || continue;'
     + ' printf "@@mw@@ %s\\n" "$f";'
     // Only the keys parseDesktopEntry looks at, group headers included — the
-    // full text of every desktop file on the machine is a megabyte of icons
-    // and translated comments this never reads.
-    + ' grep -E "^(\\[|Exec=|StartupWMClass=|Type=|Hidden=|Name=)" "$f" || true;'
+    // full text of every desktop file on the machine is a megabyte of
+    // translated comments this never reads.
+    //
+    // `Icon=` is in the list because parseDesktopEntry retains it and the chips
+    // and rows draw it. Anchored and unsuffixed like every other key here, so
+    // `Icon[de]=` is not even shipped — parseDesktopEntry would ignore it
+    // anyway, by the same rule it applies to `Name[de]`.
+    + ' grep -E "^(\\[|Exec=|StartupWMClass=|Type=|Hidden=|Name=|Icon=)" "$f" || true;'
     + ' done'
 
   // The user's own directory is scanned FIRST because a file there overrides
@@ -1902,20 +1973,23 @@ Item {
   //         "monitorName": "eDP-1", "watched": true,
   //         "renderPath": "positioned" | "fallback" | null,
   //         "placed": true | false | null,
-  //         "width": 214, "height": 120 }
+  //         "width": 214, "height": 120,
+  //         "iconSource": "file:///usr/share/icons/…/obsidian.svg" | null,
+  //         "iconResolved": true | false | null }
   //     ]
   //   }
   //
   // ABSENT vs `null`, and the difference is the contract:
   //
   //   absent  — the panel has nothing to say about this key at all. Either the
-  //             tick that computes it has not landed yet (iconSource,
-  //             iconResolved, fillState, treatment, badgeValue: they are NOT
-  //             here, rather than here as null), or the thing it describes does
-  //             not exist (`recordedAt` when this topology has no recording).
+  //             tick that computes it has not landed yet (fillState, treatment,
+  //             badgeValue: they are NOT here, rather than here as null), or the
+  //             thing it describes does not exist (`recordedAt` when this
+  //             topology has no recording).
   //   null    — computed, and the answer is genuinely empty. `recordedAt: null`
   //             is a recording that carries NO timestamp; renderPath/placed/
-  //             width/height are null while the delegate has not drawn yet.
+  //             width/height/iconSource/iconResolved are null while the delegate
+  //             has not drawn yet.
   //
   // So a consumer asks `has("k")` first and only then looks at the value, and a
   // later tick ADDS its key to the objects below rather than un-nulling one.
@@ -2042,7 +2116,12 @@ Item {
               renderPath: root.reported(report, "renderPath"),
               placed: root.reported(report, "placed"),
               width: root.reported(report, "width"),
-              height: root.reported(report, "height")
+              height: root.reported(report, "height"),
+              // The icon the chip's Image was bound to, and whether it is the
+              // app's own or the generic executable fallback. Both from the
+              // delegate, for the reason the four above are.
+              iconSource: root.reported(report, "iconSource"),
+              iconResolved: root.reported(report, "iconResolved")
             })
           }
         }
@@ -3049,6 +3128,27 @@ Item {
                                           // drawing did not have.
                                           readonly property bool placed: chipSlot.drawn !== null
 
+                                          // This app's icon, and whether it is
+                                          // the app's OWN icon or the generic
+                                          // executable one. Held as properties
+                                          // rather than written straight into
+                                          // the Image below, because the same
+                                          // two values are what the chip
+                                          // REPORTS — the payload has to carry
+                                          // what was bound, not a second
+                                          // derivation that could agree with
+                                          // the model while the Image drew
+                                          // something else.
+                                          //
+                                          // Identity first, class second: a
+                                          // recorded ghost has no window and so
+                                          // no class at all, and its identity
+                                          // is the only handle it has.
+                                          readonly property string iconSource: root.iconSourceOf(
+                                            chipTab.modelData.identityId, chipTab.modelData.className)
+                                          readonly property bool iconResolved: root.iconResolvedOf(
+                                            chipTab.modelData.identityId, chipTab.modelData.className)
+
                                           // The size this chip actually got, in
                                           // pixels, AFTER every floor and every
                                           // tab-group division — chipTab.width
@@ -3065,11 +3165,22 @@ Item {
                                               renderPath: chipTab.renderPath,
                                               placed: chipTab.placed,
                                               width: chipTab.width,
-                                              height: chipTab.height
+                                              height: chipTab.height,
+                                              // The two icon values the Image
+                                              // below actually binds. Reported
+                                              // from the same delegate on BOTH
+                                              // render paths — the delegate is
+                                              // one, only its geometry branches
+                                              // — so the fallback stack cannot
+                                              // quietly draw something else.
+                                              iconSource: chipTab.iconSource,
+                                              iconResolved: chipTab.iconResolved
                                             })
                                           }
                                           onRenderPathChanged: chipTab.reportRender()
                                           onPlacedChanged: chipTab.reportRender()
+                                          onIconSourceChanged: chipTab.reportRender()
+                                          onIconResolvedChanged: chipTab.reportRender()
                                           // The Flow's first pass runs before its
                                           // width is known and the rects settle a
                                           // frame or two later, so the size has to
@@ -3099,6 +3210,7 @@ Item {
                                           }
 
                                           Column {
+                                            id: chipContent
                                             anchors.centerIn: parent
                                             // Never negative: a chip drawn at the
                                             // minimum size is narrower than its
@@ -3107,6 +3219,56 @@ Item {
                                             // all rather than to one letter.
                                             width: Math.max(Style.space(8), chipTab.width - Style.space(8))
                                             spacing: Style.space(2)
+
+                                            // THE ICON. Sized from the chip, not
+                                            // from a constant: a chip is whatever
+                                            // the window's own rectangle scaled
+                                            // to, from the 16×10 floor up to a
+                                            // fullscreen window's whole
+                                            // workspace, and one fixed icon size
+                                            // would be a smear on the first and a
+                                            // stamp on the last. Capped at the
+                                            // kit's large icon so a big chip does
+                                            // not turn into a poster, floored at
+                                            // 8 px because below that an icon is
+                                            // noise — and hidden outright when
+                                            // even that does not fit, which is
+                                            // the same judgement chipLabel makes
+                                            // about its own text.
+                                            //
+                                            // Both render paths get here: this is
+                                            // ONE delegate, and only its slot's
+                                            // x/y/width/height branch on
+                                            // `positioned`. The stacked fallback
+                                            // rows draw this Image too.
+                                            Image {
+                                              id: chipIcon
+                                              readonly property real side: Math.max(8,
+                                                Math.min(Style.font.iconLarge,
+                                                  Math.min(chipTab.width, chipTab.height) * 0.5))
+                                              visible: chipTab.iconSource !== ""
+                                                && chipTab.width >= chipIcon.side + Style.space(2)
+                                                && chipTab.height >= chipIcon.side + Style.space(2)
+                                              width: chipIcon.side
+                                              height: chipIcon.side
+                                              anchors.horizontalCenter: parent.horizontalCenter
+                                              fillMode: Image.PreserveAspectFit
+                                              smooth: true
+                                              // Decoded at PHYSICAL pixels — a
+                                              // logical-size decode leaves PNG
+                                              // icons upscaled and blurry on
+                                              // HiDPI, which is the one thing an
+                                              // icon may not be. Copied from the
+                                              // shell's own app rows.
+                                              sourceSize.width: width * Screen.devicePixelRatio
+                                              sourceSize.height: height * Screen.devicePixelRatio
+                                              // Never blocks the map's layout
+                                              // pass on a disk read: a workspace
+                                              // full of chips is a workspace full
+                                              // of icon loads.
+                                              asynchronous: true
+                                              source: chipTab.iconSource
+                                            }
 
                                             Text {
                                               id: chipLabel

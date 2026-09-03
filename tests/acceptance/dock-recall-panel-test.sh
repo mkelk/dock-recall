@@ -45,6 +45,14 @@
 #                  workspace id under two monitors; dropping it from the payload
 #                  would leave the chip-versus-workspace cross-check below
 #                  matching on id alone, across monitors.
+#   iconSource,  — the icon the chip's Image was BOUND to, and whether it is the
+#   iconResolved   app's own or the generic executable fallback.
+#                  AppLibrary.iconSource never answers empty, so a non-empty
+#                  source proves nothing on its own — the flag is what separates
+#                  "this app's icon" from "a picture of a cog". Asserted on both
+#                  paths, and on the fallback path the chip has no window class
+#                  at all, so it also pins that the lookup falls back to the
+#                  identity.
 #   watched      — asserted against the window this test actually seeded, not
 #                  merely required to be present. The live map draws every
 #                  mappable client whether it is watched or not, so a payload in
@@ -102,6 +110,29 @@ APP_TITLE="dock-recall-panel"
 APP_CLASS="foot"
 IDENTITY="dr-panel"
 
+# THE ICON HALF needs two apps, because the claim has two sides and one window
+# can only be one of them.
+#
+#   the SEEDED app       — an app whose desktop entry names an icon. foot's real
+#                          entry declares no Icon= at all (that is a fact about
+#                          the packaged file, not an accident of this test), so
+#                          the entry below is written into the guest's own
+#                          applications directory, which the panel scans FIRST
+#                          precisely so a user's file overrides a system one.
+#   the NO-ENTRY app     — a window whose class no desktop file claims. It must
+#                          still draw the generic executable icon and report
+#                          iconResolved:false, never an empty source.
+#
+# The icon is an ABSOLUTE PATH, not a themed name, and that is deliberate:
+# AppLibrary.iconSource turns a leading "/" straight into a file:// URL, so this
+# side of the assertion does not depend on which icon theme the guest happens to
+# ship. The file it points at is the plugin's own preview.png — installed by
+# step 1, so it is certainly there.
+NOICON_TITLE="dock-recall-noicon"
+NOICON_CLASS="dock-recall-noicon"
+DESKTOP_DIR="$HOME/.local/share/applications"
+DESKTOP_FILE="$DESKTOP_DIR/dock-recall-panel-test.desktop"
+
 # The panel's own layer, declared in Panel.qml (WlrLayershell.namespace).
 PANEL_NAMESPACE="mkelk-dock-recall"
 # The IPC target the panel's IpcHandler registers. It exists only while the
@@ -114,6 +145,10 @@ GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 # Filled in at step 2 and asserted against the payload at step 5. Declared here
 # because `set -u` is on and the capture predicate below names it.
 APP_ADDRESS=""
+NOICON_ADDRESS=""
+# The file:// URL the seeded app's chip must report as its icon. Filled in at
+# step 3 alongside the desktop entry that names it.
+ICON_URL=""
 # The payloads the two view predicates capture. Same reason.
 LIVE_JSON=""
 RECORDED_JSON=""
@@ -180,8 +215,19 @@ CHIP_MIN_H=10
 # The half both views must satisfy: there is at least one chip, every chip
 # carries a non-empty key, a distinct one, one of the two render paths and the
 # geometry it drew with, a positioned chip really was placed and really has a
-# size — and no chip disagrees with the workspace it says it is on, ON ITS OWN
-# MONITOR, about which path drew it. `$state` is bound by the callers, because
+# size, an icon source that is NEVER empty and a flag saying whether that source
+# is the app's own icon — and no chip disagrees with the workspace it says it is
+# on, ON ITS OWN MONITOR, about which path drew it.
+#
+# The empty-source clause is not pedantry: AppLibrary.iconSource cannot answer
+# empty, because it falls back to application-x-executable, so an empty string
+# here means either the panel never asked (no shell, and so no appLibrary) or
+# the guest icon theme has no generic executable icon at all. The second would
+# leave every unrecognised app drawing nothing, which is worth failing on.
+#
+# NOTHING inside the shape below may carry an apostrophe or a `#` comment: it is
+# a single-quoted shell string, and an apostrophe ends it. `$state` is bound by
+# the callers, because
 # the chip-versus-workspace clause rebinds `.` inside its own iteration; `$minw`
 # and `$minh` come in as jq --argjson.
 # shellcheck disable=SC2016  # $state, $minw and $minh are jq's, not the shell's
@@ -192,7 +238,9 @@ STATE_SHAPE='
         and (.monitorName|type) == "string" and (.monitorName|length) > 0
         and (.renderPath == "positioned" or .renderPath == "fallback")
         and (.placed|type) == "boolean"
-        and (.width|type) == "number" and (.height|type) == "number")]|length) == (.chips|length)
+        and (.width|type) == "number" and (.height|type) == "number"
+        and (.iconSource|type) == "string" and (.iconSource|length) > 0
+        and (.iconResolved|type) == "boolean")]|length) == (.chips|length)
   and ((.chips|map(.key)|unique|length) == (.chips|length))
   and ([.chips[]|select(.renderPath == "positioned"
         and (.placed == false or .width < $minw or .height < $minh))]|length) == 0
@@ -220,12 +268,20 @@ STATE_SHAPE='
 capture_live_state() {
   LIVE_JSON=$(panel_state_json)
   printf '%s' "$LIVE_JSON" | jq -e --argjson minw "$CHIP_MIN_W" --argjson minh "$CHIP_MIN_H" \
-    --arg addr "$APP_ADDRESS" '. as $state |
+    --arg addr "$APP_ADDRESS" --arg noicon "$NOICON_ADDRESS" --arg icon "$ICON_URL" \
+    '. as $state |
     '"$STATE_SHAPE"'
     and .showRecorded == false
     and ([.chips[]|select(.renderPath == "positioned")]|length) > 0
     and ([.chips[]|select(.key == $addr and .watched == true
           and .renderPath == "positioned")]|length) == 1
+    # THE ICON, on the POSITIONED path. The seeded app has an entry naming an
+    # icon, so its chip reports that icon resolved; the no-entry window has
+    # none, so its chip reports the generic one and says so.
+    and ([.chips[]|select(.key == $addr and .renderPath == "positioned"
+          and .iconSource == $icon and .iconResolved == true)]|length) == 1
+    and ([.chips[]|select(.key == $noicon and .renderPath == "positioned"
+          and .iconResolved == false and (.iconSource|length) > 0)]|length) == 1
   ' >/dev/null
 }
 
@@ -233,10 +289,18 @@ capture_live_state() {
 # the fallback path, and at least one exists.
 capture_recorded_state() {
   RECORDED_JSON=$(panel_state_json)
-  printf '%s' "$RECORDED_JSON" | jq -e --argjson minw "$CHIP_MIN_W" --argjson minh "$CHIP_MIN_H" '. as $state |
+  printf '%s' "$RECORDED_JSON" | jq -e --argjson minw "$CHIP_MIN_W" --argjson minh "$CHIP_MIN_H" \
+    --arg icon "$ICON_URL" '. as $state |
     '"$STATE_SHAPE"'
     and .showRecorded == true
     and ([.chips[]|select(.renderPath == "fallback")]|length) == (.chips|length)
+    # THE SAME ICON, on the FALLBACK path — the half that matters, because the
+    # stacked branch is the one that has hidden a broken model before. The
+    # recorded chip has no window and therefore no window class at all, so this
+    # also pins that the lookup falls back to the IDENTITY: an icon resolved by
+    # class alone would report nothing here.
+    and ([.chips[]|select(.renderPath == "fallback"
+          and .iconSource == $icon and .iconResolved == true)]|length) > 0
   ' >/dev/null
 }
 
@@ -270,6 +334,11 @@ cleanup() {
   # and the panel agree about it being gone.
   omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
   pkill -f "foot --title=$APP_TITLE" 2>/dev/null
+  pkill -f "foot --app-id=$NOICON_CLASS" 2>/dev/null
+  # The desktop entry is this test's fiction too — it claims foot's window class
+  # for an app that is not foot — and the tests that share this boot scan the
+  # same directory.
+  rm -f "$DESKTOP_FILE" 2>/dev/null
   # And take the seed with us. Everything this test writes to the state file is
   # its own fiction — an identity matching a window it just killed, and a layout
   # with no geometry at all — and the tests that share this boot read the same
@@ -321,6 +390,41 @@ wait_until "shell is back after restart (panel IPC)" 60 pgrep -f 'quickshell -n 
 wait_until "dock-recall service reported ready (panel IPC)" 60 service_ready
 pass "plugin installed, enabled, and its service is live (panel IPC)"
 
+# --------------------------------------------- 1b. the desktop entry with an icon
+#
+# Written AFTER the rsync, because the Icon it names is a file the rsync put
+# there, and BEFORE the panel is ever summoned, because the panel scans the
+# applications directories once per opening (a hundred-file scan twice a second
+# on an idle desktop is not a thing this plugin does).
+#
+# Icon= is an absolute path so the assertion does not ride on the guest's icon
+# theme: AppLibrary.iconSource turns a leading "/" into a file:// URL and asks
+# the theme nothing. StartupWMClass is the field that exists to answer "which
+# window belongs to this launcher", which is the pass the panel's own lookup
+# tries first.
+ICON_PATH="$PLUGIN_DIR/preview.png"
+[[ -f $ICON_PATH ]] ||
+  fail "an icon file to name in the desktop entry (panel IPC)" "no $ICON_PATH after the install"
+# The panel builds this URL with Util.fileUrl, which percent-encodes each path
+# segment. Nothing in an unremarkable $HOME needs encoding, and this is the
+# check that says so rather than assuming it — an encoded byte would make the
+# equality below fail for a reason that has nothing to do with icons.
+[[ $ICON_PATH =~ ^[A-Za-z0-9/._~-]+$ ]] ||
+  fail "the icon path needs no percent-encoding (panel IPC)" \
+    "$ICON_PATH contains a character Util.fileUrl would escape"
+ICON_URL="file://$ICON_PATH"
+
+mkdir -p "$DESKTOP_DIR"
+cat > "$DESKTOP_FILE" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Dock Recall Panel Test
+Exec=foot --title=$APP_TITLE
+StartupWMClass=$APP_CLASS
+Icon=$ICON_PATH
+DESKTOP
+pass "desktop entry for $APP_CLASS naming Icon=$ICON_PATH (panel IPC)"
+
 # ------------------------------------------------------------ 2. run the app
 
 pkill -f "foot --title=$APP_TITLE" 2>/dev/null
@@ -337,6 +441,32 @@ APP_WS=$(clients | jq -r --arg t "$APP_TITLE" 'first(.[]|select(.initialTitle==$
 # the live map does the second whether anything is watched or not.
 APP_ADDRESS=$(app_field address)
 [[ -n $APP_ADDRESS ]] || fail "app has an address (panel IPC)"
+
+# The other half of the icon claim: a window whose class NO desktop file claims.
+# It is never watched (the identity's title axis excludes it), so it exercises
+# the lookup's class branch and finds nothing there — which must still draw the
+# generic executable icon rather than an empty source.
+#
+# The class is checked rather than assumed. `foot --app-id=` is what sets it,
+# and a foot that ignored the flag would put a second window of class `foot` on
+# the desk — which the entry written above DOES claim, so the assertion would
+# then be about the wrong thing entirely. Better to say so here.
+pkill -f "foot --app-id=$NOICON_CLASS" 2>/dev/null
+launch_app "foot --app-id=$NOICON_CLASS --title=$NOICON_TITLE"
+noicon_present() {
+  [[ -n $(clients | jq -r --arg t "$NOICON_TITLE" \
+    'first(.[]|select(.initialTitle==$t)|.address)//empty') ]]
+}
+wait_until "the no-entry window appeared (panel IPC)" 30 noicon_present
+
+NOICON_ADDRESS=$(clients | jq -r --arg t "$NOICON_TITLE" \
+  'first(.[]|select(.initialTitle==$t)|.address)//empty')
+noicon_reported_class=$(clients | jq -r --arg t "$NOICON_TITLE" \
+  'first(.[]|select(.initialTitle==$t)|.class)//empty')
+[[ $noicon_reported_class == "$NOICON_CLASS" ]] ||
+  fail "the no-entry window carries its own class (panel IPC)" \
+    "hyprctl reports class '$noicon_reported_class', not '$NOICON_CLASS' — foot ignored --app-id, and this window is indistinguishable from the seeded one"
+pass "a second window, class $NOICON_CLASS, which no desktop file claims (panel IPC)"
 
 # ------------------------------------------------- 3. seed identity + layout
 
@@ -442,7 +572,7 @@ pass "panel summoned and its layer '$PANEL_NAMESPACE' is mapped"
 if ! poll 30 capture_live_state; then
   diagnostics
   fail "panel IPC reports the live map" \
-    "no live payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, one of them the watched window $APP_ADDRESS (see the raw payload above)"
+    "no live payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path and each carrying a non-empty iconSource, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved, and $NOICON_ADDRESS reporting the generic icon unresolved (see the raw payload above)"
 fi
 printf '%s\n' "$LIVE_JSON" > "$ARTIFACTS/dock-recall-panel-state-live.json" 2>/dev/null || true
 
@@ -461,6 +591,15 @@ pass "live map over IPC: $live_chips chip(s), $live_positioned on the POSITIONED
 seeded_size=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$APP_ADDRESS" \
   'first(.chips[]|select(.key == $addr)|"\(.width)x\(.height), placed=\(.placed), ws \(.monitorName)/\(.workspaceId)")//"absent"')
 pass "the seeded window is a watched live chip keyed $APP_ADDRESS ($seeded_size)"
+
+# The icons, on the positioned path. Both halves are already required by the
+# poll above; restated so the values that proved them land in the log.
+seeded_icon=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$APP_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|"\(.iconSource) resolved=\(.iconResolved)")//"absent"')
+noicon_icon=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$NOICON_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|"\(.iconSource) resolved=\(.iconResolved)")//"absent"')
+pass "POSITIONED icons: the entry's own icon on the seeded chip ($seeded_icon)"
+pass "POSITIONED icons: the generic executable icon on a class no file claims ($noicon_icon)"
 
 # The Recorded tab's date, which the dated-header tick asserts on, is the
 # recording's own — not the tab's, and not the clock's. And it is PRESENT: an
@@ -490,7 +629,7 @@ fi
 if ! poll 30 capture_recorded_state; then
   diagnostics
   fail "panel IPC reports the recorded map" \
-    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, agreeing with their own workspace on their own monitor (see the raw payload above)"
+    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, agreeing with their own workspace on their own monitor, at least one resolving its identity's icon to $ICON_URL (see the raw payload above)"
 fi
 printf '%s\n' "$RECORDED_JSON" > "$ARTIFACTS/dock-recall-panel-state-recorded.json" 2>/dev/null || true
 screenshot "success-dock-recall-panel-02-recorded"
@@ -498,6 +637,10 @@ screenshot "success-dock-recall-panel-02-recorded"
 recorded_chips=$(printf '%s' "$RECORDED_JSON" | jq -r '.chips|length')
 recorded_fallback=$(printf '%s' "$RECORDED_JSON" | jq -r '[.chips[]|select(.renderPath == "fallback")]|length')
 pass "recorded map over IPC: $recorded_chips chip(s), $recorded_fallback on the FALLBACK path"
+
+recorded_icon=$(printf '%s' "$RECORDED_JSON" | jq -r \
+  'first(.chips[]|select(.iconResolved == true)|"\(.key) → \(.iconSource)")//"absent"')
+pass "FALLBACK icons: a stacked chip resolves its identity's icon ($recorded_icon)"
 
 # The two views are the two paths, and they are not the same chips: a payload
 # that reported one constant for renderPath would have failed one of the two

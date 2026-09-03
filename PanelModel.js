@@ -2130,7 +2130,23 @@ function matchesAnyPattern(text, patterns) {
 //      reverse-DNS name than the app reports
 //   4. the filename — a packager's choice of filename, not a statement about
 //      windows
-function launchFromDesktopFiles(patterns, files) {
+// The dump, parsed once: [{ path, entry, command }] for every file that could
+// describe an application at all.
+//
+// Split out from launchFromDesktopFiles because the icon lookup below runs the
+// SAME four passes and there are now several keys asking per panel frame — one
+// per watched identity, one per unwatched class. Re-parsing a hundred desktop
+// files for each of them is the difference between a frame and a stutter, so
+// the caller parses once and matches many.
+//
+// `requireCommand` is what keeps launch resolution byte-identical to what it
+// was: an entry with no runnable Exec was dropped BEFORE the passes, so a
+// strong pass-1 claim on an Exec-less file could never shadow a weaker claim on
+// a file that actually launches something. The icon lookup asks for the same
+// list without that filter — "which entry is this window's app" is a question a
+// file with no Exec can still answer, and an entry with no Icon simply falls
+// through to the next pass.
+function parsedDesktopEntries(files, requireCommand) {
   var list = isArray(files) ? files : [];
   var parsed = [];
 
@@ -2141,35 +2157,56 @@ function launchFromDesktopFiles(patterns, files) {
     if (entry.hidden) continue;
     if (entry.type && entry.type !== "Application") continue;
     var command = desktopExecCommand(entry.exec);
-    if (!command) continue;
+    if (requireCommand && !command) continue;
     parsed.push({ path: trim(file.path), entry: entry, command: command });
   }
 
+  return parsed;
+}
+
+// The four passes themselves, over an already-parsed list. Returns the winning
+// record, or null. `accept` lets a caller skip a record that matched but has
+// nothing to give — the icon lookup passes one, so an entry that claims the
+// class but declares no Icon= does not swallow the match and leave the app
+// iconless when a weaker file would have named one.
+function matchDesktopEntry(patterns, parsed, accept) {
+  var list = isArray(parsed) ? parsed : [];
+  var wanted = typeof accept === "function" ? accept : function () { return true; };
+
   // Pass 1: the declared window class, exactly.
-  for (var p = 0; p < parsed.length; p++) {
-    var candidates = desktopClassCandidates(parsed[p].entry);
+  for (var p = 0; p < list.length; p++) {
+    if (!wanted(list[p])) continue;
+    var candidates = desktopClassCandidates(list[p].entry);
     for (var c = 0; c < candidates.length; c++) {
-      if (matchesAnyPattern(candidates[c], patterns)) return parsed[p].command;
+      if (matchesAnyPattern(candidates[c], patterns)) return list[p];
     }
   }
 
   // Pass 2: the host of a webapp Exec line.
-  for (var u = 0; u < parsed.length; u++) {
-    var webapp = desktopWebappClassCandidate(parsed[u].entry);
-    if (webapp && matchesAnyPattern(webapp, patterns)) return parsed[u].command;
+  for (var u = 0; u < list.length; u++) {
+    if (!wanted(list[u])) continue;
+    var webapp = desktopWebappClassCandidate(list[u].entry);
+    if (webapp && matchesAnyPattern(webapp, patterns)) return list[u];
   }
 
   // Pass 3: the declared window class, fuzzily.
-  for (var f = 0; f < parsed.length; f++) {
-    if (wmClassFuzzyMatchesAny(parsed[f].entry.startupWMClass, patterns)) return parsed[f].command;
+  for (var f = 0; f < list.length; f++) {
+    if (!wanted(list[f])) continue;
+    if (wmClassFuzzyMatchesAny(list[f].entry.startupWMClass, patterns)) return list[f];
   }
 
   // Pass 4: the filename.
-  for (var q = 0; q < parsed.length; q++) {
-    if (matchesAnyPattern(desktopBasename(parsed[q].path), patterns)) return parsed[q].command;
+  for (var q = 0; q < list.length; q++) {
+    if (!wanted(list[q])) continue;
+    if (matchesAnyPattern(desktopBasename(list[q].path), patterns)) return list[q];
   }
 
-  return "";
+  return null;
+}
+
+function launchFromDesktopFiles(patterns, files) {
+  var hit = matchDesktopEntry(patterns, parsedDesktopEntries(files, true), null);
+  return hit ? hit.command : "";
 }
 
 // The same question asked about a live window rather than a stored identity.
@@ -2177,6 +2214,81 @@ function launchFromDesktopFilesForClass(className, files) {
   var pattern = derivePattern(className);
   if (!pattern) return "";
   return launchFromDesktopFiles([pattern], files);
+}
+
+// ------------------------------------------------------------------- icons
+//
+// The NAME an app's desktop entry gives its icon — "obsidian", "whatsapp", or
+// an absolute path. Not a file and not a URL: turning a name into something an
+// Image can draw is the shell's job (shell.appLibrary.iconSource), because only
+// the shell knows the icon theme, keeps a contextual index that stops "zoom"
+// resolving to an action icon, and can fall back to application-x-executable.
+// This file stays pure and clock-free; it answers the half that is a fact about
+// the desktop files.
+//
+// "" means no entry claimed this app, or the entry that did declares no Icon=.
+// The panel then draws the generic executable icon and reports iconResolved
+// false — never an empty source.
+function iconNameFromDesktopFiles(patterns, parsed) {
+  var hit = matchDesktopEntry(patterns, parsed, function (record) {
+    return trim(record && record.entry && record.entry.icon) !== "";
+  });
+  return hit ? trim(hit.entry.icon) : "";
+}
+
+// One lookup table for a whole panel frame: identity ids and window classes to
+// icon names.
+//
+// Keyed the way the callers ask — "id:<identityId>" for a watched identity,
+// "class:<className>" for a window that has no identity yet — because a chip or
+// a row knows one or the other and a recorded ghost knows only the identity
+// (its className is "", there being no window). The two keyspaces are kept
+// apart by their prefixes for the same reason appRows keys its rows that way.
+//
+// An identity is looked up by its own `patterns`, which is what
+// launchFromDesktopFiles already uses and therefore what makes the icon come
+// from the same entry the launch command did.
+function iconNameIndex(identities, clients, desktopFiles) {
+  var parsed = parsedDesktopEntries(desktopFiles, false);
+  var identityList = isArray(identities) ? identities : [];
+  var clientList = isArray(clients) ? clients : [];
+  var out = {};
+  var i;
+
+  for (i = 0; i < identityList.length; i++) {
+    var identity = identityList[i];
+    var id = trim(identity && identity.id);
+    // `undefined` and not a truthiness test: "" is a real answer ("nothing
+    // claims this app"), and re-deriving it per duplicate id would be work for
+    // the same empty string.
+    if (!id || out["id:" + id] !== undefined) continue;
+    var patterns = isArray(identity.patterns) ? identity.patterns : [];
+    out["id:" + id] = iconNameFromDesktopFiles(patterns, parsed);
+  }
+
+  for (i = 0; i < clientList.length; i++) {
+    var client = clientList[i];
+    var className = trim(client && (client.class || client.initialClass));
+    if (!className || out["class:" + className] !== undefined) continue;
+    var pattern = derivePattern(className);
+    out["class:" + className] = pattern
+      ? iconNameFromDesktopFiles([pattern], parsed) : "";
+  }
+
+  return out;
+}
+
+// The icon name for one chip or one row, off that table. Identity first: a
+// watched window's identity is the more specific claim (it can carry
+// hand-narrowed patterns and a title axis), and it is the only thing a recorded
+// ghost has at all.
+function iconNameFor(index, identityId, className) {
+  var map = (index && typeof index === "object") ? index : {};
+  var id = trim(identityId);
+  if (id && trim(map["id:" + id])) return trim(map["id:" + id]);
+  var cls = trim(className);
+  if (cls && trim(map["class:" + cls])) return trim(map["class:" + cls]);
+  return "";
 }
 
 // ------------------------------------------------------------- putting it together
@@ -5541,8 +5653,13 @@ if (typeof module !== "undefined") {
     desktopWebappClassCandidate: desktopWebappClassCandidate,
     patternLiteral: patternLiteral,
     wmClassFuzzyMatches: wmClassFuzzyMatches,
+    parsedDesktopEntries: parsedDesktopEntries,
+    matchDesktopEntry: matchDesktopEntry,
     launchFromDesktopFiles: launchFromDesktopFiles,
     launchFromDesktopFilesForClass: launchFromDesktopFilesForClass,
+    iconNameFromDesktopFiles: iconNameFromDesktopFiles,
+    iconNameIndex: iconNameIndex,
+    iconNameFor: iconNameFor,
     identitiesNeedingLaunch: identitiesNeedingLaunch,
     shellWords: shellWords,
     launchLooksBroken: launchLooksBroken,

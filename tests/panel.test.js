@@ -571,6 +571,130 @@ test("parseDesktopEntry keeps Icon=, defaulting to empty and ignoring locale-suf
   assert.strictEqual(entry.hidden, false);
 });
 
+// ------------------------------------------------------------------- icons
+//
+// Which desktop entry describes an app, and what NAME it gives its icon. The
+// other half — turning a name into a drawable file — is the shell's
+// appLibrary.iconSource, which knows the icon theme and keeps the contextual
+// index that stops "zoom" resolving to an action icon. Nothing here
+// reimplements it.
+
+test("an icon name is found through the same four passes as a launch command", () => {
+  const parsed = panel.parsedDesktopEntries(REAL_DESKTOP_FILES, false);
+
+  // Pass 1, the declared class exactly — and its chrome- variant, which is the
+  // whole reason a webapp entry recording the bare host finds the window
+  // Chromium named with a prefix and a profile tail.
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^chrome-web\\.whatsapp\\.com"], parsed), "whatsapp");
+  // Pass 3, the fuzzy class: the packager wrote md.Obsidian, the window says
+  // md.obsidian.Obsidian.
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^md\\.obsidian\\.Obsidian$"], parsed), "obsidian");
+  // foot.desktop is real and declares no Icon= at all. "" is the honest answer,
+  // and the panel draws the generic executable icon for it.
+  assert.strictEqual(panel.iconNameFromDesktopFiles(["^foot$"], parsed), "");
+  // Nothing claims this class.
+  assert.strictEqual(panel.iconNameFromDesktopFiles(["^nothing-here$"], parsed), "");
+});
+
+test("an entry with no Icon= does not swallow the match from a weaker entry that has one", () => {
+  // The strong claim (StartupWMClass, pass 1) carries no icon; the weak one
+  // (the filename, pass 4) does. Without the accept predicate the first would
+  // win the match and answer "", leaving the app iconless while a file on disk
+  // named its icon.
+  const iconless = [
+    "[Desktop Entry]", "Type=Application", "Exec=thing", "Name=Thing",
+    "StartupWMClass=thing", ""
+  ].join("\n");
+  const iconful = [
+    "[Desktop Entry]", "Type=Application", "Exec=thing --other", "Name=Thing Alt",
+    "Icon=thing-icon", ""
+  ].join("\n");
+  const files = [
+    { path: "/usr/share/applications/zzz-thing-alias.desktop", text: iconless },
+    { path: "/usr/share/applications/thing.desktop", text: iconful }
+  ];
+
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^thing$"], panel.parsedDesktopEntries(files, false)),
+    "thing-icon");
+  // And the launch command is untouched by that preference: launch resolution
+  // has no accept predicate, so the strongest claim still wins it.
+  assert.strictEqual(panel.launchFromDesktopFiles(["^thing$"], files), "thing");
+});
+
+test("an entry with no runnable Exec can name an icon but can never win a launch", () => {
+  // requireCommand is what keeps launch resolution what it was: an Exec-less
+  // file is dropped BEFORE the passes there, so it cannot shadow a file that
+  // actually launches something. The icon lookup keeps it — "which entry is
+  // this app" is a question a file with no Exec can still answer.
+  const execless = [
+    "[Desktop Entry]", "Type=Application", "Name=Linky",
+    "StartupWMClass=linky", "Icon=linky-icon", ""
+  ].join("\n");
+  const files = [{ path: "/usr/share/applications/linky.desktop", text: execless }];
+
+  assert.strictEqual(panel.parsedDesktopEntries(files, true).length, 0);
+  assert.strictEqual(panel.parsedDesktopEntries(files, false).length, 1);
+  assert.strictEqual(panel.launchFromDesktopFiles(["^linky$"], files), "");
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^linky$"], panel.parsedDesktopEntries(files, false)),
+    "linky-icon");
+});
+
+test("the icon index answers for watched identities and for bare window classes", () => {
+  const identities = [
+    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"] },
+    { id: "whatsapp", patterns: ["^chrome-web\\.whatsapp\\.com"] },
+    // A watched identity whose app has no Icon= — a real case; foot is one.
+    { id: "terminal", patterns: ["^foot$"] }
+  ];
+  const clients = [
+    { class: "foot", address: "0x1" },
+    { class: OBSIDIAN_CLASS, address: "0x2" },
+    // Nothing on disk claims this one.
+    { class: "some-unpackaged-thing", address: "0x3" }
+  ];
+
+  const index = panel.iconNameIndex(identities, clients, REAL_DESKTOP_FILES);
+
+  assert.strictEqual(index["id:obsidian"], "obsidian");
+  assert.strictEqual(index["id:whatsapp"], "whatsapp");
+  assert.strictEqual(index["id:terminal"], "");
+  assert.strictEqual(index["class:foot"], "");
+  assert.strictEqual(index[`class:${OBSIDIAN_CLASS}`], "obsidian");
+  assert.strictEqual(index["class:some-unpackaged-thing"], "");
+
+  // The two keyspaces are kept apart by their prefixes, the way appRows keys
+  // its rows: an identity called `foot` and a window class called `foot` are
+  // different questions with possibly different answers.
+  assert.ok(Object.keys(index).every((k) => k.indexOf("id:") === 0 || k.indexOf("class:") === 0));
+});
+
+test("a chip asks by identity first and by class second", () => {
+  const index = {
+    "id:obsidian": "obsidian",
+    "id:terminal": "",
+    "class:foot": "foot-icon",
+    "class:md.obsidian.Obsidian": "obsidian"
+  };
+
+  // A watched chip: its identity is the more specific claim.
+  assert.strictEqual(panel.iconNameFor(index, "obsidian", "md.obsidian.Obsidian"), "obsidian");
+  // An unwatched chip has no identity, so the class answers.
+  assert.strictEqual(panel.iconNameFor(index, "", "foot"), "foot-icon");
+  // A watched identity that resolved to nothing still falls through to its
+  // window's class — the identity's patterns may be narrower than the class is.
+  assert.strictEqual(panel.iconNameFor(index, "terminal", "foot"), "foot-icon");
+  // A recorded ghost has no window and so no class at all. Its identity is the
+  // only handle it has, and when that names nothing the panel draws the
+  // generic icon.
+  assert.strictEqual(panel.iconNameFor(index, "terminal", ""), "");
+  assert.strictEqual(panel.iconNameFor(index, "", ""), "");
+  assert.strictEqual(panel.iconNameFor(null, "obsidian", "foot"), "");
+});
+
 test("a webapp identity finds its desktop file through StartupWMClass", () => {
   // The two halves of one fact: the entry records the bare host, Chromium
   // synthesizes the class with its own prefix and a per-profile tail.

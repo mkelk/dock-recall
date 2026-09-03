@@ -253,21 +253,23 @@ omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknow
   "chips": [
     { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
       "monitorName": "eDP-1", "watched": true,
-      "renderPath": "positioned", "placed": true, "width": 214, "height": 120 }
+      "renderPath": "positioned", "placed": true, "width": 214, "height": 120,
+      "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
+      "iconResolved": true }
   ]
 }
 ```
 
 ### Absent vs `null`
 
-The fields the rest of increment 06-bwf fills in — `iconSource`, `iconResolved`,
-`fillState`, `treatment`, `badgeValue` — are **not in the payload at all** until
-the tick that computes them lands. They are not there as `null`. The convention,
-settled before the first consumer:
+The fields the rest of increment 06-bwf fills in — `fillState`, `treatment`,
+`badgeValue` — are **not in the payload at all** until the tick that computes
+them lands. They are not there as `null`. The convention, settled before the
+first consumer:
 
 | the payload | means | a consumer tests |
 |---|---|---|
-| the key is **absent** | the panel has nothing to say about it: no tick computes it yet, or the thing it describes does not exist | `jq 'has("iconSource")'` |
+| the key is **absent** | the panel has nothing to say about it: no tick computes it yet, or the thing it describes does not exist | `jq 'has("treatment")'` |
 | the key is present and **`null`** | computed, and the answer is genuinely empty | `jq '.iconSource == null'` |
 | the key is present with a value | that is the answer | `jq '.iconSource'` |
 
@@ -284,9 +286,25 @@ omarchy-shell dock-recall state | jq 'has("recordedAt")'   # false → no record
 omarchy-shell dock-recall state | jq '.recordedAt'         # null  → a recording with no timestamp
 ```
 
-`renderPath`, `placed`, `width` and `height` are `null` while the delegate that
-draws the chip has not reported yet — a transient of the first frames, which is
-why every assertion here is polled.
+`renderPath`, `placed`, `width`, `height`, `iconSource` and `iconResolved` are
+`null` while the delegate that draws the chip has not reported yet — a transient
+of the first frames, which is why every assertion here is polled.
+
+### Icons
+
+`iconSource` is what the chip's `Image` was bound to and `iconResolved` says
+whether it is the app's own icon or the generic executable one. The flag exists
+because `AppLibrary.iconSource` **never answers empty** — it falls back to
+`application-x-executable` — so a non-empty source proves only that something
+will be drawn, not that it is the right thing. The test asserts both, on a chip
+whose app has a desktop entry with an `Icon=` and on a window class no desktop
+file claims, on **both** render paths. On the fallback path a recorded chip has
+no window class at all, so that half also pins that the lookup falls back to the
+identity's own patterns.
+
+The honest limit: an app whose desktop entry really does say
+`Icon=application-x-executable` reports `iconResolved: false`. It is drawing the
+generic icon, which is what the flag is about.
 
 ### The fields that are exact from the first tick
 
