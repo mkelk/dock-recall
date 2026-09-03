@@ -4363,6 +4363,40 @@ function boxRect(box) {
 // therefore drops the whole workspace back to the equal-slot column, which is
 // the layout this panel drew before rects existed and is still honest — it just
 // says less.
+// The key a workspace is named by when a bare id is not enough. Both sides of
+// the comparison build it here so they cannot spell it differently — the same
+// discipline Panel.qml's render registry follows, and for the same reason: a
+// stale recording can name one workspace id under two monitors.
+function workspaceKey(monitorName, workspaceId) {
+  return String(monitorName === undefined || monitorName === null ? "" : monitorName)
+    + "/" + String(workspaceId === undefined || workspaceId === null ? "" : workspaceId);
+}
+
+// The workspace the user is actually looking at: the ACTIVE workspace of the
+// FOCUSED monitor, as one of those keys.
+//
+// Only the focused monitor has one. Every monitor has an active workspace, and
+// lighting all of them would say "you are here" three times on a docked desk —
+// the badge is answering "which of these is in front of you", which has one
+// answer or none.
+//
+// "" when nothing is focused, when the focused monitor reports no active
+// workspace, or when the read came back without either field. A headless output
+// set is the real case, and it is a legitimate one: no badge is filled, which
+// is honest rather than arbitrary.
+function focusedWorkspaceKey(monitors) {
+  var list = isArray(monitors) ? monitors : [];
+  for (var i = 0; i < list.length; i++) {
+    var monitor = list[i];
+    if (!monitor || monitor.focused !== true) continue;
+    if (monitor.disabled === true) continue;
+    var active = monitor.activeWorkspace;
+    if (!active || active.id === undefined || active.id === null) return "";
+    return workspaceKey(trim(monitor.name), active.id);
+  }
+  return "";
+}
+
 function workspaceModel(id, name, rect, slots) {
   var fallback = false;
   for (var s = 0; s < slots.length; s++) {
@@ -5683,6 +5717,8 @@ if (typeof module !== "undefined") {
     geometryPair: geometryPair,
     windowRect: windowRect,
     mapGeometry: mapGeometry,
+    workspaceKey: workspaceKey,
+    focusedWorkspaceKey: focusedWorkspaceKey,
     workspaceGridLayout: workspaceGridLayout,
     monitorSectionWidths: monitorSectionWidths,
     chipRectsForCanvas: chipRectsForCanvas,

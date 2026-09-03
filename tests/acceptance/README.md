@@ -248,14 +248,16 @@ omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknow
   "showRecorded": false,
   "recordedAt": "2026-09-03T09:12:44.101Z",
   "workspaces": [
-    { "id": 7, "name": "7", "monitorName": "eDP-1", "renderPath": "positioned" }
+    { "id": 7, "name": "7", "monitorName": "eDP-1", "renderPath": "positioned",
+      "badgeValue": "7", "badgeFocused": true }
   ],
   "chips": [
     { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
       "monitorName": "eDP-1", "watched": true,
       "renderPath": "positioned", "placed": true, "width": 214, "height": 120,
       "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
-      "iconResolved": true }
+      "iconResolved": true, "treatment": "pill",
+      "fillState": "watched", "edgeTone": "drift" }
   ]
 }
 ```
@@ -326,6 +328,41 @@ one.
 `chipLabelVisible` is gone. It decided the label on width alone, and two
 thresholds disagreeing about whether a chip has room for its name is what the
 ladder exists to end.
+
+### Two colour channels, and why they are two
+
+`fillState` is the durable state — `watched`, `ghost` or `unwatched`, one fill
+each. `edgeTone` is what the outline says — `drift`, `hover`, `watched` or
+`quiet`. They are separate fields because a chip can be two things at once: the
+seeded app is recorded on a workspace it is not on, so it reports
+`fillState: "watched"` **and** `edgeTone: "drift"`, and a payload that blended
+them could not say so.
+
+The fills exist at all because the outline used to carry nearly everything, and
+the hover fill *replaced* the watched one — so a watched chip under the pointer
+was indistinguishable from an unwatched one. Hover is now a translucent layer
+over whichever fill the chip already had, which is also why it is not in
+`fillState`: it is transient, and a polled payload would race it.
+
+The ghost fill is only ever visible on the **recorded** map. A ghost is by
+definition an app that is not running, so it has no live chip anywhere; the test
+seeds a second watched identity it never launches to reach that state.
+
+`fillState` is cross-checked against `watched` on every chip, which is what stops
+the panel reporting a fill it did not draw.
+
+### Workspace number badges
+
+`badgeValue` is what the badge reads and must equal the workspace's own name;
+`badgeFocused` says whether it is the accent-filled one. **At most one badge is
+filled per payload** — every monitor has an active workspace and only the focused
+monitor is in front of the user, so a second filled badge means the focus rule
+leaked across monitors. Zero is legitimate: a headless output set has no focus at
+all, and `PanelModel.focusedWorkspaceKey` answers `""` rather than guessing.
+
+The badge shows the **live** desk's focus on both maps. On the recorded map that
+is the point: the recording says where the windows belong, and "you are standing
+here" is the one thing about it that has to come from now.
 
 ### The fields that are exact from the first tick
 

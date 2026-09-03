@@ -53,6 +53,17 @@
 #                  paths, and on the fallback path the chip has no window class
 #                  at all, so it also pins that the lookup falls back to the
 #                  identity.
+#   fillState,   — the two colour channels, said separately BECAUSE they are
+#   edgeTone       separate. Watched, ghost and unwatched each draw their own
+#                  fill now; the outline carries drift and hover. The seeded app
+#                  is recorded on a workspace it is not on, so it reports
+#                  fillState "watched" AND edgeTone "drift" at once — which is
+#                  the assertion a single blended field could not support.
+#   badgeValue,  — what each workspace number badge reads, and whether it is the
+#   badgeFocused   filled one. At most ONE badge is filled per payload: every
+#                  monitor has an active workspace and only the focused monitor
+#                  is in front of the user, so a second means the focus rule
+#                  leaked across monitors.
 #   watched      — asserted against the window this test actually seeded, not
 #                  merely required to be present. The live map draws every
 #                  mappable client whether it is watched or not, so a payload in
@@ -130,6 +141,17 @@ IDENTITY="dr-panel"
 # step 1, so it is certainly there.
 NOICON_TITLE="dock-recall-noicon"
 NOICON_CLASS="dock-recall-noicon"
+
+# A THIRD app that is never launched. It is watched (it is in the identity list)
+# and it is in the recording, and nothing on the desk matches it — which is the
+# definition of a GHOST: recorded, not running, drawn as "this is where it goes"
+# rather than "this is where it is".
+#
+# Seeded because the fill states are three and the desk otherwise supplies two.
+# A run that exercised only watched and unwatched would leave the ghost fill —
+# the one state that used to have no fill at all — unasserted.
+GHOST_IDENTITY="dr-ghost"
+GHOST_CLASS="dock-recall-never-launched"
 DESKTOP_DIR="$HOME/.local/share/applications"
 DESKTOP_FILE="$DESKTOP_DIR/dock-recall-panel-test.desktop"
 
@@ -239,6 +261,22 @@ CHIP_MIN_H=10
 # the guest icon theme has no generic executable icon at all. The second would
 # leave every unrecognised app drawing nothing, which is worth failing on.
 #
+# THE TWO COLOUR CHANNELS are asserted as two, and that is the point of them.
+# `fillState` is the durable state — watched, ghost, unwatched, one fill each,
+# where before the outline carried nearly all of it and the hover fill REPLACED
+# the watched one. `edgeTone` is what the outline says, drift included. A
+# drifted chip is fillState "watched" AND edgeTone "drift" at the same time, and
+# a payload that folded the two into one field could not say so. The cross-check
+# against `watched` is what stops a panel reporting a fill it did not draw:
+# watched and unwatched are the map's own flag, and the fill has to follow it.
+#
+# THE BADGES: every workspace says what its number badge reads, and it must be
+# that workspace's own name. At most one badge is the filled one — every monitor
+# has an active workspace and only the focused monitor is in front of the user,
+# so a second filled badge means the focus rule leaked across monitors. Zero is
+# legitimate (a headless output set has no focus at all), which is why this is a
+# ceiling rather than an equality.
+#
 # NOTHING inside the shape below may carry an apostrophe or a `#` comment: it is
 # a single-quoted shell string, and an apostrophe ends it. `$state` is bound by
 # the callers, because
@@ -256,7 +294,16 @@ STATE_SHAPE='
         and (.iconSource|type) == "string" and (.iconSource|length) > 0
         and (.iconResolved|type) == "boolean"
         and (.treatment == "pill" or .treatment == "badge"
-             or .treatment == "veiled" or .treatment == "field"))]|length) == (.chips|length)
+             or .treatment == "veiled" or .treatment == "field")
+        and (.fillState == "watched" or .fillState == "ghost" or .fillState == "unwatched")
+        and (.edgeTone == "drift" or .edgeTone == "hover"
+             or .edgeTone == "watched" or .edgeTone == "quiet"))]|length) == (.chips|length)
+  and ([.chips[]|select(.watched == true and .fillState == "unwatched")]|length) == 0
+  and ([.chips[]|select(.watched == false and .fillState != "unwatched")]|length) == 0
+  and ([.workspaces[]|select((.badgeValue|type) == "string" and (.badgeValue|length) > 0
+        and (.badgeFocused|type) == "boolean")]|length) == (.workspaces|length)
+  and ([.workspaces[]|select(.badgeValue != (.name|tostring))]|length) == 0
+  and ([.workspaces[]|select(.badgeFocused == true)]|length) <= 1
   and ([.chips[]|select(.treatment != (
         if .width >= 140 and .height >= 56 then "pill"
         elif .width >= 56 and .height >= 40 then "badge"
@@ -303,6 +350,18 @@ capture_live_state() {
           and .iconSource == $icon and .iconResolved == true)]|length) == 1
     and ([.chips[]|select(.key == $noicon and .renderPath == "positioned"
           and .iconResolved == false and (.iconSource|length) > 0)]|length) == 1
+    # THE TWO COLOUR CHANNELS, on the POSITIONED path, and the whole claim in
+    # one clause: the seeded app is recorded on a workspace it is not on, so it
+    # is DRIFTED — and it reports the drift tone on its edge WHILE still
+    # reporting the watched fill under it. A panel that spent one field on both
+    # could not answer this, and a panel that let hover replace the watched fill
+    # would drop the fill the moment the pointer crossed the map.
+    and ([.chips[]|select(.key == $addr
+          and .fillState == "watched" and .edgeTone == "drift")]|length) == 1
+    and ([.chips[]|select(.key == $noicon and .fillState == "unwatched")]|length) == 1
+    # The workspace the user is standing on is on the live map, and its badge is
+    # the filled one.
+    and ([.workspaces[]|select(.badgeFocused == true)]|length) == 1
   ' >/dev/null
 }
 
@@ -322,6 +381,18 @@ capture_recorded_state() {
     # class alone would report nothing here.
     and ([.chips[]|select(.renderPath == "fallback"
           and .iconSource == $icon and .iconResolved == true)]|length) > 0
+    # THE GHOST FILL, which only this map can show: a ghost is by definition an
+    # app that is not running, so it has no live chip anywhere. It is the state
+    # that had no fill of its own at all before — recorded-but-closed was told
+    # apart by a dashed outline and a drop in opacity, on a panel where the
+    # outline was already carrying watched, hover and drift.
+    and ([.chips[]|select(.fillState == "ghost")]|length) == 1
+    # And the running app is recorded here too, so this map shows both fills at
+    # once — which is what makes them distinct rather than merely present.
+    and ([.chips[]|select(.fillState == "watched")]|length) == 1
+    # The badge, on the FALLBACK path. The ghost is recorded on the workspace
+    # the user is standing on, so this map carries it and its badge is filled.
+    and ([.workspaces[]|select(.badgeFocused == true)]|length) == 1
   ' >/dev/null
 }
 
@@ -455,6 +526,12 @@ wait_until "watched app window appeared (panel IPC)" 30 app_present
 APP_WS=$(clients | jq -r --arg t "$APP_TITLE" 'first(.[]|select(.initialTitle==$t)|.workspace.id)//empty')
 [[ -n $APP_WS ]] || fail "app has a workspace (panel IPC)"
 
+# Anywhere the window is not. The layout records the running app HERE, which is
+# what makes it drifted; the ghost stays on $APP_WS so the recorded map also
+# carries the workspace the user is actually standing on, and its badge can be
+# the filled one on the fallback path.
+DRIFTED_WS=$((APP_WS + 1))
+
 # The compositor's own name for this window, and the key PanelModel.chipFor
 # gives its live chip. Step 5 asserts the payload contains exactly this key,
 # watched — which is the only thing that distinguishes "the identity loaded and
@@ -504,6 +581,11 @@ cat > "$STATE.seed" <<JSON
       "patterns": ["^$APP_CLASS\$"],
       "titlePatterns": ["^$APP_TITLE\$"],
       "launch": "foot --title=$APP_TITLE"
+    },
+    {
+      "id": "$GHOST_IDENTITY",
+      "patterns": ["^$GHOST_CLASS\$"],
+      "launch": "foot --app-id=$GHOST_CLASS"
     }
   ],
   "layouts": {}
@@ -516,10 +598,10 @@ mv -f "$STATE.seed" "$STATE"
 # it read back; wait for the line that says it took the identity, so a seed that
 # was rejected as junk or never noticed fails HERE rather than passing quietly
 # and leaving step 5's watched-chip assertion to explain itself.
-if ! poll 30 state_loaded 1 0; then
+if ! poll 30 state_loaded 2 0; then
   diagnostics
-  fail "the service read back the seeded identity (panel IPC)" \
-    "no 'state loaded: 1 identities, 0 layouts' from the service after the identity seed"
+  fail "the service read back the seeded identities (panel IPC)" \
+    "no 'state loaded: 2 identities, 0 layouts' from the service after the identity seed"
 fi
 
 # The layout, through the engine — and DELIBERATELY without at/size. That is
@@ -533,6 +615,7 @@ RECORDED_AT=$(node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], identityId = process.argv[3], ws = Number(process.argv[4]);
+  var ghostId = process.argv[5], driftedWs = Number(process.argv[6]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var clients = JSON.parse(cp.execFileSync("hyprctl", ["clients", "-j"], { encoding: "utf8" }));
@@ -551,7 +634,21 @@ RECORDED_AT=$(node -e '
     topologyKey: engine.topologyKey(monitors),
     recordedAt: new Date().toISOString(),
     apps: [{
+      // Recorded somewhere the window is NOT, on purpose: that is what makes
+      // this app DRIFTED, and drift is the state the two colour channels have
+      // to be able to say at once — the drift tone on the edge while the
+      // watched fill stays under it.
       identityId: identityId,
+      monitorDescription: engine.monitorLabel(monitor),
+      workspaceId: driftedWs,
+      floating: false,
+      group: null
+    }, {
+      // The ghost: recorded here, and nothing on the desk matches its
+      // identity, so the recorded map draws it as a place rather than a
+      // window. Same workspace as the app above, which is what makes the two
+      // fills sit side by side on one canvas.
+      identityId: ghostId,
       monitorDescription: engine.monitorLabel(monitor),
       workspaceId: ws,
       floating: false,
@@ -561,18 +658,30 @@ RECORDED_AT=$(node -e '
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
   process.stdout.write(layout.recordedAt);
-' "$PLUGIN_DIR" "$STATE" "$IDENTITY" "$APP_WS") ||
+' "$PLUGIN_DIR" "$STATE" "$IDENTITY" "$APP_WS" "$GHOST_IDENTITY" "$DRIFTED_WS") ||
   fail "geometry-less layout recorded for this topology (panel IPC)"
 [[ -n $RECORDED_AT ]] || fail "layout recorded (panel IPC)" "the seed printed no recordedAt"
 
 # Same again for the layout: the panel reads the state the SERVICE holds, so the
 # recorded map cannot be asked about until the service has taken the layout up.
-if ! poll 30 state_loaded 1 1; then
+if ! poll 30 state_loaded 2 1; then
   diagnostics
   fail "the service read back the seeded layout (panel IPC)" \
-    "no 'state loaded: 1 identities, 1 layouts' from the service after the layout seed"
+    "no 'state loaded: 2 identities, 1 layouts' from the service after the layout seed"
 fi
-pass "seeded: $IDENTITY watched, and a layout with NO geometry on ws $APP_WS (recordedAt $RECORDED_AT)"
+pass "seeded: $IDENTITY watched and running, $GHOST_IDENTITY watched and never launched, in a layout with NO geometry (recordedAt $RECORDED_AT)"
+
+# The drift is a fact the SERVICE computes, and the panel only reads it. Waited
+# for HERE, with its own sentence, so a service that never reported drift fails
+# where that is what happened rather than as a payload poll timing out five
+# steps later with nothing to say about why.
+drift_reported() { dr_log | grep -qE "status published .*drift=[1-9]"; }
+if ! poll 30 drift_reported; then
+  diagnostics
+  fail "the service reports the seeded app as drifted (panel IPC)" \
+    "no 'drift=<n>' above zero from the service, though $IDENTITY is on ws $APP_WS and recorded on ws $DRIFTED_WS"
+fi
+pass "the service reports drift: $IDENTITY is on ws $APP_WS and recorded on ws $DRIFTED_WS"
 
 # ------------------------------------------------------- 4. summon the panel
 
@@ -593,7 +702,7 @@ pass "panel summoned and its layer '$PANEL_NAMESPACE' is mapped"
 if ! poll 30 capture_live_state; then
   diagnostics
   fail "panel IPC reports the live map" \
-    "no live payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path and each carrying a non-empty iconSource, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved, and $NOICON_ADDRESS reporting the generic icon unresolved (see the raw payload above)"
+    "no live payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, each carrying a non-empty iconSource and a treatment its own width and height earn, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved and fill=watched with edge=drift, $NOICON_ADDRESS reporting the generic icon unresolved and fill=unwatched, and exactly one workspace badge filled (see the raw payload above)"
 fi
 printf '%s\n' "$LIVE_JSON" > "$ARTIFACTS/dock-recall-panel-state-live.json" 2>/dev/null || true
 
@@ -630,6 +739,14 @@ live_tiers=$(printf '%s' "$LIVE_JSON" | jq -r \
   '[.chips[]|"\(.treatment) \(.width|floor)x\(.height|floor)"]|join(", ")')
 pass "POSITIONED treatments, each matching chipTreatment(width, height): $live_tiers"
 
+live_fills=$(printf '%s' "$LIVE_JSON" | jq -r \
+  '[.chips[]|"\(.key) fill=\(.fillState) edge=\(.edgeTone)"]|join(", ")')
+pass "POSITIONED fills and edges, two channels: $live_fills"
+
+live_badges=$(printf '%s' "$LIVE_JSON" | jq -r \
+  '[.workspaces[]|"\(.monitorName)/\(.badgeValue)\(if .badgeFocused then " (focused)" else "" end)"]|join(", ")')
+pass "POSITIONED workspace badges: $live_badges"
+
 # The Recorded tab's date, which the dated-header tick asserts on, is the
 # recording's own — not the tab's, and not the clock's. And it is PRESENT: an
 # absent recordedAt is the payload's way of saying this topology has no
@@ -658,7 +775,7 @@ fi
 if ! poll 30 capture_recorded_state; then
   diagnostics
   fail "panel IPC reports the recorded map" \
-    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, agreeing with their own workspace on their own monitor, at least one resolving its identity's icon to $ICON_URL (see the raw payload above)"
+    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, agreeing with their own workspace on their own monitor, at least one resolving its identity icon to $ICON_URL, exactly one fill=ghost ($GHOST_IDENTITY) beside exactly one fill=watched, and exactly one workspace badge filled (see the raw payload above)"
 fi
 printf '%s\n' "$RECORDED_JSON" > "$ARTIFACTS/dock-recall-panel-state-recorded.json" 2>/dev/null || true
 screenshot "success-dock-recall-panel-02-recorded"
@@ -674,6 +791,14 @@ pass "FALLBACK icons: a stacked chip resolves its identity's icon ($recorded_ico
 recorded_tiers=$(printf '%s' "$RECORDED_JSON" | jq -r \
   '[.chips[]|"\(.treatment) \(.width|floor)x\(.height|floor)"]|join(", ")')
 pass "FALLBACK treatments, each matching chipTreatment(width, height): $recorded_tiers"
+
+recorded_fills=$(printf '%s' "$RECORDED_JSON" | jq -r \
+  '[.chips[]|"\(.key) fill=\(.fillState) edge=\(.edgeTone)"]|join(", ")')
+pass "FALLBACK fills and edges, the ghost among them: $recorded_fills"
+
+recorded_badges=$(printf '%s' "$RECORDED_JSON" | jq -r \
+  '[.workspaces[]|"\(.monitorName)/\(.badgeValue)\(if .badgeFocused then " (focused)" else "" end)"]|join(", ")')
+pass "FALLBACK workspace badges: $recorded_badges"
 
 # The two views are the two paths, and they are not the same chips: a payload
 # that reported one constant for renderPath would have failed one of the two

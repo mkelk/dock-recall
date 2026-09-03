@@ -1684,6 +1684,41 @@ test("chipTreatment never throws on a degenerate size — it answers field", () 
   assert.strictEqual(panel.chipTreatment(NaN, 100), "field");
 });
 
+// ------------------------------------------------- the focused workspace badge
+
+test("only the focused monitor's active workspace is the focused one", () => {
+  const monitors = [
+    { name: "eDP-1", focused: false, activeWorkspace: { id: 1, name: "1" } },
+    { name: "DP-2", focused: true, activeWorkspace: { id: 7, name: "7" } }
+  ];
+  // Every monitor has an active workspace; only one of them is in front of the
+  // user, and filling all three badges would say "you are here" three times.
+  assert.strictEqual(panel.focusedWorkspaceKey(monitors), "DP-2/7");
+  // Monitor-qualified, because a stale recording can name one workspace id
+  // under two monitors and only one of them is the one being looked at.
+  assert.notStrictEqual(panel.focusedWorkspaceKey(monitors), panel.workspaceKey("eDP-1", 7));
+  assert.strictEqual(panel.workspaceKey("DP-2", 7), "DP-2/7");
+});
+
+test("no focus is a real answer, and it fills no badge", () => {
+  // A headless output set is the live case, and it is legitimate: nothing is
+  // filled, which is honest rather than arbitrary.
+  assert.strictEqual(panel.focusedWorkspaceKey([
+    { name: "eDP-1", focused: false, activeWorkspace: { id: 1 } }
+  ]), "");
+  // Focused, but the read came back without the field.
+  assert.strictEqual(panel.focusedWorkspaceKey([{ name: "eDP-1", focused: true }]), "");
+  assert.strictEqual(panel.focusedWorkspaceKey([
+    { name: "eDP-1", focused: true, activeWorkspace: { name: "7" } }
+  ]), "");
+  // A disabled monitor cannot be the one in front of anybody.
+  assert.strictEqual(panel.focusedWorkspaceKey([
+    { name: "eDP-1", focused: true, disabled: true, activeWorkspace: { id: 3 } }
+  ]), "");
+  assert.strictEqual(panel.focusedWorkspaceKey([]), "");
+  assert.strictEqual(panel.focusedWorkspaceKey(null), "");
+});
+
 test("the real laptop fixture maps to one monitor with its workspaces", () => {
   const map = panel.liveMapModel(clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, 480, 240);
   assert.strictEqual(map.monitors.length, 1);

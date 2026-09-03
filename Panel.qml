@@ -471,6 +471,11 @@ Item {
   readonly property var iconNames: PanelModel.iconNameIndex(
     root.identities, root.liveClients, root.desktopFiles)
 
+  // The workspace in front of the user, as a monitor-qualified key. Computed
+  // once per frame off the monitor read rather than per badge — see
+  // PanelModel.focusedWorkspaceKey for why only the focused monitor has one.
+  readonly property string focusedWorkspaceKey: PanelModel.focusedWorkspaceKey(root.liveMonitors)
+
   function iconNameOf(identityId, className) {
     return PanelModel.iconNameFor(root.iconNames, identityId, className)
   }
@@ -1966,7 +1971,8 @@ Item {
   //     "recordedAt": "2026-09-03T09:12:44.101Z" | null,   // ABSENT if none
   //     "workspaces": [
   //       { "id": 7, "name": "7", "monitorName": "eDP-1",
-  //         "renderPath": "positioned" | "fallback" | null }
+  //         "renderPath": "positioned" | "fallback" | null,
+  //         "badgeValue": "7" | null, "badgeFocused": true | false | null }
   //     ],
   //     "chips": [
   //       { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
@@ -1976,21 +1982,22 @@ Item {
   //         "width": 214, "height": 120,
   //         "iconSource": "file:///usr/share/icons/…/obsidian.svg" | null,
   //         "iconResolved": true | false | null,
-  //         "treatment": "pill" | "badge" | "veiled" | "field" | null }
+  //         "treatment": "pill" | "badge" | "veiled" | "field" | null,
+  //         "fillState": "watched" | "ghost" | "unwatched" | null,
+  //         "edgeTone": "drift" | "hover" | "watched" | "quiet" | null }
   //     ]
   //   }
   //
   // ABSENT vs `null`, and the difference is the contract:
   //
-  //   absent  — the panel has nothing to say about this key at all. Either the
-  //             tick that computes it has not landed yet (fillState, badgeValue:
-  //             they are NOT here, rather than here as null), or the thing it
+  //   absent  — the panel has nothing to say about this key at all: the thing it
   //             describes does not exist (`recordedAt` when this topology has no
-  //             recording).
+  //             recording), or a later tick computes it and has not landed.
   //   null    — computed, and the answer is genuinely empty. `recordedAt: null`
-  //             is a recording that carries NO timestamp; renderPath/placed/
-  //             width/height/iconSource/iconResolved/treatment are null while
-  //             the delegate has not drawn yet.
+  //             is a recording that carries NO timestamp; every draw-time field
+  //             (renderPath, placed, width, height, iconSource, iconResolved,
+  //             treatment, fillState, edgeTone, badgeValue, badgeFocused) is
+  //             null while the delegate has not drawn yet.
   //
   // So a consumer asks `has("k")` first and only then looks at the value, and a
   // later tick ADDS its key to the objects below rather than un-nulling one.
@@ -2098,7 +2105,13 @@ Item {
           // disambiguation the key was built for, and a cross-check that
           // matches on `id` alone matches across monitors.
           monitorName: String(box.name),
-          renderPath: root.reported(wsReport, "renderPath")
+          renderPath: root.reported(wsReport, "renderPath"),
+          // What the number badge says, and whether it is the filled one. Both
+          // from the delegate that drew the badge — `name` above is the model's
+          // value and the badge's is derived from it, so reading the badge from
+          // the model would be a second derivation that cannot disagree.
+          badgeValue: root.reported(wsReport, "badgeValue"),
+          badgeFocused: root.reported(wsReport, "badgeFocused")
         })
 
         var slots = workspace.slots || []
@@ -2123,6 +2136,10 @@ Item {
               // delegate, for the reason the four above are.
               iconSource: root.reported(report, "iconSource"),
               iconResolved: root.reported(report, "iconResolved"),
+              // The two colour channels, independently readable. A drifted chip
+              // is fillState "watched" and edgeTone "drift" at once.
+              fillState: root.reported(report, "fillState"),
+              edgeTone: root.reported(report, "edgeTone"),
               // Which of the four drawings this chip earned. Reproducible from
               // the width and height beside it — PanelModel.chipTreatment is
               // the one that decides — which is what makes a disagreement here
@@ -2781,11 +2798,42 @@ Item {
                               readonly property string renderPath: workspaceSlot.positioned ? "positioned" : "fallback"
                               readonly property string renderKey: root.workspaceRenderKey(
                                 root.showRecorded, monitorRect.modelData.name, workspaceSlot.modelData.id)
+
+                              // WHAT THE BADGE SAYS. The workspace's own name,
+                              // which for nearly every desk is its number — the
+                              // badge is a number badge, and "ws 7" spent three
+                              // characters saying what the box it sits on
+                              // already says.
+                              readonly property string badgeValue: String(workspaceSlot.modelData.name)
+
+                              // Is this the workspace in front of the user? The
+                              // ACTIVE workspace of the FOCUSED monitor, and
+                              // only that one — every monitor has an active
+                              // workspace, and filling all of them would say
+                              // "you are here" three times on a docked desk.
+                              // Monitor-qualified, because a stale recording can
+                              // name one workspace id under two monitors.
+                              //
+                              // It is the live desk's focus on BOTH maps, and on
+                              // the recorded one that is the point: the recorded
+                              // map is where the windows belong, and "you are
+                              // standing here" is the one thing about it that
+                              // has to come from now rather than from the
+                              // recording.
+                              readonly property bool badgeFocused: root.focusedWorkspaceKey !== ""
+                                && root.focusedWorkspaceKey === PanelModel.workspaceKey(
+                                  monitorRect.modelData.name, workspaceSlot.modelData.id)
+
                               function reportRender() {
-                                root.reportWorkspaceRender(workspaceSlot.renderKey,
-                                  { renderPath: workspaceSlot.renderPath })
+                                root.reportWorkspaceRender(workspaceSlot.renderKey, {
+                                  renderPath: workspaceSlot.renderPath,
+                                  badgeValue: workspaceSlot.badgeValue,
+                                  badgeFocused: workspaceSlot.badgeFocused
+                                })
                               }
                               onRenderPathChanged: workspaceSlot.reportRender()
+                              onBadgeValueChanged: workspaceSlot.reportRender()
+                              onBadgeFocusedChanged: workspaceSlot.reportRender()
                               // A view flip rebuilds the map, but the key is
                               // view-namespaced, so report under the new one
                               // whichever way the delegate gets there.
@@ -2900,16 +2948,58 @@ Item {
                               radius: Style.cornerRadius
                               padding: Style.space(4)
 
-                              Text {
+                              // THE WORKSPACE NUMBER BADGE. A filled pill rather
+                              // than the flat "ws N" it replaces: on a desk with
+                              // ten workspaces per monitor the numbers are the
+                              // map's coordinates, and a caption in the faint
+                              // foreground is the least readable thing the panel
+                              // draws.
+                              //
+                              // Accent-filled when this is the workspace in
+                              // front of the user, quiet otherwise — one filled
+                              // badge on the whole map, so it reads as a
+                              // position rather than as a fifth state to decode.
+                              // The quiet fill is the faint foreground at low
+                              // alpha, which is the same ink the flat label used
+                              // and no new colour.
+                              //
+                              // Its implicitHeight is load-bearing: the
+                              // workspace box computes its own height from it and
+                              // the canvas is positioned under it.
+                              Rectangle {
                                 id: workspaceLabel
-                                text: "ws " + workspaceSlot.modelData.name
-                                color: root.faintForeground
-                                font.family: root.fontFamily
-                                font.pixelSize: Style.font.caption
                                 anchors.top: parent.top
                                 anchors.left: parent.left
                                 anchors.topMargin: workspaceSlot.contentTopInset
                                 anchors.leftMargin: workspaceSlot.contentLeftInset
+                                // Never narrower than it is tall: a one-digit
+                                // badge is a circle, not a sliver.
+                                implicitWidth: Math.max(workspaceBadgeText.implicitWidth + Style.space(7),
+                                  workspaceLabel.implicitHeight)
+                                implicitHeight: workspaceBadgeText.implicitHeight + Style.space(2)
+                                width: implicitWidth
+                                height: implicitHeight
+                                // Follows the theme the way the kit's own
+                                // switches do: pill on rounded corners, square
+                                // on sharp.
+                                radius: Style.cornerRadius > 0 ? height / 2 : 0
+                                color: workspaceSlot.badgeFocused
+                                  ? Color.accent : Util.alpha(root.faintForeground, 0.22)
+
+                                Text {
+                                  id: workspaceBadgeText
+                                  anchors.centerIn: parent
+                                  text: workspaceSlot.badgeValue
+                                  // On the accent fill the text has to be the
+                                  // panel's GROUND, not its foreground — an
+                                  // accent-on-foreground badge is unreadable on
+                                  // any theme whose accent is light.
+                                  color: workspaceSlot.badgeFocused
+                                    ? Color.popups.background : root.faintForeground
+                                  font.family: root.fontFamily
+                                  font.pixelSize: Style.font.caption
+                                  font.bold: workspaceSlot.badgeFocused
+                                }
                               }
 
                               Item {
@@ -2965,6 +3055,50 @@ Item {
                                       ? root.driftTone
                                       : (chipSlot.linkHovered ? root.foreground
                                         : (chipSlot.anyWatched ? Color.accent : root.faintForeground))
+
+                                    // The same precedence as a WORD, so the
+                                    // payload can say which of the four tones
+                                    // this edge is wearing. Reported beside the
+                                    // fill and independent of it: a drifted chip
+                                    // has to be readable as drifted AND as
+                                    // watched, and folding the two into one
+                                    // field is exactly how that stops being
+                                    // possible.
+                                    readonly property string edgeTone: chipSlot.anyDrifted
+                                      ? "drift"
+                                      : (chipSlot.linkHovered ? "hover"
+                                        : (chipSlot.anyWatched ? "watched" : "quiet"))
+
+                                    // WHICH FILL, as a word — the state channel,
+                                    // and the reason it is a channel at all.
+                                    //
+                                    // Watched, unwatched and ghost used to be
+                                    // told apart by outline brightness with a
+                                    // fill on only one of them, and outline
+                                    // brightness is the weakest signal in the
+                                    // panel: an accent edge at rest and an accent
+                                    // edge under the pointer are a few percent of
+                                    // alpha apart. Each state now has its own
+                                    // fill, from the kit's own helpers, so the
+                                    // outline is free to carry drift and hover
+                                    // instead of carrying everything.
+                                    //
+                                    // HOVER IS NOT IN HERE. It is drawn as a
+                                    // layer over whichever fill this is (see
+                                    // chipHoverFill below), because the previous
+                                    // binding REPLACED the watched fill with the
+                                    // hover fill and a watched chip under the
+                                    // pointer became indistinguishable from an
+                                    // unwatched one. It is also transient, and a
+                                    // payload polled over IPC would race it.
+                                    //
+                                    // Per SLOT, like anyWatched and anyGhost:
+                                    // the fill is the slot's rectangle, and a
+                                    // fused tab group is one rectangle however
+                                    // many tabs share it.
+                                    readonly property string fillState: chipSlot.anyGhost
+                                      ? "ghost"
+                                      : (chipSlot.anyWatched ? "watched" : "unwatched")
 
                                     // Does the keyboard cursor sit on one of
                                     // this slot's chips? Asked per slot rather
@@ -3048,19 +3182,58 @@ Item {
                                       ? (chipSlot.drawn ? chipSlot.drawn.height : Style.space(10))
                                       : workspaceSlot.stackRowHeight
                                     radius: Style.cornerRadius
-                                    color: chipSlot.highlighted
-                                      ? Style.hoverFillFor(root.foreground, Color.accent)
-                                      : (chipSlot.anyWatched && !chipSlot.anyGhost
-                                        ? Style.selectedFillFor(root.foreground, Color.accent)
+                                    // THE STATE FILL. Three states, three fills,
+                                    // all from Style so a theme moves them
+                                    // together:
+                                    //
+                                    //   watched    the SELECTED fill — this app
+                                    //              is in the recording
+                                    //   ghost      the NORMAL fill — recorded,
+                                    //              but nothing is running; the
+                                    //              quieter ground under the
+                                    //              dashed outline below
+                                    //   unwatched  none at all, which is the
+                                    //              right amount of ink for "the
+                                    //              tool is not tracking this"
+                                    color: chipSlot.fillState === "watched"
+                                      ? Style.selectedFillFor(root.foreground, Color.accent)
+                                      : (chipSlot.fillState === "ghost"
+                                        ? Style.normalFillFor(root.foreground, Color.accent)
                                         : "transparent")
                                     // A ghost draws its outline with the Shape
                                     // below instead, so the solid one steps
                                     // aside.
+                                    //
+                                    // The border STATE is where drift outranks
+                                    // everything: "selected" is the kit's
+                                    // strongest resting edge, and it is what
+                                    // keeps a drifted chip from reading as an
+                                    // ordinary watched one now that both wear
+                                    // the accent (an Omarchy theme has no amber
+                                    // — see root.driftTone and the gap it
+                                    // documents). A drifted chip under the
+                                    // pointer keeps that edge and picks up the
+                                    // hover FILL instead, which is the same
+                                    // separate-channels rule applied twice.
                                     borderSpec: chipSlot.anyGhost && !chipSlot.highlighted
                                       ? Border.none()
-                                      : Border.controlSpec(chipSlot.highlighted ? "hover-cursor" : "normal",
+                                      : Border.controlSpec(chipSlot.anyDrifted ? "selected"
+                                          : (chipSlot.highlighted ? "hover-cursor" : "normal"),
                                         chipSlot.edgeColor, chipSlot.edgeColor)
                                     opacity: chipSlot.anyGhost ? 0.6 : 1.0
+
+                                    // HOVER, as a layer over the state fill
+                                    // rather than instead of it. Declared first
+                                    // so it paints under the ghost outline and
+                                    // the chip content, and translucent (every
+                                    // Style *FillFor is), so what shows through
+                                    // is the fill the chip already had.
+                                    Rectangle {
+                                      anchors.fill: parent
+                                      visible: chipSlot.highlighted
+                                      radius: chipSlot.radius
+                                      color: Style.hoverFillFor(root.foreground, Color.accent)
+                                    }
 
                                     // Recorded-but-not-running: a dashed outline,
                                     // the one shape in the panel that says "this
@@ -3221,7 +3394,22 @@ Item {
                                               // height) on the two numbers
                                               // reported beside it, and a
                                               // disagreement is a real one.
-                                              treatment: chipTab.treatment
+                                              treatment: chipTab.treatment,
+                                              // The two colour channels, said
+                                              // separately because they are
+                                              // separate. A drifted chip is
+                                              // fillState "watched" AND edgeTone
+                                              // "drift", and a consumer that
+                                              // could only read one of them
+                                              // could not tell a drifted watched
+                                              // chip from either half alone.
+                                              // Both live on the SLOT — the
+                                              // rectangle a fused tab group
+                                              // shares — and every chip in it
+                                              // reports the same pair, which is
+                                              // what the screen shows.
+                                              fillState: chipSlot.fillState,
+                                              edgeTone: chipSlot.edgeTone
                                             })
                                           }
                                           onRenderPathChanged: chipTab.reportRender()
@@ -3229,6 +3417,16 @@ Item {
                                           onIconSourceChanged: chipTab.reportRender()
                                           onIconResolvedChanged: chipTab.reportRender()
                                           onTreatmentChanged: chipTab.reportRender()
+                                          // The slot owns both colour channels,
+                                          // so the chip has to be told when they
+                                          // move — a tick that changes watched
+                                          // changes the fill without touching
+                                          // anything else this delegate binds.
+                                          Connections {
+                                            target: chipSlot
+                                            function onFillStateChanged() { chipTab.reportRender() }
+                                            function onEdgeToneChanged() { chipTab.reportRender() }
+                                          }
                                           // The Flow's first pass runs before its
                                           // width is known and the rects settle a
                                           // frame or two later, so the size has to
