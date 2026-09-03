@@ -128,6 +128,19 @@ thinks is happening:
 - **Pause / Activate** — stop reacting to monitor events without losing anything.
 - Full keyboard navigation; Escape closes the panel.
 
+While it is open the panel answers on the IPC target `dock-recall`, so a script
+can ask what it is showing and switch which map it shows:
+
+```bash
+omarchy-shell shell summon mkelk.dock-recall '{}'
+omarchy-shell dock-recall state              # JSON: the topology, and every chip and workspace
+omarchy-shell dock-recall setView recorded   # or live
+```
+
+That target exists only while the panel is up — the shell loads the panel on
+summon and drops it on hide — and opening and closing stay the shell's own verbs
+(`omarchy-shell shell summon|hide|toggle mkelk.dock-recall '{}'`).
+
 Every restore runs three settle passes, at 1 s, 3 s and 7 s after the trigger, so
 a monitor that takes two seconds to wake up is not a race. "Nothing happened" is
 only true about ten seconds after a dock.
