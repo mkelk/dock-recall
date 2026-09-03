@@ -248,20 +248,83 @@ omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknow
   "showRecorded": false,
   "recordedAt": "2026-09-03T09:12:44.101Z",
   "workspaces": [
-    { "id": 7, "name": "7", "badgeValue": null, "renderPath": "positioned" }
+    { "id": 7, "name": "7", "monitorName": "eDP-1", "renderPath": "positioned" }
   ],
   "chips": [
     { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
-      "iconSource": null, "iconResolved": null, "watched": true,
-      "fillState": null, "treatment": null, "renderPath": "positioned" }
+      "monitorName": "eDP-1", "watched": true,
+      "renderPath": "positioned", "placed": true, "width": 214, "height": 120 }
   ]
 }
 ```
 
-`null` is "no answer yet": the fields the rest of increment 06-bwf fills in
-report null until the tick that computes them lands, and each is added to the
-objects above rather than beside them. `key` and `renderPath` are exact from the
-first tick, because every later assertion keys on them.
+### Absent vs `null`
+
+The fields the rest of increment 06-bwf fills in — `iconSource`, `iconResolved`,
+`fillState`, `treatment`, `badgeValue` — are **not in the payload at all** until
+the tick that computes them lands. They are not there as `null`. The convention,
+settled before the first consumer:
+
+| the payload | means | a consumer tests |
+|---|---|---|
+| the key is **absent** | the panel has nothing to say about it: no tick computes it yet, or the thing it describes does not exist | `jq 'has("iconSource")'` |
+| the key is present and **`null`** | computed, and the answer is genuinely empty | `jq '.iconSource == null'` |
+| the key is present with a value | that is the answer | `jq '.iconSource'` |
+
+So a consumer asks `has("k")` first and only then looks at the value, and a
+later tick **adds** its key rather than un-nulling one.
+
+The distinction is not hypothetical. `recordedAt` is implemented, and it used to
+report `null` both for *this topology has no recording* and for *the recording
+carries no timestamp* — two different sentences for the dated Recorded header to
+say. It now answers:
+
+```bash
+omarchy-shell dock-recall state | jq 'has("recordedAt")'   # false → no recording at all
+omarchy-shell dock-recall state | jq '.recordedAt'         # null  → a recording with no timestamp
+```
+
+`renderPath`, `placed`, `width` and `height` are `null` while the delegate that
+draws the chip has not reported yet — a transient of the first frames, which is
+why every assertion here is polled.
+
+### The fields that are exact from the first tick
+
+`key`, `monitorName`, `renderPath`, `placed`, `width` and `height`, because every
+later assertion keys on them.
+
+`key` must also be **unique**, which is not free: `instanceKeyFor` spells a
+single-instance identity with its bare id, so two recorded entries of one
+identity at the same occurrence — reachable, and deliberately left unrepaired by
+the state reader — produce byte-identical keys, and a live chip falls back to its
+`className` when the window has no address. Later ticks select chips *by* key, so
+a collision would silently assert about one chip twice and about another never.
+The test checks uniqueness on every payload.
+
+`renderPath: "positioned"` is **not** on its own proof that anything was drawn.
+Inside the positioned branch there is a second, silent branch: a chip whose slot
+never resolved a rect draws a floor-sized marker at the canvas origin (`Panel.qml`
+calls it visibly wrong), and a chip measured during warm-up is sized from a
+zero-width canvas, where `chipRectsForCanvas` floors against `min(canvas, floor)`
+and answers 1×1 — non-null, so the delegate's own warning never fires either.
+`placed` separates the first case and `width`/`height` the second: a positioned
+chip must report `placed: true` **and** clear the 16×10 floor. A 1-pixel chip
+fails the gate. The same two numbers are what the treatment ladder is asked
+about — its answer is `PanelModel.chipTreatment(width, height)` on the *drawn*
+size, which no payload without them could be checked against.
+
+`monitorName` is on chips **and** workspaces. The panel's workspace render
+registry keys on the monitor because a stale recording can name one workspace id
+under two monitors; the payload carries the same monitor so a consumer can
+reproduce that disambiguation, and so this test's chip-versus-workspace
+cross-check matches on monitor *and* id rather than on id alone.
+
+That registry is also keyed by **view**. Both map models derive their monitor
+boxes from the same `mapGeometry`, so without the discriminator the recorded
+map's fallback answer for `eDP-1/7` would overwrite the live map's positioned
+one. (Chips need no such namespace: recorded chip keys carry a `recorded-`
+prefix and live ones are addresses.) The test flips to the recorded view and back
+and re-asserts the whole live shape, which is where that overwrite would show.
 
 **Why a query rather than a picture.** This venue cannot prove a pixel was
 rasterized — there are no golden images, no Pillow on host or guest, and the
@@ -283,17 +346,36 @@ the way a user does:
 | Live | real windows carry `at`/`size` | `positioned` |
 | Recorded | the seeded layout has **no** `at`/`size`, the shape of a v1 recording | `fallback` |
 
-and then requires, in each view, that every chip carries a non-empty key and one
-of the two paths, that no chip disagrees with its own workspace about which path
-drew it, and that the two views do not report the same chip keys. `renderPath`
-is reported by the delegate that drew the chip, from the same `positioned` flag
-its x, y, width and height branch on — not derived a second time from the model,
-which could agree with the model while the screen did something else.
+and then requires, in each view, that every chip carries a non-empty key, a
+*distinct* one, a monitor, one of the two paths and the geometry it drew with;
+that a positioned chip really was placed and really has a size; that no chip
+disagrees with its own workspace *on its own monitor* about which path drew it;
+and that the two views do not report the same chip keys. `renderPath`, `placed`,
+`width` and `height` are reported by the delegate that drew the chip, from the
+same `positioned` flag and the same resolved rect its x, y, width and height
+branch on — not derived a second time from the model, which could agree with the
+model while the screen did something else.
+
+**One read per view.** Each view's payload is fetched by the poll that validates
+it, and the assertions and the pass lines below it use that same captured
+payload. The panel's refresh timer runs throughout, so a second fetch is a second
+answer: the headline used to be able to read `null chip(s)` on a line that still
+said `ok -`.
+
+**The seeded window is named.** The live map draws every mappable client whether
+it is watched or not, and the recorded map hardcodes `watched: true`, so `watched`
+alone asserts nothing — the test used to pass identically if the identity never
+loaded. It now requires a live chip keyed by the seeded window's own `hyprctl`
+address and reporting `watched: true`, and every wait in the file is a poll on
+something observable (the service's own `state loaded: N identities, M layouts`
+line for the two seeds).
 
 Both payloads are copied into the artifacts directory as
-`dock-recall-panel-state-live.json` and `-recorded.json`, and the panel is
-dismissed on the way out however the test ends: its layer holds keyboard focus
-exclusively, and the tests after it want the desk back.
+`dock-recall-panel-state-live.json` and `-recorded.json`; the panel is dismissed
+on the way out however the test ends, because its layer holds keyboard focus
+exclusively and the tests after it want the desk back; and the state file the
+test seeded is removed with it, so a watched identity for a window that no longer
+exists and a layout with no geometry do not leak into the next test in the boot.
 
 ## What the undock-while-locked scenario asserts
 

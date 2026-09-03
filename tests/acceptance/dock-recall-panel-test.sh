@@ -19,10 +19,43 @@
 # WHAT IT PINS, and why it is the first tick of the epic: the six ticks after it
 # extend `dock-recall state`'s payload with icons, the treatment ladder, the
 # watched fill, workspace badges and a dated Recorded header, and each asserts
-# through this file. So the two fields their assertions key on are pinned here:
+# through this file. So the fields their assertions key on are pinned here:
 #
-#   key         — every chip has one, and it is not empty
-#   renderPath  — "positioned" or "fallback", per chip AND per workspace
+#   key          — every chip has one, it is not empty, and no two chips share
+#                  one. Uniqueness is NOT free: instanceKeyFor spells a
+#                  single-instance identity with its bare id, so two recorded
+#                  entries of one identity at the same occurrence (reachable,
+#                  and deliberately unrepaired — see StateModel's
+#                  normalizeOccurrence) collide, and a live chip falls back to
+#                  its className when the window has no address. Every later
+#                  assertion selects chips BY key, so a collision would silently
+#                  assert about one chip twice and about another never.
+#   renderPath   — "positioned" or "fallback", per chip AND per workspace
+#   placed,      — what "positioned" actually DREW. `renderPath: "positioned"`
+#   width,         is true of the silent second branch inside that path too: a
+#   height         chip whose slot never resolved a rect draws a floor-sized
+#                  marker at the canvas origin (Panel.qml calls it visibly
+#                  wrong), and a chip measured during warm-up gets a 1×1 rect
+#                  from a zero-width canvas — non-null, so the delegate's own
+#                  warning never fires either. A positioned chip must therefore
+#                  also report placed:true AND clear the 16×10 floor. A 1-pixel
+#                  chip fails this test.
+#   monitorName  — on chips AND workspaces. The workspace render registry keys
+#                  on the monitor because a stale recording can name one
+#                  workspace id under two monitors; dropping it from the payload
+#                  would leave the chip-versus-workspace cross-check below
+#                  matching on id alone, across monitors.
+#   watched      — asserted against the window this test actually seeded, not
+#                  merely required to be present. The live map draws every
+#                  mappable client whether it is watched or not, so a payload in
+#                  which the identity never loaded looks identical unless
+#                  something names the seeded window.
+#
+# ABSENT vs null in the payload — the convention the later ticks inherit, spelled
+# out in tests/acceptance/README.md: a key the panel has nothing to say about is
+# ABSENT (a field no tick has implemented yet; `recordedAt` when this topology
+# has no recording), and `null` means computed-and-genuinely-empty (`recordedAt`
+# null is a recording that carries no timestamp). Consumers ask `has("k")` first.
 #
 # BOTH RENDER PATHS, in one panel session. Panel.qml draws a workspace either
 # absolutely-positioned (chips at their real rectangles, scaled) or as the
@@ -78,6 +111,13 @@ IPC_TARGET="dock-recall"
 
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
+# Filled in at step 2 and asserted against the payload at step 5. Declared here
+# because `set -u` is on and the capture predicate below names it.
+APP_ADDRESS=""
+# The payloads the two view predicates capture. Same reason.
+LIVE_JSON=""
+RECORDED_JSON=""
+
 # ---------------------------------------------------------------- primitives
 
 clients() { hyprctl clients -j; }
@@ -106,6 +146,12 @@ shell_log() { qs log -p "${OMARCHY_PATH:-/usr/share/omarchy}/shell" --tail 3000 
 dr_log() { shell_log | grep -F "[dock-recall]"; }
 service_ready() { dr_log | grep -qF "service-ready"; }
 
+# The service's own account of what it read back off the state file, which is
+# the only observable that says a seed has actually been taken up. This test
+# starts from a REMOVED state file, so each "<n> identities, <m> layouts" pair
+# below is reached exactly once and cannot match an earlier line.
+state_loaded() { dr_log | grep -qF "state loaded: $1 identities, $2 layouts"; }
+
 plugin_state() {
   omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }'
 }
@@ -122,35 +168,72 @@ panel_layer_absent() { ! panel_layer_present; }
 
 panel_state_json() { omarchy-shell "$IPC_TARGET" state 2>/dev/null; }
 
+# The chip floor, in pixels, from Panel.qml's positioned branch: chipRectsForCanvas
+# is handed Style.space(16) x Style.space(10) and every resolved rect is grown to
+# at least that. A chip AT the floor is legitimate — that is a real window
+# clamped up to a clickable size. A chip BELOW it was never placed on a laid-out
+# canvas: chipRectsForCanvas floors against min(canvas, floor), so a zero-width
+# canvas during warm-up yields 1x1 and nothing complains.
+CHIP_MIN_W=16
+CHIP_MIN_H=10
+
 # The half both views must satisfy: there is at least one chip, every chip
-# carries a non-empty key and one of the two render paths — the two fields the
-# rest of this epic keys on — and no chip disagrees with the workspace it says
-# it is on about which path drew it. `$state` is bound by the callers, because
-# the chip-versus-workspace clause rebinds `.` inside its own iteration.
-# shellcheck disable=SC2016  # $state is jq's variable, not the shell's
+# carries a non-empty key, a distinct one, one of the two render paths and the
+# geometry it drew with, a positioned chip really was placed and really has a
+# size — and no chip disagrees with the workspace it says it is on, ON ITS OWN
+# MONITOR, about which path drew it. `$state` is bound by the callers, because
+# the chip-versus-workspace clause rebinds `.` inside its own iteration; `$minw`
+# and `$minh` come in as jq --argjson.
+# shellcheck disable=SC2016  # $state, $minw and $minh are jq's, not the shell's
 STATE_SHAPE='
   (.chips|type) == "array" and (.workspaces|type) == "array"
   and (.chips|length) > 0
   and ([.chips[]|select((.key|type) == "string" and (.key|length) > 0
-        and (.renderPath == "positioned" or .renderPath == "fallback"))]|length) == (.chips|length)
+        and (.monitorName|type) == "string" and (.monitorName|length) > 0
+        and (.renderPath == "positioned" or .renderPath == "fallback")
+        and (.placed|type) == "boolean"
+        and (.width|type) == "number" and (.height|type) == "number")]|length) == (.chips|length)
+  and ((.chips|map(.key)|unique|length) == (.chips|length))
+  and ([.chips[]|select(.renderPath == "positioned"
+        and (.placed == false or .width < $minw or .height < $minh))]|length) == 0
+  and ([.workspaces[]|select((.monitorName|type) == "string"
+        and (.monitorName|length) > 0)]|length) == (.workspaces|length)
   and ([.chips[] as $c | $state.workspaces[]
-        | select(.id == $c.workspaceId and .renderPath != $c.renderPath)]|length) == 0
+        | select(.id == $c.workspaceId and .monitorName == $c.monitorName
+                 and .renderPath != $c.renderPath)]|length) == 0
 '
 
+# The two view predicates below CAPTURE what they validated. The payload used to
+# be read twice — once to satisfy the poll, once for the assertions and the pass
+# line — with the panel's refresh timer running in between, so the numbers in the
+# headline came from a payload nothing had checked and could read "null chip(s)"
+# on an `ok -` line. Now there is one read per view, it is the one that passed,
+# and it is the one every later assertion and the pass line use.
+#
+# `poll` calls these as functions in this shell, so the assignment survives; on
+# timeout the variable holds the last, failing payload, which is what
+# diagnostics wants anyway.
+
 # The LIVE map: real windows carry at/size, so every workspace on it is
-# positioned.
-live_state_ready() {
-  panel_state_json | jq -e '. as $state |
+# positioned — and the window this test seeded is on it, watched, keyed by its
+# own hyprctl address.
+capture_live_state() {
+  LIVE_JSON=$(panel_state_json)
+  printf '%s' "$LIVE_JSON" | jq -e --argjson minw "$CHIP_MIN_W" --argjson minh "$CHIP_MIN_H" \
+    --arg addr "$APP_ADDRESS" '. as $state |
     '"$STATE_SHAPE"'
     and .showRecorded == false
     and ([.chips[]|select(.renderPath == "positioned")]|length) > 0
+    and ([.chips[]|select(.key == $addr and .watched == true
+          and .renderPath == "positioned")]|length) == 1
   ' >/dev/null
 }
 
 # The RECORDED map, built from a layout with no geometry: every chip on it is on
 # the fallback path, and at least one exists.
-recorded_state_ready() {
-  panel_state_json | jq -e '. as $state |
+capture_recorded_state() {
+  RECORDED_JSON=$(panel_state_json)
+  printf '%s' "$RECORDED_JSON" | jq -e --argjson minw "$CHIP_MIN_W" --argjson minh "$CHIP_MIN_H" '. as $state |
     '"$STATE_SHAPE"'
     and .showRecorded == true
     and ([.chips[]|select(.renderPath == "fallback")]|length) == (.chips|length)
@@ -187,6 +270,12 @@ cleanup() {
   # and the panel agree about it being gone.
   omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
   pkill -f "foot --title=$APP_TITLE" 2>/dev/null
+  # And take the seed with us. Everything this test writes to the state file is
+  # its own fiction — an identity matching a window it just killed, and a layout
+  # with no geometry at all — and the tests that share this boot read the same
+  # file. The service handles the file vanishing; it is what this test started
+  # from.
+  rm -f "$STATE" 2>/dev/null
   return $status
 }
 trap cleanup EXIT
@@ -241,6 +330,14 @@ wait_until "watched app window appeared (panel IPC)" 30 app_present
 APP_WS=$(clients | jq -r --arg t "$APP_TITLE" 'first(.[]|select(.initialTitle==$t)|.workspace.id)//empty')
 [[ -n $APP_WS ]] || fail "app has a workspace (panel IPC)"
 
+# The compositor's own name for this window, and the key PanelModel.chipFor
+# gives its live chip. Step 5 asserts the payload contains exactly this key,
+# watched — which is the only thing that distinguishes "the identity loaded and
+# this window matched it" from "the live map drew every client on the desk", and
+# the live map does the second whether anything is watched or not.
+APP_ADDRESS=$(app_field address)
+[[ -n $APP_ADDRESS ]] || fail "app has an address (panel IPC)"
+
 # ------------------------------------------------- 3. seed identity + layout
 
 SCHEMA_VERSION=$(node -e 'process.stdout.write(String(require(process.argv[1] + "/StateModel.js").STATE_VERSION))' "$PLUGIN_DIR" 2>/dev/null)
@@ -262,7 +359,17 @@ cat > "$STATE.seed" <<JSON
 }
 JSON
 mv -f "$STATE.seed" "$STATE"
-sleep 1
+
+# Polled, not slept on — and it is the identity seed that most needs it, because
+# nothing downstream used to depend on this write at all. The service logs what
+# it read back; wait for the line that says it took the identity, so a seed that
+# was rejected as junk or never noticed fails HERE rather than passing quietly
+# and leaving step 5's watched-chip assertion to explain itself.
+if ! poll 30 state_loaded 1 0; then
+  diagnostics
+  fail "the service read back the seeded identity (panel IPC)" \
+    "no 'state loaded: 1 identities, 0 layouts' from the service after the identity seed"
+fi
 
 # The layout, through the engine — and DELIBERATELY without at/size. That is
 # the shape of a v1 recording, and it is the only honest way to reach the
@@ -306,6 +413,14 @@ RECORDED_AT=$(node -e '
 ' "$PLUGIN_DIR" "$STATE" "$IDENTITY" "$APP_WS") ||
   fail "geometry-less layout recorded for this topology (panel IPC)"
 [[ -n $RECORDED_AT ]] || fail "layout recorded (panel IPC)" "the seed printed no recordedAt"
+
+# Same again for the layout: the panel reads the state the SERVICE holds, so the
+# recorded map cannot be asked about until the service has taken the layout up.
+if ! poll 30 state_loaded 1 1; then
+  diagnostics
+  fail "the service read back the seeded layout (panel IPC)" \
+    "no 'state loaded: 1 identities, 1 layouts' from the service after the layout seed"
+fi
 pass "seeded: $IDENTITY watched, and a layout with NO geometry on ws $APP_WS (recordedAt $RECORDED_AT)"
 
 # ------------------------------------------------------- 4. summon the panel
@@ -321,42 +436,62 @@ pass "panel summoned and its layer '$PANEL_NAMESPACE' is mapped"
 # ------------------------------------------------- 5. the LIVE map, over IPC
 
 # Polled rather than read once: the panel's own hyprctl reads are a process
-# spawn away and its delegates report a frame after that.
-if ! poll 30 live_state_ready; then
+# spawn away and its delegates report a frame after that. The poll CAPTURES the
+# payload it validated into $LIVE_JSON — everything below reads that one, so the
+# numbers in the pass lines are the numbers that passed.
+if ! poll 30 capture_live_state; then
   diagnostics
   fail "panel IPC reports the live map" \
-    "no positioned chip with a key came back from '$IPC_TARGET state' (see the raw payload above)"
+    "no live payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, one of them the watched window $APP_ADDRESS (see the raw payload above)"
 fi
-LIVE_JSON=$(panel_state_json)
 printf '%s\n' "$LIVE_JSON" > "$ARTIFACTS/dock-recall-panel-state-live.json" 2>/dev/null || true
 
 live_chips=$(printf '%s' "$LIVE_JSON" | jq -r '.chips|length')
 live_positioned=$(printf '%s' "$LIVE_JSON" | jq -r '[.chips[]|select(.renderPath == "positioned")]|length')
 topology=$(printf '%s' "$LIVE_JSON" | jq -r '.topologyName')
-[[ -n $topology && $topology != "null" ]] ||
+if [[ -z $topology || $topology == "null" ]]; then
+  diagnostics
   fail "panel IPC reports a topology name" "topologyName came back as '$topology'"
+fi
 pass "live map over IPC: $live_chips chip(s), $live_positioned on the POSITIONED path, topology \"$topology\""
 
+# The seeded window itself: watched, on the positioned path, keyed by the
+# address hyprctl gives it. Already required by the poll above — restated here
+# so the size of the chip that proves it lands in the log.
+seeded_size=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$APP_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|"\(.width)x\(.height), placed=\(.placed), ws \(.monitorName)/\(.workspaceId)")//"absent"')
+pass "the seeded window is a watched live chip keyed $APP_ADDRESS ($seeded_size)"
+
 # The Recorded tab's date, which the dated-header tick asserts on, is the
-# recording's own — not the tab's, and not the clock's.
+# recording's own — not the tab's, and not the clock's. And it is PRESENT: an
+# absent recordedAt is the payload's way of saying this topology has no
+# recording at all, which would make the assertion below vacuous.
+if ! printf '%s' "$LIVE_JSON" | jq -e 'has("recordedAt")' >/dev/null; then
+  diagnostics
+  fail "panel IPC reports when the layout was recorded" \
+    "recordedAt is ABSENT, which the payload's convention reserves for 'no recording for this topology'"
+fi
 reported_at=$(printf '%s' "$LIVE_JSON" | jq -r '.recordedAt')
-[[ $reported_at == "$RECORDED_AT" ]] ||
+if [[ $reported_at != "$RECORDED_AT" ]]; then
+  diagnostics
   fail "panel IPC reports when the layout was recorded" \
     "recordedAt came back as '$reported_at', the seed wrote '$RECORDED_AT'"
+fi
 pass "panel IPC reports the recording's own timestamp ($reported_at)"
 
 # --------------------------------------------- 6. the RECORDED map, over IPC
 
 view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
-[[ $view_answer == "recorded" ]] ||
+if [[ $view_answer != "recorded" ]]; then
+  diagnostics
   fail "panel IPC switches to the recorded map" "setView recorded answered '$view_answer'"
+fi
 
-if ! poll 30 recorded_state_ready; then
+if ! poll 30 capture_recorded_state; then
   diagnostics
   fail "panel IPC reports the recorded map" \
-    "no fallback chip with a key came back from '$IPC_TARGET state' after setView recorded"
+    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, agreeing with their own workspace on their own monitor (see the raw payload above)"
 fi
-RECORDED_JSON=$(panel_state_json)
 printf '%s\n' "$RECORDED_JSON" > "$ARTIFACTS/dock-recall-panel-state-recorded.json" 2>/dev/null || true
 screenshot "success-dock-recall-panel-02-recorded"
 
@@ -369,11 +504,31 @@ pass "recorded map over IPC: $recorded_chips chip(s), $recorded_fallback on the 
 # assertions above, and a payload that never rebuilt would fail this one.
 live_keys=$(printf '%s' "$LIVE_JSON" | jq -c '[.chips[].key]|sort')
 recorded_keys=$(printf '%s' "$RECORDED_JSON" | jq -c '[.chips[].key]|sort')
-[[ $live_keys != "$recorded_keys" ]] ||
+if [[ $live_keys == "$recorded_keys" ]]; then
+  diagnostics
   fail "the two maps report their own chips" "both views reported the same chip keys: $live_keys"
+fi
 
 back=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
-[[ $back == "live" ]] || fail "panel IPC switches back to the live map" "setView live answered '$back'"
+if [[ $back != "live" ]]; then
+  diagnostics
+  fail "panel IPC switches back to the live map" "setView live answered '$back'"
+fi
+
+# And the flip back is the test of the render registries, which outlive the view.
+# Workspace render reports are keyed by view AND monitor AND id for exactly this
+# moment: both map models derive their monitor boxes from the same mapGeometry,
+# so an un-namespaced key would have let the recorded delegate — fallback, every
+# time — write over the live map's positioned answer for the same monitor and
+# workspace. The whole live shape is re-asserted, so the cross-check between each
+# chip and its own workspace has to hold a second time, on reports written while
+# the other view was on screen.
+if ! poll 30 capture_live_state; then
+  diagnostics
+  fail "the live map survives a view flip" \
+    "after setView recorded and back, the live payload no longer satisfies its own shape — a recorded delegate's render report has most likely overwritten a live one"
+fi
+pass "the live map is intact after a round trip through the recorded view"
 
 # ---------------------------------------------------------- 7. leave it closed
 

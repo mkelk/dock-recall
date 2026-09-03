@@ -1892,45 +1892,84 @@ Item {
   //   {
   //     "topologyName": "Laptop + Dell U2720Q",
   //     "showRecorded": false,
-  //     "recordedAt": "2026-09-03T09:12:44.101Z" | null,
+  //     "recordedAt": "2026-09-03T09:12:44.101Z" | null,   // ABSENT if none
   //     "workspaces": [
-  //       { "id": 7, "name": "7", "badgeValue": null,
+  //       { "id": 7, "name": "7", "monitorName": "eDP-1",
   //         "renderPath": "positioned" | "fallback" | null }
   //     ],
   //     "chips": [
   //       { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
-  //         "iconSource": null, "iconResolved": null, "watched": true,
-  //         "fillState": null, "treatment": null,
-  //         "renderPath": "positioned" | "fallback" | null }
+  //         "monitorName": "eDP-1", "watched": true,
+  //         "renderPath": "positioned" | "fallback" | null,
+  //         "placed": true | false | null,
+  //         "width": 214, "height": 120 }
   //     ]
   //   }
   //
-  // `null` is "no answer yet": the fields the rest of increment 06-bwf fills in
-  // (icons, the treatment ladder, the watched fill, the workspace badge) report
-  // null until the tick that computes them lands, and every one of them is
-  // added to the objects above rather than beside them.
+  // ABSENT vs `null`, and the difference is the contract:
   //
-  // `key` and `renderPath` are exact from the start, because every later
-  // assertion keys on them. And `renderPath` is the one field that is NOT read
-  // off the model here: it is reported by the delegate that actually drew the
-  // chip, from the same `positioned` flag its x/y/width/height branch on. The
-  // map has two layouts and the fallback one has hidden a broken model before
+  //   absent  — the panel has nothing to say about this key at all. Either the
+  //             tick that computes it has not landed yet (iconSource,
+  //             iconResolved, fillState, treatment, badgeValue: they are NOT
+  //             here, rather than here as null), or the thing it describes does
+  //             not exist (`recordedAt` when this topology has no recording).
+  //   null    — computed, and the answer is genuinely empty. `recordedAt: null`
+  //             is a recording that carries NO timestamp; renderPath/placed/
+  //             width/height are null while the delegate has not drawn yet.
+  //
+  // So a consumer asks `has("k")` first and only then looks at the value, and a
+  // later tick ADDS its key to the objects below rather than un-nulling one.
+  // The two states above were the same value before (null for both), which the
+  // dated-header tick could not have told apart.
+  //
+  // `key`, `renderPath`, `placed`, `width`, `height` and `monitorName` are
+  // exact from the start, because every later assertion keys on them. The four
+  // draw-time ones are NOT read off the model here: they are reported by the
+  // delegate that actually drew the chip, from the same `positioned` flag and
+  // the same resolved rect its x/y/width/height branch on. The map has two
+  // layouts and the fallback one has hidden a broken model before
   // (.tick/learnings.md, "QML/JS boundary"), so a second derivation from the
   // model would be able to agree with the model while the screen did something
   // else.
+  //
+  // `renderPath: "positioned"` alone is not proof anything was drawn. Inside
+  // the positioned branch there is a SECOND, silent branch: a chip whose slot
+  // has no resolved rect draws a floor-sized marker at the canvas origin (see
+  // the chipSlot x/y/width/height bindings below — the code calls it visibly
+  // wrong), and during warm-up chipRectsForCanvas is handed a zero-width canvas
+  // and answers with non-null 1×1 rects, so even the warning never fires.
+  // `placed` separates the first case and `width`/`height` the second: a
+  // positioned chip that really drew has placed:true AND clears the 16×10
+  // floor. The treatment ladder needs the same two numbers — its answer is
+  // PanelModel.chipTreatment(width, height) on the DRAWN size.
 
-  // chip key -> { renderPath }, workspace key -> { renderPath }, written by
-  // the delegates. Mutated in place rather than reassigned: these are a
-  // side-channel for the IPC to read on demand, never a binding source, and
-  // reassigning would re-run the map's bindings from inside the map's own
-  // layout pass.
+  // chip key -> { renderPath, placed, width, height },
+  // workspace key -> { renderPath }, written by the delegates. Mutated in place
+  // rather than reassigned: these are a side-channel for the IPC to read on
+  // demand, never a binding source, and reassigning would re-run the map's
+  // bindings from inside the map's own layout pass.
+  //
+  // Neither registry is ever pruned, and it needs no pruning: the shell
+  // destroys the panel's Loader on hide (/usr/share/omarchy/shell/shell.qml,
+  // the panel loader's active binding), so both maps die with the panel and a
+  // fresh summon starts empty. Within one panel session they only grow, and
+  // panelState() iterates the MODEL and merely looks entries up — so a stale
+  // entry for a chip that is gone can never enter the payload.
   property var chipRenderReports: ({})
   property var workspaceRenderReports: ({})
 
   // Workspace ids are unique per desk in practice, but a stale recording can
   // name the same id under two monitors, so the monitor is part of the key.
-  function workspaceRenderKey(monitorName, workspaceId) {
-    return String(monitorName) + "/" + String(workspaceId)
+  //
+  // And the VIEW is part of it too, because both map models derive `box.name`
+  // from the same mapGeometry: without the discriminator the recorded map's
+  // workspace 7 on eDP-1 writes over the live map's, and a setView flip would
+  // hand the live payload the recorded delegate's answer. Chips are already
+  // safe — recorded chip keys carry a "recorded-" prefix, live ones are
+  // addresses — but workspaces have no such prefix of their own.
+  function workspaceRenderKey(showRecorded, monitorName, workspaceId) {
+    return (showRecorded ? "recorded" : "live")
+      + "/" + String(monitorName) + "/" + String(workspaceId)
   }
 
   // Merge rather than replace, so a later tick can report its own fields from
@@ -1950,6 +1989,17 @@ Item {
     root.mergeRenderReport(root.workspaceRenderReports, key, report)
   }
 
+  // One field of a render report, as `null` rather than as nothing when the
+  // delegate has not reported it. The distinction is the payload's whole
+  // convention: JSON.stringify DROPS an undefined property, so reading a field
+  // straight off a report that does not carry it yet would spell "not drawn
+  // yet" the way the payload spells "no tick computes this". A reported field
+  // is always present; only its value can be empty.
+  function reported(report, field) {
+    if (!report) return null
+    return report[field] !== undefined ? report[field] : null
+  }
+
   // The map as the panel has it, chip by chip. A projection of mapModel plus
   // what the delegates reported — deliberately thin, because everything with a
   // right answer in it was already decided by PanelModel.
@@ -1964,12 +2014,16 @@ Item {
       for (var w = 0; w < list.length; w++) {
         var workspace = list[w]
         var wsReport = root.workspaceRenderReports[
-          root.workspaceRenderKey(box.name, workspace.id)] || null
+          root.workspaceRenderKey(root.showRecorded, box.name, workspace.id)] || null
         workspaces.push({
           id: workspace.id,
           name: String(workspace.name),
-          badgeValue: null,
-          renderPath: wsReport ? wsReport.renderPath : null
+          // The monitor the key deliberately carries, carried through to the
+          // payload as well: without it a consumer cannot reproduce the
+          // disambiguation the key was built for, and a cross-check that
+          // matches on `id` alone matches across monitors.
+          monitorName: String(box.name),
+          renderPath: root.reported(wsReport, "renderPath")
         })
 
         var slots = workspace.slots || []
@@ -1982,28 +2036,38 @@ Item {
               key: chip.key,
               name: chip.name,
               workspaceId: workspace.id,
-              iconSource: null,
-              iconResolved: null,
+              monitorName: String(box.name),
               watched: !!chip.watched,
-              fillState: null,
-              treatment: null,
-              renderPath: report ? report.renderPath : null
+              // Draw-time, all four from the delegate that drew this chip.
+              renderPath: root.reported(report, "renderPath"),
+              placed: root.reported(report, "placed"),
+              width: root.reported(report, "width"),
+              height: root.reported(report, "height")
             })
           }
         }
       }
     }
 
-    return {
+    var payload = {
       topologyName: root.topologyName,
       showRecorded: root.showRecorded,
-      // The recording this topology has, whichever map is on screen: "when was
-      // this recorded" is a fact about the layout, not about the tab.
-      recordedAt: (root.recordedLayout && root.recordedLayout.recordedAt)
-        ? String(root.recordedLayout.recordedAt) : null,
       workspaces: workspaces,
       chips: chips
     }
+
+    // The recording this topology has, whichever map is on screen: "when was
+    // this recorded" is a fact about the layout, not about the tab.
+    //
+    // Absent when there is NO recording; present-and-null when there is one
+    // that carries no timestamp. Those were the same answer before, and the
+    // dated Recorded header has to tell them apart.
+    if (root.recordedLayout) {
+      payload.recordedAt = root.recordedLayout.recordedAt
+        ? String(root.recordedLayout.recordedAt) : null
+    }
+
+    return payload
   }
 
   IpcHandler {
@@ -2631,12 +2695,16 @@ Item {
                               // model. Read back over IPC — see root.panelState.
                               readonly property string renderPath: workspaceSlot.positioned ? "positioned" : "fallback"
                               readonly property string renderKey: root.workspaceRenderKey(
-                                monitorRect.modelData.name, workspaceSlot.modelData.id)
+                                root.showRecorded, monitorRect.modelData.name, workspaceSlot.modelData.id)
                               function reportRender() {
                                 root.reportWorkspaceRender(workspaceSlot.renderKey,
                                   { renderPath: workspaceSlot.renderPath })
                               }
                               onRenderPathChanged: workspaceSlot.reportRender()
+                              // A view flip rebuilds the map, but the key is
+                              // view-namespaced, so report under the new one
+                              // whichever way the delegate gets there.
+                              onRenderKeyChanged: workspaceSlot.reportRender()
                               Component.onCompleted: workspaceSlot.reportRender()
 
                               // The drawing area, inside the border and under the
@@ -2969,11 +3037,47 @@ Item {
                                           // it — see root.panelState.
                                           readonly property string renderPath: workspaceSlot.positioned
                                             ? "positioned" : "fallback"
+
+                                          // Did the slot get a resolved
+                                          // rectangle, or is this the silent
+                                          // second branch inside `positioned` —
+                                          // the floor-sized marker at the canvas
+                                          // origin that the x/y/width/height
+                                          // bindings above fall back to? Same
+                                          // `drawn` those bindings read, so the
+                                          // payload cannot claim placement the
+                                          // drawing did not have.
+                                          readonly property bool placed: chipSlot.drawn !== null
+
+                                          // The size this chip actually got, in
+                                          // pixels, AFTER every floor and every
+                                          // tab-group division — chipTab.width
+                                          // is one TAB's share, which is the
+                                          // width chipLabelVisible already
+                                          // branches on and the width
+                                          // PanelModel.chipTreatment will be
+                                          // asked about. Reported unrounded: a
+                                          // consumer reproducing the treatment
+                                          // has to be handed the same number the
+                                          // panel used, not a tidied one.
                                           function reportRender() {
-                                            root.reportChipRender(chipTab.modelData.key,
-                                              { renderPath: chipTab.renderPath })
+                                            root.reportChipRender(chipTab.modelData.key, {
+                                              renderPath: chipTab.renderPath,
+                                              placed: chipTab.placed,
+                                              width: chipTab.width,
+                                              height: chipTab.height
+                                            })
                                           }
                                           onRenderPathChanged: chipTab.reportRender()
+                                          onPlacedChanged: chipTab.reportRender()
+                                          // The Flow's first pass runs before its
+                                          // width is known and the rects settle a
+                                          // frame or two later, so the size has to
+                                          // be re-reported when it lands — a
+                                          // report taken only at completion is the
+                                          // 1×1 warm-up answer, for ever.
+                                          onWidthChanged: chipTab.reportRender()
+                                          onHeightChanged: chipTab.reportRender()
                                           Component.onCompleted: chipTab.reportRender()
 
                                           // The tab strip divides the slot's
