@@ -5398,12 +5398,70 @@ function recordTooltip(watchedCount, topologyName, restoring) {
 // line is the sentence, and the count is the half the badge has never had room
 // for. "In sync" over an empty watched list is a true statement about nothing,
 // and that is exactly the case the count makes visible.
-function headerMeta(badgeText, watchedCount) {
+// `extra` is one more clause for the same line — the Recorded tab's age, which
+// is a fact about what is on screen rather than about the desk.
+function headerMeta(badgeText, watchedCount, extra) {
   var state = trim(badgeText);
   var count = Number(watchedCount);
   if (!isFinite(count) || count < 0) count = 0;
   var apps = count === 1 ? "1 app watched" : count + " apps watched";
-  return state ? state + " · " + apps : apps;
+  var line = state ? state + " · " + apps : apps;
+  var tail = trim(extra);
+  return tail ? line + " · " + tail : line;
+}
+
+// WHEN THE RECORDED LAYOUT WAS RECORDED, in words.
+//
+// From the recording's OWN `recordedAt` — a field the schema has carried since
+// v1 and StateModel.normalizeLayout preserves — and never from a file mtime.
+// The state file is one file holding every topology's layout, so its mtime is
+// the last time ANY of them changed; a stale recording under a fresh mtime is
+// exactly the lie this line exists to prevent, and it is the reason the next
+// epic's captures can be honest about their own age.
+//
+// `nowMs` is passed in. This file is clock-free (see CLAUDE.md), and that is
+// also what makes every case below testable rather than observable.
+//
+// "" for a recording that carries no timestamp: there is genuinely nothing to
+// say, and the header says nothing rather than guessing. The caller keeps the
+// difference between that and NO RECORDING AT ALL — the payload spells the
+// first `null` and the second absent.
+//
+// A stamp in the FUTURE is not clamped to "just now". A layout recorded on
+// another machine, or before a clock correction, would then read as fresh when
+// it is the one thing it cannot be known to be; the day it names is the honest
+// answer instead. A minute of skew is tolerated, because that is a clock being
+// a clock rather than a recording being from the future.
+var RECORDED_FUTURE_TOLERANCE_MS = 60 * 1000;
+var MINUTE_MS = 60 * 1000;
+var HOUR_MS = 60 * MINUTE_MS;
+var DAY_MS = 24 * HOUR_MS;
+
+function plural(count, word) {
+  return count + " " + word + (count === 1 ? "" : "s");
+}
+
+function recordedAgeLabel(recordedAt, nowMs) {
+  var stamp = (typeof recordedAt === "string") ? trim(recordedAt) : "";
+  if (!stamp) return "";
+  var then = Date.parse(stamp);
+  if (!isFinite(then)) return "";
+  var now = Number(nowMs);
+  if (!isFinite(now)) return "";
+
+  var age = now - then;
+  if (age < -RECORDED_FUTURE_TOLERANCE_MS) {
+    // Name the day rather than an age nobody can act on. The ISO stamp's own
+    // date part, so this says the same thing the file says.
+    return "recorded " + stamp.slice(0, 10);
+  }
+  if (age < MINUTE_MS) return "recorded just now";
+  if (age < HOUR_MS) return "recorded " + plural(Math.floor(age / MINUTE_MS), "minute") + " ago";
+  if (age < DAY_MS) return "recorded " + plural(Math.floor(age / HOUR_MS), "hour") + " ago";
+  var days = Math.floor(age / DAY_MS);
+  if (days < 30) return "recorded " + plural(days, "day") + " ago";
+  if (days < 365) return "recorded " + plural(Math.floor(days / 30), "month") + " ago";
+  return "recorded " + plural(Math.floor(days / 365), "year") + " ago";
 }
 
 // The header switch. It is ON when the tool is WORKING, which is the only
@@ -5805,6 +5863,7 @@ if (typeof module !== "undefined") {
     restoreTooltip: restoreTooltip,
     recordTooltip: recordTooltip,
     headerMeta: headerMeta,
+    recordedAgeLabel: recordedAgeLabel,
     pauseSwitchChecked: pauseSwitchChecked,
     pauseTooltip: pauseTooltip,
     learnLaunchTooltip: learnLaunchTooltip,

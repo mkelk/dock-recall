@@ -3105,6 +3105,62 @@ test("the hero meta line carries the state AND the count", () => {
   assert.strictEqual(panel.headerMeta("", 2), "2 apps watched");
   assert.strictEqual(panel.headerMeta(null, null), "0 apps watched");
   assert.strictEqual(panel.headerMeta("In sync", -4), "In sync · 0 apps watched");
+  // The Recorded tab's age is one more clause on the same line, and only there.
+  assert.strictEqual(panel.headerMeta("In sync", 3, "recorded 3 days ago"),
+    "In sync · 3 apps watched · recorded 3 days ago");
+  assert.strictEqual(panel.headerMeta("In sync", 3, ""), "In sync · 3 apps watched");
+  assert.strictEqual(panel.headerMeta("In sync", 3, null), "In sync · 3 apps watched");
+});
+
+// -------------------------------------------- when the layout was recorded
+
+test("the recorded age is read in the recording's own units", () => {
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  const ago = (ms) => panel.recordedAgeLabel(new Date(now - ms).toISOString(), now);
+
+  assert.strictEqual(ago(0), "recorded just now");
+  assert.strictEqual(ago(59 * 1000), "recorded just now");
+  assert.strictEqual(ago(60 * 1000), "recorded 1 minute ago");
+  assert.strictEqual(ago(45 * 60 * 1000), "recorded 45 minutes ago");
+  assert.strictEqual(ago(60 * 60 * 1000), "recorded 1 hour ago");
+  assert.strictEqual(ago(23 * 60 * 60 * 1000), "recorded 23 hours ago");
+  assert.strictEqual(ago(24 * 60 * 60 * 1000), "recorded 1 day ago");
+  assert.strictEqual(ago(3 * 24 * 60 * 60 * 1000), "recorded 3 days ago");
+  assert.strictEqual(ago(29 * 24 * 60 * 60 * 1000), "recorded 29 days ago");
+  assert.strictEqual(ago(30 * 24 * 60 * 60 * 1000), "recorded 1 month ago");
+  assert.strictEqual(ago(200 * 24 * 60 * 60 * 1000), "recorded 6 months ago");
+  assert.strictEqual(ago(400 * 24 * 60 * 60 * 1000), "recorded 1 year ago");
+});
+
+test("a recording with no timestamp says nothing rather than guessing", () => {
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  // null is what StateModel.normalizeLayout writes for a layout that carries no
+  // recordedAt, and it is a DIFFERENT thing from having no recording at all —
+  // the payload keeps those apart (present-and-null vs the key being absent)
+  // even though the header has nothing to say in either case.
+  assert.strictEqual(panel.recordedAgeLabel(null, now), "");
+  assert.strictEqual(panel.recordedAgeLabel("", now), "");
+  assert.strictEqual(panel.recordedAgeLabel("   ", now), "");
+  assert.strictEqual(panel.recordedAgeLabel("not a date", now), "");
+  assert.strictEqual(panel.recordedAgeLabel(undefined, now), "");
+  // A number is not the schema's shape for this field, whatever Date.parse
+  // would make of it.
+  assert.strictEqual(panel.recordedAgeLabel(now, now), "");
+  // And no clock is no answer.
+  assert.strictEqual(panel.recordedAgeLabel("2026-09-01T00:00:00.000Z", NaN), "");
+  assert.strictEqual(panel.recordedAgeLabel("2026-09-01T00:00:00.000Z", undefined), "");
+});
+
+test("a stamp from the future names its day rather than reading as fresh", () => {
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  // A layout recorded on another machine, or before a clock correction. Clamping
+  // it to "just now" would make the one recording whose age cannot be known read
+  // as the freshest thing in the panel.
+  assert.strictEqual(panel.recordedAgeLabel("2026-12-25T09:00:00.000Z", now),
+    "recorded 2026-12-25");
+  // A minute of skew is a clock being a clock, not a recording from the future.
+  assert.strictEqual(panel.recordedAgeLabel("2026-09-03T12:00:30.000Z", now),
+    "recorded just now");
 });
 
 test("the pause switch is ON when the tool is working", () => {

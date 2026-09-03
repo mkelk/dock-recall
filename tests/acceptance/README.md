@@ -257,6 +257,7 @@ would be a second writer with none of that discipline.
   "topologyName": "Laptop + Dell U2720Q",
   "showRecorded": false,
   "recordedAt": "2026-09-03T09:12:44.101Z",
+  "recordedAge": "recorded 3 days ago",
   "headerTitle": "Laptop + Dell U2720Q",
   "headerMeta": "Drifted (1) · 3 apps watched",
   "paused": false,
@@ -304,6 +305,22 @@ say. It now answers:
 omarchy-shell dock-recall state | jq 'has("recordedAt")'   # false → no recording at all
 omarchy-shell dock-recall state | jq '.recordedAt'         # null  → a recording with no timestamp
 ```
+
+`recordedAge` travels with it and answers the same two ways: absent when there is
+no recording, `null` when there is one that carries no timestamp. It is the age
+in words — "recorded 3 days ago" — computed from the recording's **own**
+`recordedAt` and never from a file mtime, because one state file holds every
+topology's layout and its mtime is the last time *any* of them changed. A stale
+recording under a fresh mtime is exactly the lie this line exists to prevent, and
+it is what will let the next epic's captures be honest about their own age.
+
+The **Recorded** tab puts it in the hero's `headerMeta` and the **Live** tab does
+not: when a layout was recorded is a fact about the other tab. The test asserts
+both sides — the recorded payload's `headerMeta` must contain `recordedAge`, and
+the live payload's must not mention "recorded ".
+
+No schema change was needed: `recordedAt` has been a normalized layout field
+since v1 (`StateModel.normalizeLayout`), so `STATE_VERSION` stands at 4.
 
 `renderPath`, `placed`, `width`, `height`, `iconSource` and `iconResolved` are
 `null` while the delegate that draws the chip has not reported yet — a transient
@@ -425,6 +442,22 @@ new id rather than restore it. The assertion is that the row's `watched` and the
 chip's `fillState` move **in one query** — they are written by two different
 delegates reporting independently, so a payload in which only one changed is a
 real split between the list and the map.
+
+### Window titles are never markup
+
+Qt's `Text.textFormat` defaults to `Text.AutoText`, which renders a string that
+looks like HTML **as** HTML. The panel draws strings it did not write — window
+classes from Hyprland, identity ids from a user-editable state file, monitor
+descriptions from an EDID, and through the terminal proposal, names derived from
+a window's own title, which an application picks for itself.
+
+Every `Text` in `Panel.qml` therefore declares `textFormat: Text.PlainText`, and
+`tests/qml-plaintext.test.js` fails naming the line if a new one does not. The
+rule is *all* of them rather than the ones that can currently be argued to reach
+a title, because that argument would have to be re-made correctly by every future
+author. The same test asserts the shell components the panel hands untrusted
+strings to (`Ui/PanelToolTip`, `Ui/Toggle`, `Ui/PanelHero`) still declare it too —
+the tooltip carries a raw window title, and that binding is not ours to guard.
 
 ### The row-to-chip link
 

@@ -94,6 +94,14 @@
 #                  which is exactly what a hover sets — a virtual pointer is a
 #                  live-session rig, and this increment does not touch the live
 #                  session.
+#   recordedAge  — the same stamp in words, and the Recorded tab SAYS it: its
+#                  headerMeta has to contain the string, and the Live tab's has
+#                  to not, because when a layout was recorded is a fact about
+#                  the other tab. Derived from the recording's own recordedAt
+#                  and never from a file mtime — one state file holds every
+#                  topology's layout, so its mtime is the last time ANY of them
+#                  changed, and a stale recording under a fresh mtime is the lie
+#                  this line exists to prevent.
 #   watched      — asserted against the window this test actually seeded, not
 #                  merely required to be present. The live map draws every
 #                  mappable client whether it is watched or not, so a payload in
@@ -360,7 +368,7 @@ STATE_SHAPE='
                  and .renderPath != $c.renderPath)]|length) == 0
   and .headerTitle == .topologyName
   and (.headerMeta|type) == "string" and (.headerMeta|contains($state.badgeText))
-  and (.headerMeta|test("[0-9]+ apps? watched$"))
+  and (.headerMeta|test("[0-9]+ apps? watched"))
   and (.paused|type) == "boolean"
   and (.badgeText|type) == "string" and (.badgeText|length) > 0
   and (.badgeTone == "ok" or .badgeTone == "muted"
@@ -397,6 +405,10 @@ capture_live_state() {
     '. as $state |
     '"$STATE_SHAPE"'
     and .showRecorded == false
+    # The LIVE tab says nothing about when the layout was recorded — that is a
+    # fact about the other tab, and "recorded 3 days ago" over the windows on
+    # screen would be answering a question nobody asked of them.
+    and (.headerMeta|test("recorded ")|not)
     and ([.chips[]|select(.renderPath == "positioned")]|length) > 0
     and ([.chips[]|select(.key == $addr and .watched == true
           and .renderPath == "positioned")]|length) == 1
@@ -452,6 +464,11 @@ capture_recorded_state() {
     --arg icon "$ICON_URL" '. as $state |
     '"$STATE_SHAPE"'
     and .showRecorded == true
+    # THE DATED RECORDED HEADER. The layout was seeded seconds ago through the
+    # engine, so the age it earns is "recorded just now" — and the assertion is
+    # that the hero SAYS it, not merely that the panel could compute it.
+    and (.recordedAge|type) == "string" and (.recordedAge|length) > 0
+    and (.headerMeta|contains($state.recordedAge))
     and ([.chips[]|select(.renderPath == "fallback")]|length) == (.chips|length)
     # THE SAME ICON, on the FALLBACK path — the half that matters, because the
     # stacked branch is the one that has hidden a broken model before. The
@@ -864,6 +881,19 @@ if [[ $reported_at != "$RECORDED_AT" ]]; then
 fi
 pass "panel IPC reports the recording's own timestamp ($reported_at)"
 
+# And the same fact in words, derived from THAT stamp rather than from a file
+# mtime — the state file holds every topology's layout, so its mtime is the last
+# time any of them changed. Present on both tabs (it is a fact about the
+# recording, not about the tab); only the RECORDED tab puts it in the header,
+# which the two view predicates assert from opposite sides.
+if ! printf '%s' "$LIVE_JSON" | jq -e 'has("recordedAge")' >/dev/null; then
+  diagnostics
+  fail "panel IPC reports how old the recording is" \
+    "recordedAge is ABSENT while recordedAt is present — the two travel together"
+fi
+reported_age=$(printf '%s' "$LIVE_JSON" | jq -r '.recordedAge')
+pass "and how old it is, in words, from that same stamp ($reported_age)"
+
 # --------------------------------------------- 6. the RECORDED map, over IPC
 
 view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
@@ -899,6 +929,9 @@ pass "FALLBACK fills and edges, the ghost among them: $recorded_fills"
 recorded_badges=$(printf '%s' "$RECORDED_JSON" | jq -r \
   '[.workspaces[]|"\(.monitorName)/\(.badgeValue)\(if .badgeFocused then " (focused)" else "" end)"]|join(", ")')
 pass "FALLBACK workspace badges: $recorded_badges"
+
+recorded_header=$(printf '%s' "$RECORDED_JSON" | jq -r '.headerMeta')
+pass "the Recorded tab says when it was recorded: \"$recorded_header\""
 
 # The two views are the two paths, and they are not the same chips: a payload
 # that reported one constant for renderPath would have failed one of the two

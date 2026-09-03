@@ -471,6 +471,25 @@ Item {
   readonly property var iconNames: PanelModel.iconNameIndex(
     root.identities, root.liveClients, root.desktopFiles)
 
+  // ------------------------------------------- when this layout was recorded
+  //
+  // The clock the age is measured against, refreshed with the desk (see
+  // root.refresh). Not a binding on Date.now() — that would never re-evaluate.
+  property double nowMs: Date.now()
+
+  // "recorded 3 days ago", from the RECORDING's own timestamp and never from a
+  // file mtime: the state file holds every topology's layout, so its mtime is
+  // the last time any of them changed and a stale recording under a fresh mtime
+  // is exactly the lie this line exists to prevent. It is what will make the
+  // next epic's captures honest about their own age.
+  //
+  // "" for a recording that carries no timestamp, and "" when there is no
+  // recording at all — the two are different sentences, and the payload keeps
+  // them apart (null vs the key being absent) even though the header has
+  // nothing to say in either case.
+  readonly property string recordedAgeLabel: root.recordedLayout
+    ? PanelModel.recordedAgeLabel(root.recordedLayout.recordedAt, root.nowMs) : ""
+
   // The workspace in front of the user, as a monitor-qualified key. Computed
   // once per frame off the monitor read rather than per badge — see
   // PanelModel.focusedWorkspaceKey for why only the focused monitor has one.
@@ -864,6 +883,13 @@ Item {
   }
 
   function refresh() {
+    // The clock, sampled where the panel already samples the desk. PanelModel
+    // is clock-free by rule, so every age it computes is an age against a
+    // number this side hands it — and putting the sample HERE is what makes the
+    // Recorded tab's "recorded 3 days ago" tick over on the same 2 s beat as
+    // everything else, rather than freezing at whatever it read when the panel
+    // opened.
+    root.nowMs = Date.now()
     if (clientsProc.running || monitorsProc.running) return
     clientsProc.running = true
   }
@@ -1973,6 +1999,7 @@ Item {
   //     "topologyName": "Laptop + Dell U2720Q",
   //     "showRecorded": false,
   //     "recordedAt": "2026-09-03T09:12:44.101Z" | null,   // ABSENT if none
+  //     "recordedAge": "recorded 3 days ago" | null,       // ABSENT if none
   //     "headerTitle": "Laptop + Dell U2720Q" | null,
   //     "headerMeta": "In sync · 3 apps watched" | null,
   //     "paused": false | null,
@@ -2270,6 +2297,10 @@ Item {
     if (root.recordedLayout) {
       payload.recordedAt = root.recordedLayout.recordedAt
         ? String(root.recordedLayout.recordedAt) : null
+      // The same fact as the Recorded tab says it. `null` for a recording that
+      // carries no timestamp — there is an age and it is genuinely unknowable —
+      // which is the second half of the same distinction recordedAt makes.
+      payload.recordedAge = root.recordedAgeLabel ? root.recordedAgeLabel : null
     }
 
     return payload
@@ -2622,7 +2653,11 @@ Item {
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   title: root.topologyName
-                  meta: PanelModel.headerMeta(root.badge.text, root.watchedCount)
+                  // The age rides the meta line, and only on the RECORDED tab:
+                  // "recorded 3 days ago" over the live map would be answering
+                  // a question nobody asked of the windows on screen.
+                  meta: PanelModel.headerMeta(root.badge.text, root.watchedCount,
+                    root.showRecorded ? root.recordedAgeLabel : "")
                   iconComponent: heroMonitorGlyph
                   trailingControl: heroPauseControl
 
@@ -2673,6 +2708,7 @@ Item {
 
                 Text {
                   id: badgeText
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: root.badge.text
                   color: root.toneColor(root.badge.tone)
@@ -2748,6 +2784,7 @@ Item {
                     spacing: Style.space(6)
 
                     Text {
+                      textFormat: Text.PlainText
                       width: menuColumn.width
                       text: root.overflowModel.title
                       color: root.dimForeground
@@ -2802,6 +2839,7 @@ Item {
                           }
 
                           Text {
+                            textFormat: Text.PlainText
                             visible: menuRow.modelData.moreMonitors
                             anchors.verticalCenter: parent.verticalCenter
                             text: "+"
@@ -2820,6 +2858,7 @@ Item {
                           spacing: 0
 
                           Text {
+                            textFormat: Text.PlainText
                             width: parent.width
                             text: menuRow.modelData.note
                               ? menuRow.modelData.name + " · " + menuRow.modelData.note
@@ -2832,6 +2871,7 @@ Item {
                           }
 
                           Text {
+                            textFormat: Text.PlainText
                             width: parent.width
                             text: menuRow.modelData.appLabel
                             color: root.dimForeground
@@ -2844,6 +2884,7 @@ Item {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       width: menuColumn.width
                       visible: root.overflowModel.hint !== ""
                       text: root.overflowModel.hint
@@ -2957,6 +2998,7 @@ Item {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   // Positioned rather than centred: anchoring to a parent
                   // whose height comes from childrenRect would put this text
                   // in its own way.
@@ -3030,6 +3072,7 @@ Item {
 
                           Text {
                             id: monitorName
+                            textFormat: Text.PlainText
                             text: monitorRect.modelData.name
                             color: root.faintForeground
                             font.family: root.fontFamily
@@ -3039,6 +3082,7 @@ Item {
 
                           Text {
                             id: monitorSize
+                            textFormat: Text.PlainText
                             text: monitorRect.modelData.sizeLabel
                             color: root.faintForeground
                             font.family: root.fontFamily
@@ -3279,6 +3323,7 @@ Item {
 
                                 Text {
                                   id: workspaceBadgeText
+                                  textFormat: Text.PlainText
                                   anchors.centerIn: parent
                                   text: workspaceSlot.badgeValue
                                   // On the accent fill the text has to be the
@@ -3886,6 +3931,31 @@ Item {
 
                                                 Text {
                                                   id: chipLabel
+                                                  // PLAIN TEXT, and every Text
+                                                  // in this file says so — see
+                                                  // tests/qml-plaintext.test.js,
+                                                  // which fails the moment a new
+                                                  // one does not.
+                                                  //
+                                                  // Qt's default is AutoText: a
+                                                  // string that looks like HTML
+                                                  // is RENDERED as HTML, and
+                                                  // this is the binding where
+                                                  // that matters most. The name
+                                                  // is usually derived and
+                                                  // title-cased, but a terminal
+                                                  // proposes the app INSIDE it
+                                                  // from the window's own title,
+                                                  // and a window title is a
+                                                  // string an application picks
+                                                  // for itself. The rule is
+                                                  // every Text rather than the
+                                                  // ones we can currently argue
+                                                  // reach a title, because that
+                                                  // argument has to be re-made
+                                                  // correctly every time
+                                                  // somebody adds a binding.
+                                                  textFormat: Text.PlainText
                                                   // The name is the top tier and
                                                   // only the top tier. Below it
                                                   // the label was one elided
@@ -3989,6 +4059,7 @@ Item {
 
                                               Text {
                                                 id: tagLabel
+                                                textFormat: Text.PlainText
                                                 anchors.centerIn: parent
                                                 text: chipTag.tagText
                                                 color: chipTag.tone
@@ -4057,6 +4128,7 @@ Item {
 
             // ------------------------------------------------ empty state
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.emptyHint !== ""
               text: root.emptyHint
@@ -4067,6 +4139,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.recordHint !== ""
               text: root.recordHint
@@ -4084,6 +4157,7 @@ Item {
             // front is wider by construction, an observation otherwise (see
             // PanelModel.shadowNoticeFor).
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.shadowHint !== ""
               text: root.shadowHint
@@ -4098,6 +4172,7 @@ Item {
             // was a Record that logged success and grew an Undo button for a
             // write that never happened (tick sma).
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.writeRefusalReason !== ""
               text: "Read-only: " + root.writeRefusalReason
@@ -4119,6 +4194,7 @@ Item {
             // at the sentence that explains it.
             Text {
               id: inertLine
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.restoreRefusalReason !== ""
               text: "Inert: " + root.restoreRefusalReason
@@ -4133,6 +4209,7 @@ Item {
             // the shadow line is: the user pressed something and the desktop
             // does not say what they expect it to say.
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.tickRefusalHint !== ""
               text: root.tickRefusalHint
@@ -4143,6 +4220,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.untitledHint !== ""
               text: root.untitledHint
@@ -4153,6 +4231,7 @@ Item {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               visible: root.readError !== ""
               text: "Could not read the desktop — showing the last good snapshot. (" + root.readError + ")"
@@ -4314,6 +4393,7 @@ Item {
                   // which is what `launchRepairable` says and the colour shows.
                   Text {
                     id: rowLaunch
+                    textFormat: Text.PlainText
                     text: appRow.modelData.launchHint || ""
                     visible: text !== ""
                     width: visible ? implicitWidth : 0
@@ -4342,6 +4422,7 @@ Item {
                   // text is in the tooltip.
                   Text {
                     id: rowWhere
+                    textFormat: Text.PlainText
                     readonly property string placement: appRow.modelData.drifted && appRow.modelData.driftTo
                       ? appRow.modelData.position + " → " + appRow.modelData.driftTo
                       : appRow.modelData.position
@@ -4421,6 +4502,7 @@ Item {
               PanelSeparator { foreground: root.foreground }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: root.failedTitle
                 color: Color.urgent
@@ -4458,6 +4540,7 @@ Item {
                     spacing: 0
 
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: failedRow.modelData.instanceLabel
                         ? failedRow.modelData.name + " · " + failedRow.modelData.instanceLabel
@@ -4472,6 +4555,7 @@ Item {
                     // rather than elided: a blocked reason is a sentence and it
                     // is the only thing on this row worth reading.
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: failedRow.modelData.reason
                       color: root.dimForeground
@@ -4485,6 +4569,7 @@ Item {
                     // presses Retry three times against a browser has been told
                     // nothing by a button that keeps looking willing.
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       visible: failedRow.modelData.caveat !== ""
                       text: failedRow.modelData.caveat
