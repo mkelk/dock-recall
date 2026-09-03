@@ -2037,7 +2037,7 @@ Item {
   //         "width": 214, "height": 120,
   //         "iconSource": "file:///usr/share/icons/…/obsidian.svg" | null,
   //         "iconResolved": true | false | null,
-  //         "treatment": "pill" | "badge" | "veiled" | "field" | null,
+  //         "treatment": "pill" | "badge" | "strip" | "veiled" | "field" | null,
   //         "fillState": "watched" | "ghost" | "unwatched" | null,
   //         "edgeTone": "drift" | "hover" | "watched" | "quiet" | null,
   //         "linkKey": "id:obsidian" | null, "linked": false | null }
@@ -2233,7 +2233,7 @@ Item {
               // The row-to-chip link, from the chip's side.
               linkKey: root.reported(report, "linkKey"),
               linked: root.reported(report, "linked"),
-              // Which of the four drawings this chip earned. Reproducible from
+              // Which of the five drawings this chip earned. Reproducible from
               // the width and height beside it — PanelModel.chipTreatment is
               // the one that decides — which is what makes a disagreement here
               // a real finding rather than two guesses.
@@ -3686,13 +3686,21 @@ Item {
                                           readonly property bool iconResolved: root.iconResolvedOf(
                                             chipTab.modelData.identityId, chipTab.modelData.className)
 
-                                          // WHICH OF FOUR DRAWINGS THIS CHIP
+                                          // WHICH OF FIVE DRAWINGS THIS CHIP
                                           // EARNS, from the size it actually
                                           // got. The ladder:
                                           //
                                           //   pill    icon and name together on
                                           //           a ground
                                           //   badge   the icon alone, no text
+                                          //   strip   icon and name on one line,
+                                          //           for a chip that is wide but
+                                          //           far too short for a pill —
+                                          //           the fallback stack's rows,
+                                          //           which are canvas-wide and
+                                          //           17 px tall and would
+                                          //           otherwise be nameless
+                                          //           icons forever
                                           //   veiled  the content veiled, the
                                           //           icon centred on it
                                           //   field   the colour field alone
@@ -3882,7 +3890,23 @@ Item {
                                             Rectangle {
                                               id: chipPill
                                               readonly property bool isPill: chipTab.treatment === "pill"
-                                              readonly property real padX: chipPill.isPill ? Style.space(6) : 0
+                                              // THE TIERS THAT CARRY A NAME, and
+                                              // the one question every binding
+                                              // below asks instead of naming a
+                                              // tier twice. `strip` is a pill
+                                              // that has the width for a name and
+                                              // not the height for anything
+                                              // around it.
+                                              readonly property bool hasLabel: chipPill.isPill
+                                                || chipTab.treatment === "strip"
+                                              // Horizontal breathing room goes
+                                              // with the name; VERTICAL padding
+                                              // is the pill's alone, because a
+                                              // strip's whole height is one line
+                                              // of text and 3 px above and below
+                                              // it would spill into the row below
+                                              // in the stack.
+                                              readonly property real padX: chipPill.hasLabel ? Style.space(6) : 0
                                               readonly property real padY: chipPill.isPill ? Style.space(3) : 0
 
                                               visible: chipTab.treatment !== "field"
@@ -3897,8 +3921,12 @@ Item {
                                               // than a hue of its own: it must
                                               // read as the panel quietening a
                                               // patch of the chip, not as a
-                                              // second state to decode.
-                                              color: chipPill.isPill
+                                              // second state to decode. It
+                                              // follows the NAME, not the pill
+                                              // tier: the strip draws a name over
+                                              // the same ground for the same
+                                              // reason.
+                                              color: chipPill.hasLabel
                                                 ? Util.alpha(Color.popups.background, 0.72) : "transparent"
 
                                               Row {
@@ -3978,16 +4006,28 @@ Item {
                                                   // correctly every time
                                                   // somebody adds a binding.
                                                   textFormat: Text.PlainText
-                                                  // The name is the top tier and
-                                                  // only the top tier. Below it
-                                                  // the label was one elided
+                                                  // The name goes to the tiers
+                                                  // that have room for a word:
+                                                  // the pill, and the strip — a
+                                                  // chip wide enough for a name
+                                                  // and one line tall. Below
+                                                  // those the label was one elided
                                                   // letter and a smear, which made
                                                   // a small chip look like a
                                                   // broken one; the chip keeps its
                                                   // hover, its click and its
                                                   // tooltip, which is where the
                                                   // whole story was already.
-                                                  visible: chipPill.isPill
+                                                  //
+                                                  // The strip clause is not a
+                                                  // relaxation, it is the repair:
+                                                  // gating on the pill tier alone
+                                                  // silently took the name off
+                                                  // every chip on the Recorded
+                                                  // tab, whose stacked rows are
+                                                  // 17 px tall and can never
+                                                  // reach it.
+                                                  visible: chipPill.hasLabel
                                                   // Whatever is left after the
                                                   // icon and the padding, and
                                                   // never more than the text
@@ -4043,16 +4083,25 @@ Item {
                                             // in the tooltip either way.
                                             //
                                             // It rides the LABEL's visibility —
-                                            // and therefore the ladder's top tier
-                                            // — rather than inventing a threshold
-                                            // of its own: a chip too small for its
-                                            // own name is far too small for a tag.
+                                            // and therefore the tiers that draw a
+                                            // name — rather than inventing a
+                                            // threshold of its own: a chip too
+                                            // small for its own name is far too
+                                            // small for a tag.
                                             // It also has to FIT, because an
                                             // elided tag is a worse signal than no
-                                            // tag at all. The height clause stays:
-                                            // a pill-tier chip has the width for a
-                                            // tag by construction, but a tag under
-                                            // a name needs the room for two lines.
+                                            // tag at all. The height clause stays,
+                                            // and it is what tells a labelled chip
+                                            // with room for two lines from one
+                                            // without: a pill has that room by
+                                            // construction, a 17 px stacked strip
+                                            // has not, and a strip that IS taller
+                                            // than two lines gets its tag. On the
+                                            // narrow row the drift arrow beside
+                                            // the name carries the signal instead
+                                            // — see chipLabel.text — which is
+                                            // exactly what it did before the
+                                            // ladder existed.
                                             Rectangle {
                                               id: chipTag
                                               readonly property bool isDrift: (chipTab.modelData.driftTag || "") !== ""

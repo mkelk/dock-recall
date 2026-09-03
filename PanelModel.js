@@ -3355,7 +3355,28 @@ var CHIP_BADGE_MIN_HEIGHT = 40;
 var CHIP_VEILED_MIN_WIDTH = 24;
 var CHIP_VEILED_MIN_HEIGHT = 16;
 
-// Which of four drawings a chip earns, from its actual DRAWN pixel size.
+// The STRIP tier, and it deliberately introduces no number of its own — it is
+// the pill's ratified width paired with the veiled tier's ratified height.
+//
+// The four cutoffs above were ratified against POSITIONED chips, which are
+// window-shaped: a chip is its window's rectangle scaled into a box that has
+// the monitor's aspect, so width and height rise together and demanding both
+// axes is right. The fallback stacked path draws a different shape on purpose —
+// one canvas-wide row per app, a fixed 17 px tall — and it is the one geometry
+// where the both-axes rule gives the wrong answer: such a row can never clear
+// the badge's 40 px height however wide the map gets, so every app on the
+// Recorded tab was a nameless icon under a 55% veil.
+//
+// The rule that rescues it, and nothing else: a chip has room for a WORD ACROSS
+// (CHIP_PILL_MIN_WIDTH — the width at which a name was ratified to fit beside
+// an icon) and room for ONE LINE DOWN (CHIP_VEILED_MIN_HEIGHT — the ladder's
+// own floor for "there is something to see here at all", and one line of
+// caption text) draws its name, on a single line, without the pill's vertical
+// padding.
+var CHIP_STRIP_MIN_WIDTH = CHIP_PILL_MIN_WIDTH;
+var CHIP_STRIP_MIN_HEIGHT = CHIP_VEILED_MIN_HEIGHT;
+
+// Which of five drawings a chip earns, from its actual DRAWN pixel size.
 //
 // STANDALONE on purpose: this takes the chip's size AFTER chipRectsForCanvas
 // (or whatever else placed it) has already decided it, rather than being baked
@@ -3363,15 +3384,25 @@ var CHIP_VEILED_MIN_HEIGHT = 16;
 // render paths — the canvas one, which calls chipRectsForCanvas, and a fallback
 // stacked path that never does — and a treatment carried on the model would be
 // silently absent on the second path. Asking at draw time is correct on both.
+// It is still a pure function of (width, height): it knows nothing about which
+// path drew the chip, and the strip tier below is a SHAPE, not a path.
 //
 // Both axes must clear a tier's cutoffs together: a chip wide enough for "pill"
 // but too short is a "badge", not a pill stretched thin.
+//
+// The strip is asked LAST of the drawing tiers — after pill and after badge —
+// and that ordering is the whole of its safety. Every size that reached "pill"
+// or "badge" before still reaches it, because those two branches are untouched
+// and are tested first; the strip can only ever rescue a size the badge tier
+// REJECTED, which given w >= 140 means h < 40. So a strip is always wider than
+// 140 and shorter than 40 — the short-and-wide corner, and nothing else.
 function chipTreatment(width, height) {
   var w = Number(width);
   var h = Number(height);
   if (!isFinite(w) || !isFinite(h)) return "field";
   if (w >= CHIP_PILL_MIN_WIDTH && h >= CHIP_PILL_MIN_HEIGHT) return "pill";
   if (w >= CHIP_BADGE_MIN_WIDTH && h >= CHIP_BADGE_MIN_HEIGHT) return "badge";
+  if (w >= CHIP_STRIP_MIN_WIDTH && h >= CHIP_STRIP_MIN_HEIGHT) return "strip";
   if (w >= CHIP_VEILED_MIN_WIDTH && h >= CHIP_VEILED_MIN_HEIGHT) return "veiled";
   return "field";
 }
@@ -5815,6 +5846,8 @@ if (typeof module !== "undefined") {
     CHIP_BADGE_MIN_HEIGHT: CHIP_BADGE_MIN_HEIGHT,
     CHIP_VEILED_MIN_WIDTH: CHIP_VEILED_MIN_WIDTH,
     CHIP_VEILED_MIN_HEIGHT: CHIP_VEILED_MIN_HEIGHT,
+    CHIP_STRIP_MIN_WIDTH: CHIP_STRIP_MIN_WIDTH,
+    CHIP_STRIP_MIN_HEIGHT: CHIP_STRIP_MIN_HEIGHT,
     wrapTooltip: wrapTooltip,
     placementLabel: placementLabel,
     livePlacementLabel: livePlacementLabel,

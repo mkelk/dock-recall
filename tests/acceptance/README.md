@@ -344,20 +344,35 @@ generic icon, which is what the flag is about.
 
 ### The treatment ladder
 
-`treatment` is which of four drawings a chip earned — `pill` (icon and name),
-`badge` (the icon alone), `veiled` (the content veiled, the icon centred),
-`field` (the colour field alone). The panel asks `PanelModel.chipTreatment` with
-the size it **drew** at, which is why the function is standalone rather than
-baked into the model: the fallback path never calls `chipRectsForCanvas`, so a
-treatment carried on the model would be silently wrong there.
+`treatment` is which of five drawings a chip earned — `pill` (icon and name),
+`badge` (the icon alone), `strip` (icon and name on one line, for a chip wide
+enough for a word and only one line tall), `veiled` (the content veiled, the icon
+centred), `field` (the colour field alone). The panel asks
+`PanelModel.chipTreatment` with the size it **drew** at, which is why the
+function is standalone rather than baked into the model: the fallback path never
+calls `chipRectsForCanvas`, so a treatment carried on the model would be silently
+wrong there.
 
-The test does not merely check the word is one of four. It **re-derives** the
+The test does not merely check the word is one of five. It **re-derives** the
 tier from the `width` and `height` reported beside it, using the ratified
 cutoffs restated in `jq`, for every chip on both paths. A panel that asked
 `chipTreatment` with the wrong numbers reports a tier its own geometry does not
 earn, and that is the failure this catches. The cutoffs therefore live in two
 places on purpose — a test that imported the answer would agree with a wrong
 one.
+
+Self-consistency is not enough on its own, and the `strip` tier exists because it
+was not. Re-deriving the tier from the reported size passes a panel whose whole
+Recorded tab is nameless icons, because a 210×17 stacked row really does earn
+`veiled` under a ladder that demands both axes — those cutoffs were ratified
+against positioned, window-shaped chips, and the fallback stack is the one shape
+where both-axes is the wrong question. So three further assertions run beside the
+re-derivation: a fallback chip must reach a tier that **draws its name**; every
+fallback chip must clear the same 16×10 floor the positioned ones do (the floor
+was asserted only on the positioned path, so a fallback laying every chip out at
+0×0 passed everything); and a run must exercise **more than one tier** across its
+two maps, so a collapsed ladder fails the gate instead of being visible only to a
+human reading the log.
 
 `chipLabelVisible` is gone. It decided the label on width alone, and two
 thresholds disagreeing about whether a chip has room for its name is what the

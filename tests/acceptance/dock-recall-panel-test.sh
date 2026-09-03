@@ -303,6 +303,17 @@ CHIP_MIN_H=10
 # here. That is deliberate — a test that imported the answer would agree with a
 # wrong answer.
 #
+# AND RE-DERIVING IT IS NOT ENOUGH ON ITS OWN. This clause is self-consistent by
+# construction: it asks whether the reported tier equals chipTreatment(reported
+# width, reported height), which a panel drawing a column of nameless icons
+# satisfies perfectly — a 210x17 stacked row genuinely earns its tier, and the
+# gate printed the regression as a pass. Two clauses below and one check after
+# the recorded map give it teeth: every FALLBACK chip clears the same 16x10
+# floor the positioned ones do (asserting it only where renderPath is
+# "positioned" let a fallback lay every chip out at 0x0 and pass everything), a
+# fallback chip must reach a tier that DRAWS ITS NAME, and a run must exercise
+# more than one tier across its two maps.
+#
 # The empty-source clause is not pedantry: AppLibrary.iconSource cannot answer
 # empty, because it falls back to application-x-executable, so an empty string
 # here means either the panel never asked (no shell, and so no appLibrary) or
@@ -351,7 +362,7 @@ STATE_SHAPE='
         and (.width|type) == "number" and (.height|type) == "number"
         and (.iconSource|type) == "string" and (.iconSource|length) > 0
         and (.iconResolved|type) == "boolean"
-        and (.treatment == "pill" or .treatment == "badge"
+        and (.treatment == "pill" or .treatment == "badge" or .treatment == "strip"
              or .treatment == "veiled" or .treatment == "field")
         and (.fillState == "watched" or .fillState == "ghost" or .fillState == "unwatched")
         and (.edgeTone == "drift" or .edgeTone == "hover"
@@ -365,11 +376,14 @@ STATE_SHAPE='
   and ([.chips[]|select(.treatment != (
         if .width >= 140 and .height >= 56 then "pill"
         elif .width >= 56 and .height >= 40 then "badge"
+        elif .width >= 140 and .height >= 16 then "strip"
         elif .width >= 24 and .height >= 16 then "veiled"
         else "field" end))]|length) == 0
   and ((.chips|map(.key)|unique|length) == (.chips|length))
   and ([.chips[]|select(.renderPath == "positioned"
         and (.placed == false or .width < $minw or .height < $minh))]|length) == 0
+  and ([.chips[]|select(.renderPath == "fallback"
+        and (.width < $minw or .height < $minh))]|length) == 0
   and ([.workspaces[]|select((.monitorName|type) == "string"
         and (.monitorName|length) > 0)]|length) == (.workspaces|length)
   and ([.chips[] as $c | $state.workspaces[]
@@ -479,6 +493,15 @@ capture_recorded_state() {
     and (.recordedAge|type) == "string" and (.recordedAge|length) > 0
     and (.headerMeta|contains($state.recordedAge))
     and ([.chips[]|select(.renderPath == "fallback")]|length) == (.chips|length)
+    # A FALLBACK CHIP SAYS ITS NAME. The assertion whose absence let a
+    # user-visible regression ship: the label was gated on the pill tier alone,
+    # a stacked row is a fixed 17 px tall and can never reach it, and the whole
+    # Recorded tab became nameless icons under a 55% veil while every other
+    # clause here stayed green. The tiers that draw a name are pill and strip —
+    # this asks for the OUTCOME the user sees, not for a tier by name, which is
+    # why it lists both rather than pinning the one the stack happens to earn.
+    and ([.chips[]|select(.renderPath == "fallback"
+          and (.treatment == "pill" or .treatment == "strip"))]|length) > 0
     # THE SAME ICON, on the FALLBACK path — the half that matters, because the
     # stacked branch is the one that has hidden a broken model before. The
     # recorded chip has no window and therefore no window class at all, so this
@@ -945,7 +968,7 @@ fi
 if ! poll 30 capture_recorded_state; then
   diagnostics
   fail "panel IPC reports the recorded map" \
-    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, agreeing with their own workspace on their own monitor, at least one resolving its identity icon to $ICON_URL, exactly one fill=ghost ($GHOST_IDENTITY) beside exactly one fill=watched, and exactly one workspace badge filled (see the raw payload above)"
+    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, each above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor, at least one of them reaching a tier that DRAWS ITS NAME (pill or strip — a stacked row is canvas-wide and one line tall, and gating the name on the pill tier alone is what emptied this tab once), agreeing with their own workspace on their own monitor, at least one resolving its identity icon to $ICON_URL, exactly one fill=ghost ($GHOST_IDENTITY) beside exactly one fill=watched, and exactly one workspace badge filled (see the raw payload above)"
 fi
 printf '%s\n' "$RECORDED_JSON" > "$ARTIFACTS/dock-recall-panel-state-recorded.json" 2>/dev/null || true
 screenshot "success-dock-recall-panel-02-recorded"
@@ -961,6 +984,15 @@ pass "FALLBACK icons: a stacked chip resolves its identity's icon ($recorded_ico
 recorded_tiers=$(printf '%s' "$RECORDED_JSON" | jq -r \
   '[.chips[]|"\(.treatment) \(.width|floor)x\(.height|floor)"]|join(", ")')
 pass "FALLBACK treatments, each matching chipTreatment(width, height): $recorded_tiers"
+
+# THE NAME, on the fallback path. Required by the poll above; restated here so
+# the chip that proves it lands in the log, because the log is where this went
+# wrong last time — "veiled 210x17, veiled 210x17" printed as a pass while the
+# Recorded tab had lost every app name it had.
+recorded_named=$(printf '%s' "$RECORDED_JSON" | jq -r \
+  'first(.chips[]|select(.treatment == "pill" or .treatment == "strip")
+     |"\(.key) \(.treatment) at \(.width|floor)x\(.height|floor)")//"NONE"')
+pass "FALLBACK chips reach a tier that draws the app's name ($recorded_named)"
 
 recorded_fills=$(printf '%s' "$RECORDED_JSON" | jq -r \
   '[.chips[]|"\(.key) fill=\(.fillState) edge=\(.edgeTone)"]|join(", ")')
@@ -982,6 +1014,27 @@ if [[ $live_keys == "$recorded_keys" ]]; then
   diagnostics
   fail "the two maps report their own chips" "both views reported the same chip keys: $live_keys"
 fi
+
+# THE LADDER IS A LADDER, and this run climbed more than one rung of it. Every
+# clause so far is satisfied by a panel that answers ONE tier for every chip it
+# ever draws — the re-derivation would agree with it, because it agrees with
+# whatever chipTreatment says. A collapse to a single tier (a cutoff moved, a
+# geometry that stopped varying, the drawn size stopped being asked for) is a
+# real product failure and it was visible only to a human reading the tier list
+# in the log. Across the two maps, because the two maps are the two shapes: real
+# windows are window-shaped and the stacked rows are wide-and-short, so one tier
+# across both means one of them stopped being itself.
+run_tiers=$(jq -rn --argjson live "$LIVE_JSON" --argjson recorded "$RECORDED_JSON" \
+  '[($live.chips[], $recorded.chips[])|.treatment]|unique|join(", ")')
+run_tier_count=$(jq -rn --argjson live "$LIVE_JSON" --argjson recorded "$RECORDED_JSON" \
+  '[($live.chips[], $recorded.chips[])|.treatment]|unique|length')
+if ((run_tier_count < 2)); then
+  diagnostics
+  fail "the treatment ladder has more than one rung in a run" \
+    "every chip on both maps came out as the same tier: $run_tiers.
+       The ladder is meant to answer differently for a window-shaped chip and for a canvas-wide stacked row; one answer for both means a cutoff, the drawn size, or a whole render path stopped varying. Re-deriving the tier from the reported size cannot catch this — it agrees with a collapsed ladder as readily as with a working one."
+fi
+pass "the ladder answered $run_tier_count tiers across the run's two maps: $run_tiers"
 
 back=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
 if [[ $back != "live" ]]; then

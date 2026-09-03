@@ -1660,6 +1660,78 @@ test("chipTreatment picks a tier from the chip's DRAWN size, checking both axes 
   assert.strictEqual(panel.chipTreatment(24, 15), "field", "one px under the veiled HEIGHT cutoff");
 });
 
+test("the strip tier introduces no number of its own — it is two ratified ones", () => {
+  // The point of the whole design. The four cutoffs were ratified by a human
+  // against rendered chips; a fifth pair invented to rescue the stacked rows
+  // would be a guess sitting beside four measurements. So "room for a word
+  // across" is the width at which a name was ratified to fit beside an icon, and
+  // "room for one line down" is the ladder's own floor for there being anything
+  // to see. If either moves, the strip moves with it, and this line says so.
+  assert.strictEqual(panel.CHIP_STRIP_MIN_WIDTH, panel.CHIP_PILL_MIN_WIDTH);
+  assert.strictEqual(panel.CHIP_STRIP_MIN_HEIGHT, panel.CHIP_VEILED_MIN_HEIGHT);
+});
+
+test("a wide chip only one line tall is a strip, and draws its name", () => {
+  // THE FALLBACK STACK'S OWN SHAPE. A stacked row is canvas-wide and a fixed
+  // 17 px tall (Panel.qml stackRowHeight), so it can never clear the badge's
+  // 40 px however wide the map gets. Under a ladder that demands both axes it
+  // was `veiled` — a nameless icon under a 55% veil — for every app on the
+  // Recorded tab, which is strictly less than the width-only threshold it
+  // replaced said. This is the tier that gives it its name back.
+  assert.strictEqual(panel.chipTreatment(210, 17), "strip");
+
+  // The two edges of the tier, one pixel apart on each axis.
+  assert.strictEqual(panel.chipTreatment(140, 16), "strip");
+  assert.strictEqual(panel.chipTreatment(139, 16), "veiled", "one px under the strip WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(140, 15), "field", "one px under the strip HEIGHT cutoff");
+  // ...and `field` rather than `veiled` there because 15 is under the veiled
+  // height too. The strip's floor IS the veiled floor, so nothing falls between.
+
+  // The tier is asked LAST of the drawing tiers, and that is its safety: a size
+  // that already earns a badge keeps its badge, however wide it is. A ratified
+  // both-axes answer is never overturned by the rescue.
+  assert.strictEqual(panel.chipTreatment(300, 55), "badge", "still the ratified answer");
+  assert.strictEqual(panel.chipTreatment(300, 40), "badge");
+  assert.strictEqual(panel.chipTreatment(300, 39), "strip", "one px below the badge, and now wide-and-short");
+
+  // So every strip is wider than a pill and shorter than a badge, by
+  // construction — the short-and-wide corner and nothing else.
+  for (const [w, h] of [[140, 16], [210, 17], [1000, 39], [300, 20]]) {
+    assert.strictEqual(panel.chipTreatment(w, h), "strip");
+    assert.ok(w >= panel.CHIP_PILL_MIN_WIDTH && h < panel.CHIP_BADGE_MIN_HEIGHT);
+  }
+});
+
+test("the strip changes nothing a positioned chip was already answered", () => {
+  // The evidence, rather than the argument. The old ladder is restated here —
+  // deliberately, the way the acceptance test restates the cutoffs in jq, so
+  // this compares against the ratified answer and not against the code under
+  // test — and every size on a fine grid must still get it, EXCEPT in the
+  // corner the strip was added for.
+  const before = (w, h) => {
+    if (w >= 140 && h >= 56) return "pill";
+    if (w >= 56 && h >= 40) return "badge";
+    if (w >= 24 && h >= 16) return "veiled";
+    return "field";
+  };
+  let changed = 0;
+  for (let w = 0; w <= 400; w++) {
+    for (let h = 0; h <= 200; h++) {
+      const now = panel.chipTreatment(w, h);
+      const was = before(w, h);
+      if (now === was) continue;
+      changed++;
+      // Only ever veiled -> strip, only ever in the corner, and only ever a
+      // chip GAINING its name. Nothing is demoted and no tier is redrawn.
+      assert.strictEqual(was, "veiled", `${w}x${h} was ${was}`);
+      assert.strictEqual(now, "strip", `${w}x${h} is now ${now}`);
+      assert.ok(w >= 140 && h >= 16 && h < 40, `${w}x${h} is outside the wide-and-short corner`);
+    }
+  }
+  // And the corner is not empty, so the loop above is not vacuously green.
+  assert.strictEqual(changed, (400 - 140 + 1) * (40 - 16));
+});
+
 test("a chip at the chipRectsForCanvas floor earns the field treatment", () => {
   // The floor is a real state, not a degenerate one: chipRectsForCanvas grows
   // every resolved rect to at least CHIP_MIN_WIDTH x CHIP_MIN_HEIGHT, so a
