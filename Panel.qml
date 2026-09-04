@@ -2007,7 +2007,16 @@ Item {
   // pictures all failed is still a good record.
   function recordLayout() {
     if (!root.canRecord) return false
-    var layout = Engine.buildLayout(root.liveClients, root.liveMonitors, root.identities, new Date().toISOString())
+    // ONE WINDOW INDEX, TWO USES (tick 3xi). `chosen` numbers every watched
+    // identity's windows in placement order, and it is what makes "occurrence 1"
+    // mean a particular window. The layout is built from it and the pictures are
+    // taken of it, so both are talking about the same desk read at the same
+    // instant. Computing it twice — which is what the capture used to do, a
+    // Qt.callLater turn later and over the LIVE client list — is the one way a
+    // picture can be filed under a correct key and be of a different window.
+    var chosen = Engine.chosenWindows(root.liveClients, root.identities, root.liveMonitors)
+    var layout = Engine.buildLayout(root.liveClients, root.liveMonitors, root.identities,
+      new Date().toISOString(), chosen)
     if (!layout.topologyKey) {
       root.warn("record refused: the monitor list resolves to no topology at all")
       return false
@@ -2059,23 +2068,39 @@ Item {
     //
     // The store never writes the state file, so there is no path from a failed
     // picture back to the recording either.
-    Qt.callLater(function () { root.captureAfterRecord(layout) })
+    Qt.callLater(function () { root.captureAfterRecord(layout, chosen) })
     return true
   }
 
   // Take the pictures the layout just committed asks for.
   //
-  // The WINDOW each picture is of comes from engine.chosenWindows — the same
-  // index buildLayout numbered the occurrences with, computed from the same
-  // clients and monitors — so a file stored under occurrence 1 is a photograph
-  // of the window the recording calls occurrence 1. Matching a second time here
-  // would be a second opinion, and the two could differ.
+  // THE WINDOW EACH PICTURE IS OF IS HANDED IN (tick 3xi). `chosen` is the very
+  // index recordLayout built this layout from — the same object, not a second
+  // computation — so a file stored under occurrence 1 is a photograph of the
+  // window the recording calls occurrence 1.
+  //
+  // It used to call Engine.chosenWindows again right here, under a comment
+  // claiming that was "the same index buildLayout numbered the occurrences with,
+  // computed from the same clients and monitors". It was not. buildLayout
+  // computed its index privately and did not return it, and this call ran a
+  // Qt.callLater turn later, over the LIVE `root.liveClients` property, with
+  // nothing making the two agree. That is the one place a capture can be filed
+  // under a CORRECT key and be a photograph of a DIFFERENT window — the DoD's
+  // "keyed on identity, occurrence and topology" passes unchanged, and no map
+  // could ever show it.
+  //
+  // No index, no pictures. Building one here would be exactly the second opinion
+  // this tick removed, and this codebase refuses rather than guesses.
   //
   // Consent is read from the identities, one `pictured === true` at a time, and
   // an app that has withheld it is `skipped` rather than merely absent, so the
   // log can say how many pictures were NOT taken as well as how many were.
-  function captureAfterRecord(layout) {
-    var chosen = Engine.chosenWindows(root.liveClients, root.identities, root.liveMonitors)
+  function captureAfterRecord(layout, chosen) {
+    if (!chosen) {
+      root.warn("this recording came with no window index, so no pictures were taken — a"
+        + " picture whose window was matched a second time could be of a different window")
+      return
+    }
     var plan = PanelModel.capturePlan(layout, root.identities, chosen)
     if (!plan.captures.length) {
       // Still an eviction: a re-record with the consent since withdrawn has to

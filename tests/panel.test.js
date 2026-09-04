@@ -6192,12 +6192,12 @@ test("A SCREENSHOT CANNOT FAIL A RECORD: the capture is last, gated, and off the
   // 2. IT IS OFF THE RECORDING'S STACK. Qt.callLater puts it in a later
   //    event-loop turn, so recordLayout has already returned before any capture
   //    code runs and nothing it does can unwind through the record.
-  assert.ok(body.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout) })") !== -1,
+  assert.ok(body.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout, chosen) })") !== -1,
     "the capture is called synchronously from recordLayout");
 
   // 3. NOTHING IN THE CAPTURE PATH WRITES THE STATE FILE. The one function it
   //    reaches, and the whole store, must never call writeState.
-  const after = source.slice(source.indexOf("function captureAfterRecord(layout)"));
+  const after = source.slice(source.indexOf("function captureAfterRecord(layout, chosen)"));
   const afterBody = after.slice(0, after.indexOf("\n  }\n"));
   assert.strictEqual(afterBody.indexOf("writeState"), -1, afterBody);
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -6222,7 +6222,7 @@ test("the pictures are evicted at all three points a recording can end", () => {
       name + " no longer evicts this topology's pictures");
   }
 
-  const after = source.slice(source.indexOf("function captureAfterRecord(layout)"));
+  const after = source.slice(source.indexOf("function captureAfterRecord(layout, chosen)"));
   const afterBody = after.slice(0, after.indexOf("\n  }\n"));
   assert.ok(afterBody.indexOf("captureStore.evict(plan.prefix") !== -1,
     "a re-record with the consent withdrawn leaves the old pictures behind");
@@ -6642,6 +6642,140 @@ test("EVERY WAY OF WITHDRAWING A CAMERA DELETES THE PICTURES, on every desk (tic
   assert.ok(matchBody.indexOf("\"-o\"") !== -1 && matchBody.indexOf("\"(\"") !== -1, matchBody);
 });
 
+// ---------------------------------------------------------------------------
+// The picture is of the window it claims (tick 3xi)
+// ---------------------------------------------------------------------------
+
+// Two windows of one identity, far enough apart that the placement comparator
+// has an opinion about which is occurrence 0.
+function twoTerminals(leftAt, rightAt) {
+  return [
+    makeClient({ address: "0xLEFT", class: "foot", title: "left", at: leftAt, size: [800, 600],
+                 workspace: { id: 1, name: "1" }, monitor: 0 }),
+    makeClient({ address: "0xRIGHT", class: "foot", title: "right", at: rightAt, size: [400, 300],
+                 workspace: { id: 1, name: "1" }, monitor: 0 })
+  ];
+}
+
+test("a SECOND window index is a second opinion, and it can photograph the wrong window (tick 3xi)", () => {
+  // This test exists to show the failure is real rather than theoretical, and to
+  // make it impossible to reintroduce quietly. Both halves use the SAME layout;
+  // the only difference is which index the plan is built from.
+  const identities = [{ id: "terminal", patterns: ["^foot$"], pictured: true }];
+  const atRecord = twoTerminals([100, 100], [900, 100]);
+  const layout = engine.buildLayout(atRecord, monitorsLaptop, identities, AT);
+
+  // The desk read a moment later, with the two windows swapped left to right —
+  // a drag, a tiling flip, anything. Nothing about the layout changed; it is
+  // already written.
+  const afterwards = twoTerminals([900, 100], [100, 100]);
+
+  const honest = engine.chosenWindows(atRecord, identities, monitorsLaptop);
+  const second = engine.chosenWindows(afterwards, identities, monitorsLaptop);
+
+  // The occurrence order really did move. Without this the rest proves nothing.
+  assert.notStrictEqual(honest.byId.terminal[0].address, second.byId.terminal[0].address,
+    "the two reads agree, so this fixture cannot demonstrate anything");
+
+  const fromRecord = panel.capturePlan(layout, identities, honest);
+  const fromSecondOpinion = panel.capturePlan(layout, identities, second);
+
+  // BOTH PLANS ARE FILED UNDER THE SAME NAMES. That is the whole danger: the
+  // key is (identity, occurrence, topology), it is right either way, and no map
+  // and no assertion about the key can tell these two apart.
+  assert.deepStrictEqual(fromRecord.captures.map((c) => c.file),
+    fromSecondOpinion.captures.map((c) => c.file));
+
+  // And they photograph DIFFERENT WINDOWS.
+  assert.notDeepStrictEqual(fromRecord.captures.map((c) => c.address),
+    fromSecondOpinion.captures.map((c) => c.address),
+    "the second opinion happened to agree — the fixture no longer demonstrates the bug");
+
+  // The honest plan's window is the one the layout entry actually describes:
+  // same address, and therefore the geometry the record filed.
+  const byAddress = {};
+  for (const client of atRecord) byAddress[client.address] = client;
+  for (const capture of fromRecord.captures) {
+    const entry = layout.apps.find((a) => a.identityId === capture.identityId
+      && a.occurrence === capture.occurrence);
+    assert.ok(entry, "no layout entry for " + capture.file);
+    const client = byAddress[capture.address];
+    assert.ok(client, "the capture names an address the record never saw: " + capture.address);
+    assert.deepStrictEqual(entry.at, client.at,
+      "the picture's window is not the window this entry describes");
+    assert.deepStrictEqual(entry.size, client.size);
+  }
+});
+
+test("ONE INDEX, TWO USES: buildLayout takes the index the capture will be handed (tick 3xi)", () => {
+  const identities = [{ id: "terminal", patterns: ["^foot$"], pictured: true }];
+  const clients = twoTerminals([100, 100], [900, 100]);
+  const chosen = engine.chosenWindows(clients, identities, monitorsLaptop);
+
+  // Handing in the index the function would have built itself changes nothing —
+  // so the panel's single computation is not a different recording.
+  assert.deepStrictEqual(
+    engine.buildLayout(clients, monitorsLaptop, identities, AT, chosen),
+    engine.buildLayout(clients, monitorsLaptop, identities, AT));
+
+  // And the parameter is LOAD-BEARING rather than politely ignored: an index
+  // over a different read produces a different record. If this ever comes out
+  // equal, buildLayout has gone back to computing its own and the panel's two
+  // uses are two computations again.
+  const other = engine.chosenWindows(twoTerminals([900, 100], [100, 100]), identities, monitorsLaptop);
+  assert.notDeepStrictEqual(
+    engine.buildLayout(clients, monitorsLaptop, identities, AT, other),
+    engine.buildLayout(clients, monitorsLaptop, identities, AT));
+
+  // Omitted, it is what it always was — scripts/record-current, and every test
+  // that only wants a record.
+  assert.deepStrictEqual(
+    engine.buildLayout(clients, monitorsLaptop, identities, AT, null),
+    engine.buildLayout(clients, monitorsLaptop, identities, AT));
+});
+
+test("the panel builds the window index ONCE, and the comment says what the code does (tick 3xi)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // EXACTLY ONE call in the whole panel. Two is the bug: the second ran a
+  // Qt.callLater turn later, over the LIVE client list, with nothing making the
+  // two agree.
+  assert.strictEqual((source.match(/Engine\.chosenWindows\(/g) || []).length, 1,
+    "Panel.qml computes the window index more than once — a capture can be filed under a "
+    + "correct key and be a photograph of a different window");
+
+  const recAt = source.indexOf("function recordLayout() {");
+  const recBody = source.slice(recAt, source.indexOf("\n  }\n", recAt));
+  assert.ok(recBody.indexOf("var chosen = Engine.chosenWindows(") !== -1,
+    "recordLayout no longer builds the index:\n" + recBody);
+  // The same variable reaches both: the record and the pictures.
+  assert.ok(recBody.indexOf("new Date().toISOString(), chosen)") !== -1,
+    "the layout is no longer built from the index the capture will be handed:\n" + recBody);
+  assert.ok(recBody.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout, chosen) })") !== -1,
+    "the capture is no longer handed the index the layout was built from:\n" + recBody);
+
+  // And the capture NEVER builds one. A refusal, not a recomputation — building
+  // one there is precisely the second opinion.
+  const capAt = source.indexOf("function captureAfterRecord(layout, chosen) {");
+  assert.ok(capAt !== -1, "captureAfterRecord no longer takes the index");
+  const capBody = source.slice(capAt, source.indexOf("\n  }\n", capAt));
+  assert.strictEqual(capBody.indexOf("chosenWindows"), -1,
+    "captureAfterRecord computes the index again:\n" + capBody);
+  assert.ok(capBody.indexOf("if (!chosen)") !== -1,
+    "a recording with no index silently gets a guessed one:\n" + capBody);
+
+  // THE COMMENT IS PART OF THE CONTRACT. The old one asserted the two
+  // computations were "the same index buildLayout numbered the occurrences
+  // with, computed from the same clients and monitors", which was false — and
+  // this codebase treats a false comment as a defect in itself.
+  const comment = source.slice(source.indexOf("// Take the pictures the layout just committed"), capAt);
+  assert.strictEqual(comment.indexOf("would be a second opinion"), -1,
+    "the comment still claims a second match here would merely be a second opinion");
+  assert.ok(comment.indexOf("HANDED IN") !== -1, comment);
+});
+
 test("the map stops drawing a picture the camera has been taken off (tick sp7)", () => {
   const fs = require("node:fs");
   const path = require("node:path");
@@ -6992,7 +7126,7 @@ test("the prompt is offered by the capture round, after it finishes", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  const fn = source.slice(source.indexOf("function captureAfterRecord(layout) {"));
+  const fn = source.slice(source.indexOf("function captureAfterRecord(layout, chosen) {"));
   const body = fn.slice(0, fn.indexOf("\n  }\n"));
 
   // Inside the completion callback and nowhere else. Asking before the round

@@ -1785,7 +1785,27 @@ function isSpecialWorkspaceId(value) {
 // exists so a recorder (the panel, scripts/record-current) can say out loud
 // that the count it just printed is short, and why. A silently short recording
 // is exactly the "windows out of sync" report this project exists to answer.
-function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
+//
+// `chosenIndex` is the LAST parameter and the newest (tick 3xi): the window
+// index the occurrences are numbered from, when the caller has already built one
+// and needs to keep it. It is not an optimisation. A caller that has to name the
+// window an entry describes — the capture pipeline is the only one — cannot
+// compute that index a SECOND time and still be talking about the same windows:
+// the second call runs a later event-loop turn over a LIVE client list, and
+// nothing makes the two agree. A picture filed under a CORRECT key that
+// photographed a DIFFERENT window is the one failure that feature cannot detect
+// and the map could never show, and "keyed on identity, occurrence and topology"
+// goes on passing while it happens.
+//
+// So the panel builds the index once, hands it here, and hands the SAME variable
+// to the capture. Omitted — scripts/record-current, and every test that only
+// wants a record — this builds its own, which is the behaviour it always had.
+//
+// It is not returned on the layout, deliberately: the layout is a RECORD, it is
+// serialized and compared as one, and an index of raw hyprctl clients hanging
+// off it would put the whole client list into everything that stringifies a
+// recording.
+function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIndex) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
   var list = identities || [];
@@ -1796,7 +1816,7 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
   // order, indexed once before anything is recorded and used for both halves of
   // every entry. An app entry that describes window A while the group it claims
   // to be in was read off window B is the index-hole bug — see pickClientFor.
-  var chosen = chosenWindows(clients, list, monitors);
+  var chosen = chosenIndex ? chosenIndex : chosenWindows(clients, list, monitors);
 
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];

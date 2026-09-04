@@ -31,6 +31,15 @@
 #                     guest has an imaging library. The parser walking the
 #                     segment chain to a frame marker IS the decode this venue
 #                     can honestly perform.
+#   THE SUBJECT     — and this is the one the format assertions cannot make. The
+#                     name proves the KEY; nothing proved the PIXELS, and every
+#                     assertion above passes on a store that photographed the
+#                     withheld window, the panel's own 1x1 host surface scaled
+#                     up, or the whole output — both test windows are the same
+#                     binary, so their content cannot tell them apart. Their
+#                     SHAPES can: they are floated at aspect ratios five times
+#                     apart, and the stored JPEG's own proportions have to be the
+#                     pictured window's and not the withheld one's.
 #   RE-RECORD       — records again and requires the file to have CHANGED, not
 #                     merely to still be there. A capture path that quietly
 #                     stopped writing would leave the first record's picture in
@@ -353,6 +362,59 @@ wait_until "the pictured app's window appeared (captures)" 30 window_here "$PICT
 wait_until "the withheld app's window appeared (captures)" 30 window_here "$WITHHELD_TITLE"
 pass "two windows on the desk: one app that will grant the picture consent, one that will not"
 
+# --------------------------------- 2b. TWO DELIBERATELY DIFFERENT SHAPES (3xi)
+#
+# Both windows are class `foot` from the same binary, so their PIXELS cannot tell
+# them apart — and a test that only checks the file name, the JPEG header and a
+# width cap passes just as happily on a store that photographed the WITHHELD
+# window, the panel's own 1x1 host surface scaled up, or the whole output.
+#
+# Their SHAPES can tell them apart. Floated at wildly different aspect ratios —
+# one wide, one tall — the stored JPEG's own proportions become evidence about
+# which window was in front of the camera. `captureWidth` scales the picture
+# down but scales it PROPORTIONALLY (targetHeight is height * targetWidth /
+# width), so the ratio survives the resize; only the absolute pixels do not,
+# which is why nothing below compares those.
+#
+# The exact numbers do not matter and are not asserted. What is asserted, below,
+# is that the two ended up different enough for the question to be answerable —
+# a run where the resize did not take is a run where this proves nothing, and it
+# says so rather than passing.
+shape_window() {
+  local address="$1" width="$2" height="$3" x="$4" y="$5"
+  [[ -n $address ]] || return 1
+  hyprctl dispatch setfloating "address:$address" >/dev/null 2>&1
+  hyprctl dispatch resizewindowpixel "exact $width $height,address:$address" >/dev/null 2>&1
+  hyprctl dispatch movewindowpixel "exact $x $y,address:$address" >/dev/null 2>&1
+}
+window_size() {
+  clients | jq -r --arg t "$1" 'first(.[]|select(.initialTitle==$t)|"\(.size[0])x\(.size[1])")//empty'
+}
+
+shape_window "$(window_address "$PICTURED_TITLE")" 900 340 20 20
+shape_window "$(window_address "$WITHHELD_TITLE")" 340 700 20 400
+sleep 2
+
+PICTURED_SIZE=$(window_size "$PICTURED_TITLE")
+WITHHELD_SIZE=$(window_size "$WITHHELD_TITLE")
+[[ -n $PICTURED_SIZE && -n $WITHHELD_SIZE ]] ||
+  fail "both test windows report a size (captures)" \
+    "pictured '$PICTURED_SIZE', withheld '$WITHHELD_SIZE'"
+
+# The two shapes have to be far enough apart that a picture of the wrong one
+# could not be mistaken for a picture of the right one. 40% is a floor, not a
+# target: the shapes asked for above differ by a factor of five.
+shapes_differ=$(node -e '
+  function ratio(s) { var p = String(s).split("x"); return Number(p[0]) / Number(p[1]); }
+  var mine = ratio(process.argv[1]), theirs = ratio(process.argv[2]);
+  if (!isFinite(mine) || !isFinite(theirs) || mine <= 0 || theirs <= 0) process.exit(2);
+  process.stdout.write(mine.toFixed(3) + " vs " + theirs.toFixed(3));
+  process.exit(Math.abs(mine - theirs) / Math.max(mine, theirs) >= 0.4 ? 0 : 1);
+' "$PICTURED_SIZE" "$WITHHELD_SIZE") ||
+  fail "the two test windows have distinguishable shapes (captures)" \
+    "pictured $PICTURED_SIZE, withheld $WITHHELD_SIZE (aspect $shapes_differ) — the resize did not take, so no assertion below could tell a picture of one from a picture of the other"
+pass "the two windows are shaped differently on purpose: pictured $PICTURED_SIZE, withheld $WITHHELD_SIZE (aspect $shapes_differ)"
+
 # ------------------------------------------------------- 3. seed the identities
 #
 # Both watched; only one PICTURED. The version is read out of StateModel rather
@@ -486,6 +548,40 @@ width=${dimensions%x*}
     "it is ${dimensions}, and the store caps the width at 512"
 bytes=$(wc -c < "$CACHE_DIR/$EXPECTED_FILE")
 pass "Record stored one picture, $EXPECTED_FILE — $dimensions, $bytes bytes, a decodable JPEG"
+
+# AND IT IS A PICTURE OF THE RIGHT WINDOW (tick 3xi).
+#
+# Everything above this line — the file name, the SOF walk, the width cap, the
+# non-emptiness — passes unchanged on a store that photographed the WITHHELD
+# window, the panel's own 1x1 host surface scaled up, or the whole output. The
+# name proves the KEY; nothing proved the PIXELS, and the two test windows are
+# the same binary so their content cannot tell them apart.
+#
+# Their proportions can. `jpeg_size` already read both dimensions and this used
+# to throw the height away; the stored picture's aspect ratio has to be the
+# PICTURED window's and not the WITHHELD one's — one wide, one tall, five times
+# apart. Compared with a tolerance rather than an equality on purpose: the
+# compositor's captured size and the geometry hyprctl reports disagree about
+# borders and scale (spike o2x, and it is why CaptureStore sizes from
+# sourceSize), so the honest claim is "these proportions, not those".
+aspect_verdict=$(node -e '
+  function ratio(s) { var p = String(s).split("x"); return Number(p[0]) / Number(p[1]); }
+  var stored = ratio(process.argv[1]);
+  var mine = ratio(process.argv[2]);
+  var theirs = ratio(process.argv[3]);
+  if (!isFinite(stored) || !isFinite(mine) || !isFinite(theirs)) process.exit(2);
+  var dMine = Math.abs(stored - mine) / mine;
+  var dTheirs = Math.abs(stored - theirs) / theirs;
+  process.stdout.write("stored " + stored.toFixed(3)
+    + ", pictured " + mine.toFixed(3) + " (off by " + (dMine * 100).toFixed(1) + "%)"
+    + ", withheld " + theirs.toFixed(3) + " (off by " + (dTheirs * 100).toFixed(1) + "%)");
+  process.exit((dMine <= 0.15 && dTheirs > 0.15) ? 0 : 1);
+' "$dimensions" "$PICTURED_SIZE" "$WITHHELD_SIZE") || {
+  diagnostics
+  fail "the stored picture is OF the pictured window, and not of the other one" \
+    "$aspect_verdict — a picture whose proportions are not the pictured window's is a picture of something else"
+}
+pass "the picture's proportions are the pictured window's, not the withheld one's: $aspect_verdict"
 
 # THE CONSENT. The withheld app is watched, it is running, and it is in the
 # recording — and it has no picture. Asserted by NAME as well as by count: a
