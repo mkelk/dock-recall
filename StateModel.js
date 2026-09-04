@@ -14,7 +14,7 @@
 // the panel epic (writes it). Add fields; never repurpose one.
 //
 //   State {
-//     version:    4                 // the schema generation. A file at an
+//     version:    5                 // the schema generation. A file at an
 //                                   // OLDER version is UPGRADED in place on the
 //                                   // read (see "Migration" below); a file from
 //                                   // the FUTURE keeps its own number, is still
@@ -79,6 +79,16 @@
 //                         // started automatically, and the reason the restore
 //                         // executor treats a launch-less identity as a
 //                         // permanent miss instead of retrying.
+//     pictured: boolean   // v5. May this identity's windows be PHOTOGRAPHED?
+//                         // Defaults to false, and it is a SEPARATE consent
+//                         // from being watched: an app can be watched without
+//                         // being pictured. Someone who wants their password
+//                         // manager RESTORED has not thereby agreed to have it
+//                         // captured to disk, so the two are not one switch and
+//                         // watching something never turns this on.
+//                         // Only a literal `true` grants it — see
+//                         // normalizeIdentity, which reads it the way `paused`
+//                         // is read — and it is ALWAYS PRESENT (see Migration).
 //   }
 //
 //   Layout — exactly what engine.buildLayout() returns:
@@ -145,6 +155,12 @@
 //   `version` becomes 4. No layout entry moves at all — this generation touches
 //   identities only.
 //
+//   v4 -> v5 is additive again, and identity-only again: every identity that
+//   does not carry `pictured` gains `pictured: false`, and `version` becomes 5.
+//   No layout entry moves, and nothing an identity already said changes — an
+//   upgrade can only ever WITHHOLD this consent, never grant it, which is the
+//   one direction a migration is allowed to decide on the user's behalf.
+//
 //   THE DELIBERATE CHOICE, v4: the empty list IS MATERIALIZED. normalizeIdentity
 //   writes `titlePatterns` on every identity it returns, so a v3 file read and
 //   written back gains a `"titlePatterns": []` line per identity rather than
@@ -157,6 +173,13 @@
 //   `launch: ""`, both of which have always been written whether the file said
 //   so or not.
 //
+//   AND AGAIN, v5: `pictured` follows that precedent exactly. It is written on
+//   every identity normalizeIdentity returns, false included, so a v4 file read
+//   and written back gains a `"pictured": false` line per identity. A consumer
+//   must never need has("pictured"): "absent" and "not consented" are the same
+//   answer, and a capture path that had to tell them apart would eventually get
+//   it backwards on the one identity whose key went missing.
+//
 //   THE ONE THING v4 TAKES AWAY (tick j8o): a migrated `launch` that forces a
 //   window class NO pattern of its own identity claims — the signature of v3's
 //   retired `--app-id` backfill — is EMPTIED. It is the first non-additive step
@@ -166,10 +189,18 @@
 //   Everything else an identity said is carried through untouched, and all of
 //   it is pinned by tests/state.test.js.
 //
-//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 in one read — because
-//   normalizeLayout writes the v2 and v3 fields and normalizeIdentity writes the
-//   v4 field unconditionally, so there are no intermediate states to sequence.
-//   A v4 file read and written back is byte-identical to itself.
+//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 -> v5 in one read —
+//   because normalizeLayout writes the v2 and v3 fields and normalizeIdentity
+//   writes the v4 and v5 fields unconditionally, so there are no intermediate
+//   states to sequence. A v5 file read and written back is byte-identical to
+//   itself.
+//
+//   And every step of it happens IN MEMORY. Nothing here writes a file: the
+//   service reads an older file, runs from the upgraded state, and the file on
+//   disk keeps its own version until the next write has a reason of its own.
+//   That is deliberate — opening the panel must not rewrite the user's file —
+//   and it is pinned in tests/state.test.js and end to end in
+//   tests/acceptance/dock-recall-appid-migration-test.sh.
 //
 // Reading the future (the other direction, and it has no migration):
 //   A file whose version EXCEEDS this build's is READ, and that is all: it is
@@ -293,7 +324,7 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 4;
+var STATE_VERSION = 5;
 
 // ES5, no Array.isArray assumptions about the QML JS engine's vintage: this is
 // the one array test that behaves the same in node and in Qt's V4.
@@ -517,7 +548,16 @@ function normalizeIdentity(value, migrating) {
     // when empty, so nothing downstream has to tell absent from empty. An
     // identity from a v3 file gains it here; that IS the v3 -> v4 migration.
     titlePatterns: normalizePatterns(value.titlePatterns),
-    launch: migrating ? migratedLaunch(launch, patterns) : launch
+    launch: migrating ? migratedLaunch(launch, patterns) : launch,
+    // v5. A CONSENT, and the same shape rule as titlePatterns: always written,
+    // even when false, so nothing downstream has to tell absent from off. An
+    // identity from a v4 file gains it here; that IS the v4 -> v5 migration.
+    //
+    // `=== true` and not a truthiness test, exactly as `paused` above: a file
+    // that does not say yes has not said yes, and `"false"`, `1` and `null` are
+    // all things a hand edit produces while meaning something else. The only
+    // grant is the literal the writer of this file emits.
+    pictured: value.pictured === true
   };
 }
 
@@ -722,8 +762,8 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> v2 -> v3 -> v4, as far as it has to go, in the
-//               one pass). Not an error and not a recovery: nothing was
+//               upgraded (v1 -> v2 -> v3 -> v4 -> v5, as far as it has to go, in
+//               the one pass). Not an error and not a recovery: nothing was
 //               invented, and the only thing dropped is the one v4 subtracts on
 //               purpose (migratedLaunch). The service logs it once and the next
 //               write persists the upgraded shape.
@@ -821,8 +861,8 @@ function writeRefusal(state) {
 // Same question as writeRefusal, opposite half of the same damage (tick t03,
 // finding A6). Protecting only the file was protecting the wrong thing:
 //
-//   - normalizeIdentity is a WHITELIST, so a v5 identity reaches memory with
-//     every field v5 added STRIPPED. A rule that v5 narrowed — to a profile, a
+//   - normalizeIdentity is a WHITELIST, so a v6 identity reaches memory with
+//     every field v6 added STRIPPED. A rule that v6 narrowed — to a profile, a
 //     title, a workspace — arrives here as the class-only rule it was BEFORE
 //     that narrowing existed;
 //   - a restore then acts on that broader rule: it CLAIMS windows the user

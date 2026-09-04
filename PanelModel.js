@@ -333,7 +333,7 @@ function identityClaimsSame(identity, pattern, titlePattern) {
 // hosting exactly one unambiguous child — the proposal is a TITLE identity:
 //
 //   { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-//     launch: "foot --title=herdr herdr" }
+//     launch: "foot --title=herdr herdr", pictured: false }
 //
 // which under the v4 AND semantics means "the foot window titled herdr" and
 // nothing else.
@@ -421,12 +421,25 @@ function suggestIdentity(className, identities, derivation) {
   // terminalChildDerivation built from it. Writing it here rather than leaving
   // the autofill pass to derive the identical string a moment later means the
   // identity is complete in the first write.
-  if (!titlePattern) return { id: id, patterns: [pattern], launch: "" };
+  //
+  // `pictured: false` on BOTH returns (schema v5, tick 2c3). Being watched and
+  // being photographed are separate consents, and a tick grants only the first:
+  // an app the user wants RESTORED has not thereby been offered up to be
+  // captured to disk. StateModel.normalizeIdentity would materialize the false
+  // on the way to the file anyway, so writing it here buys nothing on disk —
+  // what it buys is that the object this function HANDS BACK has the schema's
+  // shape before it ever reaches a file, and every caller that reads a proposal
+  // straight (the panel's confirmation line, the undo stash) sees the same
+  // identity the file will hold. The alternative is a field that is undefined
+  // for exactly as long as it takes to write, which is the window the learnings
+  // entry behind this tick was written about.
+  if (!titlePattern) return { id: id, patterns: [pattern], launch: "", pictured: false };
   return {
     id: id,
     patterns: [pattern],
     titlePatterns: [titlePattern],
-    launch: dispatchableCommand(answer.command)
+    launch: dispatchableCommand(answer.command),
+    pictured: false
   };
 }
 

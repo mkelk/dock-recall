@@ -204,10 +204,12 @@ test("what a toggle produces survives StateModel's normalizer intact", () => {
   const identities = panel.toggleWatchedIdentities(state.identities(before), "md.obsidian.Obsidian", "");
   const next = state.setIdentities(before, identities);
   const round = state.parseState(state.serializeState(next));
-  // A panel-created identity says nothing about titles, and schema v4
-  // materializes that as an empty list rather than an absent key.
+  // A panel-created identity says nothing about titles and consents to no
+  // picture, and the schema materializes both — an empty list and a withheld
+  // flag — rather than leaving either key absent.
   assert.deepStrictEqual(round.state.identities, [
-    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], titlePatterns: [], launch: "" }
+    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], titlePatterns: [],
+      launch: "", pictured: false }
   ]);
 });
 
@@ -1243,7 +1245,8 @@ test("a launch repair round-trips through the file with its titles intact", () =
     state.identities(before), { herdr: "foot --title herdr" });
   const round = state.parseState(state.serializeState(state.setIdentities(before, repaired)));
   assert.deepStrictEqual(round.state.identities, [
-    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title herdr" }
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+      launch: "foot --title herdr", pictured: false }
   ]);
 });
 
@@ -3794,7 +3797,8 @@ test("ticking a terminal that hosts one app proposes the app, not the terminal",
     id: "herdr",
     patterns: ["^foot$"],
     titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr"
+    launch: "foot --title=herdr herdr",
+    pictured: false
   });
 
   // And that pair claims exactly one of the two foot windows on the desktop.
@@ -3833,7 +3837,7 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   const watchedFoot = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
   assert.deepStrictEqual(panel.suggestIdentity("foot", watchedFoot, herdr), {
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr"
+    launch: "foot --title=herdr herdr", pictured: false
   });
 
   // The same PAIR already on the list is the same rule, so nothing is added —
@@ -3880,15 +3884,15 @@ test("a ticked title identity is prepended, so first-match reaches it first", ()
 });
 
 test("a proposed title identity survives StateModel's normalizer intact", () => {
-  // The v4 field whitelist has to carry both lists AND the launch through a
-  // write — an identity that loses `titlePatterns` on the way in stops
-  // matching its window and nothing says why.
+  // The field whitelist has to carry both lists, the launch AND the v5 consent
+  // through a write — an identity that loses `titlePatterns` on the way in
+  // stops matching its window and nothing says why.
   const identities = panel.toggleWatchedIdentities([], "foot", "",
     footChildDerivation([{ pid: 901, argv: ["herdr"] }]));
   const round = state.parseState(state.serializeState(state.setIdentities(state.defaultState(), identities)));
   assert.deepStrictEqual(round.state.identities, [{
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr"
+    launch: "foot --title=herdr herdr", pictured: false
   }]);
 });
 
@@ -3915,7 +3919,7 @@ test("a window already launched with --title proposes that title", () => {
   const added = panel.suggestIdentity("foot", [], derived);
   assert.deepStrictEqual(added, {
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr"
+    launch: "foot --title=herdr herdr", pictured: false
   });
   assert.strictEqual(engine.clientMatchesIdentity(TITLED_WINDOW, added), true);
   assert.strictEqual(engine.clientMatchesIdentity(BARE_WINDOW, added), false);
@@ -4115,7 +4119,7 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
   // about a browser window, and there is nothing to refuse.
   assert.strictEqual(panel.tickRefusalReason("chromium", []), "");
   assert.deepStrictEqual(panel.suggestIdentity("chromium", []),
-    { id: "chromium", patterns: ["^chromium$"], launch: "" });
+    { id: "chromium", patterns: ["^chromium$"], launch: "", pictured: false });
 
   // Already watched is a no-op — and since tick v5c a no-op the panel can SAY,
   // because a silent one logged a success line for a click that changed nothing.
@@ -4198,7 +4202,7 @@ test("the panel names the exact relaunch command until a matching window exists"
     engine.couldShadow);
   assert.deepStrictEqual(identities, [{
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr"
+    launch: "foot --title=herdr herdr", pictured: false
   }]);
 
   // The bare window alone: nothing matches, and the panel says so with the
@@ -5802,7 +5806,7 @@ test("tickOutcome answers the whole click in one pass", () => {
   assert.strictEqual(add.refusal, "");
   assert.deepStrictEqual(add.added, {
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr"
+    launch: "foot --title=herdr herdr", pictured: false
   });
   assert.deepStrictEqual(add.identities, [add.added]);
 

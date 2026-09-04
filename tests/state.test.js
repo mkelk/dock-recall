@@ -28,15 +28,16 @@ const FILE_IDENTITIES = [
 ];
 
 // The same identities as the READER returns them: v4 materializes the empty
-// `titlePatterns`, so an expectation about what came back off a pre-v4 file is
-// the file's own list plus that one key. See "THE DELIBERATE CHOICE, v4" in the
-// StateModel.js header.
+// `titlePatterns` and v5 the withheld `pictured`, so an expectation about what
+// came back off an older file is the file's own list plus those two keys. See
+// "THE DELIBERATE CHOICE, v4" and "AND AGAIN, v5" in the StateModel.js header.
 function asRead(identities) {
   return identities.map((identity) => ({
     id: identity.id,
     patterns: identity.patterns,
     titlePatterns: identity.titlePatterns || [],
-    launch: identity.launch
+    launch: identity.launch,
+    pictured: identity.pictured === true
   }));
 }
 
@@ -53,10 +54,10 @@ function sampleState() {
 
 // --------------------------------------------------------------- roundtrip
 
-test("a default state is version 4, active, with nothing recorded", () => {
+test("a default state is version 5, active, with nothing recorded", () => {
   const fresh = state.defaultState();
-  assert.deepStrictEqual(fresh, { version: 4, paused: false, identities: [], layouts: {} });
-  assert.strictEqual(state.STATE_VERSION, 4);
+  assert.deepStrictEqual(fresh, { version: 5, paused: false, identities: [], layouts: {} });
+  assert.strictEqual(state.STATE_VERSION, 5);
 });
 
 test("serialize -> parse round-trips a populated state byte for byte", () => {
@@ -76,7 +77,7 @@ test("serialize -> parse round-trips a populated state byte for byte", () => {
 test("the serialized file is human-readable JSON with a trailing newline", () => {
   const text = state.serializeState(sampleState());
   assert.ok(text.endsWith("\n"));
-  assert.ok(text.indexOf("\n  \"version\": 4") !== -1, "pretty-printed with 2-space indent");
+  assert.ok(text.indexOf("\n  \"version\": 5") !== -1, "pretty-printed with 2-space indent");
 });
 
 test("a recorded layout survives the round trip unchanged", () => {
@@ -190,7 +191,8 @@ test("setIdentities replaces the list and normalizes it", () => {
     { patterns: ["orphan"] },
     { id: "editor", patterns: ["dupe"] }
   ]);
-  assert.deepStrictEqual(next.identities, [{ id: "editor", patterns: ["^code$"], titlePatterns: [], launch: "" }]);
+  assert.deepStrictEqual(next.identities,
+    [{ id: "editor", patterns: ["^code$"], titlePatterns: [], launch: "", pictured: false }]);
   // Layouts are untouched by an identity edit.
   assert.deepStrictEqual(state.topologyKeys(next), [LAPTOP_KEY]);
 });
@@ -233,8 +235,8 @@ test("a half-valid file keeps what is usable and repairs the rest", () => {
 
   assert.strictEqual(result.recovered, false);
   assert.deepStrictEqual(result.state.identities, [
-    { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" },
-    { id: "broken", patterns: [], titlePatterns: [], launch: "" }
+    { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot", pictured: false },
+    { id: "broken", patterns: [], titlePatterns: [], launch: "", pictured: false }
   ]);
   assert.deepStrictEqual(state.topologyKeys(result.state), ["Laptop"]);
   assert.deepStrictEqual(state.layoutFor(result.state, "Laptop").apps,
@@ -430,22 +432,22 @@ test("paused survives every other edit to the file", () => {
   assert.strictEqual(state.setIdentities(paused, FILE_IDENTITIES).paused, true);
 });
 
-// ------------------------------------- the v1 -> v2 -> v3 -> v4 migration
+// -------------------------------- the v1 -> v2 -> v3 -> v4 -> v5 migration
 
 const V1_TEXT = fs.readFileSync(path.join(__dirname, "fixtures", "state-v1.json"), "utf8");
 const V1_RAW = JSON.parse(V1_TEXT);
 
-test("a v1 file upgrades to v4 without losing anything it said", () => {
+test("a v1 file upgrades to v5 without losing anything it said", () => {
   const result = state.parseState(V1_TEXT);
 
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null, "and it is not an error either");
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 4, "the whole chain runs in one read");
+  assert.strictEqual(result.state.version, 5, "the whole chain runs in one read");
   assert.strictEqual(result.state.paused, false);
 
   // Every identity, verbatim — including the `launch: ""` never-launch entry —
-  // plus the one additive v4 field.
+  // plus the additive v4 and v5 fields.
   assert.deepStrictEqual(result.state.identities, asRead(V1_RAW.identities));
 
   // Every layout, every app, every field the v1 file carried, unchanged.
@@ -520,13 +522,14 @@ test("a v1 file with junk in the new fields is repaired, never rejected", () => 
 });
 
 test("a version from the FUTURE keeps its number; an older one does not", () => {
-  assert.strictEqual(state.migrateVersion(1), 4, "upgraded, the whole chain");
-  assert.strictEqual(state.migrateVersion(2), 4, "upgraded");
-  assert.strictEqual(state.migrateVersion(3), 4, "upgraded");
-  assert.strictEqual(state.migrateVersion(4), 4);
-  assert.strictEqual(state.migrateVersion(5), 5, "we did not write it, so we do not claim it");
-  assert.strictEqual(state.migrateVersion(undefined), 4, "a version-less file is as old as they come");
-  assert.strictEqual(state.migrateVersion("2"), 4);
+  assert.strictEqual(state.migrateVersion(1), 5, "upgraded, the whole chain");
+  assert.strictEqual(state.migrateVersion(2), 5, "upgraded");
+  assert.strictEqual(state.migrateVersion(3), 5, "upgraded");
+  assert.strictEqual(state.migrateVersion(4), 5, "upgraded");
+  assert.strictEqual(state.migrateVersion(5), 5);
+  assert.strictEqual(state.migrateVersion(6), 6, "we did not write it, so we do not claim it");
+  assert.strictEqual(state.migrateVersion(undefined), 5, "a version-less file is as old as they come");
+  assert.strictEqual(state.migrateVersion("2"), 5);
 
   const future = state.parseState(JSON.stringify({ version: 99, identities: [], layouts: {} }));
   assert.strictEqual(future.state.version, 99);
@@ -549,15 +552,16 @@ test("a version from the FUTURE keeps its number; an older one does not", () => 
 // that the three write paths a user can reach leave the file byte-identical, and
 // pin that every writer in the repository actually consults it.
 
-// A v5 file: everything this build knows, plus one identity field it does not.
-// Hand-shaped rather than fixtured, because there is no v5 and the point is what
+// A v6 file: everything this build knows, plus one identity field it does not.
+// Hand-shaped rather than fixtured, because there is no v6 and the point is what
 // an unknown field does on the way through.
 const FUTURE_TEXT = JSON.stringify({
-  version: 5,
+  version: 6,
   paused: false,
   identities: [
     { id: "terminal", patterns: ["^foot$"], titlePatterns: ["^scratch$"], launch: "foot",
-      workspacePreference: "the v5 field this build has never heard of" }
+      pictured: false,
+      workspacePreference: "the v6 field this build has never heard of" }
   ],
   layouts: {}
 }, null, 2) + "\n";
@@ -589,8 +593,8 @@ test("writeRefusal names the future version and the one this build writes", () =
   assert.strictEqual(state.writeRefusal(null), null, "nothing to refuse about nothing");
 
   const refusal = state.writeRefusal(state.parseState(FUTURE_TEXT).state);
-  assert.ok(refusal, "a v5 state cannot be written by a v4 build");
-  assert.ok(refusal.indexOf("v5") !== -1, "says which version the file is");
+  assert.ok(refusal, "a v6 state cannot be written by a v5 build");
+  assert.ok(refusal.indexOf("v6") !== -1, "says which version the file is");
   assert.ok(refusal.indexOf("v" + state.STATE_VERSION) !== -1, "and which one this build writes");
   assert.ok(refusal.indexOf("READ-ONLY") !== -1, "and what that means for the file");
 
@@ -604,17 +608,17 @@ test("writeRefusal names the future version and the one this build writes", () =
   assert.ok(state.writeRefusal(state.removeLayout(future, LAPTOP_KEY)));
 });
 
-test("this is what a write would destroy: the v5 field is gone by the time it is in memory", () => {
+test("this is what a write would destroy: the v6 field is gone by the time it is in memory", () => {
   const identity = state.parseState(FUTURE_TEXT).state.identities[0];
   assert.strictEqual(identity.workspacePreference, undefined,
     "normalizeIdentity is a whitelist — the unknown field never reaches memory");
   assert.strictEqual(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("workspacePreference"), -1,
     "so serializing would write the file back without it");
-  assert.ok(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("\"version\": 5") !== -1,
-    "and still stamped v5, which is the lie that loses the data");
+  assert.ok(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("\"version\": 6") !== -1,
+    "and still stamped v6, which is the lie that loses the data");
 });
 
-test("a Record, a panel edit and a pause toggle each leave a v5 file byte-identical", () => {
+test("a Record, a panel edit and a pause toggle each leave a v6 file byte-identical", () => {
   const file = freshStateFile(FUTURE_TEXT);
   const before = fs.readFileSync(file);
   const loaded = state.parseState(fs.readFileSync(file, "utf8")).state;
@@ -643,7 +647,7 @@ test("a Record, a panel edit and a pause toggle each leave a v5 file byte-identi
 
   // Each refusal says why — a silent no-op would be the worse bug.
   for (const reason of [record, edit, pause]) {
-    assert.ok(reason.indexOf("v5") !== -1 && reason.indexOf("READ-ONLY") !== -1, reason);
+    assert.ok(reason.indexOf("v6") !== -1 && reason.indexOf("READ-ONLY") !== -1, reason);
   }
 
   // The file is still READ correctly — the identity it names is materialized in
@@ -653,11 +657,11 @@ test("a Record, a panel edit and a pause toggle each leave a v5 file byte-identi
   assert.deepStrictEqual(state.identities(loaded)[0].titlePatterns, ["^scratch$"]);
 });
 
-// ------------------------------------------- a v5 file is INERT, not read-only
+// ------------------------------------------- a v6 file is INERT, not read-only
 //
 // Finding A6. Write protection alone was half a rule. `normalizeIdentity` is a
-// whitelist, so a v5 identity arrives in memory with every narrowing field v5
-// added STRIPPED — a `^chromium$` rule that v5 scoped to one profile, one
+// whitelist, so a v6 identity arrives in memory with every narrowing field v6
+// added STRIPPED — a `^chromium$` rule that v6 scoped to one profile, one
 // title, one workspace comes through as class-only. The old build then restored
 // from it: it claimed, moved and RELAUNCHED windows against rules far broader
 // than the ones the user wrote. Refusing the write while still acting on the
@@ -695,8 +699,8 @@ test("restoreRefusal makes a future-version file inert and says why", () => {
 
   const future = state.parseState(FUTURE_TEXT).state;
   const refusal = state.restoreRefusal(future);
-  assert.ok(refusal, "a v5 state may not drive a restore on a v4 build");
-  assert.ok(refusal.indexOf("v5") !== -1, "says which version the file is");
+  assert.ok(refusal, "a v6 state may not drive a restore on a v5 build");
+  assert.ok(refusal.indexOf("v6") !== -1, "says which version the file is");
   assert.ok(refusal.indexOf("v" + state.STATE_VERSION) !== -1, "and which one this build understands");
   assert.ok(/INERT|no restore/i.test(refusal), "and what it means: nothing is dispatched");
 
@@ -706,7 +710,7 @@ test("restoreRefusal makes a future-version file inert and says why", () => {
   assert.ok(state.restoreRefusal(state.setPaused(future, true)));
   assert.ok(state.restoreRefusal(state.upsertLayout(future, sampleLayout())));
 
-  // A v5 file with a perfectly good layout for the topology on screen is STILL
+  // A v6 file with a perfectly good layout for the topology on screen is STILL
   // inert: the layout is not the problem, the stripped identities are.
   const withLayout = state.upsertLayout(future, sampleLayout());
   assert.ok(state.hasLayoutFor(withLayout, LAPTOP_KEY),
@@ -733,7 +737,7 @@ test("Service.qml gates every restore path on restoreRefusal", () => {
   const gateStart = request.indexOf("StateModel.restoreRefusal(");
   const gate = request.slice(gateStart, request.indexOf("return", gateStart) + "return".length);
   assert.strictEqual(gate.indexOf("byHand"), -1,
-    "the inert gate has a manual escape hatch — a v5 file must be inert for the button too");
+    "the inert gate has a manual escape hatch — a v6 file must be inert for the button too");
 
   // And it comes BEFORE the pause contract, which does have that escape hatch:
   // "I cannot read this file" outranks "not right now".
@@ -788,7 +792,7 @@ test("Panel.qml refuses a manual restore from an inert file before it dismisses"
     "canRestore no longer asks PanelModel — the condition has drifted back into a binding");
 });
 
-test("the same three writes against a v4 file go through (the guard is not a blanket no)", () => {
+test("the same three writes against a v5 file go through (the guard is not a blanket no)", () => {
   const file = freshStateFile(state.serializeState(sampleState()));
   const before = fs.readFileSync(file, "utf8");
   const loaded = state.parseState(before).state;
@@ -825,7 +829,7 @@ function occurrences(source, needle) {
 
 // -------------------------------------------- a refused write says so (sma)
 //
-// The blocker: press Record on a v5 file and the panel AFFIRMED SUCCESS.
+// The blocker: press Record on a future-version file and the panel AFFIRMED SUCCESS.
 // writeState's refusal was a console.warn and a bare `return`; the next line
 // logged "recorded 7 apps" regardless; and because the undo stash was armed
 // BEFORE the write, the Undo button — the panel's one positive confirmation
@@ -951,7 +955,7 @@ test("a v2 file upgrades to v3 by gaining occurrence 0, and nothing else moves",
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 4, "and it keeps going, to the current generation");
+  assert.strictEqual(result.state.version, 5, "and it keeps going, to the current generation");
   assert.deepStrictEqual(result.state.identities, asRead(before.identities));
 
   for (const key of Object.keys(before.layouts)) {
@@ -972,13 +976,13 @@ test("a v2 file upgrades to v3 by gaining occurrence 0, and nothing else moves",
   }
 });
 
-test("a v4 file re-reads byte-identical: the migration has nothing left to do", () => {
-  // Every door into v4 — a v1 file, a v2 file, a v3 file — and then the fixed
-  // point.
-  for (const source of [V1_TEXT, syntheticV2Text(), syntheticV3Text()]) {
+test("a v5 file re-reads byte-identical: the migration has nothing left to do", () => {
+  // Every door into v5 — a v1 file, a v2 file, a v3 file, a v4 file — and then
+  // the fixed point.
+  for (const source of [V1_TEXT, syntheticV2Text(), syntheticV3Text(), syntheticV4Text()]) {
     const once = state.serializeState(state.parseState(source).state);
     const again = state.parseState(once);
-    assert.strictEqual(again.migrated, false, "a v4 file is not migrated again");
+    assert.strictEqual(again.migrated, false, "a v5 file is not migrated again");
     assert.strictEqual(again.error, null);
     assert.strictEqual(state.serializeState(again.state), once, "byte for byte");
   }
@@ -1046,13 +1050,19 @@ test("the recorder writes an occurrence on every entry it produces", () => {
 // and migration only: the matching itself lives in engine.js (tick 3e7), and
 // nothing in this file compiles or applies a pattern.
 
-const TITLED = { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title herdr" };
+// Carries the v5 consent explicitly (withheld, which is the default) because
+// this is compared against what the READER hands back, and the reader
+// materializes the field.
+const TITLED = {
+  id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+  launch: "foot --title herdr", pictured: false
+};
 
 test("an identity carrying titlePatterns survives the parse -> serialize round trip", () => {
   // The failure this closes: before v4, normalizeIdentity rebuilt every identity
   // from exactly {id, patterns, launch}, so the field was silently dropped on
   // the FIRST write — nothing downstream could ever have matched on it.
-  const written = state.serializeState({ version: 4, identities: [TITLED], layouts: {} });
+  const written = state.serializeState({ version: 5, identities: [TITLED], layouts: {} });
   assert.ok(written.indexOf("titlePatterns") !== -1, "it reaches the file at all");
 
   const result = state.parseState(written);
@@ -1095,7 +1105,7 @@ test("a v3 file upgrades to v4 by gaining an empty titlePatterns, and nothing el
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 4);
+  assert.strictEqual(result.state.version, 5, "and it keeps going, to the current generation");
 
   // Every identity byte for byte, plus the one additive field and nothing else.
   assert.strictEqual(result.state.identities.length, before.identities.length);
@@ -1110,7 +1120,8 @@ test("a v3 file upgrades to v4 by gaining an empty titlePatterns, and nothing el
     // "absent" from "empty".
     assert.deepStrictEqual(upgraded.titlePatterns, [], identity.id);
     assert.ok("titlePatterns" in upgraded, identity.id + " carries the key, not just the value");
-    assert.deepStrictEqual(Object.keys(upgraded), ["id", "patterns", "titlePatterns", "launch"], identity.id);
+    assert.deepStrictEqual(Object.keys(upgraded),
+      ["id", "patterns", "titlePatterns", "launch", "pictured"], identity.id);
   });
 
   // v4 is an identity-only generation: not one layout entry moves.
@@ -1127,7 +1138,7 @@ test("the upgraded v3 file is stable: reading it again has nothing left to upgra
   const once = state.parseState(syntheticV3Text()).state;
   const written = state.serializeState(once);
   const twice = state.parseState(written);
-  assert.strictEqual(twice.migrated, false, "the second read is a v4 read");
+  assert.strictEqual(twice.migrated, false, "the second read is a v5 read");
   assert.strictEqual(twice.error, null);
   assert.deepStrictEqual(twice.state, once);
   assert.strictEqual(state.serializeState(twice.state), written);
@@ -1174,7 +1185,7 @@ test("a v3 --app-id launch the identity's own patterns cannot claim is neutraliz
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 4);
+  assert.strictEqual(result.state.version, 5);
 
   const migrated = result.state.identities[0];
   assert.notStrictEqual(migrated.launch, "foot --app-id=herdr herdr",
@@ -1294,27 +1305,230 @@ test("the version bump is unchanged for a v3 file whose launches are clean", () 
   const before = JSON.parse(text);
   const result = state.parseState(text);
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 4);
+  assert.strictEqual(result.state.version, 5);
   before.identities.forEach((identity, i) => {
     assert.strictEqual(result.state.identities[i].launch, identity.launch, identity.id);
   });
 });
 
-test("a v4 file's --app-id launch is the USER's and is never touched", () => {
+test("a v5 file's --app-id launch is the USER's and is never touched", () => {
   // Only a MIGRATED file carries the retired mechanism's data. A file already at
   // this generation was written by a build that no longer derives the flag, so
   // anything spelling it there was typed by hand — and a hand edit of the launch
   // field is a decision this module does not overrule.
   const text = JSON.stringify({
-    version: 4,
+    version: 5,
     paused: false,
-    identities: [{ id: "herdr", patterns: ["^foot$"], titlePatterns: [], launch: "foot --app-id=herdr herdr" }],
+    identities: [{ id: "herdr", patterns: ["^foot$"], titlePatterns: [],
+      launch: "foot --app-id=herdr herdr", pictured: false }],
     layouts: {}
   }, null, 2) + "\n";
   const result = state.parseState(text);
   assert.strictEqual(result.migrated, false);
   assert.strictEqual(result.state.identities[0].launch, "foot --app-id=herdr herdr");
-  assert.strictEqual(state.serializeState(result.state), text, "and the v4 file is still a fixed point");
+  assert.strictEqual(state.serializeState(result.state), text, "and the v5 file is still a fixed point");
+});
+
+// ------------------------------------------ schema v5: the pictured consent
+//
+// Tick 2c3. `pictured` is a SECOND consent on an identity, and it is separate
+// from being watched: an app can be watched without being pictured. Someone who
+// wants their password manager RESTORED has not thereby agreed to have it
+// PHOTOGRAPHED, so the default is OFF.
+//
+// Like `titlePatterns` before it the default is MATERIALIZED — written on every
+// identity this module returns — so no consumer ever has to tell "absent" from
+// "off". It ships HERE as schema and migration only: nothing takes a picture
+// yet, and no UI toggles it.
+
+// What the shipped v4 writer put on disk: geometry and an occurrence on every
+// entry, a materialized (empty) titlePatterns on every identity, and no
+// `pictured` key at all, because the field did not exist yet.
+function syntheticV4Text() {
+  const raw = JSON.parse(syntheticV3Text());
+  raw.version = 4;
+  for (const identity of raw.identities) identity.titlePatterns = [];
+  return JSON.stringify(raw, null, 2) + "\n";
+}
+
+const PICTURED = {
+  id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+  launch: "foot --title herdr", pictured: true
+};
+
+test("a v4 file upgrades to v5 by gaining pictured: false, and nothing else moves", () => {
+  const text = syntheticV4Text();
+  const before = JSON.parse(text);
+  const result = state.parseState(text);
+
+  assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
+  assert.strictEqual(result.error, null, "and it is not an error either");
+  assert.strictEqual(result.migrated, true);
+  assert.strictEqual(result.state.version, 5);
+
+  // Every identity byte for byte, plus the one additive field and nothing else.
+  assert.strictEqual(result.state.identities.length, before.identities.length);
+  before.identities.forEach((identity, i) => {
+    const upgraded = result.state.identities[i];
+    assert.strictEqual(upgraded.id, identity.id, identity.id);
+    assert.deepStrictEqual(upgraded.patterns, identity.patterns, identity.id);
+    assert.deepStrictEqual(upgraded.titlePatterns, identity.titlePatterns, identity.id);
+    assert.strictEqual(upgraded.launch, identity.launch, identity.id);
+    // The only difference — and it IS materialized, exactly as v4's empty
+    // titlePatterns is. See "THE DELIBERATE CHOICE" in the StateModel.js header.
+    assert.strictEqual(upgraded.pictured, false, identity.id + " defaults to off");
+    assert.ok("pictured" in upgraded, identity.id + " carries the key, not just the value");
+    assert.deepStrictEqual(Object.keys(upgraded),
+      ["id", "patterns", "titlePatterns", "launch", "pictured"], identity.id);
+  });
+
+  // v5 is an identity-only generation: not one layout entry moves.
+  assert.deepStrictEqual(state.topologyKeys(result.state), Object.keys(before.layouts).sort());
+  for (const key of Object.keys(before.layouts)) {
+    assert.deepStrictEqual(state.layoutFor(result.state, key), before.layouts[key], key);
+  }
+
+  // And it is written back on the way out.
+  assert.ok(state.serializeState(result.state).indexOf('"pictured": false') !== -1);
+});
+
+test("the upgraded v4 file is stable: reading it again has nothing left to upgrade", () => {
+  const once = state.parseState(syntheticV4Text()).state;
+  const written = state.serializeState(once);
+  const twice = state.parseState(written);
+  assert.strictEqual(twice.migrated, false, "the second read is a v5 read");
+  assert.strictEqual(twice.error, null);
+  assert.deepStrictEqual(twice.state, once);
+  assert.strictEqual(state.serializeState(twice.state), written);
+});
+
+test("a v5 file round-trips unchanged, pictured: true included", () => {
+  const written = state.serializeState({ version: 5, identities: [PICTURED], layouts: {} });
+  assert.ok(written.indexOf('"pictured": true') !== -1, "it reaches the file at all");
+
+  const result = state.parseState(written);
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(result.recovered, false);
+  assert.strictEqual(result.migrated, false, "a v5 file is not a migration");
+  assert.deepStrictEqual(result.state.identities, [PICTURED],
+    "the granted consent survives the round trip");
+  assert.strictEqual(state.serializeState(result.state), written, "and the file is a fixed point");
+});
+
+test("pictured is materialized on EVERY identity, through every door into v5", () => {
+  // The promise v4 made about titlePatterns, made again and pinned the same
+  // way: a consumer must never need has("pictured"). Every door into the
+  // current generation — a v1 file, a v2 file, a v3 file, a v4 file — and then
+  // the write path, which is where a panel row that never mentions the field
+  // arrives.
+  const doors = [
+    ["v1", V1_TEXT],
+    ["v2", syntheticV2Text()],
+    ["v3", syntheticV3Text()],
+    ["v4", syntheticV4Text()]
+  ];
+  for (const [name, text] of doors) {
+    const identities = state.parseState(text).state.identities;
+    assert.ok(identities.length > 0, name + " has identities to check at all");
+    for (const identity of identities) {
+      assert.ok("pictured" in identity, name + ": " + identity.id + " carries the key");
+      assert.strictEqual(identity.pictured, false, name + ": " + identity.id + " defaults to off");
+    }
+  }
+
+  // setIdentities normalizes, so a half-built row from the panel still lands
+  // carrying the field rather than leaving it undefined in the file.
+  const written = state.setIdentities(state.defaultState(),
+    [{ id: "browser", patterns: ["^chromium$"], launch: "" }]);
+  assert.strictEqual(written.identities[0].pictured, false);
+  assert.ok(state.serializeState(written).indexOf('"pictured": false') !== -1);
+
+  // And a fresh default has nothing to materialize it ON, which is the one
+  // shape that must not grow a stray key.
+  assert.deepStrictEqual(state.defaultState(),
+    { version: 5, paused: false, identities: [], layouts: {} });
+});
+
+test("pictured is a consent, so only an explicit true grants it", () => {
+  // The safe direction `paused` already takes: a file that does not say yes has
+  // not said yes. Junk in the field is not a grant, and it never costs the
+  // identity anything else.
+  const result = state.parseState(JSON.stringify({
+    version: 5,
+    identities: [
+      { id: "yes", patterns: ["^a$"], launch: "", pictured: true },
+      { id: "no", patterns: ["^b$"], launch: "", pictured: false },
+      { id: "absent", patterns: ["^c$"], launch: "" },
+      { id: "string-true", patterns: ["^d$"], launch: "", pictured: "true" },
+      { id: "one", patterns: ["^e$"], launch: "", pictured: 1 },
+      { id: "null", patterns: ["^f$"], launch: "", pictured: null }
+    ],
+    layouts: {}
+  }));
+
+  assert.strictEqual(result.recovered, false, "none of that is a corrupt file");
+  assert.deepStrictEqual(result.state.identities.map((i) => i.pictured),
+    [true, false, false, false, false, false]);
+  assert.deepStrictEqual(result.state.identities.map((i) => i.patterns),
+    [["^a$"], ["^b$"], ["^c$"], ["^d$"], ["^e$"], ["^f$"]],
+    "and nothing else about any of them moves");
+});
+
+test("a v4 file is READ as v5 while the file on disk stays v4 until the next write", () => {
+  // The property the v3 -> v4 upgrade has, kept: the read upgrades in MEMORY
+  // and touches nothing. A migration that rewrote the file on sight would
+  // rewrite it under a user who only opened the panel — and the acceptance
+  // suite pins the same thing end to end for v3 -> v4
+  // (tests/acceptance/dock-recall-appid-migration-test.sh, "upgraded in memory;
+  // the file on disk is still v3").
+  const file = freshStateFile(syntheticV4Text());
+  const before = fs.readFileSync(file);
+
+  const loaded = state.parseState(fs.readFileSync(file, "utf8"));
+  assert.strictEqual(loaded.migrated, true, "the read IS an upgrade");
+  assert.strictEqual(loaded.state.version, 5, "and in memory it is v5");
+  for (const identity of loaded.state.identities) {
+    assert.strictEqual(identity.pictured, false, identity.id);
+  }
+
+  assert.deepStrictEqual(fs.readFileSync(file), before, "and the file on disk is untouched by the read");
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 4, "still v4 on disk");
+  assert.strictEqual(fs.readFileSync(file, "utf8").indexOf("pictured"), -1,
+    "with no pictured key anywhere in it");
+
+  // The NEXT write is what persists the upgrade, and it is not refused: an
+  // older file is writable, only a newer one is not.
+  assert.strictEqual(guardedWrite(file, state.setPaused(loaded.state, true)), null);
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.strictEqual(after.version, 5, "now the file itself is v5");
+  assert.ok(after.identities.length > 0);
+  for (const identity of after.identities) {
+    assert.strictEqual(identity.pictured, false, identity.id + " on disk");
+  }
+});
+
+test("the two suggestIdentity returns both carry the field", () => {
+  // suggestIdentity is the sole CONSTRUCTOR of an identity and it has two
+  // return statements — the class-only proposal and the title proposal. The
+  // learnings entry this tick was written against exists because a previous
+  // field was missed at a rebuild site, so both are pinned here, next to the
+  // schema they have to match.
+  const classOnly = panel.suggestIdentity("chromium", []);
+  assert.strictEqual(classOnly.pictured, false, "the class-only proposal");
+  assert.ok("pictured" in classOnly);
+
+  // The derivation is handed in rather than derived — suggestIdentity is pure,
+  // and this shape is what terminalChildDerivation answers.
+  const titled = panel.suggestIdentity("foot", [],
+    { title: "herdr", command: "foot --title=herdr herdr", reason: "" });
+  assert.strictEqual(titled.id, "herdr", "the title proposal was made at all");
+  assert.strictEqual(titled.pictured, false, "the title proposal");
+  assert.ok("pictured" in titled);
+
+  // A proposal must survive the write it is made for: the file keeps the field
+  // rather than the writer inventing it a second time.
+  const saved = state.setIdentities(state.defaultState(), [classOnly, titled]);
+  assert.deepStrictEqual(saved.identities.map((i) => i.pictured), [false, false]);
 });
 
 // ------------------------------------------------- live-read: hyprctl reads
