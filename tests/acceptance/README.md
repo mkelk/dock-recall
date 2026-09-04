@@ -243,6 +243,8 @@ omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknow
 omarchy-shell dock-recall setPaused on           # "paused" | "active" | "unknown" | "no-state"
 omarchy-shell dock-recall setOverflow open       # "open" | "closed" | "unknown"
 omarchy-shell dock-recall toggleRow <row key>    # "toggled" | "not-clickable" | "no-row" | "unknown"
+omarchy-shell dock-recall setPictured <row key> on
+                                                 # "on" | "off" | "not-picturable" | "no-row" | "no-state" | "unknown"
 omarchy-shell dock-recall hoverLink <link key>   # the key now hovered, or "none"
 ```
 
@@ -271,7 +273,7 @@ would be a second writer with none of that discipline.
   ],
   "chips": [
     { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
-      "monitorName": "eDP-1", "watched": true,
+      "monitorName": "eDP-1", "watched": true, "pictured": false,
       "renderPath": "positioned", "placed": true, "width": 214, "height": 120,
       "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
       "iconResolved": true, "treatment": "pill",
@@ -480,6 +482,44 @@ a title, because that argument would have to be re-made correctly by every futur
 author. The same test asserts the shell components the panel hands untrusted
 strings to (`Ui/PanelToolTip`, `Ui/Toggle`, `Ui/PanelHero`) still declare it too —
 the tooltip carries a raw window title, and that binding is not ours to guard.
+
+### The second consent
+
+`pictured` is on chips **and** rows; `picturable` is on rows alone. Being
+*watched* lets the tool move an app's windows; being *pictured* lets it
+photograph them at Record and keep the picture on disk. Those are different
+permissions — someone who wants their password manager restored has not agreed
+to have it photographed — so they are two fields, granted separately, and
+`pictured` defaults **off**.
+
+`picturable` exists because `pictured: false` says two different things. A
+watched app that has withheld the grant reports `picturable: true,
+pictured: false` and draws a camera; an unwatched live window and an orphaned
+recorded ghost report `picturable: false` and draw none, because `pictured` is a
+field **on an identity** and an identity exists exactly while the app is
+watched. The camera is on the **row** rather than on the chip: the map is
+already the control surface for the first tick, and a second consent there would
+have to be a modifier-click or a second hit zone inside a rectangle that is
+16 × 10 px at its floor — an invisible affordance for a privacy decision.
+
+Two invariants are checked on every payload: a chip that is not watched is never
+pictured, and a row that is not picturable never is. The grant itself is driven
+by `setPictured <row key> on|off`, which routes through the panel's own
+`setPicturedFor` — a fresh read of the file, `StateModel.setPictured` (one
+field, one identity, every other identity byte-identical), and a log line gated
+on the write. Like `setPaused` it answers the position the camera is **in
+afterwards**, so a refused write is visible without reading a log.
+
+The test then requires that the grant moved **only** `pictured`: the row is
+still watched, no other row became pictured, and the state file on disk still
+carries both identities with the seeded one's patterns and launch unchanged. It
+restarts the shell and re-asserts, because a flag that lives only in a panel
+property is not a consent the user gave.
+
+The limit, pinned in `tests/state.test.js` so it is a decision rather than a
+surprise: unwatching an app removes its identity and takes the grant with it,
+and re-watching starts from the default. Consent is not remembered for an app
+nobody is watching, which is the safe direction.
 
 ### The row-to-chip link
 

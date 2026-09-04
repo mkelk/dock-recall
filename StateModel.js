@@ -1016,6 +1016,70 @@ function isPaused(state) {
   return !!(state && state.paused === true);
 }
 
+// ------------------------------------------------- the SECOND consent (v5)
+//
+// `pictured` is a field on ONE identity, and this is the only setter for it.
+// Not `setIdentities` with a hand-rebuilt list: that is a whitelist rebuild of
+// every identity in the file (see normalizeIdentity), and a caller assembling
+// the list itself is the shape .tick/learnings.md names as "a data-loss bug
+// waiting for the next field". Copy the identity, replace the one field, leave
+// every other identity byte-identical — the same discipline
+// PanelModel.identityWithLaunch established for the launch command.
+//
+// WATCHED AND PICTURED ARE SEPARATE CONSENTS, and this function is where that
+// separation is enforced rather than merely intended: it touches `pictured` and
+// nothing else, so a grant can never smuggle a change to `patterns`, to
+// `launch`, or to which identities exist. The other direction — which identity
+// is watched at all — is membership of `identities`, and only setIdentities
+// changes that. Two writes, two functions, and neither can perform the other's
+// act by accident.
+//
+// An id no identity carries returns the base UNCHANGED rather than inventing
+// one. Consent is granted for something the user is already watching; minting
+// an identity here would be the panel deciding to watch an app because it was
+// asked to photograph it.
+//
+// Same caller contract as setPaused: read the file FRESH, apply this, write
+// atomically.
+function identityWithPictured(identity, pictured) {
+  var out = {};
+  for (var key in identity) {
+    if (Object.prototype.hasOwnProperty.call(identity, key)) out[key] = identity[key];
+  }
+  out.pictured = pictured === true;
+  return out;
+}
+
+function setPictured(state, identityId, pictured) {
+  var base = normalizeState(state);
+  var id = typeof identityId === "string" ? identityId : "";
+  if (!id) return base;
+
+  var want = pictured === true;
+  var next = [];
+  var found = false;
+  for (var i = 0; i < base.identities.length; i++) {
+    var identity = base.identities[i];
+    if (identity.id !== id) {
+      next.push(identity);
+      continue;
+    }
+    found = true;
+    next.push(identityWithPictured(identity, want));
+  }
+  if (!found) return base;
+
+  return { version: base.version, paused: base.paused, identities: next, layouts: base.layouts };
+}
+
+// Has this identity granted the picture consent? False for an identity that
+// does not exist, which is the same answer as "no" on purpose: an app nobody
+// watches has consented to nothing.
+function isPictured(state, identityId) {
+  var identity = identityById(state, typeof identityId === "string" ? identityId : "");
+  return !!(identity && identity.pictured === true);
+}
+
 // ---------------------------------------------------------------------------
 // The status file: pure shaping
 // ---------------------------------------------------------------------------
@@ -1556,6 +1620,8 @@ if (typeof module !== "undefined") {
     setIdentities: setIdentities,
     setPaused: setPaused,
     isPaused: isPaused,
+    setPictured: setPictured,
+    isPictured: isPictured,
     defaultStatus: defaultStatus,
     normalizeStatus: normalizeStatus,
     normalizeVerdict: normalizeVerdict,

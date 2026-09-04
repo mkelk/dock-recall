@@ -116,6 +116,12 @@ thinks is happening:
 - **App list** — every window Hyprland is showing, ordered monitor → workspace →
   position, with a tick per app. Unticked apps are ignored by every restore.
   Apps with several windows get one row per window.
+- **Camera per app** — a second consent, separate from the tick, drawn as a small
+  camera on every watched row. The tick lets Dock Recall **move** an app's
+  windows; the camera lets it **photograph** them when you press Record, so the
+  Recorded map can show the window even when the app is closed. It is off until
+  you switch it on, it is per app, and switching it off again leaves the app
+  watched. Unticking an app takes its camera consent with it.
 - **Record layout / Restore now** — record the current arrangement for the current
   topology, or replay the recording immediately without waiting for a cable.
 - **Undo record** — immediately after recording, put the previous recording back.
@@ -135,6 +141,7 @@ can ask what it is showing and switch which map it shows:
 omarchy-shell shell summon mkelk.dock-recall '{}'
 omarchy-shell dock-recall state              # JSON: the topology, and every chip and workspace
 omarchy-shell dock-recall setView recorded   # or live
+omarchy-shell dock-recall setPictured <row key> on   # the camera consent, or off
 ```
 
 That target exists only while the panel is up — the shell loads the panel on

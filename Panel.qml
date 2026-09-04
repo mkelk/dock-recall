@@ -1693,6 +1693,83 @@ Item {
       : "activated — monitor changes will be acted on again")
   }
 
+  // -------------------------------------------- the second consent (tick qnc)
+  //
+  // WATCHED IS NOT PICTURED. Watching an app means the tool may MOVE its
+  // windows; picturing it means the tool may PHOTOGRAPH them and keep the
+  // picture on disk. Someone who wants their password manager put back on the
+  // right workspace has not agreed to have it photographed mid-reveal, so the
+  // two are separate grants and the second one defaults OFF (schema v5 —
+  // StateModel.normalizeIdentity materializes `pictured: false` on every
+  // identity through every door, so nothing here ever has to tell absent from
+  // withheld).
+  //
+  // WHERE THE AFFORDANCE LIVES: the app LIST, one camera button per row, and
+  // not the map. The map is already the control surface for the first tick — a
+  // chip click watches or unwatches — and a second consent on the same surface
+  // would have to be a modifier-click or a second hit zone inside a rectangle
+  // that is 16×10 px at its floor. Both are invisible, and an invisible
+  // affordance for a privacy decision is the wrong kind of clever. The list is
+  // where the panel already keeps its PER-APP facts (the watched switch, the
+  // launch hint and its own separate click target, the placement), so the
+  // second per-app fact belongs beside them, with the same grammar: a small
+  // control that is not the row's toggle, clicked on its own.
+  //
+  // Only a WATCHED identity can be pictured, and that is not a UI restriction
+  // but the shape of the data: `pictured` is a field ON an identity, and an
+  // identity exists exactly while the app is watched. So an unwatched row and
+  // an orphaned recorded ghost offer no camera at all rather than one that
+  // writes nowhere.
+
+  function picturedOf(identityId) {
+    return StateModel.isPictured(root.stateModel, identityId)
+  }
+
+  // Is there anything for a camera on this row to write to? An identity id
+  // that names a WATCHED identity — the recorded-but-unwatched ghost carries an
+  // id too, and it is an id the file no longer has.
+  function picturableOf(identityId) {
+    if (!identityId) return false
+    return StateModel.identityById(root.stateModel, identityId) !== null
+  }
+
+  // Grant or withdraw it, with the discipline setPaused established: a FRESH
+  // read (this rewrites the whole file, which also carries every layout), the
+  // adopt-what-the-file-says branch when somebody got there first, the
+  // StateModel setter that touches one field, and a success line gated on
+  // writeState's boolean — a refused write must not log a consent it did not
+  // record.
+  function setPicturedFor(identityId, want) {
+    if (!identityId) return
+    var fresh = root.freshState()
+    if (!fresh) return
+
+    var identity = StateModel.identityById(fresh, identityId)
+    if (!identity) {
+      root.warn("cannot picture \"" + identityId + "\": it is not on the watched list — "
+        + "click its live window to watch it first")
+      return
+    }
+    if ((identity.pictured === true) === (want === true)) {
+      // Somebody got there first (a second panel, a hand edit). The user's
+      // intent is already the file's content; adopt it rather than writing it
+      // again, exactly as the pause toggle does.
+      root.stateModel = fresh
+      return
+    }
+    if (!root.writeState(StateModel.setPictured(fresh, identityId, want === true))) return
+    root.log(want === true
+      ? "picturing \"" + identityId + "\" — Record will store a picture of its windows"
+      : "no longer picturing \"" + identityId + "\" — Record will store no picture of it")
+  }
+
+  // The flip. Computed against the panel's copy and re-checked against the file
+  // inside setPicturedFor, which is what makes a stale copy adopt rather than
+  // write the wrong way round.
+  function togglePictured(identityId) {
+    root.setPicturedFor(identityId, !root.picturedOf(identityId))
+  }
+
   // ------------------------------------------------ the one-shot record undo
   //
   // Record OVERWRITES this topology's layout and says so in its own tooltip;
@@ -2255,6 +2332,11 @@ Item {
               // delegate, for the reason the four above are.
               iconSource: root.reported(report, "iconSource"),
               iconResolved: root.reported(report, "iconResolved"),
+              // The SECOND consent (tick qnc), reported beside `watched` and
+              // never derived from it: the whole point of the pair is that they
+              // move independently, so a consumer has to be able to read them
+              // independently.
+              pictured: root.reported(report, "pictured"),
               // The two colour channels, independently readable. A drifted chip
               // is fillState "watched" and edgeTone "drift" at once.
               fillState: root.reported(report, "fillState"),
@@ -2287,6 +2369,10 @@ Item {
         ghost: root.reported(rowReport, "ghost"),
         iconSource: root.reported(rowReport, "iconSource"),
         iconResolved: root.reported(rowReport, "iconResolved"),
+        // The second consent, and whether this row has anything to grant it
+        // with. See the row delegate for why both are said.
+        pictured: root.reported(rowReport, "pictured"),
+        picturable: root.reported(rowReport, "picturable"),
         linkKey: root.reported(rowReport, "linkKey"),
         linked: root.reported(rowReport, "linked")
       })
@@ -2415,6 +2501,39 @@ Item {
         if (list[i].clickable === false) return "not-clickable"
         root.toggleChip(list[i])
         return "toggled"
+      }
+      return "no-row"
+    }
+
+    // The SECOND consent, driven the way its camera drives it (tick qnc).
+    // Through root.setPicturedFor and nothing else — that function is the one
+    // place that re-reads the state file before writing, adopts what the file
+    // already says, and gates its log line on the write — for the same reason
+    // setPaused above routes through the panel's own setter.
+    //
+    // Keyed by ROW, not by identity id, so a caller cannot grant a consent to
+    // something the panel is not showing: the row is looked up in appRows, and
+    // a key that names no row answers "no-row" rather than acting on something
+    // else. A row with no identity to grant with — an unwatched window, an
+    // orphaned recorded ghost — answers "not-picturable", which is the same
+    // sentence its missing camera says.
+    //
+    // Answers the position the camera is IN afterwards, exactly as setPaused
+    // does, so a caller comparing the answer to its request learns about a
+    // refused write without reading a log.
+    function setPictured(key: string, value: string): string {
+      var want = String(value || "").toLowerCase()
+      if (want !== "on" && want !== "off" && want !== "true" && want !== "false") return "unknown"
+      if (!root.stateLoaded) return "no-state"
+      var wanted = String(key || "")
+      if (!wanted) return "unknown"
+      var list = root.appRows || []
+      for (var i = 0; i < list.length; i++) {
+        if (String(list[i].key) !== wanted) continue
+        var identityId = String(list[i].identityId || "")
+        if (!root.picturableOf(identityId)) return "not-picturable"
+        root.setPicturedFor(identityId, want === "on" || want === "true")
+        return root.picturedOf(identityId) ? "on" : "off"
       }
       return "no-row"
     }
@@ -3366,6 +3485,14 @@ Item {
                   readonly property bool iconResolved: root.iconResolvedOf(
                     appRow.modelData.identityId, appRow.modelData.className)
 
+                  // The second consent, as this row draws it (tick qnc). Held
+                  // here rather than read twice, for the reason the icon pair
+                  // above is: the payload has to carry what the camera was
+                  // BOUND to, not a second derivation that could agree with the
+                  // state file while the row drew something else.
+                  readonly property bool picturable: root.picturableOf(appRow.modelData.identityId)
+                  readonly property bool pictured: root.picturedOf(appRow.modelData.identityId)
+
                   // What this row DREW, read back over IPC. Keyed by the row's
                   // own key, which appRows already makes unique across all three
                   // states.
@@ -3376,12 +3503,22 @@ Item {
                       ghost: appRow.modelData.ghost === true,
                       iconSource: appRow.iconSource,
                       iconResolved: appRow.iconResolved,
+                      // The SECOND consent, and whether this row can carry one
+                      // at all. Both, because "false" says two different things
+                      // — a watched app that has withheld the grant, and a row
+                      // (an unwatched window, an orphaned ghost) that has
+                      // nothing to grant it with — and the camera draws only in
+                      // the first case.
+                      pictured: appRow.pictured,
+                      picturable: appRow.picturable,
                       // The row's half of the row-to-chip link: the key it
                       // answers to, and whether it is answering right now.
                       linkKey: String(appRow.modelData.linkKey || ""),
                       linked: appRow.linked
                     })
                   }
+                  onPicturedChanged: appRow.reportRender()
+                  onPicturableChanged: appRow.reportRender()
                   onIconSourceChanged: appRow.reportRender()
                   // This was the bug (sm1): the desktop-file scan that resolves
                   // an icon lands AFTER open(), so both properties start out ""/
@@ -3442,7 +3579,7 @@ Item {
                     id: rowToggle
                     anchors.left: rowIcon.right
                     anchors.leftMargin: Style.space(8)
-                    anchors.right: rowLaunch.left
+                    anchors.right: rowCamera.left
                     anchors.rightMargin: Style.space(8)
                     anchors.verticalCenter: parent.verticalCenter
 
@@ -3465,6 +3602,106 @@ Item {
                     fontFamily: root.fontFamily
                     titleSize: Style.font.caption
                     onClicked: root.toggleChip(appRow.modelData)
+                  }
+
+                  // THE SECOND CONSENT, one camera per row (tick qnc).
+                  //
+                  // Drawn from primitives rather than set in an icon font, the
+                  // way the hero's monitor glyph and the overflow menu's mini
+                  // monitors are: this panel has no glyph font of its own and
+                  // borrowing one would make the camera the only piece of
+                  // chrome that changes shape with the user's theme.
+                  //
+                  // FILLED means granted. Outline-only means withheld, which is
+                  // the default and the state most rows are in — so the list
+                  // reads as "nothing is being photographed" at a glance, and a
+                  // grant is the thing that stands out. It is the same polarity
+                  // the watched switch uses and the opposite of a warning
+                  // badge, deliberately: consent is a positive act.
+                  //
+                  // Absent entirely on a row with nothing to write to — an
+                  // unwatched window, or the orphaned recorded ghost whose
+                  // identity the file no longer carries. `width: 0` when hidden
+                  // so the toggle beside it takes the space back rather than
+                  // anchoring against a gap.
+                  Item {
+                    id: rowCamera
+                    readonly property bool picturable: root.picturableOf(appRow.modelData.identityId)
+                    readonly property bool pictured: root.picturedOf(appRow.modelData.identityId)
+                    readonly property color tone: rowCamera.pictured ? Color.accent : root.faintForeground
+
+                    visible: rowCamera.picturable
+                    width: rowCamera.visible ? Style.font.iconLarge : 0
+                    height: Style.font.iconLarge
+                    anchors.right: rowLaunch.left
+                    anchors.rightMargin: rowCamera.visible ? Style.space(8) : 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    opacity: rowCamera.pictured ? 1.0 : 0.75
+
+                    // The body: a rounded box, with a bump on top for the
+                    // viewfinder hump. Filled when the consent is granted,
+                    // hollow when it is not.
+                    Rectangle {
+                      id: cameraHump
+                      anchors.horizontalCenter: parent.horizontalCenter
+                      anchors.horizontalCenterOffset: -Math.round(parent.width * 0.14)
+                      anchors.top: parent.top
+                      anchors.topMargin: Math.round(parent.height * 0.14)
+                      width: Math.round(parent.width * 0.30)
+                      height: Math.round(parent.height * 0.14)
+                      radius: Math.max(1, Style.space(1))
+                      color: rowCamera.tone
+                    }
+
+                    Rectangle {
+                      id: cameraBody
+                      anchors.horizontalCenter: parent.horizontalCenter
+                      anchors.bottom: parent.bottom
+                      anchors.bottomMargin: Math.round(parent.height * 0.14)
+                      width: parent.width
+                      height: Math.round(parent.height * 0.58)
+                      radius: Math.max(1, Style.space(2))
+                      color: rowCamera.pictured ? rowCamera.tone : "transparent"
+                      border.width: Math.max(1, Style.space(1))
+                      border.color: rowCamera.tone
+
+                      // The lens. On a granted camera it is a hole punched in
+                      // the filled body (the panel's own background), so the
+                      // shape still reads as a camera at 18 px rather than as a
+                      // solid blob.
+                      Rectangle {
+                        anchors.centerIn: parent
+                        width: Math.round(parent.height * 0.56)
+                        height: width
+                        radius: width / 2
+                        color: rowCamera.pictured ? Color.popups.background : "transparent"
+                        border.width: rowCamera.pictured ? 0 : Math.max(1, Style.space(1))
+                        border.color: rowCamera.tone
+                      }
+                    }
+
+                    HoverHandler { id: rowCameraHover }
+
+                    // Its own click target, the way "learn launch" has one:
+                    // pressing the camera must not also untick the app, and
+                    // with the row's toggle confined to the Toggle itself that
+                    // is structural rather than a declaration-order trick.
+                    MouseArea {
+                      anchors.fill: parent
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: root.togglePictured(appRow.modelData.identityId)
+                    }
+
+                    // The consequence, said out loud. A privacy grant is the
+                    // one control in this panel where "what does this button
+                    // do" must not be inferable only from its shape.
+                    PanelToolTip {
+                      visible: rowCameraHover.hovered
+                      text: rowCamera.pictured
+                        ? "Pictured: Record stores a picture of this app's windows.\nClick to stop."
+                        : "Not pictured: Record stores no picture of this app.\nClick to allow one."
+                      fontFamily: root.fontFamily
+                    }
                   }
 
                   // What Restore can and cannot do for this app, in three

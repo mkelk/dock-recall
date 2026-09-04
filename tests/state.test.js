@@ -1531,6 +1531,142 @@ test("the two suggestIdentity returns both carry the field", () => {
   assert.deepStrictEqual(saved.identities.map((i) => i.pictured), [false, false]);
 });
 
+// --------------------------------- the setter for the second consent (qnc)
+//
+// `setPictured` is the ONLY writer of the field, and the whole reason it exists
+// rather than the panel handing setIdentities a rebuilt list: setIdentities
+// runs every identity back through normalizeIdentity, which is a WHITELIST, so
+// a caller assembling that list is the exact shape .tick/learnings.md calls "a
+// data-loss bug waiting for the next field". This one copies the identity and
+// replaces one key.
+//
+// The pair below is what "two separate consents" means in code: `setPictured`
+// can never change who is watched (membership of `identities`), and
+// `setIdentities` can never grant a picture the user did not.
+
+function watchedPair() {
+  return state.setIdentities(state.defaultState(), [
+    { id: "vault", patterns: ["^KeePassXC$"], titlePatterns: [], launch: "keepassxc" },
+    { id: "editor", patterns: ["^code$"], titlePatterns: [], launch: "code" }
+  ]);
+}
+
+test("setPictured grants the consent on one identity and touches nothing else", () => {
+  const before = watchedPair();
+  assert.deepStrictEqual(before.identities.map((i) => i.pictured), [false, false],
+    "both start withheld, which is the default this feature ships with");
+
+  const after = state.setPictured(before, "editor", true);
+  assert.deepStrictEqual(after.identities.map((i) => i.id), ["vault", "editor"],
+    "the watched list is the same list, in the same order");
+  assert.deepStrictEqual(after.identities.map((i) => i.pictured), [false, true]);
+
+  // Every OTHER field of the identity that was touched, and the whole of the
+  // one that was not.
+  assert.deepStrictEqual(after.identities[1], {
+    id: "editor", patterns: ["^code$"], titlePatterns: [], launch: "code", pictured: true
+  });
+  assert.deepStrictEqual(after.identities[0], before.identities[0]);
+
+  // And the caller's state object is not mutated under it — the panel binds to
+  // this object, and an in-place edit would leave the camera drawn in the
+  // position it was in before it was pressed.
+  assert.strictEqual(before.identities[1].pictured, false);
+});
+
+test("and withdraws it again, which is the same act in the other direction", () => {
+  const granted = state.setPictured(watchedPair(), "vault", true);
+  const withdrawn = state.setPictured(granted, "vault", false);
+  assert.deepStrictEqual(withdrawn.identities.map((i) => i.pictured), [false, false]);
+  assert.deepStrictEqual(withdrawn.identities, watchedPair().identities,
+    "back to byte-identical, so a withdrawal leaves no trace of the grant");
+});
+
+test("setPictured is a consent too: only an explicit true grants it", () => {
+  // The same rule normalizeIdentity applies to the FILE, applied to the SETTER
+  // — an argument that is merely truthy is not a grant, because the one place a
+  // grant may come from is a user pressing the camera.
+  const base = watchedPair();
+  for (const junk of ["true", 1, {}, "yes"]) {
+    assert.strictEqual(state.setPictured(base, "vault", junk).identities[0].pictured, false,
+      JSON.stringify(junk) + " is not a grant");
+  }
+  assert.strictEqual(state.setPictured(base, "vault", true).identities[0].pictured, true);
+});
+
+test("setPictured never mints an identity, so it can never make an app watched", () => {
+  // The point behind the assertion: granting a picture consent is a decision
+  // about an app the user is ALREADY watching. Minting an identity here would
+  // be the panel deciding to watch an app because it was asked to photograph
+  // one — the exact coupling this epic exists to break.
+  const base = watchedPair();
+  for (const id of ["nobody", "", null, undefined, 7]) {
+    const after = state.setPictured(base, id, true);
+    assert.deepStrictEqual(after.identities, base.identities,
+      JSON.stringify(id) + " named nothing, so nothing changed");
+  }
+});
+
+test("watched and pictured move independently, in both directions", () => {
+  // DIRECTION ONE — the picture grant leaves the watched list alone.
+  const granted = state.setPictured(watchedPair(), "vault", true);
+  assert.deepStrictEqual(granted.identities.map((i) => i.id), ["vault", "editor"]);
+  assert.deepStrictEqual(granted.identities.map((i) => i.patterns),
+    [["^KeePassXC$"], ["^code$"]]);
+
+  // DIRECTION TWO — a change to the watched list leaves every surviving grant
+  // where it was. Unwatching an app is REMOVING its identity (that is what
+  // watched means here), and the app that stays keeps its consent.
+  const unwatched = state.setIdentities(granted,
+    granted.identities.filter((i) => i.id !== "editor"));
+  assert.deepStrictEqual(unwatched.identities.map((i) => i.id), ["vault"]);
+  assert.strictEqual(unwatched.identities[0].pictured, true,
+    "vault is still pictured though editor stopped being watched");
+
+  // And the honest limit of the pair, pinned so it is a decision rather than a
+  // surprise: `pictured` is a field ON an identity and an identity exists
+  // exactly while the app is watched, so unwatching an app takes its grant with
+  // it and re-watching starts from the default. Consent is not remembered for
+  // an app nobody is watching — which is the safe direction.
+  const dropped = state.setIdentities(granted,
+    granted.identities.filter((i) => i.id !== "vault"));
+  assert.deepStrictEqual(dropped.identities.map((i) => i.id), ["editor"]);
+  const rewatched = state.setIdentities(dropped,
+    dropped.identities.concat([panel.suggestIdentity("KeePassXC", dropped.identities)]));
+  assert.strictEqual(
+    rewatched.identities.filter((i) => i.id === "keepassxc")[0].pictured, false,
+    "re-watching grants nothing on its own");
+});
+
+test("the grant survives the round trip to the file, both ways round", () => {
+  const file = freshStateFile(state.serializeState(watchedPair()));
+  const loaded = state.parseState(fs.readFileSync(file, "utf8")).state;
+
+  assert.strictEqual(guardedWrite(file, state.setPictured(loaded, "vault", true)), null);
+  const back = state.parseState(fs.readFileSync(file, "utf8")).state;
+  assert.strictEqual(state.isPictured(back, "vault"), true);
+  assert.strictEqual(state.isPictured(back, "editor"), false);
+  assert.ok(fs.readFileSync(file, "utf8").indexOf('"pictured": true') !== -1,
+    "and it reaches the file as the literal the reader accepts");
+
+  assert.strictEqual(guardedWrite(file, state.setPictured(back, "vault", false)), null);
+  const off = state.parseState(fs.readFileSync(file, "utf8")).state;
+  assert.strictEqual(state.isPictured(off, "vault"), false);
+  assert.deepStrictEqual(off.identities, watchedPair().identities);
+});
+
+test("isPictured answers no for an identity nobody watches", () => {
+  const granted = state.setPictured(watchedPair(), "vault", true);
+  assert.strictEqual(state.isPictured(granted, "vault"), true);
+  assert.strictEqual(state.isPictured(granted, "editor"), false);
+  // An app with no identity has consented to nothing, and that is the same
+  // answer as "withheld" on purpose — the caller that asks this is deciding
+  // whether to photograph, and both answers mean do not.
+  assert.strictEqual(state.isPictured(granted, "nobody"), false);
+  assert.strictEqual(state.isPictured(granted, ""), false);
+  assert.strictEqual(state.isPictured(null, "vault"), false);
+});
+
 // ------------------------------------------------- live-read: hyprctl reads
 
 // The failure these close: a read that did not succeed used to arrive as an

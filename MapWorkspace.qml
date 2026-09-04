@@ -517,6 +517,15 @@ BorderSurface {
               readonly property bool iconResolved: panel.iconResolvedOf(
                 chipTab.modelData.identityId, chipTab.modelData.className)
 
+              // THE SECOND CONSENT, per chip (tick qnc). Watched says the tool
+              // may MOVE this window; pictured says it may PHOTOGRAPH it, and
+              // the two are independent grants — so the payload says both
+              // rather than one flag a consumer would have to guess the other
+              // from. Off for every chip whose window matches no identity: an
+              // app nobody watches has consented to nothing.
+              readonly property bool pictured: panel.picturedOf(
+                chipTab.modelData.identityId)
+
               // WHICH OF FIVE DRAWINGS THIS CHIP EARNS, from the size it
               // actually got. The ladder:
               //
@@ -563,6 +572,9 @@ BorderSurface {
                   // fallback stack cannot quietly draw something else.
                   iconSource: chipTab.iconSource,
                   iconResolved: chipTab.iconResolved,
+                  // The second consent, from the same delegate and on both
+                  // render paths, for the same reason the icon pair is.
+                  pictured: chipTab.pictured,
                   // The tier the drawing below branches on, from the same
                   // property those bindings read — so a consumer can
                   // reproduce it with chipTreatment(width, height) on the two
@@ -590,6 +602,7 @@ BorderSurface {
               onPlacedChanged: chipTab.reportRender()
               onIconSourceChanged: chipTab.reportRender()
               onIconResolvedChanged: chipTab.reportRender()
+              onPicturedChanged: chipTab.reportRender()
               onTreatmentChanged: chipTab.reportRender()
               // The slot owns both colour channels, so the chip has to be
               // told when they move — a tick that changes watched changes the

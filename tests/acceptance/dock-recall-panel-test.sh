@@ -104,6 +104,20 @@
 #                  topology's layout, so its mtime is the last time ANY of them
 #                  changed, and a stale recording under a fresh mtime is the lie
 #                  this line exists to prevent.
+#   pictured,    — THE SECOND CONSENT (tick qnc), on chips and on rows.
+#   picturable     Watching an app lets the tool MOVE its windows; picturing it
+#                  lets the tool PHOTOGRAPH them and keep the picture on disk,
+#                  and the two are separate grants with the second defaulting
+#                  OFF. `picturable` is rows-only and says whether the row has a
+#                  watched identity to grant WITH — an unwatched window and an
+#                  orphaned recorded ghost have none, and draw no camera. The
+#                  invariants asserted on every payload: a chip that is not
+#                  watched is never pictured, and a row that cannot be pictured
+#                  never is. Section 7c then drives the grant over IPC and
+#                  requires that ONLY `pictured` moved — on one app, in one
+#                  direction, with the watched list byte-identical on disk — and
+#                  that it survives a shell restart.
+#
 #   watched      — asserted against the window this test actually seeded, not
 #                  merely required to be present. The live map draws every
 #                  mappable client whether it is watched or not, so a payload in
@@ -362,6 +376,7 @@ STATE_SHAPE='
         and (.width|type) == "number" and (.height|type) == "number"
         and (.iconSource|type) == "string" and (.iconSource|length) > 0
         and (.iconResolved|type) == "boolean"
+        and (.pictured|type) == "boolean"
         and (.treatment == "pill" or .treatment == "badge" or .treatment == "strip"
              or .treatment == "veiled" or .treatment == "field")
         and (.fillState == "watched" or .fillState == "ghost" or .fillState == "unwatched")
@@ -369,6 +384,7 @@ STATE_SHAPE='
              or .edgeTone == "watched" or .edgeTone == "quiet"))]|length) == (.chips|length)
   and ([.chips[]|select(.watched == true and .fillState == "unwatched")]|length) == 0
   and ([.chips[]|select(.watched == false and .fillState != "unwatched")]|length) == 0
+  and ([.chips[]|select(.watched == false and .pictured == true)]|length) == 0
   and ([.workspaces[]|select((.badgeValue|type) == "string" and (.badgeValue|length) > 0
         and (.badgeFocused|type) == "boolean")]|length) == (.workspaces|length)
   and ([.workspaces[]|select(.badgeValue != (.name|tostring))]|length) == 0
@@ -403,8 +419,10 @@ STATE_SHAPE='
         and (.watched|type) == "boolean" and (.ghost|type) == "boolean"
         and (.iconSource|type) == "string" and (.iconSource|length) > 0
         and (.iconResolved|type) == "boolean"
+        and (.pictured|type) == "boolean" and (.picturable|type) == "boolean"
         and (.linkKey|type) == "string" and (.linked|type) == "boolean")]|length) == (.rows|length)
   and ((.rows|map(.key)|unique|length) == (.rows|length))
+  and ([.rows[]|select(.picturable == false and .pictured == true)]|length) == 0
 '
 
 # The two view predicates below CAPTURE what they validated. The payload used to
@@ -1269,6 +1287,168 @@ if ! poll 20 row_and_chip unwatched; then
     "after unticking '$reticked_key', the row and its chip did not both go back to unwatched"
 fi
 pass "and unticking puts both back — the list and the map never disagree"
+
+# ------------------------------------------- 7c. the SECOND consent (tick qnc)
+#
+# WATCHED IS NOT PICTURED. Watching an app means the tool may MOVE its windows.
+# Picturing it means the tool may PHOTOGRAPH them at Record and keep the picture
+# on disk — a change in category, not a feature — so it is a separate grant and
+# it defaults OFF. The whole of this section is the claim that the two flags are
+# INDEPENDENT, which is a claim a payload carrying one of them could not make.
+#
+# Driven through `setPictured <row key> on|off`, which is the panel's own
+# setPicturedFor and nothing else: a fresh read of the file, the one-field
+# StateModel setter, and a log line gated on the write. Pressing the camera
+# itself would need a virtual pointer, which is a live-session rig this
+# increment does not use.
+#
+# The row driven is the SEEDED app, not the no-entry one: only a watched
+# identity has a `pictured` field to move, and the seeded app is the one this
+# test knows is watched by name.
+
+# Nothing has granted anything yet, so nothing is pictured anywhere — the
+# default, asserted before it is changed so the flip below has a floor.
+before_pictured=$(panel_state_json | jq -r \
+  '[([.rows[]|select(.pictured == true)]|length),
+    ([.chips[]|select(.pictured == true)]|length)]|join("/")')
+if [[ $before_pictured != "0/0" ]]; then
+  diagnostics
+  fail "pictured defaults off everywhere (panel IPC)" \
+    "$before_pictured row(s)/chip(s) already report pictured:true before anything granted it"
+fi
+
+# Only the two watched identities can be pictured at all. The unwatched live
+# window and the orphaned ghost report picturable:false and draw no camera — an
+# affordance that wrote nowhere is the bug this flag exists to prevent.
+picturable_rows=$(panel_state_json | jq -r '[.rows[]|select(.picturable == true)]|length')
+if ! [[ $picturable_rows =~ ^[0-9]+$ ]] || ((picturable_rows < 1)); then
+  diagnostics
+  fail "a watched row offers the consent (panel IPC)" \
+    "no row reports picturable:true, so no camera is drawn anywhere"
+fi
+pass "pictured defaults off on every row and every chip; $picturable_rows row(s) can grant it"
+
+seeded_row_key=$(panel_state_json | jq -r --arg addr "$APP_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|.linkKey) as $l
+   | first(.rows[]|select(.linkKey == $l and .picturable == true)|.key)//empty')
+if [[ -z $seeded_row_key ]]; then
+  diagnostics
+  fail "the seeded app has a picturable row (panel IPC)" \
+    "no picturable row shares the link key of the chip keyed $APP_ADDRESS"
+fi
+
+# A row with nothing to grant WITH answers so, rather than writing nowhere and
+# reporting success. Found through the no-entry window, which step 7b left
+# unwatched.
+noicon_row_now=$(panel_state_json | jq -r --arg addr "$NOICON_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|.linkKey) as $l
+   | first(.rows[]|select(.linkKey == $l)|.key)//empty')
+if [[ -n $noicon_row_now ]]; then
+  refused=$(omarchy-shell "$IPC_TARGET" setPictured "$noicon_row_now" on 2>&1)
+  [[ $refused == "not-picturable" ]] ||
+    fail "an unwatched row refuses the consent (panel IPC)" \
+      "setPictured '$noicon_row_now' on answered '$refused', expected 'not-picturable'"
+fi
+missing_answer=$(omarchy-shell "$IPC_TARGET" setPictured "no-such-row" on 2>&1)
+[[ $missing_answer == "no-row" ]] ||
+  fail "a key that names no row is refused (panel IPC)" \
+    "setPictured 'no-such-row' on answered '$missing_answer', expected 'no-row'"
+pass "the consent is refused where there is nothing to grant it with (not-picturable, no-row)"
+
+grant=$(omarchy-shell "$IPC_TARGET" setPictured "$seeded_row_key" on 2>&1)
+if [[ $grant != "on" ]]; then
+  diagnostics
+  fail "panel IPC grants the picture consent" \
+    "setPictured '$seeded_row_key' on answered '$grant'"
+fi
+
+# ONE app, ONE flag. The row is still watched, its chips are still watched, and
+# NOTHING ELSE on either surface became pictured — which is what "the two are
+# independent" means when written down.
+only_this_pictured() {
+  panel_state_json | jq -e --arg row "$seeded_row_key" --arg addr "$APP_ADDRESS" --arg want "$1" '
+    ([.rows[]|select(.key == $row and .pictured == ($want == "on")
+       and .watched == true and .picturable == true)]|length) == 1
+    and ([.chips[]|select(.key == $addr and .pictured == ($want == "on")
+          and .watched == true)]|length) == 1
+    and ([.rows[]|select(.key != $row and .pictured == true)]|length) == 0' >/dev/null
+}
+if ! poll 20 only_this_pictured on; then
+  diagnostics
+  fail "granting the consent moves pictured and nothing else" \
+    "after setPictured '$seeded_row_key' on, the payload never reported that row pictured AND still watched with no other row pictured"
+fi
+
+# THE FILE, not just the payload. `pictured` is written by StateModel.setPictured
+# — one field on one identity — so the watched list on disk has to be
+# byte-identical apart from that flag. A setter that rebuilt the identity list
+# would pass every clause above and still have dropped a pattern.
+file_check=$(jq -r --arg id "$IDENTITY" --arg ghost "$GHOST_IDENTITY" '
+  [(.identities|length),
+   (first(.identities[]|select(.id == $id)|.pictured)|tostring),
+   (first(.identities[]|select(.id == $ghost)|.pictured)|tostring),
+   (first(.identities[]|select(.id == $id)|.patterns|join(","))),
+   (first(.identities[]|select(.id == $id)|.launch))]|join("|")' "$STATE" 2>/dev/null)
+expected_file="2|true|false|^$APP_CLASS\$|foot --title=$APP_TITLE"
+if [[ $file_check != "$expected_file" ]]; then
+  diagnostics
+  fail "the grant reaches the file and touches one field" \
+    "the state file reads '$file_check', expected '$expected_file'"
+fi
+pass "the consent is granted on $IDENTITY alone: pictured true, watched unchanged, $GHOST_IDENTITY untouched"
+
+# IT SURVIVES A SHELL RESTART, which is the only thing that separates a flag
+# held in a panel property from a consent the user actually gave. The panel dies
+# with the shell, so this also re-establishes it from scratch.
+omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
+omarchy-restart-shell >/dev/null 2>&1
+wait_until "shell is back after the consent restart (panel IPC)" 60 pgrep -f 'quickshell -n -p'
+wait_until "service is live again after the consent restart (panel IPC)" 60 service_ready
+omarchy-shell shell summon "$PLUGIN_ID" '{}' >/dev/null 2>&1
+if ! poll 30 panel_layer_present; then
+  diagnostics
+  fail "the panel comes back after the consent restart" "the panel never mapped its layer again"
+fi
+if ! poll 90 desktop_scanned; then
+  diagnostics
+  fail "the desktop-file scan completed after the consent restart (panel IPC)" \
+    "no 'scanned <n> desktop files' line after the restart"
+fi
+restart_row_key=$(panel_state_json | jq -r --arg addr "$APP_ADDRESS" \
+  'first(.chips[]|select(.key == $addr)|.linkKey) as $l
+   | first(.rows[]|select(.linkKey == $l and .picturable == true)|.key)//empty')
+if [[ -z $restart_row_key ]]; then
+  diagnostics
+  fail "the seeded app still has a picturable row after the restart" "no picturable row for $APP_ADDRESS"
+fi
+seeded_row_key="$restart_row_key"
+if ! poll 30 only_this_pictured on; then
+  diagnostics
+  fail "the consent survives a shell restart" \
+    "after restarting the shell, the payload does not report $IDENTITY pictured and watched"
+fi
+pass "and it survives a shell restart — a fresh panel reads the same consent back"
+
+# AND BACK. Withdrawing leaves the app watched, which is the other direction of
+# the same independence claim.
+withdraw=$(omarchy-shell "$IPC_TARGET" setPictured "$seeded_row_key" off 2>&1)
+if [[ $withdraw != "off" ]]; then
+  diagnostics
+  fail "panel IPC withdraws the picture consent" \
+    "setPictured '$seeded_row_key' off answered '$withdraw'"
+fi
+if ! poll 20 only_this_pictured off; then
+  diagnostics
+  fail "withdrawing the consent leaves the app watched" \
+    "after setPictured '$seeded_row_key' off, the payload never reported that row unpictured AND still watched"
+fi
+withdrawn_file=$(jq -r --arg id "$IDENTITY" \
+  '[(.identities|length), (first(.identities[]|select(.id == $id)|.pictured)|tostring)]|join("|")' \
+  "$STATE" 2>/dev/null)
+[[ $withdrawn_file == "2|false" ]] ||
+  fail "the withdrawal reaches the file" \
+    "the state file reads '$withdrawn_file', expected '2|false'"
+pass "and withdrawing it leaves $IDENTITY watched — the two consents move independently"
 
 # ---------------------------------------------------------- 8. leave it closed
 
