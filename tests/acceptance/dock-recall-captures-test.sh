@@ -162,7 +162,15 @@ as_root() { echo "$GUEST_PASSWORD" | sudo -S "$@" 2>/dev/null; }
 shell_log() { qs log -p "${OMARCHY_PATH:-/usr/share/omarchy}/shell" --tail 3000 2>/dev/null; }
 dr_log() { shell_log | grep -F "[dock-recall]"; }
 service_ready() { dr_log | grep -qF "service-ready"; }
-plugin_state() { omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$0 ~ id {print ($0 ~ /enabled/ ? "enabled" : "disabled")}' | head -1; }
+# WORD FOR WORD the other four copies of this in this directory (tick md1).
+# This one had drifted into an UNANCHORED regex over the whole line, inferring
+# the state from a substring — and `PLUGIN_ID` contains a `.`, so the pattern
+# matched more than it meant to; a format change that moved the word "enabled"
+# would have reported `disabled` for an enabled plugin, and the enable step
+# below would then have chased a phantom.
+plugin_state() {
+  omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }'
+}
 plugin_known() { [[ -n $(plugin_state) ]]; }
 panel_layer_present() {
   hyprctl layers -j | jq -e --arg ns "$PANEL_NAMESPACE" \

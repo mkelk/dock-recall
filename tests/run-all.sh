@@ -10,7 +10,9 @@
 #   1. node --test 'tests/**/*.test.js'   the pure brain, against real hyprctl
 #                                         fixtures. Seconds.
 #   2. omarchy plugin validate .          the manifest and its entry points.
-#   3. qmllint                            SYNTAX ONLY on the seven QML files.
+#   3. qmllint                            SYNTAX ONLY, on every QML file the
+#                                         repository ships — from a glob, not a
+#                                         list, so a new one cannot be missed.
 #                                         Never cite it as evidence that
 #                                         bindings resolve — an unknown id was
 #                                         once injected and it passed.
@@ -111,8 +113,28 @@ step "node --test 'tests/**/*.test.js'" \
 step "omarchy plugin validate ." \
   omarchy plugin validate .
 
-step "qmllint (syntax) on the seven QML files" \
-  qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml MapWorkspace.qml BarWidget.qml ToplevelBridge.qml CaptureStore.qml ConsentPrompt.qml
+# EVERY QML FILE, FROM A GLOB (tick md1). This was a hand-maintained argument
+# list, and it is the same class of guard as tests/qml-plaintext.test.js's scan
+# targets: tick xk5 shipped MapWorkspace.qml outside BOTH of them and tick y4y
+# spent a whole tick retro-fitting them. A file the linter is never handed is a
+# file whose syntax nothing checks, and the omission is silent.
+#
+# The plugin installs its clone root and its QML sits at the top level (see
+# CLAUDE.md), so `*.qml` here IS the set. An empty expansion has to be an ERROR
+# rather than a `qmllint '*.qml'` that lints a file by that name, or a step that
+# passes having checked nothing at all.
+qml_files=()
+for qml in *.qml; do
+  [[ -e $qml ]] || continue
+  qml_files+=("$qml")
+done
+if ((${#qml_files[@]} == 0)); then
+  printf '\033[1;31mno QML files in %s — the qmllint step would check nothing\033[0m\n' "$REPO_ROOT"
+  exit 1
+fi
+
+step "qmllint (syntax) on all ${#qml_files[@]} QML files" \
+  qmllint -I "$OMARCHY_PATH/shell" "${qml_files[@]}"
 
 step "tests/sandbox-dock.sh" \
   ./tests/sandbox-dock.sh

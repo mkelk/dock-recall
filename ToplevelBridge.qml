@@ -198,9 +198,13 @@ QtObject {
       handles.push({ address: want.address, toplevel: row.wayland });
     }
 
-    verdict.decided = verdict.pending.length === 0;
-    verdict.ok = verdict.decided && verdict.gone.length === 0
-      && verdict.invalid.length === 0 && handles.length === verdict.asked;
+    // `decided` and `ok` are RE-derived, because the handle re-check above can
+    // have moved a resolved entry into `pending` since classifyToplevels
+    // answered — but they are derived by the SAME function it used (tick md1).
+    // This was a second spelling of the rule, in different text, right beside
+    // the one the tests pin: the tested source and the running source could
+    // differ, and nothing would say so.
+    PanelModel.applyToplevelVerdictFlags(verdict, handles.length);
     verdict.handles = handles;
     verdict.timedOut = false;
     verdict.waitedMs = 0;

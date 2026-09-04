@@ -115,11 +115,16 @@ Item {
   // The basenames the last listing found, as a set. The panel reads this to
   // decide whether a chip has a picture at all — an Image that simply fails to
   // load would draw nothing and report a source that is not there.
+  //
+  // REASSIGNED on every listing, never mutated: a fresh object is what makes a
+  // binding that read it re-evaluate. There used to be a `generation` counter
+  // beside it for that job, read by the panel through a `< 0` branch that could
+  // never be taken — a binding dependency disguised as a guard, pinned by
+  // nothing, and one tidy-up away from every chip's picture never refreshing
+  // again with no test failure and no visible error (tick md1). `hasIn` below
+  // takes the listing as an ARGUMENT instead, so the dependency is in the call
+  // and deleting it does not compile.
   property var files: ({})
-  // Bumped on every listing, so a binding can depend on the CONTENT of `files`
-  // without `files` having to be reassigned (it is mutated in place, like the
-  // panel's render registries).
-  property int generation: 0
 
   // IS A ROUND IN FLIGHT? The one truth, and it is LOAD-BEARING (tick ilg):
   // `capture()`'s own guard reads it, and so does the panel — `canRecord` is
@@ -139,9 +144,21 @@ Item {
 
   // ------------------------------------------------------------ the listing
 
+  // Is this basename in THIS listing? The listing is a parameter so that a
+  // caller's binding depends on the listing it asked about — a QML binding
+  // re-evaluates when a property it READ changes, and `store.files` read inside
+  // a function is a dependency nobody can see at the call site.
+  //
+  // `own`, not a bare lookup: a basename that collides with an Object.prototype
+  // key would otherwise answer truthy for a picture that is not there
+  // (.tick/learnings.md, tick 8hp).
+  function hasIn(files, name) {
+    if (!name || !files) return false
+    return Object.prototype.hasOwnProperty.call(files, String(name))
+  }
+
   function has(name) {
-    if (!name) return false
-    return Object.prototype.hasOwnProperty.call(store.files, String(name))
+    return store.hasIn(store.files, name)
   }
 
   function pathFor(name) {
@@ -175,7 +192,6 @@ Item {
       // read against. `find` exits non-zero for a cache directory that was never
       // created, and that is the state the plugin ships in rather than a fault.
       store._cacheDirPresent = (exitCode === 0)
-      store.generation = store.generation + 1
     }
   }
 
@@ -663,7 +679,11 @@ Item {
   // THE SINGLE PLACE a round's state is torn down, and ONLY a round's OWN state
   // (tick ilg): every early-return path AFTER capture()'s guards has to reach
   // this, and no path before them may — a refusal that called this tore down the
-  // round that was actually running. It resets EVERYTHING the round owns, not
+  // round that was actually running. That audit is a TEST, not a comment in this
+  // file: "_finish() tears down every piece of round state, and every
+  // early-return path between the guard and completion reaches it" in
+  // tests/panel.test.js walks each path here and asserts it. It resets
+  // EVERYTHING the round owns, not
   // just the fields `busy` reads, because a partially-torn-down round
   // (the queue left populated, say) latches the guard in capture() forever:
   // the next Record sees `busy` still true and refuses, silently, for the

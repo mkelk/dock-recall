@@ -880,8 +880,18 @@ Item {
 
     // A refusal belongs to the moment it was pressed in, and every /proc answer
     // this panel holds belongs to the last time it was open. Both are dropped
-    // here: the panel object outlives open and close, and a summon an hour
-    // later must not build a tick on an hour-old picture of the desk.
+    // here, so a summon cannot build a tick on a stale picture of the desk.
+    //
+    // This used to say "the panel object outlives open and close" (tick md1).
+    // IT DOES NOT — the shell destroys the panel's Loader on hide, and two
+    // things in this epic's blast radius depend on that as load-bearing fact:
+    // CaptureStore's "the pictures die with the panel, because this component
+    // does", and the acceptance suite's deleted-capture round, which is asserted
+    // on a FRESH panel for exactly that reason. So on the ordinary path these
+    // two resets find nothing to reset. They stay because a panel that is
+    // summoned again WITHOUT having been destroyed (a re-summon of an open one,
+    // with a different focusRequest) is the path where they do work, and because
+    // "opens holding nothing" is cheaper to guarantee than to reason about.
     root.refusedTick = null
     root.forgetProcReads()
 
@@ -1412,9 +1422,18 @@ Item {
   // Gated on the listing rather than on the file simply being nameable: an
   // Image pointed at a path that is not there draws nothing and reports a
   // source anyway, and "the panel says it has a picture" has to mean the cache
-  // does. `captureStore.generation` is read so this re-evaluates when the
-  // listing changes — `files` is mutated in place, exactly as the panel's own
-  // render registries are.
+  // does.
+  //
+  // THE LISTING IS PASSED IN, and that is what makes every chip's picture
+  // refresh after an eviction (tick md1). A QML binding re-evaluates when a
+  // property it READ changes, and `captureStore.files` read inside the store's
+  // own `has()` is invisible at this call site. It used to be declared by a
+  // `if (captureStore.generation < 0) return ""` — a branch that can never be
+  // true, whose only job was to register the dependency, and which nothing
+  // pinned: a future tidy-up deleting an obviously-dead line would silently stop
+  // every chip refreshing, with no test failure and no visible error. Handing
+  // `captureStore.files` to `hasIn` cannot be tidied away, because without it
+  // there is no listing to look in.
   //
   // AND GATED ON THE CAMERA (tick sp7). Withdrawing a camera — the row's button,
   // "Not for these apps", or unticking the app — deletes that identity's
@@ -1427,11 +1446,10 @@ Item {
   // It also covers the case no eviction can: a recorded-but-unwatched ghost has
   // no identity in the file at all, so it has no camera, so it draws no picture.
   function captureFileFor(identityId, occurrence) {
-    if (captureStore.generation < 0) return ""
     if (!identityId || !root.topologyKey) return ""
     if (!root.picturedOf(identityId)) return ""
     var name = PanelModel.captureFileName(identityId, occurrence, root.topologyKey)
-    return captureStore.has(name) ? name : ""
+    return captureStore.hasIn(captureStore.files, name) ? name : ""
   }
 
   function capturePathFor(identityId, occurrence) {

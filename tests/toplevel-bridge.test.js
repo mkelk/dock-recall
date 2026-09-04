@@ -388,3 +388,53 @@ test("the refusal sentence is defensive about junk", () => {
   assert.strictEqual(PanelModel.toplevelBridgeRefusal({}), "");
   assert.strictEqual(PanelModel.toplevelBridgeRefusal({}, "later"), "");
 });
+
+// ---------------------------------------------------------------------------
+// `decided` and `ok` have ONE definition (tick md1)
+// ---------------------------------------------------------------------------
+
+test("the bridge re-derives decided/ok with the same function classifyToplevels used", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "ToplevelBridge.qml"), "utf8");
+
+  // THE BUG: `evaluate()` computed both again, in different text, right beside
+  // the copy the tests above pin — because its handle re-check can move a
+  // resolved entry into `pending` after the classification is done. Two
+  // derivations of one rule is two rules, and only one of them was tested: the
+  // tested source and the running source could differ with nothing saying so.
+  assert.ok(source.indexOf("PanelModel.applyToplevelVerdictFlags(verdict, handles.length)") !== -1,
+    "ToplevelBridge no longer derives decided/ok through the shared function");
+  assert.strictEqual(source.indexOf("verdict.decided ="), -1,
+    "ToplevelBridge writes `decided` itself again — that is the second spelling");
+  assert.strictEqual(source.indexOf("verdict.ok ="), -1,
+    "ToplevelBridge writes `ok` itself again — that is the second spelling");
+});
+
+test("the shared derivation answers what both callers need", () => {
+  // Without a handle count — classifyToplevels' question. A clean
+  // classification is decided and ok.
+  const clean = PanelModel.classifyToplevels(MODEL, [VISIBLE], true);
+  assert.strictEqual(clean.decided, true);
+  assert.strictEqual(clean.ok, true);
+
+  // WITH a handle count — the bridge's extra requirement: every window that was
+  // asked about produced a live handle. One short and `ok` goes false while
+  // `decided` stays true, which is exactly the state the handle re-check
+  // produces and the pair the bridge's refusal reads.
+  const short = PanelModel.applyToplevelVerdictFlags(
+    PanelModel.classifyToplevels(MODEL, [VISIBLE], true), 0);
+  assert.strictEqual(short.decided, true);
+  assert.strictEqual(short.ok, false);
+
+  // And a pending entry is undecided whatever the handles say.
+  const pending = PanelModel.applyToplevelVerdictFlags(
+    PanelModel.classifyToplevels(MODEL, [UNMAPPED], false), 0);
+  assert.strictEqual(pending.decided, false);
+  assert.strictEqual(pending.ok, false);
+
+  // It MUTATES and returns the same object, which is what lets the bridge apply
+  // it to a verdict it has already been pushing into.
+  const verdict = PanelModel.classifyToplevels(MODEL, [VISIBLE], true);
+  assert.strictEqual(PanelModel.applyToplevelVerdictFlags(verdict, 1), verdict);
+});

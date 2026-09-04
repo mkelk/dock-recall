@@ -6045,7 +6045,9 @@ function classifyToplevels(entries, addresses, settled) {
     else pending.push(plan.missing[i]);
   }
 
-  return {
+  // `decided` and `ok` are not written here: they are answers ABOUT these
+  // buckets, and applyToplevelVerdictFlags is their one definition.
+  return applyToplevelVerdictFlags({
     resolved: plan.resolved,
     invalid: plan.invalid,
     missing: plan.missing,
@@ -6054,10 +6056,32 @@ function classifyToplevels(entries, addresses, settled) {
     gone: gone,
     settled: !!settled,
     asked: plan.resolved.length + plan.invalid.length
-      + plan.missing.length + plan.unmapped.length,
-    decided: pending.length === 0,
-    ok: pending.length === 0 && gone.length === 0 && plan.invalid.length === 0
-  };
+      + plan.missing.length + plan.unmapped.length
+  });
+}
+
+// `decided` and `ok` are the two verdict fields that are ANSWERS ABOUT the
+// buckets rather than buckets of their own, and this is their one definition
+// (tick md1).
+//
+// They were derived twice: here, where the tests pin them, and again in
+// ToplevelBridge.evaluate — with different text — because the bridge's
+// handle re-check can move a resolved entry into `pending` after the
+// classification is done, so the classification's answers go stale. Two
+// derivations of one rule is two rules, and only one of them was tested.
+//
+// `handleCount`, when given, adds the bridge's extra requirement: every window
+// that was asked about produced a live handle. Omitted, there are no handles yet
+// and the question does not arise.
+function applyToplevelVerdictFlags(verdict, handleCount) {
+  var pending = isArray(verdict.pending) ? verdict.pending : [];
+  var gone = isArray(verdict.gone) ? verdict.gone : [];
+  var invalid = isArray(verdict.invalid) ? verdict.invalid : [];
+  var enough = (handleCount === undefined || handleCount === null)
+    || handleCount === (Number(verdict.asked) || 0);
+  verdict.decided = pending.length === 0;
+  verdict.ok = verdict.decided && gone.length === 0 && invalid.length === 0 && enough;
+  return verdict;
 }
 
 // One resolved entry, re-checked against the live model row its index points
@@ -6523,9 +6547,16 @@ function consentPromptDue(answer, entries) {
 // PanelModel and StateModel are siblings and neither may require the other, so
 // the two spellings are pinned against each other in tests/panel.test.js — the
 // same arrangement TERMINAL_BINARIES already lives under.
+// DERIVED FROM consentChoices, not spelled out (tick md1). This was a THIRD
+// copy of the answer vocabulary as bare literals — after consentChoices' ids and
+// StateModel's own list — in a file whose header says out loud that a typo there
+// is a silent "unasked" for ever. It is `isConsentChoice` on a trimmed word and
+// nothing more, so a fourth answer added to consentChoices is answered here the
+// moment it exists. Without that, a fourth answer would leave consentPromptDue
+// re-asking a question the user has already answered, which is the one thing
+// this epic's headline invariant forbids.
 function consentAnswered(answer) {
-  var word = trim(answer);
-  return word === "keep" || word === "not-these" || word === "none";
+  return isConsentChoice(answer);
 }
 
 // What the prompt says above the strip, and what it says under it.
@@ -6572,6 +6603,7 @@ if (typeof module !== "undefined") {
     toplevelAddressListRefusal: toplevelAddressListRefusal,
     resolveToplevels: resolveToplevels,
     classifyToplevels: classifyToplevels,
+    applyToplevelVerdictFlags: applyToplevelVerdictFlags,
     toplevelHandleStillValid: toplevelHandleStillValid,
     toplevelBridgeRefusal: toplevelBridgeRefusal,
     captureHash: captureHash,

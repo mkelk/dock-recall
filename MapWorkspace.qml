@@ -8,8 +8,9 @@
 // that depth the usable column is about twenty-eight characters, so a two-line
 // binding carried thirty-six lines of comment, and heavy commenting is this
 // plugin's main defence in a file of nearly five thousand lines. The depth had
-// become a tax on the one thing holding the file together, and the next tickets
-// draw window captures inside these very chips. Extracted in tick xk5 with no
+// become a tax on the one thing holding the file together, and the tickets that
+// followed drew window captures inside these very chips — which they now do
+// (increment 06-bwf: `chipCapture` is below). Extracted in tick xk5 with no
 // behaviour change at all: the same bindings in the same order, the same
 // comments word for word, rewrapped to a column that fits them.
 //

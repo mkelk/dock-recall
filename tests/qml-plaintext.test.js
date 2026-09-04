@@ -17,18 +17,27 @@
 // `Text { }` to Panel.qml without `textFormat: Text.PlainText` and this fails,
 // naming the line.
 //
-// SCOPE. Panel.qml and MapWorkspace.qml — between them, every file that draws
-// untrusted strings. A later tick extracted the map's ~900 lines out of
-// Panel.qml into MapWorkspace.qml, and the Text elements this file cares about
-// most went with it: chipLabel, which renders a window title an application
-// chose for itself, plus tagLabel and workspaceBadgeText. The scan follows
-// them there rather than stopping at the file's old boundary — each file gets
-// its own exact block-count check, so a Text added to either one without
-// `textFormat` still fails, naming the right file and line. The shell's own
-// components the panel uses (Ui/PanelToolTip, Ui/Toggle, Ui/PanelHero) already
-// declare PlainText on their contentItem, which is why the tooltip carrying a
-// raw window title is not a hole; that is asserted below too, so a shell that
-// dropped it would be caught here rather than on screen.
+// SCOPE: EVERY QML FILE THIS REPOSITORY SHIPS, from a glob (tick md1).
+//
+// It was a hand-maintained list of three, in a file whose own thesis two
+// paragraphs up is that "all of them" is a rule a machine can check and "it
+// cannot rot into a stale whitelist". It was exactly that whitelist. Tick xk5
+// extracted the map into MapWorkspace.qml carrying `chipLabel` — the one binding
+// that renders a window title an application chose for itself — OUTSIDE both
+// guards, and tick y4y spent a whole tick retro-fitting them. Coverage was
+// complete only because the three files that contained a `Text` happened to be
+// the three named; the moment a fourth grew one, the whitelist rotted silently
+// and the failure was an HTML-injection hole.
+//
+// The plugin installs its clone root and its QML entry points sit at the top
+// level (see CLAUDE.md), so `*.qml` in the repository root IS the set. Files
+// with no Text at all are scanned and pass trivially, which is the point: the
+// scan does not have to be told about them.
+//
+// The shell's own components the panel uses (Ui/PanelToolTip, Ui/Toggle,
+// Ui/PanelHero) already declare PlainText on their contentItem, which is why the
+// tooltip carrying a raw window title is not a hole; that is asserted below too,
+// so a shell that dropped it would be caught here rather than on screen.
 //
 // AND ONE STRUCTURAL GUARD, at the bottom. This is the repository's source-scan
 // file — node cannot instantiate QML, so a claim about which COMPONENT the panel
@@ -44,19 +53,33 @@ const path = require("node:path");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const PANEL_QML = path.join(REPO_ROOT, "Panel.qml");
-const MAP_WORKSPACE_QML = path.join(REPO_ROOT, "MapWorkspace.qml");
-const CONSENT_PROMPT_QML = path.join(REPO_ROOT, "ConsentPrompt.qml");
 
-// Every `Text { ... }` block in a QML file, as { line, body }.
+// THE SET, from a glob and not from a list. See SCOPE above for why that is the
+// whole point of this file rather than a convenience.
+function qmlFiles() {
+  return fs.readdirSync(REPO_ROOT)
+    .filter((name) => name.endsWith(".qml"))
+    .sort()
+    .map((name) => ({ label: name, file: path.join(REPO_ROOT, name) }));
+}
+
+// Every `<Name> { ... }` block in a QML file, as { line, body }.
 //
 // Brace-counted rather than regex-matched over the whole block: a QML property
 // value can contain a brace (a JS block binding routinely does), so counting is
 // what makes "where does this element end" answerable at all. String literals
 // and `//` comments are skipped for the same reason — `text: "}"` is legal and
 // is not a close, and neither is a brace somebody drew in prose.
-function textBlocks(source) {
+//
+// The element name is a parameter because there is more than one thing to ask
+// about a QML tree (tick md1): the PanelHero guard at the bottom used to walk
+// braces with its own eight-line loop that skipped neither strings nor comments
+// and found its element with `indexOf("PanelHero {")` — exactly one space, where
+// the regex beside it allowed any. `PanelHero{` made all three of its assertions
+// pass VACUOUSLY. One hardened scanner, asked twice.
+function elementBlocks(source, name) {
   const lines = source.split("\n");
-  // `Text {`, and the forms it appears in as a property value:
+  // `<Name> {`, and the forms it appears in as a property value:
   // `delegate: Text {`, `contentItem: Text {`.
   //
   // The brace may be pressed against the name (`Text{`) or spaced off it
@@ -64,9 +87,10 @@ function textBlocks(source) {
   // whole body of a one-line element. All of those are valid QML, and an
   // opener that demanded exactly one space with the brace last read them as
   // ordinary lines and never scanned them at all. The only form still outside
-  // this pattern is a brace on the FOLLOWING line, and TEXT_DECLARATION below
+  // this pattern is a brace on the FOLLOWING line, and declarationsOf below
   // is what turns that from a silent skip into a failure.
-  const opens = /^(\s*(?:[A-Za-z_][A-Za-z0-9_]*:\s*)?Text\s*\{)(.*)$/;
+  const opens = new RegExp(
+    "^(\\s*(?:[A-Za-z_][A-Za-z0-9_]*:\\s*)?" + name + "\\s*\\{)(.*)$");
   const blocks = [];
 
   for (let i = 0; i < lines.length; i++) {
@@ -109,11 +133,17 @@ function textBlocks(source) {
   return blocks;
 }
 
-// Every place the file DECLARES a Text element, counted without parsing one.
-// Deliberately a different question from textBlocks': it tolerates every
-// spacing, a trailing comment and a brace on the next line, so the two agreeing
-// is evidence the scanner reached all of them.
-const TEXT_DECLARATION = /\bText\s*\{/g;
+function textBlocks(source) {
+  return elementBlocks(source, "Text");
+}
+
+// Every place the file DECLARES an element of this name, counted without
+// parsing one. Deliberately a different question from elementBlocks': it
+// tolerates every spacing, a trailing comment and a brace on the next line, so
+// the two agreeing is evidence the scanner reached all of them.
+function declarationsOf(source, name) {
+  return (source.match(new RegExp("\\b" + name + "\\s*\\{", "g")) || []).length;
+}
 
 // The vacuity guard, and it is an EQUALITY rather than a floor.
 //
@@ -122,14 +152,22 @@ const TEXT_DECLARATION = /\bText\s*\{/g;
 // match — without a word. A skipped Text is exactly what this file exists to
 // prevent, so the arithmetic has to be exact: every declaration the file makes
 // is a block the scanner parsed, or the suite FAILS and says which count moved.
-function assertScannedEveryText(label, source, blocks) {
-  const declared = (source.match(TEXT_DECLARATION) || []).length;
+//
+// It is also what carries the extra files the glob now brings in: a file with no
+// Text at all declares none and parses none, and passes by arithmetic rather
+// than by being left off a list.
+function assertScannedEvery(label, name, source, blocks) {
+  const declared = declarationsOf(source, name);
   assert.strictEqual(blocks.length, declared,
-    `${label}: the scanner parsed ${blocks.length} Text element(s) but the file` +
-    ` declares ${declared}. A form the scanner cannot parse is a Text nobody` +
-    " checked, which is the whole hole this file closes — widen textBlocks()" +
-    " (or, if the extra count is the words `Text {` inside a comment or a" +
+    `${label}: the scanner parsed ${blocks.length} ${name} element(s) but the file` +
+    ` declares ${declared}. A form the scanner cannot parse is a ${name} nobody` +
+    " checked, which is the whole hole this file closes — widen elementBlocks()" +
+    ` (or, if the extra count is the words \`${name} {\` inside a comment or a` +
     " string, reword it).");
+}
+
+function assertScannedEveryText(label, source, blocks) {
+  assertScannedEvery(label, "Text", source, blocks);
 }
 
 test("the scanner reads the forms a QML author actually writes", () => {
@@ -184,51 +222,76 @@ test("a brace inside a comment does not swallow the rest of the file", () => {
   assert.ok(!/textFormat/.test(blocks[1].body));
 });
 
-// One scan target per file this suite guards, each with its own exact
-// block-count check (assertScannedEveryText) and its own floor — a *minimum*
-// sanity check that the scanner still matched something, distinct from the
-// exact count. Panel.qml's stays high because the file is still full of
-// static chrome; MapWorkspace.qml's is low because the map only has the three
-// Text elements the extraction carried over (chipLabel, tagLabel,
-// workspaceBadgeText) — a floor of 20 there would never trip even if the
-// scanner stopped matching two of the three.
-// ConsentPrompt.qml joins them for the same reason MapWorkspace.qml did: it
-// draws a string an application chose for itself. Its thumbnail strip labels
-// each picture with the app's own name, resolved off the same app row the list
-// draws — so a window title that looks like markup reaches a Text here exactly
-// as it reaches chipLabel there. Its floor is low because the prompt has three
-// Text elements (the title, the body, and the name under each thumbnail), and a
-// floor of 20 would never trip even if the scanner stopped matching two of them.
-const SCAN_TARGETS = [
-  { label: "Panel.qml", file: PANEL_QML, minBlocks: 20 },
-  { label: "MapWorkspace.qml", file: MAP_WORKSPACE_QML, minBlocks: 2 },
-  { label: "ConsentPrompt.qml", file: CONSENT_PROMPT_QML, minBlocks: 2 },
-];
+test("the element scanner cannot be dodged by writing the brace without a space (tick md1)", () => {
+  // The PanelHero guard at the bottom used to find its element with
+  // `indexOf("PanelHero {")` — exactly one space — while the regex beside it
+  // allowed any. Written like this, the slice started at -1, the walk produced
+  // an empty string, and all three of its assertions passed over nothing.
+  const source = [
+    'PanelHero{',
+    '  title: hero.title // a brace { in prose, and a "}" in a string',
+    '  trailingControl: pauseSwitch',
+    '}'
+  ].join("\n");
 
-for (const target of SCAN_TARGETS) {
-  test(`every Text in ${target.label} declares textFormat: Text.PlainText`, () => {
+  const heroes = elementBlocks(source, "PanelHero");
+  assert.strictEqual(heroes.length, 1);
+  assert.match(heroes[0].body, /title: hero\.title/);
+  assert.match(heroes[0].body, /trailingControl:/);
+  // And the same oracle the Text scan uses agrees, so the guard is an oracle
+  // rather than a restatement here too.
+  assertScannedEvery("forms", "PanelHero", source, heroes);
+});
+
+// ONE TEST OVER THE GLOB, not one per named file. A per-file test needs a
+// per-file name, and a per-file name is a list — the thing this tick removed.
+// The failure message names the file and the line anyway, which is what a
+// per-file test was ever for.
+test("every Text in every QML file this plugin ships declares textFormat: Text.PlainText", () => {
+  const files = qmlFiles();
+
+  // THE GLOB ITSELF IS THE FIRST THING THAT CAN GO WRONG. A rename, a move into
+  // a subdirectory, a readdir that answers nothing: every one of those turns
+  // this whole test green by scanning nothing at all. The plugin's entry points
+  // are its QML files and it has seven of them.
+  assert.ok(files.length >= 7,
+    "the QML glob found " + files.length + " file(s) (" + files.map((f) => f.label).join(", ")
+    + "). The plugin ships its QML at the repository root — if a file moved into a"
+    + " subdirectory, this scan is no longer looking at it.");
+
+  const unguarded = [];
+  let scanned = 0;
+
+  for (const target of files) {
     const source = fs.readFileSync(target.file, "utf8");
     const blocks = textBlocks(source);
 
     // Every Text the file declares is a Text this scan parsed. The trap a
     // source-scanning test falls into is that nothing checked is nothing
-    // failed, and a floor only catches the version of it where NOTHING
-    // matched.
+    // failed, and this equality is what catches it PER FILE — including for the
+    // files that have no Text at all, which pass by arithmetic rather than by
+    // being left off a list.
     assertScannedEveryText(target.label, source, blocks);
-    assert.ok(blocks.length > target.minBlocks,
-      `expected ${target.label} to contain Text elements, found ${blocks.length}` +
-      " — the block scanner has most likely stopped matching");
+    scanned += blocks.length;
 
-    const unguarded = blocks
-      .filter((b) => !/^\s*textFormat:\s*Text\.PlainText\s*$/m.test(b.body))
-      .map((b) => `${target.label}:${b.line}`);
+    for (const block of blocks) {
+      if (!/^\s*textFormat:\s*Text\.PlainText\s*$/m.test(block.body)) {
+        unguarded.push(`${target.label}:${block.line}`);
+      }
+    }
+  }
 
-    assert.deepStrictEqual(unguarded, [],
-      `these Text elements in ${target.label} do not declare` +
-      " textFormat: Text.PlainText, so Qt will render markup an application" +
-      " put in its own window title:\n  " + unguarded.join("\n  "));
-  });
-}
+  // The floor is now over the whole set rather than per file, because the set is
+  // no longer a list of files known to contain Text. It is the same claim it
+  // always was: the scanner has not silently stopped matching.
+  assert.ok(scanned > 20,
+    "the scan found only " + scanned + " Text element(s) across " + files.length
+    + " QML file(s) — the block scanner has most likely stopped matching");
+
+  assert.deepStrictEqual(unguarded, [],
+    "these Text elements do not declare textFormat: Text.PlainText, so Qt will" +
+    " render markup an application put in its own window title:\n  " + unguarded.join("\n  "));
+});
 
 test("the shell components the panel draws untrusted strings through are plain too", () => {
   // The panel hands a raw window TITLE to PanelToolTip and a row name to
@@ -291,24 +354,24 @@ test("the panel's header is the shell's PanelHero, and it is what reports the he
   assert.ok(!fs.existsSync(path.join(REPO_ROOT, "PanelHero.qml")),
     "a local PanelHero.qml would shadow the shell's component of the same name");
 
-  // Exactly one, declared as an element rather than mentioned in prose.
-  const declarations = source.match(/^\s*PanelHero\s*\{/gm) || [];
-  assert.strictEqual(declarations.length, 1,
-    "expected exactly one PanelHero element in Panel.qml, found " + declarations.length);
+  // THE SAME HARDENED SCANNER the Text guard uses (tick md1). This walked
+  // braces with a loop of its own that skipped neither strings nor comments, and
+  // found its element with `indexOf("PanelHero {")` — exactly one space, where
+  // the regex on the line above allowed any. Written `PanelHero{`, the slice
+  // started at -1, the walk produced an empty string, and all three assertions
+  // below passed VACUOUSLY. The equality guard is the same oracle the Text scan
+  // uses: every declaration is a block the scanner parsed.
+  const heroes = elementBlocks(source, "PanelHero");
+  assertScannedEvery("Panel.qml", "PanelHero", source, heroes);
+  assert.strictEqual(heroes.length, 1,
+    "expected exactly one PanelHero element in Panel.qml, found " + heroes.length);
 
   // And it is THE header: the block that reports `headerTitle` and `headerMeta`
   // into the payload is inside the PanelHero, bound to the hero's own `title`
   // and `meta`. That is the join a hand-rolled Item would break — it could still
   // report the same two strings, but not off a PanelHero's properties.
-  const start = source.indexOf("PanelHero {");
-  let depth = 0;
-  let end = -1;
-  for (let i = source.indexOf("{", start); i < source.length; i++) {
-    if (source[i] === "{") depth += 1;
-    else if (source[i] === "}" && --depth === 0) { end = i; break; }
-  }
-  assert.ok(end > start, "unbalanced braces after the PanelHero declaration");
-  const hero = source.slice(start, end);
+  const hero = heroes[0].body;
+  assert.ok(hero.length > 0, "the PanelHero element parsed as an empty block");
 
   assert.match(hero, /root\.reportHeader\(\{\s*title:\s*hero\.title,\s*meta:\s*hero\.meta\s*\}\)/,
     "the payload's headerTitle/headerMeta no longer come from the PanelHero's own properties");

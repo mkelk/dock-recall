@@ -6792,7 +6792,7 @@ test("the map stops drawing a picture the camera has been taken off (tick sp7)",
   const gate = body.indexOf("if (!root.picturedOf(identityId)) return \"\"");
   assert.ok(gate !== -1,
     "the chip's capture is not gated on the camera, so a withdrawn picture keeps rendering:\n" + body);
-  assert.ok(gate < body.indexOf("captureStore.has(name)"),
+  assert.ok(gate < body.indexOf("captureStore.hasIn("),
     "the listing is consulted before the camera is:\n" + body);
 
   // ONE gate, in the funnel both readers go through — the chip's Image and the
@@ -7179,4 +7179,103 @@ test("the prompt reports what it drew, and reports nothing while it is shut", ()
   // The label comes from the BUTTON and the id from the MODEL. A prompt offering
   // the right three ids under the wrong three words is what the pair catches.
   assert.ok(body.indexOf("label: String(choiceReport.label)") !== -1, body);
+});
+
+// ---------------------------------------------------------------------------
+// The guards stop being whitelists, and the small correctness items (tick md1)
+// ---------------------------------------------------------------------------
+
+test("consentAnswered is DERIVED from the answer list, not a third copy of it", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "PanelModel.js"), "utf8");
+
+  // It was a third spelling of the vocabulary as bare literals — after
+  // consentChoices' ids and StateModel's own list — in a file whose header says
+  // a typo there is "a silent unasked for ever". A fourth answer added to
+  // consentChoices and forgotten here would leave consentPromptDue re-asking a
+  // question the user has already answered.
+  const at = source.indexOf("function consentAnswered(answer)");
+  assert.ok(at !== -1, "consentAnswered is gone");
+  const body = source.slice(at, source.indexOf("\n}\n", at));
+  for (const word of ["keep", "not-these", "none"]) {
+    assert.strictEqual(body.indexOf('"' + word + '"'), -1,
+      "consentAnswered still spells the vocabulary out:\n" + body);
+  }
+
+  // Behaviour, not only shape: every id the prompt offers is an answered one,
+  // and nothing else is.
+  for (const choice of panel.consentChoices()) {
+    assert.strictEqual(panel.consentAnswered(choice.id), true, choice.id);
+    assert.strictEqual(panel.isConsentChoice(choice.id), true, choice.id);
+  }
+  assert.strictEqual(panel.consentAnswered("unasked"), false);
+  assert.strictEqual(panel.consentAnswered(""), false);
+  assert.strictEqual(panel.consentAnswered(null), false);
+  assert.strictEqual(panel.consentAnswered("kept"), false);
+  // Whitespace is tolerated exactly as isConsentChoice tolerates it — one rule,
+  // so a hand-edited file cannot be read two ways.
+  assert.strictEqual(panel.consentAnswered("  keep "), panel.isConsentChoice("  keep "));
+});
+
+test("the chip's picture depends on the LISTING, in the call rather than in a dead branch (tick md1)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // `if (captureStore.generation < 0) return ""` was a branch that can never be
+  // true whose only job was to register a binding dependency, and nothing
+  // pinned it: a future tidy-up deleting an obviously-dead line would silently
+  // stop every chip's picture refreshing after an evict, with no test failure
+  // and no visible error.
+  const at = source.indexOf("function captureFileFor(identityId, occurrence) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+  assert.strictEqual(body.indexOf("generation"), -1,
+    "the dead generation branch is back:\n" + body);
+  assert.ok(body.indexOf("captureStore.hasIn(captureStore.files, name)") !== -1,
+    "the listing is no longer passed in, so the dependency is invisible at the call site:\n" + body);
+
+  // And it cannot be tidied away, because without it there is no listing to
+  // look in: `hasIn` takes the set as its first argument.
+  assert.ok(store.indexOf("function hasIn(files, name)") !== -1,
+    "CaptureStore no longer offers a lookup that takes the listing");
+  const hasAt = store.indexOf("function has(name)");
+  assert.ok(hasAt !== -1);
+  assert.ok(store.slice(hasAt, store.indexOf("\n  }\n", hasAt)).indexOf("store.hasIn(store.files, name)") !== -1,
+    "has() is a second lookup rule rather than the same one with the store's own listing");
+
+  // The counter is gone entirely — an unread property is the next thing to be
+  // read for the wrong reason.
+  assert.strictEqual(store.indexOf("property int generation"), -1,
+    "the generation counter is still there, read by nobody");
+});
+
+test("the five copies of plugin_state in the acceptance suite are one function (tick md1)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = path.join(__dirname, "acceptance");
+
+  // The captures test had drifted into an UNANCHORED regex over the whole line,
+  // inferring the state from a substring — and PLUGIN_ID contains a `.`, so the
+  // pattern matched more than it meant to. A format change that moved the word
+  // "enabled" would have reported `disabled` for an enabled plugin, and the
+  // enable step that follows would have chased a phantom.
+  const bodies = new Map();
+  for (const name of fs.readdirSync(dir).filter((f) => f.endsWith("-test.sh")).sort()) {
+    const source = fs.readFileSync(path.join(dir, name), "utf8");
+    const at = source.indexOf("plugin_state()");
+    if (at === -1) continue;
+    bodies.set(name, source.slice(at, source.indexOf("\n}\n", at)).replace(/\s+/g, " ").trim());
+  }
+
+  assert.ok(bodies.size >= 5,
+    "expected at least five acceptance scripts to define plugin_state, found " + bodies.size);
+  const spellings = new Set(bodies.values());
+  assert.strictEqual(spellings.size, 1,
+    "plugin_state is spelled " + spellings.size + " different ways:\n"
+    + [...bodies].map(([f, b]) => "  " + f + ": " + b).join("\n"));
+  // And the one spelling reads the FIELD, keyed on the whole id.
+  assert.match([...spellings][0], /\$1 == id \{ print \$2 \}/,
+    "plugin_state no longer reads the state field with an exact id match");
 });
