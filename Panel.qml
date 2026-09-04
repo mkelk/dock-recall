@@ -634,12 +634,30 @@ Item {
   })
 
   function moveSection(direction) {
+    // The first-Record dialogue owns Tab as well as the arrows (tick y28). It is
+    // a question the panel is waiting on an answer to, so Tab walks the three
+    // answers rather than leaving them: a Tab that stepped out of the prompt
+    // would leave a modal surface up with the cursor somewhere behind it, and
+    // Escape is the way out that exists on purpose.
+    if (root.consentOpen) {
+      root.moveConsentCursor(direction)
+      return
+    }
     root.focusSection = PanelModel.nextSection(root.focusOrder, root.focusSection, direction)
     if (root.focusSection === "chips" && !root.currentChip) root.moveChipCursor(1)
     if (root.focusSection === "failed" && !root.currentFailedRow) root.moveFailedCursor(1)
   }
 
   function handleMove(dx, dy) {
+    // THE PROMPT IS CHECKED FIRST, before even the menu (tick y28). It is the
+    // panel's only true modal — a question with the keyboard and a scrim over
+    // everything behind it — and the arrows walking the map underneath would
+    // move a cursor nobody can see, on a surface nobody can click. Horizontal
+    // first, because the answers are a row.
+    if (root.consentOpen) {
+      root.moveConsentCursor(dx !== 0 ? dx : dy)
+      return
+    }
     // An open menu owns the arrows: it is the only thing on screen the user is
     // looking at, and walking the map behind it would move a cursor nobody can
     // see. Vertical first, because the menu is a column.
@@ -682,6 +700,13 @@ Item {
   }
 
   function activateCursor() {
+    // The prompt first, for the reason handleMove checks it first: while it is
+    // up, Enter and Space belong to the answer under the cursor and to nothing
+    // behind it.
+    if (root.consentOpen) {
+      root.activateConsent()
+      return
+    }
     if (root.overflowOpen) {
       root.activateOverflow()
       return
@@ -2022,7 +2047,222 @@ Item {
     }
     captureStore.capture(plan, function (results) {
       root.log(PanelModel.captureLogLine(plan, results))
+      // THE CONSENT MOMENT, and this is where it belongs: the round has
+      // finished, so the pictures the prompt is about are on disk and can be
+      // shown. Asking before the round would mean asking about photographs
+      // nobody has seen, which is the warning label this feature deliberately
+      // is not (tick y28).
+      root.offerConsent(results)
     })
+  }
+
+  // ----------------------------------------- the first-Record dialogue (y28)
+  //
+  // THE HUMAN'S DECISION, IN FULL: at the first Record with picturable apps the
+  // panel shows THE CAPTURES JUST TAKEN and offers exactly three answers — Keep
+  // pictures / Not for these apps / No pictures — and the answer survives a
+  // shell restart. Asked ONCE.
+  //
+  // WHY IT SHOWS THE PICTURES. It is an onboarding moment that demonstrates the
+  // feature, not a warning label. A sentence about photographs of your windows
+  // is a scary abstraction; three photographs of your own windows is a thing you
+  // can look at and have an opinion about. That framing is why this shows the
+  // captures rather than describing them, and it is why it happens AFTER the
+  // round rather than before it — there is no honest way to show somebody their
+  // own captures before taking them, and the per-app camera is what authorised
+  // taking them in the first place. What this adds is the chance to say the
+  // result is not what they wanted, with an answer that takes it back.
+  //
+  // WHERE THE ANSWER LIVES: StateModel.pictureConsent, schema v6, beside
+  // `paused` — panel-level, not per-identity, because it is an answer about the
+  // FEATURE. The per-app grant is `Identity.pictured` and it is not replaced by
+  // this; two of the three answers act by withdrawing it.
+  //
+  // The five parts of the modal are the overflow menu's five, mirrored: a bool
+  // (consentOpen), focusSection set to its own value on open, a guard at the top
+  // of handleMove so the panel cursor cannot walk behind it, an auto-close when
+  // focus leaves, and Escape unwinding one level at a time. Plus a sixth this
+  // one needs and the menu does not: the previous focusSection is STASHED and
+  // restored, because the prompt arrives unbidden — the user did not tab to it
+  // and did not ask for it, so putting the cursor back where they left it is the
+  // difference between an interruption and a derailment.
+
+  property bool consentOpen: false
+
+  // The prompt's own cursor, held as a CHOICE ID rather than an index, for the
+  // reason the map's is held as a chip key and the menu's as an action id: the
+  // list is a binding, and an index is a promise about an order.
+  property string consentCursor: ""
+
+  // Where the panel's cursor was when the prompt took the keyboard. Restored on
+  // the way out, whether the user answered or dismissed.
+  property string consentReturnSection: ""
+
+  // The strip: one entry per picture the round actually STORED, as
+  // { identityId, occurrence, file, name, source }. The successes and nothing
+  // else — see PanelModel.consentCaptureEntries for why a failed capture is not
+  // a hole in the strip but an absence from it.
+  property var consentEntries: []
+
+  readonly property var consentChoiceModel: PanelModel.consentChoices()
+  readonly property var consentChoiceIds: PanelModel.menuActionIds(root.consentChoiceModel)
+
+  // What the file says the user answered, or "unasked".
+  readonly property string pictureConsent: StateModel.pictureConsent(root.stateModel)
+
+  // The app name the strip puts under a thumbnail. Looked up in appRows rather
+  // than derived again here: the row is what the user reads this app's name off
+  // everywhere else in the panel, and a second derivation could name the same
+  // app two ways in one window. The id is the fallback, which is what a picture
+  // of an app whose row has since gone honestly is.
+  function consentAppName(identityId) {
+    var rows = root.appRows || []
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].identityId || "") === String(identityId)) return String(rows[i].name)
+    }
+    return String(identityId)
+  }
+
+  // Offer the question, if it is still owed and there is something to ask about.
+  // Called from the capture round's completion and nowhere else.
+  function offerConsent(results) {
+    var entries = PanelModel.consentCaptureEntries(results)
+    if (!PanelModel.consentPromptDue(root.pictureConsent, entries)) return
+
+    // The strip's rows, each carrying the two things the component cannot work
+    // out for itself: what to call the app, and the URL its Image binds. The
+    // URL comes from captureStore.pathFor and Util.fileUrl — the same spelling
+    // of "a local file" the map's chips use, so a home directory with a space
+    // in it works here for the same reason it works there.
+    var strip = []
+    for (var i = 0; i < entries.length; i++) {
+      var path = captureStore.pathFor(entries[i].file)
+      strip.push({
+        identityId: entries[i].identityId,
+        occurrence: entries[i].occurrence,
+        file: entries[i].file,
+        name: root.consentAppName(entries[i].identityId),
+        source: path ? Util.fileUrl(path) : ""
+      })
+    }
+    root.consentEntries = strip
+    root.openConsent()
+  }
+
+  function openConsent() {
+    // STASHED BEFORE it is overwritten, and only when the prompt was not
+    // already up: a second offer while the first is on screen must not stash
+    // "consent" as the place to go back to.
+    if (!root.consentOpen) root.consentReturnSection = root.focusSection
+    root.consentOpen = true
+    root.focusSection = "consent"
+    root.consentCursor = PanelModel.firstEnabledActionId(root.consentChoiceModel)
+  }
+
+  // Put the keyboard back where it was. The one exit that is NOT an answer —
+  // Escape and a click on the scrim both land here — so nothing is written and
+  // nothing is deleted: the question is still owed, and the next Record that
+  // stores a picture asks it again. "Asked once" means asked once ANSWERED, and
+  // recording an answer the user did not give is the single thing a consent
+  // dialogue may never do.
+  function closeConsent() {
+    if (!root.consentOpen) return
+    root.consentOpen = false
+    root.consentCursor = ""
+    root.consentEntries = []
+    // Back where the user left it. `focusOrder` may no longer carry the stashed
+    // section (the Undo button can disappear under a prompt that was open while
+    // a topology changed), so an unknown one falls back to the map — which is
+    // where the panel opens and the one section that is always there.
+    var back = root.consentReturnSection
+    root.consentReturnSection = ""
+    root.focusSection = (back && root.focusOrder.indexOf(back) !== -1) ? back : "chips"
+    if (root.focusSection === "chips" && !root.currentChip) root.moveChipCursor(1)
+  }
+
+  function dismissConsent() {
+    root.closeConsent()
+  }
+
+  function moveConsentCursor(delta) {
+    root.consentCursor = PanelModel.nextSection(root.consentChoiceIds, root.consentCursor, delta)
+  }
+
+  function activateConsent() {
+    root.answerConsent(root.consentCursor)
+  }
+
+  // ANSWER IT. Returns whether the answer reached the file, so the IPC can tell
+  // a recorded answer from a refused write.
+  //
+  // The discipline is setPaused's, because it is the same kind of write: a FRESH
+  // read (this rewrites the whole file, which also carries every layout and
+  // every identity), the adopt-what-the-file-says branch when somebody got there
+  // first, a StateModel setter that touches only what the answer is about, a
+  // success line gated on writeState's boolean, and the log line last.
+  //
+  // ONE WRITE for all three answers, and that is what StateModel.clearPictured
+  // exists for: two of them withdraw a consent as well as recording one, and a
+  // loop of setPictured calls would be N whole-file round trips with the state
+  // after the third describing a decision the user never expressed.
+  //
+  //   Keep pictures      — records the answer. Nothing is deleted, nobody's
+  //                        camera moves.
+  //   Not for these apps — the apps in the strip lose their camera, and the
+  //                        pictures just taken are deleted. THESE apps: the ones
+  //                        the user is looking at. Other apps, and other desks,
+  //                        are untouched.
+  //   No pictures        — every camera goes off and EVERY stored picture is
+  //                        deleted, on every desk. Not a standing gate on top of
+  //                        the per-app consent, deliberately: `pictured` already
+  //                        defaults to off and only an explicit camera press
+  //                        turns it on, so after this answer nothing can be
+  //                        photographed again without the user saying so, app by
+  //                        app. A standing lock would add nothing except a way
+  //                        out that the panel has no affordance for — an
+  //                        unreachable off switch is not a consent model, it is
+  //                        a bricked feature.
+  function answerConsent(answer) {
+    if (!PanelModel.isConsentChoice(answer)) return false
+    var fresh = root.freshState()
+    if (!fresh) return false
+
+    var ids = PanelModel.consentIdentityIds(root.consentEntries)
+
+    if (StateModel.pictureConsentAsked(fresh)) {
+      // Somebody got there first (a second panel, a hand edit). The question is
+      // already answered on disk; adopt that rather than overwriting it with a
+      // second answer to a question that was only ever asked once.
+      root.stateModel = fresh
+      root.closeConsent()
+      return false
+    }
+
+    var next = fresh
+    if (answer === "not-these") next = StateModel.clearPictured(next, ids)
+    else if (answer === "none") next = StateModel.clearPictured(next, null)
+    next = StateModel.setPictureConsent(next, answer)
+
+    if (!root.writeState(next)) return false
+
+    // THE PICTURES, AFTER THE WRITE, like every other eviction in this file: a
+    // refused write must not take the pictures with it.
+    //
+    // "Not for these apps" evicts by TOPOLOGY PREFIX rather than file by file,
+    // and that is exact rather than approximate: a capture round evicts the
+    // whole prefix before it writes anything (CaptureStore.capture), so the
+    // files under this desk's prefix ARE the round's files and nothing else.
+    // "No pictures" reaches further, across every desk, because that is what the
+    // answer says.
+    if (answer === "not-these") {
+      captureStore.evict(PanelModel.captureTopologyPrefix(root.topologyKey), "declined")
+    } else if (answer === "none") {
+      captureStore.evictAll("declined")
+    }
+
+    root.log(PanelModel.consentAnswerLine(answer, ids))
+    root.closeConsent()
+    return true
   }
 
   // --------------------------------------------- the header overflow menu (gwa)
@@ -2116,8 +2356,21 @@ Item {
 
   // Tabbing away from the ⋯ closes what it opened: a menu left hanging over a
   // panel whose keyboard cursor has moved on is a surface with no owner.
+  //
+  // ONE HANDLER, both surfaces, because QML allows exactly one `onXChanged` per
+  // signal per object — a second `onFocusSectionChanged` here would be a syntax
+  // error, not a second listener.
+  //
+  // The prompt's half is not reachable by Tab (moveSection keeps Tab inside it)
+  // but it IS reachable: `onCanUndoRecordChanged` sends the cursor to "record"
+  // when the Undo button goes away, and `onFailedRowsChanged` sends it to
+  // "restore" when a cycle succeeds. Either can fire while the prompt is up, and
+  // a modal left hanging over a cursor that has moved on is exactly the state
+  // this guard exists for. Dismissed, not answered — nothing the panel does to
+  // itself may count as the user's answer.
   onFocusSectionChanged: {
     if (root.focusSection !== "overflow" && root.overflowOpen) root.closeOverflow()
+    if (root.focusSection !== "consent" && root.consentOpen) root.closeConsent()
   }
 
   // Delete this topology's layout. No confirmation — the panel never blocks —
@@ -2276,6 +2529,12 @@ Item {
   //     "badgeTone": "ok" | "muted" | "accent" | "urgent" | null,
   //     "overflowOpen": false,
   //     "overflowLayouts": [ { "name": "Laptop", "current": false } ],
+  //     "pictureConsent": "unasked" | "keep" | "not-these" | "none",
+  //     "consentOpen": false,
+  //     "consentChoices": [ { "id": "keep", "label": "Keep pictures" } ],
+  //     "consentCaptures": [ { "identityId": "obsidian", "occurrence": 0,
+  //                            "name": "Obsidian", "source": "file:///…",
+  //                            "ready": true } ],
   //     "hoveredLinkKey": "",
   //     "rows": [
   //       { "key": "obsidian", "name": "Obsidian", "watched": true,
@@ -2429,6 +2688,24 @@ Item {
 
   function reportWorkspaceRender(key, report) {
     root.mergeRenderReport(root.workspaceRenderReports, key, report)
+  }
+
+  // The first-Record dialogue's two registries (tick y28): the answer buttons by
+  // CHOICE ID, and the thumbnails by identity-and-occurrence.
+  //
+  // Same discipline as every registry above — written by the delegate, never
+  // reset, and panelState() iterates the MODEL and looks entries up. That is
+  // what makes "a shut prompt reports no answers" true without a wipe, and it is
+  // the lesson tick be1 paid for: a Repeater's delegates are created once and
+  // are not destroyed by the surface they sit on going away.
+  property var consentChoiceReports: ({})
+  function reportConsentChoice(id, report) {
+    root.mergeRenderReport(root.consentChoiceReports, id, report)
+  }
+
+  property var consentCaptureReports: ({})
+  function reportConsentCapture(key, report) {
+    root.mergeRenderReport(root.consentCaptureReports, key, report)
   }
 
   // One field of a render report, as `null` rather than as nothing when the
@@ -2598,6 +2875,42 @@ Item {
       }
     }
 
+    // The first-Record dialogue, from the buttons and thumbnails that drew it,
+    // and ONLY while it is up (tick y28). Iterated from the MODEL — the choice
+    // list and the strip — for the reason the overflow rows are: a report left
+    // over from a previous offer cannot enter the payload, and a row the model
+    // carries but no delegate has drawn yet is skipped rather than reported
+    // half-drawn.
+    var consentChoices = []
+    var consentCaptures = []
+    if (root.consentOpen) {
+      var choiceModel = root.consentChoiceModel
+      for (var ci = 0; ci < choiceModel.length; ci++) {
+        var choiceId = String(choiceModel[ci].id)
+        var choiceReport = root.consentChoiceReports[choiceId] || null
+        // The id from the MODEL, the label from the BUTTON. A prompt offering
+        // the right three ids under the wrong three words is the failure this
+        // pair catches; one value read off the model twice could not.
+        if (choiceReport) consentChoices.push({ id: choiceId, label: String(choiceReport.label) })
+      }
+      var stripModel = root.consentEntries || []
+      for (var si = 0; si < stripModel.length; si++) {
+        var shotKey = String(stripModel[si].identityId) + "#" + String(stripModel[si].occurrence)
+        var shotReport = root.consentCaptureReports[shotKey] || null
+        if (!shotReport) continue
+        consentCaptures.push({
+          identityId: String(shotReport.identityId),
+          occurrence: shotReport.occurrence,
+          name: String(shotReport.name),
+          // What the Image was bound to, and whether it ARRIVED. The pair is the
+          // point: a strip that reports three sources and one ready picture is a
+          // prompt showing the user two empty boxes.
+          source: String(shotReport.source),
+          ready: shotReport.ready === true
+        })
+      }
+    }
+
     var payload = {
       topologyName: root.topologyName,
       showRecorded: root.showRecorded,
@@ -2614,6 +2927,24 @@ Item {
       badgeTone: root.reported(header, "badgeTone"),
       overflowOpen: root.overflowOpen,
       overflowLayouts: layouts,
+      // THE FIRST-RECORD DIALOGUE (tick y28). Three keys, and they answer three
+      // different questions:
+      //
+      //   pictureConsent  — what the FILE says the user answered, or "unasked".
+      //                     The one that survives a shell restart, and therefore
+      //                     the one that proves "asked once".
+      //   consentOpen     — is the prompt on screen right now.
+      //   consentChoices  — what the prompt is OFFERING, from the buttons that
+      //                     drew it, and only while it is up.
+      //   consentCaptures — the thumbnails it is showing, likewise.
+      //
+      // `pictureConsent` is always present; the prompt's own three are always
+      // present too, empty when it is shut. Neither is a draw-time null: "the
+      // prompt is not up" is a fact the panel has, not a value it is waiting for.
+      pictureConsent: root.pictureConsent,
+      consentOpen: root.consentOpen,
+      consentChoices: consentChoices,
+      consentCaptures: consentCaptures,
       // What the panel is hovering, and therefore what is lit on both surfaces.
       hoveredLinkKey: root.hoveredLinkKey,
       workspaces: workspaces,
@@ -2784,6 +3115,29 @@ Item {
       return root.forgetLayout() ? "forgotten" : "nothing-to-forget"
     }
 
+    // ANSWER THE FIRST-RECORD DIALOGUE (tick y28), the way its buttons answer
+    // it. Through root.answerConsent and nothing else: that function owns the
+    // fresh read, the single composed write, the eviction and the log line, and
+    // an IPC path that set `pictureConsent` directly would record an answer
+    // without performing it — a "No pictures" that deleted nothing.
+    //
+    // It exists because this prompt is otherwise reachable only by a finger on
+    // one of three buttons, and the acceptance venue has no pointer. The verb is
+    // the door a headless test drives it through, and the same door
+    // `omarchy-shell` gets.
+    //
+    // Answers what HAPPENED rather than what was asked for, exactly as setPaused
+    // and setPictured do: "not-asking" for a prompt that is not up, "unknown"
+    // for a word that is not one of the three, "refused" for a write the file
+    // would not take, and otherwise the answer that was recorded.
+    function answerConsent(answer: string): string {
+      var want = String(answer || "").toLowerCase()
+      if (!PanelModel.isConsentChoice(want)) return "unknown"
+      if (!root.stateLoaded) return "no-state"
+      if (!root.consentOpen) return "not-asking"
+      return root.answerConsent(want) ? want : "refused"
+    }
+
     // The overflow menu, opened and closed by the panel's own verbs so the
     // popup and root.overflowOpen cannot disagree — the same reason summon and
     // hide stay the shell's.
@@ -2885,9 +3239,14 @@ Item {
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
 
-        // Esc closes the MENU first when one is open, and the panel only when
-        // there is nothing else to back out of — one key, one level at a time.
-        onCloseRequested: root.overflowOpen ? root.closeOverflow() : root.dismiss()
+        // Esc backs out ONE LEVEL AT A TIME: the first-Record dialogue if it is
+        // up, then the menu, then the panel itself. The prompt is outermost
+        // because it is the only surface here that took the keyboard away from
+        // the panel entirely — and backing out of it is a dismissal, not an
+        // answer, so the question is asked again at the next Record that stores
+        // a picture (see closeConsent).
+        onCloseRequested: root.consentOpen ? root.dismissConsent()
+          : (root.overflowOpen ? root.closeOverflow() : root.dismiss())
         onMoveRequested: function (dx, dy) { root.handleMove(dx, dy) }
         // Space and Enter both land here (PanelKeyCatcher emits
         // activateRequested for each), which is exactly the rule the sketch
@@ -4274,6 +4633,32 @@ Item {
               }
             }
           }
+        }
+      }
+
+      // ------------------------------------ the first-Record dialogue (y28)
+      //
+      // OVER THE WHOLE CARD, and declared AFTER the key catcher so it is drawn
+      // on top of it and its MouseAreas see a click first. It is not inside the
+      // ScrollView on purpose: a question the panel is waiting on an answer to
+      // must not be scrollable off the top of its own card, and the scroll
+      // position the user left behind is still theirs when the prompt goes.
+      //
+      // A LOADER, not a `visible` binding, and the difference is the thumbnail
+      // strip: the prompt's Images decode files off disk, and a shut prompt that
+      // merely stopped painting would keep them decoded for the panel's life —
+      // for pictures of windows the user may just have said they do not want
+      // kept. Unloaded, the strip does not exist between offers.
+      //
+      // Everything about the keyboard lives on the panel (consentOpen, the
+      // stashed section, the guards in handleMove/moveSection/activateCursor,
+      // the Escape chain); the component draws, reports, and reports a press.
+      Loader {
+        anchors.fill: parent
+        active: root.consentOpen
+        visible: root.consentOpen
+        sourceComponent: ConsentPrompt {
+          panel: root
         }
       }
     }

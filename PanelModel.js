@@ -6307,6 +6307,185 @@ function captureFileIndex(listing) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// THE FIRST-RECORD DIALOGUE (tick y28)
+// ---------------------------------------------------------------------------
+//
+// WHAT IT IS, AND WHAT IT IS NOT. It is an ONBOARDING MOMENT that demonstrates
+// the feature, not a warning label. The user has already granted the per-app
+// consent (the camera on the row), a Record has just happened, and the pictures
+// exist — so the panel shows them THE PICTURES IT JUST TOOK and asks what they
+// think. That framing is the whole reason it shows thumbnails rather than
+// describing what a thumbnail would be: a sentence about photographs of your
+// windows is a scary abstraction, and three photographs of your own windows is
+// a thing you can look at and have an opinion about.
+//
+// It is asked ONCE. The answer lives in the state file
+// (StateModel.pictureConsent, schema v6), so it survives a shell restart, and
+// "unasked" is the only value that brings it back.
+//
+// WHY THE PICTURES ARE TAKEN FIRST. There is no honest way to show somebody
+// their own captures before taking them, and the alternative — describing the
+// feature and asking permission in the abstract — is exactly the warning label
+// the design rejects. The per-app camera is what authorises the capture; this
+// asks whether the RESULT is what the user expected, with an answer ("Not for
+// these apps") that takes it back.
+
+// The three answers, in the order they are drawn and tabbed through.
+//
+// Shaped like an overflow-menu action list — `{id, label, tooltip, enabled}` —
+// so menuActionIds, menuAction, firstEnabledActionId and nextSection drive this
+// prompt's cursor without a second navigation vocabulary. They are all always
+// enabled: a prompt with a dimmed answer is a question whose answer the asker
+// has already decided.
+//
+// The ORDER is the design's: the affirming answer first, because it is the one
+// the user is most likely to want and the one the moment is for, then the two
+// refusals in order of scope. Nothing here is a default — there is no preselect
+// beyond "the cursor starts on the first" — and Escape is not an answer.
+function consentChoices() {
+  return [
+    {
+      id: "keep",
+      label: "Keep pictures",
+      tooltip: "Keep these pictures and go on taking one for each app whose camera"
+        + " is on. You can switch any app's camera off later.",
+      enabled: true
+    },
+    {
+      id: "not-these",
+      label: "Not for these apps",
+      tooltip: "Delete the pictures just taken and switch the camera off for these"
+        + " apps. Other apps are unaffected, and this is not asked again.",
+      enabled: true
+    },
+    {
+      id: "none",
+      label: "No pictures",
+      tooltip: "Delete every picture this plugin has stored and switch off every"
+        + " app's camera. Nothing is photographed again unless you switch a"
+        + " camera back on.",
+      enabled: true
+    }
+  ];
+}
+
+// Is `answer` one of the three? The IPC verb asks it, so a caller cannot answer
+// the prompt with a word the panel would then have to interpret.
+function isConsentChoice(answer) {
+  var wanted = trim(answer);
+  var choices = consentChoices();
+  for (var i = 0; i < choices.length; i++) {
+    if (choices[i].id === wanted) return true;
+  }
+  return false;
+}
+
+// The captures a finished round actually STORED, in the order they were taken —
+// the thumbnails the prompt shows, and the apps "Not for these apps" is about.
+//
+// The successes and nothing else. A round's results carry every planned capture
+// including the ones that failed, and a strip with a hole in it where a window
+// on a sleeping monitor should be would be a prompt asking about a picture that
+// does not exist. `identityId` and `occurrence` are carried through because the
+// map keys on the pair and the panel resolves the file the same way it resolves
+// a chip's.
+function consentCaptureEntries(results) {
+  var list = isArray(results) ? results : [];
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var result = list[i];
+    if (!result || result.ok !== true) continue;
+    var identityId = trim(result.identityId);
+    if (!identityId) continue;
+    out.push({
+      identityId: identityId,
+      occurrence: occurrenceOf(result.occurrence),
+      file: trim(result.file)
+    });
+  }
+  return out;
+}
+
+// The identities the strip is showing, deduped and in first-seen order. What
+// "these apps" means, said once, so the button's label and the write it performs
+// cannot describe two different sets.
+function consentIdentityIds(entries) {
+  var list = isArray(entries) ? entries : [];
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < list.length; i++) {
+    var id = list[i] ? trim(list[i].identityId) : "";
+    if (!id || own(seen, id)) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+// SHOULD THE PROMPT OPEN? Asked when a capture round finishes, and the one place
+// the rule lives.
+//
+// Two conditions, and the second is not the one the DoD's sentence suggests.
+// "The first Record with picturable apps" is the case this fires in, but the
+// test is on the pictures that were actually STORED, not on the plan: a round
+// where every capture failed (a window on a monitor that is not rendering, the
+// one real failure mode this feature has) has nothing to show, and a
+// three-choice dialogue over an empty strip is precisely the warning label this
+// moment is not. The user is asked at the next Record that produces something,
+// which is the first moment there is anything to ask about.
+function consentPromptDue(answer, entries) {
+  if (consentAnswered(answer)) return false;
+  return (isArray(entries) ? entries : []).length > 0;
+}
+
+// Has the question been answered at all? A copy of
+// StateModel.pictureConsentAsked, spelled out here rather than imported:
+// PanelModel and StateModel are siblings and neither may require the other, so
+// the two spellings are pinned against each other in tests/panel.test.js — the
+// same arrangement TERMINAL_BINARIES already lives under.
+function consentAnswered(answer) {
+  var word = trim(answer);
+  return word === "keep" || word === "not-these" || word === "none";
+}
+
+// What the prompt says above the strip, and what it says under it.
+//
+// The title names what happened, in the past tense, because it already has:
+// the Record is on disk and so are the pictures. The body is one sentence about
+// what they are FOR, because a picture of your own window is self-explanatory
+// and a cache under ~/.cache is not.
+function consentTitle(count) {
+  var n = (typeof count === "number" && isFinite(count) && count > 0) ? Math.round(count) : 0;
+  if (n === 1) return "Dock Recall took a picture of this window";
+  return "Dock Recall took pictures of these " + n + " windows";
+}
+
+function consentBody() {
+  return "They are stored on this machine, under ~/.cache, and drawn on the"
+    + " Recorded map so you can see which window was where. They are replaced"
+    + " when you record again and deleted when you forget the layout.";
+}
+
+// The log line each answer leaves. One sentence per answer, naming what it DID
+// rather than which button was pressed — the log is read by somebody asking
+// what happened to their files.
+function consentAnswerLine(answer, identityIds) {
+  var ids = isArray(identityIds) ? identityIds : [];
+  if (answer === "keep") {
+    return "pictures kept — " + ids.length + " app(s) go on being photographed at Record";
+  }
+  if (answer === "not-these") {
+    return "no pictures for " + (ids.length ? "\"" + ids.join("\", \"") + "\"" : "these apps")
+      + " — their cameras are off and the pictures just taken are deleted";
+  }
+  if (answer === "none") {
+    return "no pictures at all — every camera is off and every stored picture is deleted;"
+      + " switch a camera back on to change that";
+  }
+  return "";
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     normalizedAddress: normalizedAddress,
@@ -6323,6 +6502,15 @@ if (typeof module !== "undefined") {
     capturePlan: capturePlan,
     captureLogLine: captureLogLine,
     captureFileIndex: captureFileIndex,
+    consentChoices: consentChoices,
+    isConsentChoice: isConsentChoice,
+    consentCaptureEntries: consentCaptureEntries,
+    consentIdentityIds: consentIdentityIds,
+    consentPromptDue: consentPromptDue,
+    consentAnswered: consentAnswered,
+    consentTitle: consentTitle,
+    consentBody: consentBody,
+    consentAnswerLine: consentAnswerLine,
     // Exported for the QML side as much as for the tests: an identity-id lookup
     // in Panel.qml has to go through this too (tick 8hp).
     own: own,

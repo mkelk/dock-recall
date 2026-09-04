@@ -10,7 +10,7 @@
 #   1. node --test 'tests/**/*.test.js'   the pure brain, against real hyprctl
 #                                         fixtures. Seconds.
 #   2. omarchy plugin validate .          the manifest and its entry points.
-#   3. qmllint                            SYNTAX ONLY on the six QML files.
+#   3. qmllint                            SYNTAX ONLY on the seven QML files.
 #                                         Never cite it as evidence that
 #                                         bindings resolve — an unknown id was
 #                                         once injected and it passed.
@@ -111,8 +111,8 @@ step "node --test 'tests/**/*.test.js'" \
 step "omarchy plugin validate ." \
   omarchy plugin validate .
 
-step "qmllint (syntax) on the six QML files" \
-  qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml MapWorkspace.qml BarWidget.qml ToplevelBridge.qml CaptureStore.qml
+step "qmllint (syntax) on the seven QML files" \
+  qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml MapWorkspace.qml BarWidget.qml ToplevelBridge.qml CaptureStore.qml ConsentPrompt.qml
 
 step "tests/sandbox-dock.sh" \
   ./tests/sandbox-dock.sh

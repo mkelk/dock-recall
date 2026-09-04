@@ -64,6 +64,18 @@
 #                     Recorded map is entirely the fallback in the field, and
 #                     the project's learnings record it engaging silently and
 #                     hiding a broken model for two live rounds.
+#   THE DIALOGUE    — the FIRST Record with picturable apps puts the panel in
+#                     the consent state, showing the captures just taken and
+#                     offering exactly three answers. Asserted on what it is
+#                     SHOWING (a thumbnail whose Image reports Ready, at the same
+#                     URL the recorded map binds) as much as on what it offers,
+#                     because a strip of empty boxes would satisfy a count. The
+#                     answer is then read back off the state file, survives a
+#                     SHELL RESTART, and the next Record does not ask again —
+#                     which is the whole of "asked once". Finally "Not for these
+#                     apps" is driven end to end: the cameras go off AND the
+#                     pictures already taken are deleted, because either half
+#                     alone is the wrong behaviour.
 #   ONE CAPTURE GONE — the file is deleted and the panel re-summoned. It must be
 #                     offered no picture at all. Asserted on a FRESH panel
 #                     because that is the honest shape: within one session a
@@ -420,6 +432,81 @@ pass "Record stored one picture, $EXPECTED_FILE — $dimensions, $bytes bytes, a
     "$CACHE_DIR/$WITHHELD_FILE exists for $WITHHELD_IDENTITY, which is watched and NOT pictured"
 pass "and none for $WITHHELD_IDENTITY — watched, recorded, and never photographed"
 
+# ------------------------------- 5a. THE FIRST-RECORD DIALOGUE (tick y28)
+#
+# The first Record with picturable apps puts the panel in the CONSENT STATE: it
+# shows the captures just taken and offers exactly three answers. This is the
+# moment the feature demonstrates itself, so the assertion is on what the prompt
+# is SHOWING as much as on what it is offering — a strip that reported three
+# sources and no ready picture would be a prompt showing the user empty boxes.
+#
+# The seed above left `pictureConsent` out of the state file entirely, which the
+# reader materializes as "unasked" — so this is genuinely the first ask, reached
+# the way a user reaches it and not by setting a flag.
+
+CAPTURE_URL="file://$CACHE_DIR/$EXPECTED_FILE"
+
+consent_offered() {
+  panel_state_json | jq -e --arg id "$PICTURED_IDENTITY" --arg url "$CAPTURE_URL" '
+    .consentOpen == true
+    and .pictureConsent == "unasked"
+    # EXACTLY THREE, in order, under exactly these words. The ids come from the
+    # model and the labels from the buttons that drew them, so a prompt offering
+    # the right ids under the wrong words fails here.
+    and ([.consentChoices[]|.id] == ["keep", "not-these", "none"])
+    and ([.consentChoices[]|.label]
+         == ["Keep pictures", "Not for these apps", "No pictures"])
+    # THE CAPTURES JUST TAKEN, and they are the ones on disk: the same URL the
+    # recorded map binds, decoded (ready) rather than merely pointed at.
+    and ((.consentCaptures|length) == 1)
+    and (.consentCaptures[0].identityId == $id)
+    and (.consentCaptures[0].source == $url)
+    and (.consentCaptures[0].ready == true)
+    and ((.consentCaptures[0].name|length) > 0)' >/dev/null
+}
+if ! poll 40 consent_offered; then
+  diagnostics
+  fail "the first Record with picturable apps puts the panel in the consent state" \
+    "no payload with consentOpen, pictureConsent 'unasked', the three answers, and one ready thumbnail"
+fi
+screenshot "success-dock-recall-captures-02-consent"
+pass "the first Record asks: three answers — Keep pictures / Not for these apps / No pictures — over the picture it just took"
+
+# ANSWERED THROUGH THE PANEL'S OWN VERB, which routes to root.answerConsent and
+# nothing else — the one place that re-reads the file, writes once, evicts and
+# logs. There is no pointer in this venue, and this is the door that replaces
+# one.
+keep_answer=$(omarchy-shell "$IPC_TARGET" answerConsent keep 2>&1)
+[[ $keep_answer == "keep" ]] ||
+  fail "the panel records the answer (captures)" "answerConsent keep answered '$keep_answer'"
+
+consent_kept() {
+  panel_state_json | jq -e '
+    .consentOpen == false
+    and .pictureConsent == "keep"
+    and ((.consentChoices|length) == 0)
+    and ((.consentCaptures|length) == 0)' >/dev/null
+}
+if ! poll 20 consent_kept; then
+  diagnostics
+  fail "answering closes the prompt and records the answer (captures)" \
+    "the payload still shows the prompt, or does not report the answer"
+fi
+# ON DISK, which is what makes it survive anything at all.
+stored_answer=$(jq -r '.pictureConsent//"absent"' "$STATE" 2>/dev/null)
+[[ $stored_answer == "keep" ]] ||
+  fail "the answer is written to the state file (captures)" \
+    "the state file says pictureConsent '$stored_answer'"
+# And "Keep pictures" kept them: nothing was deleted and nobody's camera moved.
+cache_is 1 ||
+  fail "\"Keep pictures\" keeps the pictures (captures)" "$CACHE_DIR holds $(cache_count)"
+still_pictured=$(jq -r --arg id "$PICTURED_IDENTITY" \
+  'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
+[[ $still_pictured == "true" ]] ||
+  fail "\"Keep pictures\" leaves the camera on (captures)" \
+    "$PICTURED_IDENTITY reports pictured '$still_pictured'"
+pass "answered: the prompt closed, the answer is in the state file, the picture and the camera are untouched"
+
 # The panel says so too: the recorded map reports a capture path for the chip
 # that has one, and no such key for the chip that does not.
 view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
@@ -436,7 +523,8 @@ view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 # Both are ABSENT, never present-and-empty, for the chip that has no picture:
 # the payload convention is that a key the panel has nothing to say about is not
 # there at all, and "" would be a second spelling of the same silence.
-CAPTURE_URL="file://$CACHE_DIR/$EXPECTED_FILE"
+#
+# CAPTURE_URL is set at step 5a, where the consent prompt asserts on the same URL.
 [[ $CACHE_DIR/$EXPECTED_FILE =~ ^[A-Za-z0-9/._~-]+$ ]] ||
   fail "the capture path needs no percent-encoding (captures)" \
     "$CACHE_DIR/$EXPECTED_FILE contains a character Util.fileUrl would escape"
@@ -747,6 +835,129 @@ forgotten=$(jq -r --arg k "$TOPOLOGY_KEY" '(.layouts|has($k))|tostring' "$STATE"
   fail "forgetting a layout removes it from the file (captures)" \
     "the state file still has a layout for '$TOPOLOGY_KEY'"
 pass "forgetting the layout deleted both the recording and its picture"
+
+# --------------------- 10b. ASKED ONCE, across a shell restart (tick y28)
+#
+# The answer is in the state file rather than in the panel, so a restart is what
+# proves it: the shell process that held "keep" in memory is gone, and the panel
+# below is a fresh object reading the file from disk.
+#
+# The SECOND restart in this test, and it is the honest cost of the claim. The
+# apps are Hyprland clients rather than shell children, so they survive it; only
+# the panel has to be summoned again.
+omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
+poll 20 panel_layer_absent
+omarchy-restart-shell >/dev/null 2>&1
+wait_until "shell is back after the second restart (captures)" 60 pgrep -f 'quickshell -n -p'
+wait_until "dock-recall service is ready again (captures)" 60 service_ready
+omarchy-shell shell summon "$PLUGIN_ID" '{}' >/dev/null 2>&1
+if ! poll 30 panel_layer_present; then
+  diagnostics
+  fail "the panel comes back after the second restart (captures)" "no panel layer"
+fi
+if ! poll 60 panel_ready; then
+  diagnostics
+  fail "the restarted panel has read the desk and the consent (captures)" \
+    "no payload with chips, one of them pictured"
+fi
+
+survived() { panel_state_json | jq -e '.pictureConsent == "keep" and .consentOpen == false' >/dev/null; }
+if ! poll 30 survived; then
+  diagnostics
+  fail "the answer survives a shell restart (captures)" \
+    "the restarted panel reports pictureConsent '$(panel_state_json | jq -r '.pictureConsent//"absent"')'"
+fi
+
+# AND IT DOES NOT ASK AGAIN. A Record that stores a picture is exactly the event
+# that opened the prompt the first time, so this is the same trigger under an
+# answered file — the whole of "asked once".
+asked_again_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $asked_again_record == "recorded" ]] ||
+  fail "panel IPC records after the restart (captures)" "record answered '$asked_again_record'"
+if ! poll 40 cache_is 1; then
+  diagnostics
+  fail "the record after the restart stores a picture (captures)" "$CACHE_DIR holds $(cache_count)"
+fi
+# The picture is on disk, so the prompt's trigger has fired; give the panel a
+# moment it could open in and require that it did not.
+sleep 3
+panel_state_json | jq -e '.consentOpen == false and .pictureConsent == "keep"' >/dev/null ||
+  fail "the prompt does not appear again (captures)" \
+    "a Record after the answer put the panel back in the consent state"
+pass "asked ONCE: the answer survived a shell restart and the next Record did not ask again"
+
+# ---------- 10c. “Not for these apps” unpictures them and deletes theirs
+#
+# The one answer with a destructive half, driven end to end. The question has to
+# be asked again to answer it differently, and the only honest way to reach that
+# is the file itself — `pictureConsent` is user-editable like everything else in
+# it, and setting it back to "unasked" is what a user who wanted to be asked
+# again would do. Nothing else is touched: the camera is still on and the
+# picture from 10b is still on disk.
+TOPOLOGY_KEY=$(jq -r 'first(.layouts|keys[])//empty' "$STATE" 2>/dev/null)
+[[ -n $TOPOLOGY_KEY ]] || fail "there is a layout to re-record (captures)" "no layout key in $STATE"
+node -e '
+  var fs = require("fs");
+  var StateModel = require(process.argv[1] + "/StateModel.js");
+  var statePath = process.argv[2];
+  var state = StateModel.parseState(fs.readFileSync(statePath, "utf8")).state;
+  fs.writeFileSync(statePath + ".tmp",
+    StateModel.serializeState(StateModel.setPictureConsent(state, "unasked")));
+  fs.renameSync(statePath + ".tmp", statePath);
+' "$PLUGIN_DIR" "$STATE" || fail "the state file can be set back to unasked (captures)"
+
+unasked_again() { panel_state_json | jq -e '.pictureConsent == "unasked"' >/dev/null; }
+if ! poll 30 unasked_again; then
+  diagnostics
+  fail "the panel picks up the reset answer (captures)" "the panel still reports an answered consent"
+fi
+
+reask_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $reask_record == "recorded" ]] ||
+  fail "panel IPC records for the second ask (captures)" "record answered '$reask_record'"
+if ! poll 40 consent_offered; then
+  diagnostics
+  fail "the prompt comes back once the question is owed again (captures)" \
+    "no payload with consentOpen and the three answers"
+fi
+
+decline_answer=$(omarchy-shell "$IPC_TARGET" answerConsent not-these 2>&1)
+[[ $decline_answer == "not-these" ]] ||
+  fail "the panel records the refusal (captures)" "answerConsent not-these answered '$decline_answer'"
+
+# THE APPS ARE UNPICTURED AND THE PICTURES ARE GONE. Both halves, because either
+# one alone would be the wrong behaviour: a camera left on would photograph them
+# again at the next Record, and a picture left on disk is the thing the user just
+# said they did not want kept.
+if ! poll 30 cache_is 0; then
+  diagnostics
+  fail "\"Not for these apps\" removes the captures already taken" \
+    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ')"
+fi
+declined_pictured=$(jq -r --arg id "$PICTURED_IDENTITY" \
+  'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
+[[ $declined_pictured == "false" ]] ||
+  fail "\"Not for these apps\" leaves those apps unpictured" \
+    "$PICTURED_IDENTITY still reports pictured '$declined_pictured'"
+declined_answer_on_disk=$(jq -r '.pictureConsent//"absent"' "$STATE" 2>/dev/null)
+[[ $declined_answer_on_disk == "not-these" ]] ||
+  fail "the refusal is written to the state file (captures)" \
+    "the state file says pictureConsent '$declined_answer_on_disk'"
+
+# The panel agrees, from the row that draws the camera.
+declined_reported() {
+  panel_state_json | jq -e '
+    .consentOpen == false
+    and .pictureConsent == "not-these"
+    and (([.rows[]|select(.pictured == true)]|length) == 0)
+    and (([.chips[]|select(.pictured == true)]|length) == 0)' >/dev/null
+}
+if ! poll 30 declined_reported; then
+  diagnostics
+  fail "the panel reports the withdrawn consent (captures)" \
+    "a row or a chip still reports pictured after \"Not for these apps\""
+fi
+pass "\"Not for these apps\": the cameras are off, the pictures just taken are deleted, and the answer is on disk"
 
 # --------------------------------------------------------- 11. leave it closed
 

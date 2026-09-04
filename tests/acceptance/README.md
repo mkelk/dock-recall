@@ -251,6 +251,9 @@ that photographed everything it watches.
 | a failed capture | the cache directory is made **uncreatable** and a Record is performed. It must answer `recorded`, the state file must carry the layout with both apps and a timestamp, and no picture may exist. Driven, not argued |
 | a wiped cache | the whole directory is deleted under a live panel. Every chip must go on reporting an icon source, no chip may report a `capturePath`, and nothing may error |
 | both render paths | the layout's geometry is stripped so the recorded map drops to the stacked fallback, and the **same file** must still be drawn there — at a tier that carries the app's name |
+| the first-Record dialogue | the **first** Record with picturable apps puts the panel in the consent state: `consentOpen`, `pictureConsent: "unasked"`, exactly three answers (`keep` / `not-these` / `none` — ids from the model, labels from the buttons that drew them), and a thumbnail whose Image reports **Ready** at the same URL the recorded map binds. A strip of empty boxes would satisfy a count, so `ready` is asserted and not only `source` |
+| asked once | the answer is read back off the state file, the **shell is restarted**, and the restarted panel still reports it. Then a Record — the same event that opened the prompt the first time — must not reopen it |
+| "Not for these apps" | driven end to end: the cameras go off **and** the pictures already taken are deleted. Either half alone is the wrong behaviour — a camera left on photographs them again at the next Record, and a picture left on disk is exactly what the user just said they did not want kept. Reaching the second ask means setting `pictureConsent` back to `"unasked"` in the file, which is what a user who wanted asking again would do |
 | one capture deleted | the file goes and the panel is re-summoned. It must be offered no picture at all: no `captureSource`, no `capturePath`, icon and name intact. Asserted on a fresh panel because that is the honest shape — within one session a chip that already decoded its picture goes on drawing it, and the shell destroys the panel on hide anyway |
 
 **How a Record is reached.** Through the panel's own `record`, `undoRecord` and
@@ -292,6 +295,8 @@ omarchy-shell dock-recall hoverLink <link key>   # the key now hovered, or "none
 omarchy-shell dock-recall record                 # "recorded" | "refused" | "cannot-record" | "no-state"
 omarchy-shell dock-recall undoRecord             # "undone" | "refused" | "nothing-to-undo"
 omarchy-shell dock-recall forgetLayout           # "forgotten" | "nothing-to-forget" | "no-state"
+omarchy-shell dock-recall answerConsent keep     # "keep" | "not-these" | "none" | "not-asking"
+                                                 #   | "refused" | "no-state" | "unknown"
 ```
 
 The last three exist because **Record is the moment a picture is taken**, and
@@ -323,6 +328,10 @@ would be a second writer with none of that discipline.
   "badgeTone": "accent",
   "overflowOpen": false,
   "overflowLayouts": [],
+  "pictureConsent": "unasked",
+  "consentOpen": false,
+  "consentChoices": [],
+  "consentCaptures": [],
   "workspaces": [
     { "id": 7, "name": "7", "monitorName": "eDP-1", "renderPath": "positioned",
       "badgeValue": "7", "badgeFocused": true }
@@ -500,6 +509,28 @@ The delegates report under the layout's `topologyKey`, not its display `name`:
 same make and model and different EDID serials share a name, and keying on it
 would have both rows carrying whichever delegate finished last — `current`
 included. The payload still carries the name, which is what a consumer reads.
+
+### The first-Record dialogue
+
+Four keys, answering four different questions:
+
+| key | question |
+|---|---|
+| `pictureConsent` | what the **file** says the user answered: `"unasked"`, `"keep"`, `"not-these"` or `"none"`. Schema v6, beside `paused`, so it survives a shell restart — which is what makes "asked once" a claim about the tool and not about one panel session |
+| `consentOpen` | is the prompt on screen right now |
+| `consentChoices` | what it is **offering**, from the buttons that drew it: `{id, label}` per answer. The id comes from the model and the label from the button, so a prompt offering the right three ids under the wrong three words fails |
+| `consentCaptures` | what it is **showing**: `{identityId, occurrence, name, source, ready}` per thumbnail. `ready` is `Image.Ready` and nothing looser — a strip that reported three sources and one ready picture is a prompt showing the user two empty boxes |
+
+The last three are reported by the prompt's own delegates and are empty while it
+is shut, on the same discipline `overflowLayouts` uses: never reset, gated at
+read time on `consentOpen`, and iterated from the **model** so a report left over
+from a previous offer cannot enter the payload.
+
+`answerConsent` routes to the panel's own `answerConsent` and nothing else — the
+one place that re-reads the file, composes the answer and any withdrawal into a
+**single** write, evicts the pictures *after* that write goes through, and logs.
+An IPC path that set `pictureConsent` directly would record an answer without
+performing it: a "No pictures" that deleted nothing.
 
 ### The app list
 

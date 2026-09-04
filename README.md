@@ -129,6 +129,15 @@ thinks is happening:
   and the map goes back to icons with nothing lost. Forgetting a layout deletes
   its pictures, re-recording replaces them, and undoing a record takes them with
   it.
+- **Asked once, with the pictures in front of you** — the first time a Record
+  actually stores a picture, the panel shows you the pictures it just took and
+  offers three answers: **Keep pictures**, **Not for these apps**, or **No
+  pictures**. Not for these apps switches those apps' cameras off and deletes
+  what was just taken; No pictures switches every camera off and deletes every
+  stored picture, on every desk. The answer lives in the state file, so it
+  survives a shell restart and you are not asked again. Escape, or a click
+  outside it, dismisses it *without* answering — the question is still owed, and
+  it comes back at the next Record.
 - **Record layout / Restore now** — record the current arrangement for the current
   topology, or replay the recording immediately without waiting for a cable.
 - **Undo record** — immediately after recording, put the previous recording back.
@@ -149,6 +158,7 @@ omarchy-shell shell summon mkelk.dock-recall '{}'
 omarchy-shell dock-recall state              # JSON: the topology, and every chip and workspace
 omarchy-shell dock-recall setView recorded   # or live
 omarchy-shell dock-recall setPictured <row key> on   # the camera consent, or off
+omarchy-shell dock-recall answerConsent keep         # or not-these, or none
 ```
 
 That target exists only while the panel is up — the shell loads the panel on
@@ -326,9 +336,9 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 905 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 926 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
-qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml CaptureStore.qml
+qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml CaptureStore.qml ConsentPrompt.qml
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
 ./scripts/dev-install --restart    # install this working tree and restart the shell
 ```
@@ -345,7 +355,7 @@ if anything did. A real run of it, 2026-09-02:
 -----------------------------------------------------------------
 1  node --test 'tests/**/*.test.js'                 PASS           0
 2  omarchy plugin validate .                        PASS           0
-3  qmllint (syntax) on the six QML files            PASS           0
+3  qmllint (syntax) on the seven QML files          PASS           0
 4  tests/sandbox-dock.sh                            PASS          31
 5  tests/sandbox-future-version.sh --both           PASS          65
 6  tests/sandbox-reserved-id.sh                     PASS          35

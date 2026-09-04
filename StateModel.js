@@ -14,7 +14,7 @@
 // the panel epic (writes it). Add fields; never repurpose one.
 //
 //   State {
-//     version:    5                 // the schema generation. A file at an
+//     version:    6                 // the schema generation. A file at an
 //                                   // OLDER version is UPGRADED in place on the
 //                                   // read (see "Migration" below); a file from
 //                                   // the FUTURE keeps its own number, is still
@@ -34,6 +34,26 @@
 //                                   // file rather than the status file because
 //                                   // it is a user decision that must survive a
 //                                   // shell restart.
+//     pictureConsent:               // v6. THE ANSWER TO THE FIRST-RECORD
+//       "unasked"                   // DIALOGUE, and it is one answer for the
+//       | "keep"                    // whole tool rather than one per identity —
+//       | "not-these"               // the per-app grant is `Identity.pictured`
+//       | "none"                    // below, and this is the moment the user was
+//                                   // SHOWN what that grant produces and said
+//                                   // what they thought of it. It lives here for
+//                                   // the same reason `paused` does: it is a
+//                                   // decision, and a decision the user has to
+//                                   // make twice is a decision they were not
+//                                   // asked about the first time.
+//                                   // "unasked" is the default and the ONLY
+//                                   // value that makes the prompt appear; the
+//                                   // other three all mean "asked, and answered"
+//                                   // and differ in what the answer DID (see
+//                                   // Panel.qml, answerConsent). Nothing here
+//                                   // gates a capture: the gate is `pictured`,
+//                                   // per app, and every one of these answers
+//                                   // acts by changing that field rather than by
+//                                   // becoming a second switch in front of it.
 //     identities: Identity[]        // ORDER IS PRIORITY ORDER — engine.js
 //                                   // matchClient() returns the FIRST match, so
 //                                   // specific webapp identities must sit
@@ -189,11 +209,31 @@
 //   Everything else an identity said is carried through untouched, and all of
 //   it is pinned by tests/state.test.js.
 //
-//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 -> v5 in one read —
-//   because normalizeLayout writes the v2 and v3 fields and normalizeIdentity
-//   writes the v4 and v5 fields unconditionally, so there are no intermediate
-//   states to sequence. A v5 file read and written back is byte-identical to
-//   itself.
+//   v5 -> v6 is additive once more, and this time at the TOP level: a file that
+//   does not carry `pictureConsent` gains `pictureConsent: "unasked"`, and
+//   `version` becomes 6. Nothing an identity says moves at all.
+//
+//   "unasked" is the only honest default, and it is the direction that costs the
+//   user nothing: a file written before this generation existed was written by a
+//   build that never put the question, so nobody has answered it. The upgrade
+//   therefore ARRANGES FOR THE QUESTION rather than answering it — the opposite
+//   of v5, where the safe direction was to withhold. The two are the same rule
+//   seen from both ends: a migration may never invent a consent, and it may never
+//   pretend one was sought.
+//
+//   MATERIALIZED, like v4's and v5's: normalizeState writes `pictureConsent` on
+//   every state it returns, so a v5 file read and written back gains one
+//   `"pictureConsent": "unasked"` line. A consumer never has to tell absent from
+//   unasked, and an unrecognised word (a hand edit, a newer generation's answer
+//   stripped by a round trip that should never have happened) reads as "unasked"
+//   — which asks again rather than assuming an answer nobody in this build can
+//   understand.
+//
+//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 -> v5 -> v6 in one read —
+//   because normalizeLayout writes the v2 and v3 fields, normalizeIdentity
+//   writes the v4 and v5 fields and normalizeState writes the v6 one, all
+//   unconditionally, so there are no intermediate states to sequence. A v6 file
+//   read and written back is byte-identical to itself.
 //
 //   And every step of it happens IN MEMORY. Nothing here writes a file: the
 //   service reads an older file, runs from the upgraded state, and the file on
@@ -324,7 +364,28 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 5;
+var STATE_VERSION = 6;
+
+// The four values `pictureConsent` can hold (v6). Named rather than spelled out
+// at each site, because three of them are compared against in Panel.qml, in the
+// IPC verb that answers the prompt and in the tests, and a typo in a string
+// literal is a silent "unasked" for ever.
+var PICTURE_CONSENT_UNASKED = "unasked";
+var PICTURE_CONSENT_KEEP = "keep";
+var PICTURE_CONSENT_NOT_THESE = "not-these";
+var PICTURE_CONSENT_NONE = "none";
+
+// Anything at all -> one of the four. An unrecognised word is "unasked" on
+// purpose: see the v5 -> v6 note above. This is a WHITELIST for the same reason
+// normalizeIdentity is one — the file is hand-editable, and a typo must degrade
+// to "ask me again" rather than to a fifth state nothing in this build handles.
+function normalizePictureConsent(value) {
+  var word = typeof value === "string" ? value : "";
+  if (word === PICTURE_CONSENT_KEEP) return PICTURE_CONSENT_KEEP;
+  if (word === PICTURE_CONSENT_NOT_THESE) return PICTURE_CONSENT_NOT_THESE;
+  if (word === PICTURE_CONSENT_NONE) return PICTURE_CONSENT_NONE;
+  return PICTURE_CONSENT_UNASKED;
+}
 
 // ES5, no Array.isArray assumptions about the QML JS engine's vintage: this is
 // the one array test that behaves the same in node and in Qt's V4.
@@ -374,7 +435,13 @@ function own(map, key) {
 }
 
 function defaultState() {
-  return { version: STATE_VERSION, paused: false, identities: [], layouts: {} };
+  return {
+    version: STATE_VERSION,
+    paused: false,
+    pictureConsent: PICTURE_CONSENT_UNASKED,
+    identities: [],
+    layouts: {}
+  };
 }
 
 // Coerce whatever a pattern list contains into an array of non-empty strings.
@@ -743,6 +810,11 @@ function normalizeState(value) {
     // pausing is a file from before the switch existed, and the tool has always
     // been active. Only an explicit `true` pauses.
     paused: value.paused === true,
+    // v6, and the default is again the direction that assumes nothing: a file
+    // that does not mention the picture question was written before there was
+    // one to ask, so it has not been answered. See normalizePictureConsent for
+    // why an unrecognised word lands here too.
+    pictureConsent: normalizePictureConsent(value.pictureConsent),
     // The v4 migration is the first that is not purely additive — see
     // migratedLaunch — so the identities need to know whether this read IS a
     // migration. Every other caller of normalizeIdentities is a WRITE path and
@@ -762,8 +834,8 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> v2 -> v3 -> v4 -> v5, as far as it has to go, in
-//               the one pass). Not an error and not a recovery: nothing was
+//               upgraded (v1 -> v2 -> v3 -> v4 -> v5 -> v6, as far as it has to
+//               go, in the one pass). Not an error and not a recovery: nothing was
 //               invented, and the only thing dropped is the one v4 subtracts on
 //               purpose (migratedLaunch). The service logs it once and the next
 //               write persists the upgraded shape.
@@ -901,6 +973,36 @@ function serializeState(state) {
 // Queries and updates
 // ---------------------------------------------------------------------------
 
+// A NEW state, normalized, with one or two top-level fields replaced — and the
+// only shape in which the setters below are allowed to build one.
+//
+// It exists because every setter here used to end with the same literal:
+//   `return { version: …, paused: …, identities: …, layouts: … }`
+// written out four times. That is precisely the enumerated-field-list shape
+// .tick/learnings.md calls "a data-loss bug waiting for the next field", and v6
+// is that next field: `pictureConsent` would have survived a pause toggle and
+// been silently dropped by the first Record, because upsertLayout's literal
+// never mentioned it. The identity half of this module learned the lesson at v5
+// (identityWithPictured copies and replaces one key); this is the same discipline
+// one level up.
+//
+// The copy is of the NORMALIZED base, so a caller handing in half a state still
+// gets a whole one, and the patch is applied over it — so a field this function
+// has never heard of cannot leak in from `patch` either: normalizeState is the
+// whitelist, and it runs first.
+function stateWith(state, patch) {
+  var base = normalizeState(state);
+  var out = {};
+  var key;
+  for (key in base) {
+    if (Object.prototype.hasOwnProperty.call(base, key)) out[key] = base[key];
+  }
+  for (key in patch) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) out[key] = patch[key];
+  }
+  return out;
+}
+
 function layoutFor(state, topologyKey) {
   var layouts = (state && state.layouts) || {};
   var key = typeof topologyKey === "string" ? topologyKey : "";
@@ -975,7 +1077,7 @@ function upsertLayout(state, layout) {
   }
   layouts[normalized.topologyKey] = normalized;
 
-  return { version: base.version, paused: base.paused, identities: base.identities, layouts: layouts };
+  return stateWith(base, { layouts: layouts });
 }
 
 function removeLayout(state, topologyKey) {
@@ -986,15 +1088,14 @@ function removeLayout(state, topologyKey) {
     if (key === topologyKey) continue;
     layouts[key] = base.layouts[key];
   }
-  return { version: base.version, paused: base.paused, identities: base.identities, layouts: layouts };
+  return stateWith(base, { layouts: layouts });
 }
 
 // Replace the whole identity list (the panel edits it as a list). Returns a new
 // state, normalized, so a UI that hands over half-built rows cannot corrupt the
 // file.
 function setIdentities(state, list) {
-  var base = normalizeState(state);
-  return { version: base.version, paused: base.paused, identities: normalizeIdentities(list), layouts: base.layouts };
+  return stateWith(state, { identities: normalizeIdentities(list) });
 }
 
 // Flip the tool's on/off switch. Same new-object discipline as the rest: the
@@ -1069,7 +1170,7 @@ function setPictured(state, identityId, pictured) {
   }
   if (!found) return base;
 
-  return { version: base.version, paused: base.paused, identities: next, layouts: base.layouts };
+  return stateWith(base, { identities: next });
 }
 
 // Has this identity granted the picture consent? False for an identity that
@@ -1078,6 +1179,85 @@ function setPictured(state, identityId, pictured) {
 function isPictured(state, identityId) {
   var identity = identityById(state, typeof identityId === "string" ? identityId : "");
   return !!(identity && identity.pictured === true);
+}
+
+// WITHDRAW the picture consent, from a named set of identities or from ALL of
+// them. One write, however many identities it touches.
+//
+// It exists because two of the three answers to the first-Record dialogue are
+// withdrawals — "Not for these apps" names the apps that were just photographed,
+// "No pictures" names none and means every one — and both have to land in the
+// file as a SINGLE atomic write alongside the answer itself. A loop of
+// setPictured calls would be N writes, each one a whole-file round trip, with
+// the state after the third one describing a decision the user never expressed.
+//
+// `identityIds` null or undefined means EVERY identity. That is a deliberate,
+// documented spelling and not a defaulting accident, because the alternative —
+// an empty array meaning "all" — would turn a caller's empty list into a
+// wholesale withdrawal. An empty array here withdraws from nothing, which is
+// what an empty list of apps means.
+//
+// It only ever sets `pictured` to false. There is no grant half: granting is a
+// per-app act on a per-app control, and a bulk GRANT is the one operation this
+// consent model must not have.
+function clearPictured(state, identityIds) {
+  var base = normalizeState(state);
+  var all = identityIds === undefined || identityIds === null;
+  var wanted = {};
+  if (!all) {
+    var list = isArray(identityIds) ? identityIds : [identityIds];
+    for (var w = 0; w < list.length; w++) {
+      if (typeof list[w] === "string" && list[w]) wanted[list[w]] = true;
+    }
+  }
+
+  var next = [];
+  var changed = false;
+  for (var i = 0; i < base.identities.length; i++) {
+    var identity = base.identities[i];
+    var touch = all || own(wanted, identity.id) === true;
+    if (!touch || identity.pictured !== true) {
+      next.push(identity);
+      continue;
+    }
+    changed = true;
+    next.push(identityWithPictured(identity, false));
+  }
+  if (!changed) return base;
+
+  return stateWith(base, { identities: next });
+}
+
+// ------------------------------------ the first-Record dialogue's answer (v6)
+//
+// One answer for the whole tool, and the only setter for it. Same caller
+// contract as setPaused and setPictured: read the file FRESH, apply this, write
+// atomically — this is a decision the user could have been staring at while the
+// service rewrote the same file underneath them.
+//
+// COMPOSABLE ON PURPOSE. Two of the three answers also withdraw a consent, and
+// the panel spells that as `setPictureConsent(clearPictured(fresh, ids), answer)`
+// — one state, one write, one thing that happened. Neither function knows about
+// the other, which is what lets the third answer ("Keep pictures") use this one
+// alone.
+function setPictureConsent(state, answer) {
+  return stateWith(state, { pictureConsent: normalizePictureConsent(answer) });
+}
+
+// What the user answered, or "unasked". Never absent — normalizeState
+// materializes it — so this is a convenience over `state.pictureConsent` for
+// callers holding something that has not been through the normalizer.
+function pictureConsent(state) {
+  return normalizePictureConsent(state ? state.pictureConsent : "");
+}
+
+// Is the first-Record dialogue still owed? The one question the prompt's
+// visibility hangs on, said once so the panel and the IPC cannot disagree about
+// what "asked once" means: asked once is asked once ANSWERED, and the three
+// answers are indistinguishable here on purpose — what they DID differs, that
+// they closed the question does not.
+function pictureConsentAsked(state) {
+  return pictureConsent(state) !== PICTURE_CONSENT_UNASKED;
 }
 
 // ---------------------------------------------------------------------------
@@ -1622,6 +1802,16 @@ if (typeof module !== "undefined") {
     isPaused: isPaused,
     setPictured: setPictured,
     isPictured: isPictured,
+    clearPictured: clearPictured,
+    PICTURE_CONSENT_UNASKED: PICTURE_CONSENT_UNASKED,
+    PICTURE_CONSENT_KEEP: PICTURE_CONSENT_KEEP,
+    PICTURE_CONSENT_NOT_THESE: PICTURE_CONSENT_NOT_THESE,
+    PICTURE_CONSENT_NONE: PICTURE_CONSENT_NONE,
+    normalizePictureConsent: normalizePictureConsent,
+    setPictureConsent: setPictureConsent,
+    pictureConsent: pictureConsent,
+    pictureConsentAsked: pictureConsentAsked,
+    stateWith: stateWith,
     defaultStatus: defaultStatus,
     normalizeStatus: normalizeStatus,
     normalizeVerdict: normalizeVerdict,

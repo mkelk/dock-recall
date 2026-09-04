@@ -6364,3 +6364,270 @@ test("the capture source is a fact about the RECORDED map, and a file URL", () =
   assert.ok(state.indexOf("if (capturePath) chips[chips.length - 1].capturePath = capturePath") !== -1);
   assert.ok(state.indexOf("if (drawnCapture) chips[chips.length - 1].captureSource = drawnCapture") !== -1);
 });
+
+// ---------------------------------------------------------------------------
+// THE FIRST-RECORD DIALOGUE (tick y28)
+// ---------------------------------------------------------------------------
+//
+// The human's decision, in full: at the first Record with picturable apps the
+// panel shows THE CAPTURES JUST TAKEN and offers exactly three answers — Keep
+// pictures / Not for these apps / No pictures — and the answer survives a shell
+// restart. Asked ONCE.
+//
+// The parts with a right answer are pure and live here; the modal's five moving
+// parts are QML and are pinned at the source below, the way every other QML gate
+// in this file is.
+
+test("the prompt offers exactly three answers, in the order it draws them", () => {
+  const choices = panel.consentChoices();
+  assert.deepStrictEqual(choices.map((c) => c.id), ["keep", "not-these", "none"]);
+  assert.deepStrictEqual(choices.map((c) => c.label),
+    ["Keep pictures", "Not for these apps", "No pictures"]);
+
+  // No answer is dimmed. A prompt with a disabled option is a question whose
+  // answer the asker has already decided.
+  for (const choice of choices) {
+    assert.strictEqual(choice.enabled, true, choice.id);
+    assert.ok(choice.tooltip.length > 0, choice.id + " says what pressing it will do");
+  }
+
+  // Shaped like the overflow menu's actions, so the SAME cursor helpers drive
+  // both surfaces rather than the prompt inventing a second vocabulary.
+  assert.deepStrictEqual(panel.menuActionIds(choices), ["keep", "not-these", "none"]);
+  assert.strictEqual(panel.firstEnabledActionId(choices), "keep");
+  assert.strictEqual(panel.nextSection(panel.menuActionIds(choices), "keep", 1), "not-these");
+  assert.strictEqual(panel.nextSection(panel.menuActionIds(choices), "keep", -1), "none");
+});
+
+test("only one of the three is an answer", () => {
+  for (const id of ["keep", "not-these", "none"]) assert.ok(panel.isConsentChoice(id), id);
+  for (const junk of ["", "Keep", "yes", "unasked", null, undefined, 7, {}]) {
+    assert.strictEqual(panel.isConsentChoice(junk), false, JSON.stringify(junk));
+  }
+});
+
+test("the strip is the pictures that were STORED, not the ones that were planned", () => {
+  // A round's results carry every planned capture, failures included. A
+  // thumbnail strip with a hole in it where a window on a sleeping monitor
+  // should be would be a prompt asking about a picture that does not exist.
+  const results = [
+    { identityId: "obsidian", occurrence: 0, file: "a.jpg", ok: true, reason: "" },
+    { identityId: "vault", occurrence: 0, file: "b.jpg", ok: false, reason: "no-frame" },
+    { identityId: "obsidian", occurrence: 1, file: "c.jpg", ok: true, reason: "" },
+    { identityId: "", occurrence: 0, file: "d.jpg", ok: true, reason: "" }
+  ];
+  assert.deepStrictEqual(panel.consentCaptureEntries(results), [
+    { identityId: "obsidian", occurrence: 0, file: "a.jpg" },
+    { identityId: "obsidian", occurrence: 1, file: "c.jpg" }
+  ]);
+  assert.deepStrictEqual(panel.consentCaptureEntries(null), []);
+
+  // "These apps" is the identities the user is LOOKING AT, deduped and in
+  // first-seen order — two windows of one app are one app.
+  assert.deepStrictEqual(panel.consentIdentityIds(panel.consentCaptureEntries(results)),
+    ["obsidian"]);
+  assert.deepStrictEqual(panel.consentIdentityIds(null), []);
+});
+
+test("the prompt is due once, and only when there is something to show", () => {
+  const shown = [{ identityId: "obsidian", occurrence: 0, file: "a.jpg" }];
+
+  assert.strictEqual(panel.consentPromptDue("unasked", shown), true);
+  assert.strictEqual(panel.consentPromptDue("", shown), true, "a state that has never said");
+
+  // ASKED ONCE — and all three answers close it, because what they DID differs
+  // and that they closed the question does not.
+  for (const answer of ["keep", "not-these", "none"]) {
+    assert.strictEqual(panel.consentPromptDue(answer, shown), false, answer);
+  }
+
+  // A round that stored nothing has nothing to demonstrate. The user is asked at
+  // the next Record that produces something, which is the first moment there is
+  // anything to ask about — a three-choice dialogue over an empty strip is
+  // precisely the warning label this moment is not.
+  assert.strictEqual(panel.consentPromptDue("unasked", []), false);
+  assert.strictEqual(panel.consentPromptDue("unasked", null), false);
+});
+
+test("PanelModel and StateModel spell the consent words identically", () => {
+  // The cross-pin. PanelModel may not require StateModel (siblings; neither
+  // imports the other), so `consentAnswered` is a copy of
+  // StateModel.pictureConsentAsked and this is what keeps the copy honest —
+  // exactly the arrangement TERMINAL_BINARIES already lives under.
+  const words = ["unasked", "keep", "not-these", "none", "", "Keep", "yes", null, 7];
+  for (const word of words) {
+    assert.strictEqual(panel.consentAnswered(word),
+      state.pictureConsentAsked({ pictureConsent: word }),
+      JSON.stringify(word) + ": the two spellings have drifted apart");
+  }
+  // And the three ids the prompt offers are exactly the three the file accepts.
+  for (const choice of panel.consentChoices()) {
+    assert.strictEqual(state.normalizePictureConsent(choice.id), choice.id,
+      choice.id + " is not a value the state file can hold");
+  }
+});
+
+test("the prompt's own words name what happened, in the past tense", () => {
+  assert.strictEqual(panel.consentTitle(1), "Dock Recall took a picture of this window");
+  assert.strictEqual(panel.consentTitle(3), "Dock Recall took pictures of these 3 windows");
+  assert.ok(panel.consentBody().indexOf("~/.cache") !== -1,
+    "a picture of your own window is self-explanatory; a cache directory is not");
+
+  // One log line per answer, naming what it DID rather than which button was
+  // pressed — the log is read by somebody asking what happened to their files.
+  assert.ok(panel.consentAnswerLine("keep", ["obsidian"]).indexOf("kept") !== -1);
+  const declined = panel.consentAnswerLine("not-these", ["obsidian", "vault"]);
+  assert.ok(declined.indexOf("obsidian") !== -1 && declined.indexOf("vault") !== -1,
+    "it names the apps it turned off: " + declined);
+  assert.ok(panel.consentAnswerLine("none", []).indexOf("every camera") !== -1);
+  assert.strictEqual(panel.consentAnswerLine("nonsense", []), "");
+});
+
+test("the modal mirrors the overflow menu's five parts, and stashes the cursor", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // 1. A BOOL of its own.
+  assert.ok(source.indexOf("property bool consentOpen: false") !== -1);
+
+  // 2. focusSection set to its own value on open, and 6. the previous one
+  //    STASHED first — the part the overflow menu does not need, because the
+  //    user tabbed to the ⋯ and did not ask for this.
+  const open = source.slice(source.indexOf("function openConsent() {"));
+  const openBody = open.slice(0, open.indexOf("\n  }\n"));
+  assert.ok(openBody.indexOf("root.consentReturnSection = root.focusSection") !== -1, openBody);
+  assert.ok(openBody.indexOf("root.consentReturnSection = root.focusSection")
+    < openBody.indexOf("root.focusSection = \"consent\""),
+    "the stash runs AFTER the overwrite, so what it stashes is \"consent\" itself");
+
+  // 3. handleMove checks it FIRST, so the panel cursor cannot move behind it.
+  const move = source.slice(source.indexOf("function handleMove(dx, dy) {"));
+  const moveBody = move.slice(0, move.indexOf("\n  }\n"));
+  assert.ok(moveBody.indexOf("root.consentOpen") !== -1, "handleMove ignores the prompt");
+  assert.ok(moveBody.indexOf("root.consentOpen") < moveBody.indexOf("root.overflowOpen"),
+    "the prompt is the panel's only true modal and has to be asked about first");
+
+  // Enter and Space too, and Tab — which the prompt keeps rather than letting it
+  // step out and leave a modal over a cursor somewhere behind it.
+  const activate = source.slice(source.indexOf("function activateCursor() {"));
+  assert.ok(activate.slice(0, activate.indexOf("\n  }\n")).indexOf("root.activateConsent()") !== -1);
+  const section = source.slice(source.indexOf("function moveSection(direction) {"));
+  assert.ok(section.slice(0, section.indexOf("\n  }\n")).indexOf("root.moveConsentCursor(") !== -1);
+
+  // 4. Auto-close when focus leaves — in the ONE onFocusSectionChanged handler,
+  //    because QML allows exactly one per signal per object.
+  const changed = source.slice(source.indexOf("onFocusSectionChanged: {"));
+  const changedBody = changed.slice(0, changed.indexOf("\n  }\n"));
+  assert.ok(changedBody.indexOf("root.closeConsent()") !== -1, changedBody);
+  assert.strictEqual(source.split("onFocusSectionChanged: {").length - 1, 1,
+    "a second onFocusSectionChanged on root would be a syntax error, not a second listener");
+
+  // 5. Escape unwinds ONE LEVEL AT A TIME: prompt, then menu, then the panel.
+  const escape = source.slice(source.indexOf("onCloseRequested:"), source.indexOf("onMoveRequested:"));
+  assert.ok(escape.indexOf("root.consentOpen ? root.dismissConsent()") !== -1, escape);
+  assert.ok(escape.indexOf("root.consentOpen") < escape.indexOf("root.overflowOpen"), escape);
+  assert.ok(escape.indexOf("root.dismiss()") !== -1, "and the panel is still the last level");
+
+  // And the cursor comes BACK. Dismissing is not an answer: nothing is written.
+  const close = source.slice(source.indexOf("function closeConsent() {"));
+  const closeBody = close.slice(0, close.indexOf("\n  }\n"));
+  assert.ok(closeBody.indexOf("root.focusSection = (back && root.focusOrder.indexOf(back) !== -1)") !== -1,
+    closeBody);
+  assert.strictEqual(closeBody.indexOf("writeState"), -1,
+    "dismissing the prompt writes something — a dismissal is not an answer");
+  assert.strictEqual(closeBody.indexOf("evict"), -1,
+    "dismissing the prompt deletes something");
+});
+
+test("answering is ONE write, and it deletes only after the write went through", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const fn = source.slice(source.indexOf("function answerConsent(answer) {"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+
+  // setPaused's discipline: a FRESH read, the adopt-what-the-file-says branch,
+  // a StateModel setter, and the log gated on writeState's boolean.
+  assert.ok(body.indexOf("root.freshState()") !== -1, "it writes from the panel's stale copy");
+  assert.ok(body.indexOf("StateModel.pictureConsentAsked(fresh)") !== -1,
+    "it overwrites an answer somebody else already gave");
+  assert.ok(body.indexOf("if (!root.writeState(next)) return false") !== -1, body);
+  assert.ok(body.indexOf("root.writeState(next)") < body.indexOf("root.log("),
+    "the log line is not gated on the write");
+
+  // ONE write for all three answers: the withdrawal is composed into the same
+  // state object rather than looped as N whole-file round trips.
+  assert.strictEqual(body.split("root.writeState(").length - 1, 1,
+    "answering the prompt writes the file more than once");
+  assert.ok(body.indexOf("StateModel.clearPictured(next, ids)") !== -1, body);
+  assert.ok(body.indexOf("StateModel.clearPictured(next, null)") !== -1,
+    "\"No pictures\" has to reach every identity, not just the ones on screen");
+  assert.ok(body.indexOf("StateModel.setPictureConsent(next, answer)") !== -1, body);
+
+  // THE PICTURES GO AFTER THE WRITE, like every other eviction in this file: a
+  // refused write must not take the pictures with it.
+  assert.ok(body.indexOf("root.writeState(next)") < body.indexOf("captureStore.evict"),
+    "a refused write still deletes the user's pictures");
+  assert.ok(body.indexOf("captureStore.evictAll(") !== -1,
+    "\"No pictures\" leaves the other desks' pictures on disk");
+});
+
+test("the prompt is offered by the capture round, after it finishes", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const fn = source.slice(source.indexOf("function captureAfterRecord(layout) {"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+
+  // Inside the completion callback and nowhere else. Asking before the round
+  // would mean asking about photographs nobody has seen, which is the warning
+  // label this feature deliberately is not.
+  assert.ok(body.indexOf("root.offerConsent(results)") !== -1, body);
+  assert.ok(body.indexOf("captureStore.capture(plan, function (results)")
+    < body.indexOf("root.offerConsent(results)"), body);
+
+  // And the no-captures early return does NOT offer it: a Record that stored
+  // nothing has nothing to ask about.
+  const early = body.slice(0, body.indexOf("captureStore.capture("));
+  assert.strictEqual(early.indexOf("offerConsent"), -1, early);
+});
+
+test("the strip is unloaded between offers, not merely hidden", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const loader = source.slice(source.indexOf("sourceComponent: ConsentPrompt") - 400);
+
+  // The prompt's Images decode files off disk. A shut prompt that merely stopped
+  // painting would keep them decoded for the panel's life — for pictures of
+  // windows the user may just have said they do not want kept.
+  assert.ok(loader.indexOf("active: root.consentOpen") !== -1, loader.slice(0, 500));
+  assert.ok(loader.indexOf("sourceComponent: ConsentPrompt") !== -1);
+});
+
+test("the prompt reports what it drew, and reports nothing while it is shut", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const prompt = fs.readFileSync(path.join(__dirname, "..", "ConsentPrompt.qml"), "utf8");
+
+  // The delegates write; panelState iterates the MODEL and looks entries up.
+  // Never reset — tick be1's lesson: a Repeater's delegates are created once and
+  // are not destroyed by the surface they sit on closing.
+  assert.ok(prompt.indexOf("prompt.panel.reportConsentChoice(") !== -1);
+  assert.ok(prompt.indexOf("prompt.panel.reportConsentCapture(") !== -1);
+
+  const fn = source.slice(source.indexOf("function panelState() {"));
+  const body = fn.slice(0, fn.indexOf("\n    return payload\n"));
+  assert.ok(body.indexOf("if (root.consentOpen) {") !== -1,
+    "a shut prompt reports the answers it is not offering");
+  assert.ok(body.indexOf("root.consentChoiceModel") !== -1,
+    "the choices are read off a registry rather than iterated from the model");
+  assert.ok(body.indexOf("pictureConsent: root.pictureConsent") !== -1,
+    "the stored answer — the one that proves \"asked once\" across a restart");
+
+  // The label comes from the BUTTON and the id from the MODEL. A prompt offering
+  // the right three ids under the wrong three words is what the pair catches.
+  assert.ok(body.indexOf("label: String(choiceReport.label)") !== -1, body);
+});

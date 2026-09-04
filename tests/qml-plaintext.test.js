@@ -38,6 +38,7 @@ const path = require("node:path");
 const REPO_ROOT = path.join(__dirname, "..");
 const PANEL_QML = path.join(REPO_ROOT, "Panel.qml");
 const MAP_WORKSPACE_QML = path.join(REPO_ROOT, "MapWorkspace.qml");
+const CONSENT_PROMPT_QML = path.join(REPO_ROOT, "ConsentPrompt.qml");
 
 // Every `Text { ... }` block in a QML file, as { line, body }.
 //
@@ -184,9 +185,17 @@ test("a brace inside a comment does not swallow the rest of the file", () => {
 // Text elements the extraction carried over (chipLabel, tagLabel,
 // workspaceBadgeText) — a floor of 20 there would never trip even if the
 // scanner stopped matching two of the three.
+// ConsentPrompt.qml joins them for the same reason MapWorkspace.qml did: it
+// draws a string an application chose for itself. Its thumbnail strip labels
+// each picture with the app's own name, resolved off the same app row the list
+// draws — so a window title that looks like markup reaches a Text here exactly
+// as it reaches chipLabel there. Its floor is low because the prompt has three
+// Text elements (the title, the body, and the name under each thumbnail), and a
+// floor of 20 would never trip even if the scanner stopped matching two of them.
 const SCAN_TARGETS = [
   { label: "Panel.qml", file: PANEL_QML, minBlocks: 20 },
   { label: "MapWorkspace.qml", file: MAP_WORKSPACE_QML, minBlocks: 2 },
+  { label: "ConsentPrompt.qml", file: CONSENT_PROMPT_QML, minBlocks: 2 },
 ];
 
 for (const target of SCAN_TARGETS) {

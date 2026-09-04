@@ -175,27 +175,51 @@ Item {
   // leaving the kernel, and nothing outside the prefix can be named.
   function evict(prefix, reason) {
     if (!store.cacheDir || !prefix) return
-    store._evictPrefix = String(prefix)
+    store._evictPattern = String(prefix) + "*"
     store._evictReason = String(reason || "")
     evictProc.running = false
     evictProc.running = true
   }
 
-  property string _evictPrefix: ""
+  // EVERY picture, on every desk. The third answer to the first-Record dialogue
+  // ("No pictures", tick y28) is the only caller, and it is deliberately a
+  // separate function rather than `evict("")`: the prefix form refuses an empty
+  // prefix precisely so a caller with an unresolved topology key cannot delete
+  // the whole cache by accident, and a wholesale delete has to be something a
+  // caller ASKED for by name.
+  //
+  // The pattern is `*.jpg` and not `*`, so this names only the files this store
+  // writes. The directory is ours and holds nothing else today; saying so in the
+  // pattern is what keeps that true if it ever stops being.
+  function evictAll(reason) {
+    if (!store.cacheDir) return
+    store._evictPattern = "*.jpg"
+    store._evictReason = String(reason || "")
+    evictProc.running = false
+    evictProc.running = true
+  }
+
+  property string _evictPattern: ""
   property string _evictReason: ""
 
   Process {
     id: evictProc
     command: ["find", store.cacheDir, "-maxdepth", "1", "-type", "f",
-              "-name", store._evictPrefix + "*", "-delete"]
+              "-name", store._evictPattern, "-delete"]
     stderr: StdioCollector { waitForEnd: true }
     onExited: {
       // Nothing is logged about the count, because `find -delete` does not
       // report one and a second listing to count what is gone would be a
       // process spawn for a log line. What IS logged is the act and its reason,
       // so the sequence in the log reads as the user's own sequence.
+      //
+      // WHICH pictures, because the two evictions delete different things and a
+      // line reading "this layout" after "No pictures" would describe an act
+      // narrower than the one that ran.
       if (store._evictReason) {
-        store.log("dropped the pictures for this layout (" + store._evictReason + ")")
+        store.log((store._evictPattern === "*.jpg"
+          ? "dropped every stored picture, on every desk ("
+          : "dropped the pictures for this layout (") + store._evictReason + ")")
       }
       store.refresh()
       if (store._evictThen) {
