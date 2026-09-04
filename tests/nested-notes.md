@@ -596,3 +596,71 @@ Two more things worth knowing, both of which broke a first draft of this check:
   `$SBOX/nested-hyprland.log` for "config error" passes whatever the config says.
 - `hyprctl configerrors` answers **blank** on a clean instance, not the string
   `"no errors"` its own `--help` line suggests.
+
+---
+
+# 2026-09-04 — Why the two test windows would not change shape (tick z65)
+
+Run: a throwaway probe over `tests/sandbox-lib.sh` (nested Hyprland 0.56.2,
+Lua-configured exactly as an Omarchy Quattro guest is). Nothing ran against the
+live session; the isolation footer passed on every run. The subject is
+`tests/acceptance/dock-recall-captures-test.sh`'s `shape_window()`, which floats
+the two test windows at aspect ratios five times apart so the stored JPEG's
+proportions can say WHICH window was photographed.
+
+In the VM both windows came back `621x368` — identical, the tiled size — and the
+test's precondition correctly refused to prove anything.
+
+## The cause, and it is sharper than "unknown dispatcher"
+
+The three plain dispatchers `shape_window` sent are not merely unrecognised.
+A Lua-configured Hyprland hands `hyprctl dispatch <anything>` to the LUA parser
+as `hl.dispatch(<anything>)`, and the legacy argument syntax is not Lua, so all
+three are **parse errors**:
+
+    setfloating address:0x… ->
+      error: [string "return hl.dispatch(setfloating address:0x..."]:1:
+             ')' expected near 'address'
+       → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax
+               might need to be updated.
+
+    resizewindowpixel exact 900 340,address:0x…  -> same, near 'exact'
+    movewindowpixel   exact 20 20,address:0x…    -> same, near 'exact'
+
+The window is untouched: a tiled `foot` read `1406x840 at 5,5 floating=false`
+before all three and `1406x840 at 5,5 floating=false` after. **`hyprctl` exits
+0 regardless**, and `shape_window` threw the messages away with
+`>/dev/null 2>&1` — so the only symptom that ever reached anyone was two
+identical tiled sizes, five minutes into a VM boot.
+
+## The working form
+
+The one `engine.js`'s own restore executor emits (`opToCommand`, ticks 8t4/y29)
+and the one every other script in `tests/acceptance/` already uses:
+
+    hl.dsp.window.float({ window = "address:0x…", action = "toggle" })
+    hl.dsp.window.resize({ window = "address:0x…", x = <w>, y = <h> })
+    hl.dsp.window.move({   window = "address:0x…", x = <x>, y = <y> })
+
+Resize BEFORE move (a resize keeps the centre fixed and therefore moves `at`),
+and the float is sent only when a fresh read disagrees, because `action` is
+ignored on 0.56 and every spelling toggles.
+
+Measured, two tiled 700x840 `foot` windows on a 1416x850 nested output:
+
+    float -> ok, resize -> ok, move -> ok   (all six dispatches)
+    pictured  900x340 at 20,20   floating=true
+    withheld  340x700 at 20,400  floating=true
+    aspect 2.647 vs 0.486 — 81.7% apart, against the test's 40% floor
+
+Both landed on the window they NAMED. That is not a formality: an unrecognised
+selector key acts silently on the ACTIVE window (`.tick/learnings.md`), so "one
+window carries the other's numbers" is a live failure mode, and it is what the
+`900x340 != 340x700` check in the probe was there to catch.
+
+## One jq trap on the way
+
+`.floating // empty` collapses a TILED window and a window that does not exist
+into the same empty string, because jq's `//` treats a literal `false` as
+absent. Both cases happen to want the same thing here, so it worked by accident;
+`// false` says what is meant.

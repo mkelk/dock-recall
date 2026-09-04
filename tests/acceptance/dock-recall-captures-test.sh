@@ -388,20 +388,104 @@ pass "two windows on the desk: one app that will grant the picture consent, one 
 # is that the two ended up different enough for the question to be answerable —
 # a run where the resize did not take is a run where this proves nothing, and it
 # says so rather than passing.
+#
+# DISPATCH FORM (tick z65) — MEASURED, in the nested sandbox, both ways.
+#
+# The three plain dispatchers this used to send — setfloating /
+# resizewindowpixel / movewindowpixel — do nothing at all on an Omarchy Quattro
+# guest, and the reason is sharper than "unknown dispatcher". The config is Lua,
+# so `hyprctl dispatch <anything>` is handed to the LUA parser as
+# `hl.dispatch(<anything>)`, and the legacy argument syntax is not Lua. All
+# three come back with a PARSE error:
+#
+#   setfloating address:0x… ->
+#     error: [string "return hl.dispatch(setfloating address:0x..."]:1:
+#            ')' expected near 'address'
+#      → Note: dispatch in lua is a shorthand for hl.dispatch(...), your syntax
+#              might need to be updated.
+#
+# and the window is untouched — measured on a tiled foot: 1406x840 before,
+# 1406x840 after all three. `hyprctl` exits 0 anyway, and this function threw
+# the message away with `>/dev/null 2>&1`, so the VM's identical 621x368 tiled
+# sizes were the only symptom that ever reached the log. Hence rule 1 of this
+# tick: nothing here swallows an answer any more.
+#
+# The working spelling is the one engine.js's own restore executor uses and
+# live-verified against the real session (ticks 8t4/y29), and the one every
+# other script in this directory reaches for (dock-recall-roundtrip-test.sh,
+# undock-locked.sh): `hl.dsp.window.float` / `.resize` / `.move`, each naming
+# its subject with `window = "address:0x…"`. Verified end to end in the nested
+# sandbox before this was written — two tiled 700x840 foot windows came out
+# 900x340 at 20,20 and 340x700 at 20,400, every dispatch answering `ok`, aspect
+# 2.647 vs 0.486, 81.7% apart against a 40% floor. Both landed on the window
+# they NAMED, which is the selector trap in .tick/learnings.md: an unrecognised
+# selector key acts silently on the ACTIVE window, so "one window carries the
+# other's numbers" is a real failure mode and the check below would catch it.
+#
+# Two things from that evidence matter here:
+#   - `hl.dsp.window.float`'s `action` is IGNORED by this Hyprland — every
+#     spelling toggles — so the current `.floating` is read first and the
+#     dispatch is sent only when it disagrees with "floating", exactly as
+#     Service.qml's executeFloating does. Sending it unconditionally would
+#     un-float a window a previous run of this test left floating.
+#   - RESIZE MUST COME BEFORE MOVE. A resize keeps the window's CENTRE fixed,
+#     so it also changes `at`; resizing after positioning drags the window off
+#     the very (x, y) just asked for.
 shape_window() {
-  local address="$1" width="$2" height="$3" x="$4" y="$5"
+  local label="$1" address="$2" width="$3" height="$4" x="$5" y="$6"
   [[ -n $address ]] || return 1
-  hyprctl dispatch setfloating "address:$address" >/dev/null 2>&1
-  hyprctl dispatch resizewindowpixel "exact $width $height,address:$address" >/dev/null 2>&1
-  hyprctl dispatch movewindowpixel "exact $x $y,address:$address" >/dev/null 2>&1
+
+  # `// false` and not `// empty`: jq's `//` treats a literal `false` as absent,
+  # so `.floating // empty` collapses "tiled" and "no such window" into the same
+  # empty string. Both still want the toggle, so it worked — but only by
+  # accident, and the next reader of this line deserves better than that.
+  local floating answer
+  floating=$(clients | jq -r --arg a "$address" 'first(.[]|select(.address==$a)|.floating)//false')
+  if [[ $floating != "true" ]]; then
+    answer=$(hyprctl dispatch "hl.dsp.window.float({ window = \"address:$address\", action = \"toggle\" })")
+    [[ $answer == "ok" ]] ||
+      fail "$label floated (captures)" "hl.dsp.window.float answered '$answer' for $address"
+  fi
+
+  answer=$(hyprctl dispatch "hl.dsp.window.resize({ window = \"address:$address\", x = $width, y = $height })")
+  [[ $answer == "ok" ]] ||
+    fail "$label resized (captures)" "hl.dsp.window.resize answered '$answer' for $address"
+
+  answer=$(hyprctl dispatch "hl.dsp.window.move({ window = \"address:$address\", x = $x, y = $y })")
+  [[ $answer == "ok" ]] ||
+    fail "$label moved (captures)" "hl.dsp.window.move answered '$answer' for $address"
 }
 window_size() {
   clients | jq -r --arg t "$1" 'first(.[]|select(.initialTitle==$t)|"\(.size[0])x\(.size[1])")//empty'
 }
 
-shape_window "$(window_address "$PICTURED_TITLE")" 900 340 20 20
-shape_window "$(window_address "$WITHHELD_TITLE")" 340 700 20 400
-sleep 2
+shape_window "the pictured window" "$(window_address "$PICTURED_TITLE")" 900 340 20 20
+shape_window "the withheld window" "$(window_address "$WITHHELD_TITLE")" 340 700 20 400
+
+# Poll for two agreeing reads rather than `sleep 2` — the house rule everywhere
+# else in this suite, and `sleep 0.3` inside a deadline loop is the poll, not a
+# sleep-then-assert. Each `hyprctl dispatch` above is a synchronous round trip
+# that commits before the next is parsed (engine.js geometry-actuator notes,
+# tick y29), and in the sandbox the new sizes were already readable on the first
+# sample — so this waits for `hyprctl clients` to be QUIET, not for the resize.
+#
+# It deliberately decides nothing. If the dispatches were accepted and then
+# silently undone — the "tiler simply re-took the window" case this whole
+# section exists to catch — the sizes go quiet too, just at the wrong values,
+# and the distinguishable-shapes check right below is what calls that. Two
+# consecutive agreeing reads at the TILED size is a settled answer and still a
+# failure, which is exactly the outcome the VM run produced.
+shape_settle_deadline=$((SECONDS + 10))
+prev_pictured_size="" prev_withheld_size=""
+while (( SECONDS < shape_settle_deadline )); do
+  cur_pictured_size=$(window_size "$PICTURED_TITLE")
+  cur_withheld_size=$(window_size "$WITHHELD_TITLE")
+  [[ -n $cur_pictured_size && -n $cur_withheld_size \
+     && $cur_pictured_size == "$prev_pictured_size" \
+     && $cur_withheld_size == "$prev_withheld_size" ]] && break
+  prev_pictured_size="$cur_pictured_size" prev_withheld_size="$cur_withheld_size"
+  sleep 0.3
+done
 
 PICTURED_SIZE=$(window_size "$PICTURED_TITLE")
 WITHHELD_SIZE=$(window_size "$WITHHELD_TITLE")
