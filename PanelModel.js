@@ -6084,6 +6084,229 @@ function toplevelBridgeRefusal(verdict, waitedMs) {
   return "Cannot picture " + parts.join(", ") + ".";
 }
 
+// ---------------------------------------------------------------------------
+// The capture cache: what a picture is called, and which ones a Record takes
+// ---------------------------------------------------------------------------
+//
+// Pictures live in ~/.cache/omarchy/dock-recall/ and NOT in the state file.
+// That is a product decision, not a filesystem one: a cache is a directory a
+// cleaner is allowed to wipe, the correct behaviour when it does is that the
+// map falls back to icons, and keeping the pixels out of the state file
+// preserves the README's "writes one state file" promise byte for byte. If
+// losing a picture broke anything it would have to join the atomic write, and
+// that property would be gone.
+//
+// THE KEY is (identityId, occurrence, topologyKey) — the tuple
+// engine.buildLayout already makes unique for one recording. Identity alone
+// would give two windows of one app the same picture; leaving the topology out
+// would make the laptop's recording and the docked one overwrite each other.
+//
+// THE NAME has to survive being a filename and being handed to `find`, and both
+// of its variable parts come from places a user can type into: an identity id is
+// hand-editable in the state file, and a topology key is built from monitor
+// descriptions an EDID supplies. So neither is used raw. The topology becomes a
+// hash, which also gives eviction the one thing it needs — every picture of one
+// recording shares a leading segment, so "forget this layout" is a single
+// prefixed `find`. The identity keeps a readable, sanitized fragment for anyone
+// looking at the directory, plus its own hash so two ids that sanitize to the
+// same characters still get different files.
+//
+// A hash collision on the topology (1 in 2^32) would make two desks share a
+// prefix and evict each other's pictures. The cost is a lost cache entry and a
+// map that falls back to icons, which is the same outcome as a cleaner running
+// — so it is a tolerable failure rather than a corruption, and it is written
+// down here rather than left to be discovered.
+
+var CAPTURE_SUFFIX = ".jpg";
+var CAPTURE_ID_CHARS = 40;
+
+// FNV-1a, 32-bit, as 8 hex digits. Not a security hash and not asked to be —
+// it is a short, stable, dependency-free name for an arbitrary string.
+//
+// The multiply is written as shifts and adds because ES5 has no 32-bit multiply:
+// `hash * 16777619` exceeds 2^53 for a large hash and silently loses low bits,
+// which would make the name depend on floating-point rounding.
+function captureHash(text) {
+  var s = (text === undefined || text === null) ? "" : String(text);
+  var hash = 0x811c9dc5;
+  for (var i = 0; i < s.length; i++) {
+    hash = (hash ^ s.charCodeAt(i)) >>> 0;
+    hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
+  }
+  var hex = hash.toString(16);
+  while (hex.length < 8) hex = "0" + hex;
+  return hex;
+}
+
+// One path segment, safe by construction. Anything outside [A-Za-z0-9._-]
+// becomes "_", which is what turns `../../etc/passwd` into a name and not a
+// traversal, and a leading "-" or "." is replaced too — the first would read as
+// a flag to the tools that clean this directory up, the second would hide the
+// file and, as "..", would name the parent.
+function captureSafeSegment(text, cap) {
+  var s = (text === undefined || text === null) ? "" : String(text);
+  var limit = (typeof cap === "number" && cap > 0) ? cap : CAPTURE_ID_CHARS;
+  var out = "";
+  for (var i = 0; i < s.length && out.length < limit; i++) {
+    var ch = s.charAt(i);
+    out += /[A-Za-z0-9._-]/.test(ch) ? ch : "_";
+  }
+  if (out === "") return "_";
+  var first = out.charAt(0);
+  if (first === "-" || first === ".") out = "_" + out.substring(1);
+  return out;
+}
+
+// Every picture of one recording starts with this. Eviction is exactly "delete
+// the files under this prefix", which is why the topology segment is first and
+// alone.
+function captureTopologyPrefix(topologyKey) {
+  return captureHash(topologyKey) + "-";
+}
+
+// The file one (identity, occurrence) of one recording is stored as. "" for an
+// entry with no identity, which is not a thing a layout carries — the guard is
+// so a caller cannot build a name that is only a prefix and then hand it to
+// something that treats it as one.
+function captureFileName(identityId, occurrence, topologyKey) {
+  var id = (typeof identityId === "string") ? trim(identityId) : "";
+  if (!id) return "";
+  return captureTopologyPrefix(topologyKey)
+    + captureSafeSegment(id, CAPTURE_ID_CHARS) + "-" + captureHash(id)
+    + "-" + occurrenceOf(occurrence) + CAPTURE_SUFFIX;
+}
+
+// WHICH PICTURES A RECORD SHOULD TAKE, and which it deliberately will not.
+//
+// One entry per app in the layout that was just committed, so the pictures and
+// the recording describe the same moment and the same windows. The window each
+// entry names comes from engine.chosenWindows — the SAME index buildLayout
+// numbered the occurrences with — rather than from a second matching pass here:
+// a picture filed under occurrence 1 that photographed the window buildLayout
+// called occurrence 0 would be a lie the map could never detect.
+//
+// `skipped` is not an error list. "not-pictured" is the normal, intended answer
+// for every app whose second consent is withheld, and it is the majority of a
+// healthy plan; "no-window" is an app the recording carries but the desk no
+// longer does. Both are reported so a caller can say what it did rather than
+// only what it managed.
+//
+// A layout with no topologyKey plans nothing: without one there is no prefix,
+// and a picture with no prefix could not be evicted with the recording.
+function capturePlan(layout, identities, chosen) {
+  var topologyKey = (layout && typeof layout.topologyKey === "string") ? layout.topologyKey : "";
+  if (!topologyKey) return { topologyKey: "", prefix: "", captures: [], skipped: [] };
+
+  var apps = (layout && isArray(layout.apps)) ? layout.apps : [];
+  var list = isArray(identities) ? identities : [];
+  var pictured = {};
+  for (var i = 0; i < list.length; i++) {
+    // `=== true` and nothing looser: this is the read of a CONSENT, and the
+    // same rule StateModel.normalizeIdentity applies to the file.
+    if (list[i] && typeof list[i].id === "string" && list[i].pictured === true) {
+      pictured[list[i].id] = true;
+    }
+  }
+
+  var byId = (chosen && chosen.byId) ? chosen.byId : {};
+  var captures = [];
+  var skipped = [];
+  for (var a = 0; a < apps.length; a++) {
+    var app = apps[a];
+    var identityId = (app && typeof app.identityId === "string") ? trim(app.identityId) : "";
+    if (!identityId) continue;
+    var occurrence = occurrenceOf(app.occurrence);
+
+    if (!own(pictured, identityId)) {
+      skipped.push({ identityId: identityId, occurrence: occurrence, reason: "not-pictured" });
+      continue;
+    }
+
+    // own(), never a bare lookup: for an id like "constructor" a bare read
+    // answers with Object.prototype's member — truthy, and not a window list
+    // (.tick/learnings.md, tick 8hp).
+    var windows = own(byId, identityId);
+    var client = (windows && windows[occurrence]) ? windows[occurrence] : null;
+    var address = client ? trim(client.address) : "";
+    if (!address) {
+      skipped.push({ identityId: identityId, occurrence: occurrence, reason: "no-window" });
+      continue;
+    }
+
+    captures.push({
+      identityId: identityId,
+      occurrence: occurrence,
+      address: address,
+      file: captureFileName(identityId, occurrence, topologyKey)
+    });
+  }
+
+  return {
+    topologyKey: topologyKey,
+    prefix: captureTopologyPrefix(topologyKey),
+    captures: captures,
+    skipped: skipped
+  };
+}
+
+// What a finished capture round says in the log. A sentence rather than a count
+// because the interesting number is which of four things happened, and a caller
+// assembling it inline would say it differently at each of its call sites.
+//
+// Best-effort is stated OUT LOUD: a record whose pictures all failed is still a
+// good record, and the line has to read that way rather than as a failure.
+// A FAILURE SAYS WHY. The reasons are the whole diagnostic value of this line:
+// "no-frame" is a window on a monitor that is not rendering (the one real
+// failure mode this feature has), "no-handle" is a window that closed between
+// the record and the capture, "save-failed" is a disk that would not take it.
+// Without them the line is "1 could not be captured" and the next person has
+// nothing to go on.
+function captureLogLine(plan, results) {
+  var list = isArray(results) ? results : [];
+  var taken = 0;
+  var failed = 0;
+  var reasons = [];
+  var seenReason = {};
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].ok === true) {
+      taken++;
+      continue;
+    }
+    failed++;
+    var reason = (list[i] && list[i].reason) ? String(list[i].reason) : "unknown";
+    if (!own(seenReason, reason)) {
+      seenReason[reason] = true;
+      reasons.push(reason);
+    }
+  }
+  var withheld = 0;
+  var gone = 0;
+  var skipped = (plan && isArray(plan.skipped)) ? plan.skipped : [];
+  for (var s = 0; s < skipped.length; s++) {
+    if (skipped[s] && skipped[s].reason === "no-window") gone++; else withheld++;
+  }
+
+  var parts = [taken + " picture(s) stored"];
+  if (failed) parts.push(failed + " could not be captured (" + reasons.join(", ") + ")");
+  if (withheld) parts.push(withheld + " not pictured");
+  if (gone) parts.push(gone + " no longer open");
+  return parts.join(", ");
+}
+
+// The basenames a directory listing came back with, as a set. `find -printf
+// '%f\n'` is what produces it, and a missing cache directory produces nothing
+// at all — which is the correct answer and not an error: a wiped cache means
+// the map falls back to icons.
+function captureFileIndex(listing) {
+  var out = {};
+  var lines = String(listing === undefined || listing === null ? "" : listing).split("\n");
+  for (var i = 0; i < lines.length; i++) {
+    var name = trim(lines[i]);
+    if (name) out[name] = true;
+  }
+  return out;
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     normalizedAddress: normalizedAddress,
@@ -6093,6 +6316,13 @@ if (typeof module !== "undefined") {
     classifyToplevels: classifyToplevels,
     toplevelHandleStillValid: toplevelHandleStillValid,
     toplevelBridgeRefusal: toplevelBridgeRefusal,
+    captureHash: captureHash,
+    captureSafeSegment: captureSafeSegment,
+    captureTopologyPrefix: captureTopologyPrefix,
+    captureFileName: captureFileName,
+    capturePlan: capturePlan,
+    captureLogLine: captureLogLine,
+    captureFileIndex: captureFileIndex,
     // Exported for the QML side as much as for the tests: an identity-id lookup
     // in Panel.qml has to go through this too (tick 8hp).
     own: own,

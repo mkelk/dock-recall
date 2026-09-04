@@ -52,6 +52,21 @@ Item {
   readonly property string statusPath: root.stateDir + "/dock-recall.status.json"
   readonly property string triggerPath: root.stateDir + "/dock-recall.trigger"
 
+  // WHERE THE PICTURES GO, and it is a CACHE and not state (tick sz6). A cache
+  // is a directory a cleaner is allowed to wipe, and the correct behaviour when
+  // it does is that the Recorded map falls back to icons — so nothing here ever
+  // joins the atomic state write, and the README's "writes one state file"
+  // promise survives a feature that writes pixels of the screen to disk.
+  //
+  // XDG_CACHE_HOME first, because a user who has moved their cache has moved it
+  // for a reason (a tmpfs, a different disk) and a plugin that ignored the
+  // variable would be the one thing still writing to ~/.cache.
+  readonly property string cacheHome: {
+    var xdg = String(Quickshell.env("XDG_CACHE_HOME") || "")
+    return xdg ? xdg : root.home + "/.cache"
+  }
+  readonly property string captureDir: root.cacheHome + "/omarchy/dock-recall"
+
   // ------------------------------------------------------------------ state
 
   property bool opened: false
@@ -1347,6 +1362,54 @@ Item {
     printErrors: false
   }
 
+  // ------------------------------------------------------ the picture cache
+  //
+  // Everything about a stored picture that is not a pure decision lives in
+  // CaptureStore.qml; the names and the plan are PanelModel's. This is the
+  // instance and the four questions the panel asks it.
+  //
+  // Its host window is mapped for as long as the PANEL is, not for as long as a
+  // capture is in flight: a window that has just become visible has not been
+  // exposed yet, and a grab on an unexposed window fails in a way nothing can
+  // tell from a compositor declining. It is 1x1, transparent, on the background
+  // layer, and excluded from every reservation, so "mapped" costs a surface and
+  // no pixels.
+  CaptureStore {
+    id: captureStore
+    cacheDir: root.captureDir
+    logPrefix: root.logPrefix
+    hostScreen: root.focusedScreen
+    hostMapped: root.opened
+  }
+
+  // The picture this (identity, occurrence) would have for the CURRENT
+  // topology, or "" when the cache does not hold one.
+  //
+  // Gated on the listing rather than on the file simply being nameable: an
+  // Image pointed at a path that is not there draws nothing and reports a
+  // source anyway, and "the panel says it has a picture" has to mean the cache
+  // does. `captureStore.generation` is read so this re-evaluates when the
+  // listing changes — `files` is mutated in place, exactly as the panel's own
+  // render registries are.
+  function captureFileFor(identityId, occurrence) {
+    if (captureStore.generation < 0) return ""
+    if (!identityId || !root.topologyKey) return ""
+    var name = PanelModel.captureFileName(identityId, occurrence, root.topologyKey)
+    return captureStore.has(name) ? name : ""
+  }
+
+  function capturePathFor(identityId, occurrence) {
+    var name = root.captureFileFor(identityId, occurrence)
+    return name ? captureStore.pathFor(name) : ""
+  }
+
+  // Re-read the directory when the panel opens: a cleaner may have run since it
+  // was last up, and the listing is what tells "there is a picture for this
+  // chip" from "there was one". The other re-read is on a topology change, and
+  // it lives in the existing onTopologyKeyChanged below rather than in a second
+  // handler — QML allows only one per signal per object.
+  onOpenedChanged: if (root.opened) captureStore.refresh()
+
   // FileView.setText does not mkdir, and with the service disabled nobody else
   // will have.
   Process {
@@ -1799,17 +1862,22 @@ Item {
     if (root.recordUndo && root.recordUndo.topologyKey !== root.topologyKey) {
       root.recordUndo = null
     }
+    // A different desk is a different capture prefix, so every chip's answer to
+    // "do I have a picture" changed with it.
+    captureStore.refresh()
   }
 
+  // Returns whether the file now holds what the undo asked for, so the IPC and
+  // any later caller can tell a performed undo from a refused one.
   function undoRecord() {
-    if (!root.canUndoRecord) return
+    if (!root.canUndoRecord) return false
     var stash = root.recordUndo
     // Same read-modify-write discipline as the pause toggle, and for the same
     // reason: this rewrites the whole file from an object that also carries
     // every OTHER topology's layout, so a copy that went stale while the panel
     // sat open would file yesterday's recordings alongside today's undo.
     var fresh = root.freshState()
-    if (!fresh) return
+    if (!fresh) return false
 
     // Cleared FIRST, and unconditionally: this is a one-shot: pressing it twice
     // must not put the same layout back twice, and a write that fails is not a
@@ -1821,24 +1889,43 @@ Item {
     // a click the user never made.
     var act = PanelModel.undoStashAction(stash) === "forget" ? "forget" : "record"
 
+    // THE PICTURES FOLLOW THE LAYOUT, in both branches (tick sz6). The files on
+    // disk belong to the record this press is undoing, and the layout being put
+    // back is one whose own pictures were overwritten the moment that record
+    // ran. Leaving them would draw photographs of windows at positions the
+    // restored recording does not describe — a picture that lies about the
+    // layout it sits next to is worse than no picture, and "no picture" is a
+    // state this feature is built to degrade into gracefully.
+    //
+    // So an undone re-record leaves the previous LAYOUT restored and picture-
+    // less, and the map falls back to icons until the next Record. That is the
+    // honest limit of a one-shot undo over an overwrite-in-place cache: the
+    // pixels the previous record took are already gone, and this cannot invent
+    // them. Stated here rather than discovered later.
+    captureStore.evict(PanelModel.captureTopologyPrefix(stash.topologyKey), "undone")
+
     if (PanelModel.recordUndoRestores(stash)) {
-      if (!root.writeState(StateModel.upsertLayout(fresh, stash.previousLayout))) return
+      if (!root.writeState(StateModel.upsertLayout(fresh, stash.previousLayout))) return false
       root.log("undid the " + act + " for topology \"" + stash.topologyKey + "\" — put back the layout"
         + " recorded at " + (stash.previousLayout.recordedAt || "an unknown time")
         + " (" + (stash.previousLayout.apps || []).length + " apps)")
-      return
+      return true
     }
-    if (!root.writeState(StateModel.removeLayout(fresh, stash.topologyKey))) return
+    if (!root.writeState(StateModel.removeLayout(fresh, stash.topologyKey))) return false
     root.log("undid the " + act + " for topology \"" + stash.topologyKey + "\" — this setup had no"
       + " layout before it, so it has none again")
+    return true
   }
 
+  // Returns whether a layout was written, so the IPC can tell a record from a
+  // refusal. The capture round below is NOT part of that answer: a Record whose
+  // pictures all failed is still a good record.
   function recordLayout() {
-    if (!root.canRecord) return
+    if (!root.canRecord) return false
     var layout = Engine.buildLayout(root.liveClients, root.liveMonitors, root.identities, new Date().toISOString())
     if (!layout.topologyKey) {
       root.warn("record refused: the monitor list resolves to no topology at all")
-      return
+      return false
     }
     // READ before the write, ARMED after it (tick sma). The layout this record
     // is about to replace has to be read from the state the write will replace
@@ -1856,7 +1943,7 @@ Item {
     // the reason Restore does nothing.
     var learned = root.withLearnedLaunches(root.stateModel)
     var base = learned ? learned.state : root.stateModel
-    if (!root.writeState(StateModel.upsertLayout(base, layout))) return
+    if (!root.writeState(StateModel.upsertLayout(base, layout))) return false
     root.recordUndo = { topologyKey: layout.topologyKey, previousLayout: replaced }
     if (learned) root.log(learned.line)
     root.log("recorded " + layout.apps.length + " apps for topology \"" + layout.topologyKey + "\"")
@@ -1870,6 +1957,54 @@ Item {
         + (excluded[e].workspaceName || excluded[e].workspaceId)
         + " — a scratchpad placement cannot be restored, so it is left out of the layout")
     }
+
+    // THE PICTURES, LAST AND OFF THIS STACK (tick sz6).
+    //
+    // A SCREENSHOT MUST NEVER BE ABLE TO FAIL A RECORD, and this is where that
+    // is enforced rather than intended. Three things make it true:
+    //
+    //   · it is reached only through the success path — every `return false`
+    //     above is before it, and the layout is on disk by the time it runs;
+    //   · it is the LAST statement, so the write, the undo stash and every log
+    //     line this function owes the user are already done;
+    //   · Qt.callLater puts it in a LATER event-loop turn, so recordLayout has
+    //     returned true to its caller before any capture code executes at all.
+    //     Nothing the store can do — an exception, a hung compositor, a full
+    //     disk — is on the recording's stack any more.
+    //
+    // The store never writes the state file, so there is no path from a failed
+    // picture back to the recording either.
+    Qt.callLater(function () { root.captureAfterRecord(layout) })
+    return true
+  }
+
+  // Take the pictures the layout just committed asks for.
+  //
+  // The WINDOW each picture is of comes from engine.chosenWindows — the same
+  // index buildLayout numbered the occurrences with, computed from the same
+  // clients and monitors — so a file stored under occurrence 1 is a photograph
+  // of the window the recording calls occurrence 1. Matching a second time here
+  // would be a second opinion, and the two could differ.
+  //
+  // Consent is read from the identities, one `pictured === true` at a time, and
+  // an app that has withheld it is `skipped` rather than merely absent, so the
+  // log can say how many pictures were NOT taken as well as how many were.
+  function captureAfterRecord(layout) {
+    var chosen = Engine.chosenWindows(root.liveClients, root.identities, root.liveMonitors)
+    var plan = PanelModel.capturePlan(layout, root.identities, chosen)
+    if (!plan.captures.length) {
+      // Still an eviction: a re-record with the consent since withdrawn has to
+      // drop the pictures the previous record took, or the map would go on
+      // showing photographs the user has asked it to stop taking.
+      captureStore.evict(plan.prefix, "re-recorded")
+      if (plan.skipped.length) {
+        root.log("no pictures for this recording — " + PanelModel.captureLogLine(plan, []))
+      }
+      return
+    }
+    captureStore.capture(plan, function (results) {
+      root.log(PanelModel.captureLogLine(plan, results))
+    })
   }
 
   // --------------------------------------------- the header overflow menu (gwa)
@@ -1970,26 +2105,37 @@ Item {
   // Delete this topology's layout. No confirmation — the panel never blocks —
   // and the way back is the SAME one-shot undo Record arms, stashed before the
   // write and from the same fresh read the write is built on.
+  // Returns whether a layout was actually removed.
   function forgetLayout() {
     var fresh = root.freshState()
-    if (!fresh) return
+    if (!fresh) return false
     var stash = PanelModel.forgetUndoStash(root.topologyKey,
       StateModel.layoutFor(fresh, root.topologyKey))
     if (!stash) {
       root.log("nothing to forget: no layout is recorded for topology \"" + root.topologyKey + "\"")
       root.closeOverflow()
-      return
+      return false
     }
     // Armed after the write, for the reason recordLayout's comment gives: an
     // Undo button is a claim that something happened.
     if (!root.writeState(StateModel.removeLayout(fresh, root.topologyKey))) {
       root.closeOverflow()
-      return
+      return false
     }
     root.recordUndo = stash
+    // THE PICTURES GO WITH THE RECORDING (tick sz6). Forgetting a layout is the
+    // delete point, and a photograph of a window kept after the arrangement it
+    // belonged to was deleted is exactly the thing this epic's consent design
+    // exists not to leave lying around. AFTER the write, like the log line: a
+    // refused write must not take the pictures with it.
+    //
+    // The undo this arms puts the LAYOUT back and cannot put the pixels back —
+    // see undoRecord for why that is the honest behaviour rather than a gap.
+    captureStore.evict(PanelModel.captureTopologyPrefix(root.topologyKey), "forgotten")
     root.log("forgot the layout for topology \"" + root.topologyKey + "\" ("
       + (stash.previousLayout.apps || []).length + " apps) — undo puts it back")
     root.closeOverflow()
+    return true
   }
 
   // Recording during a restore would file the half-restored desktop as the
@@ -2316,6 +2462,24 @@ Item {
           for (var c = 0; c < members.length; c++) {
             var chip = members[c]
             var report = root.chipRenderReports[chip.key] || null
+            // THE STORED PICTURE, if the cache holds one for this chip (tick
+            // sz6). Panel-computed rather than delegate-reported, and named
+            // `capturePath` for exactly that reason: it is the claim "the cache
+            // has a file for this identity, occurrence and topology", not the
+            // claim "the chip drew it". The second claim is `captureSource`,
+            // which the delegate reports.
+            //
+            // Only on the RECORDED map. The cache key is the recording's, and a
+            // picture is a fact about a recorded layout — the Live tab draws the
+            // windows that are actually on screen, and offering it a photograph
+            // of one of them would be answering a question nobody asked.
+            //
+            // ABSENT, never "" or null, when there is none: the payload's
+            // convention is that a key the panel has nothing to say about is not
+            // there, and an empty string would be a consumer's problem to tell
+            // from a path.
+            var capturePath = root.showRecorded
+              ? root.capturePathFor(chip.identityId, chip.occurrence) : ""
             chips.push({
               key: chip.key,
               name: chip.name,
@@ -2350,6 +2514,10 @@ Item {
               // a real finding rather than two guesses.
               treatment: root.reported(report, "treatment")
             })
+            // ADDED rather than assigned above, because the payload's rule is
+            // that a key the panel has nothing to say about is ABSENT — and
+            // "this chip has no stored picture" is exactly that.
+            if (capturePath) chips[chips.length - 1].capturePath = capturePath
           }
         }
       }
@@ -2557,6 +2725,37 @@ Item {
       return root.hoveredLinkKey
     }
 
+    // THE THREE ACTS ON A RECORDING, driven the way their buttons drive them
+    // (tick sz6). Through root.recordLayout / undoRecord / forgetLayout and
+    // nothing else: those three own the fresh read, the atomic write, the
+    // one-shot undo stash and the picture cache's eviction, and an IPC path
+    // that wrote a layout directly would be a second recorder with none of it.
+    //
+    // They exist because Record is the moment a picture is taken, and until now
+    // the only way to reach it was a finger on the button — `scripts/record-current`
+    // writes through StateModel and never opens the panel, so it takes no
+    // pictures and never could. A headless venue had no door onto the act this
+    // whole epic is about.
+    //
+    // Each answers what HAPPENED rather than what was asked for, and none of
+    // them waits for the pictures: the capture round is best-effort and runs
+    // after the write, so "recorded" is a claim about the state file alone.
+    function record(): string {
+      if (!root.stateLoaded) return "no-state"
+      if (!root.canRecord) return "cannot-record"
+      return root.recordLayout() ? "recorded" : "refused"
+    }
+
+    function undoRecord(): string {
+      if (!root.canUndoRecord) return "nothing-to-undo"
+      return root.undoRecord() ? "undone" : "refused"
+    }
+
+    function forgetLayout(): string {
+      if (!root.stateLoaded) return "no-state"
+      return root.forgetLayout() ? "forgotten" : "nothing-to-forget"
+    }
+
     // The overflow menu, opened and closed by the panel's own verbs so the
     // popup and root.overflowOpen cannot disagree — the same reason summon and
     // hide stay the shell's.
@@ -2586,16 +2785,22 @@ Item {
     return ""
   }
 
+  // The same answer as a Quickshell screen. Hoisted out of the PanelWindow's own
+  // binding because the capture store's 1x1 host needs it too — and it needs it
+  // to be the SAME screen, which is a rendering one by construction: it is the
+  // monitor the user is looking at.
+  readonly property var focusedScreen: {
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++) {
+      if (screens[i] && screens[i].name === root.focusedMonitorName) return screens[i]
+    }
+    return screens.length > 0 ? screens[0] : null
+  }
+
   PanelWindow {
     id: panelWindow
 
-    screen: {
-      var screens = Quickshell.screens
-      for (var i = 0; i < screens.length; i++) {
-        if (screens[i] && screens[i].name === root.focusedMonitorName) return screens[i]
-      }
-      return screens.length > 0 ? screens[0] : null
-    }
+    screen: root.focusedScreen
 
     visible: root.opened
     color: "transparent"

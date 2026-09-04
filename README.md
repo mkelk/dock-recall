@@ -319,9 +319,9 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 882 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 900 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
-qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml
+qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml CaptureStore.qml
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
 ./scripts/dev-install --restart    # install this working tree and restart the shell
 ```
@@ -338,7 +338,7 @@ if anything did. A real run of it, 2026-09-02:
 -----------------------------------------------------------------
 1  node --test 'tests/**/*.test.js'                 PASS           0
 2  omarchy plugin validate .                        PASS           0
-3  qmllint (syntax) on the three QML files          PASS           0
+3  qmllint (syntax) on the six QML files            PASS           0
 4  tests/sandbox-dock.sh                            PASS          31
 5  tests/sandbox-future-version.sh --both           PASS          65
 6  tests/sandbox-reserved-id.sh                     PASS          35

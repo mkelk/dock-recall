@@ -17,6 +17,7 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `run.sh` | **the entrypoint** — stage, boot, run, and answer in an exit code |
 | `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
 | `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
+| `dock-recall-captures-test.sh` | record-time pictures, observed on the guest filesystem |
 | `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
 | `undock-locked.sh` | the locked scenario's host half — QMP keyboard and screendumps |
@@ -88,6 +89,7 @@ its output, so `run.sh` requires **all** of these lines and nothing less:
 ok - acceptance suite passed in 122s (artifacts in /tmp/omarchy-acceptance)
 ok - dock-recall round trip: record, undock, scatter, redock, restored
 ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
+ok - dock-recall captures: stored per consent, keyed, overwritten, evicted, and never able to fail a record
 ok - dock-recall panel IPC: chips keyed and reported on both render paths, positioned and fallback
 ok - dock-recall undock-while-locked: guest prepared (dr-locked on ws 8 @ dr-lock-dock, session UNLOCKED)
 ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
@@ -224,6 +226,45 @@ what neither of them will ever touch.
 Both seeded and migrated state files are copied into the artifacts directory, so
 the migration is auditable after the VM is gone.
 
+## What the captures test asserts
+
+`dock-recall-captures-test.sh` is the one test here whose evidence is **files**.
+Everything else in increment 06-bwf is proven at bind level, because this venue
+cannot show a pixel was rasterized — but a picture on disk is a real artifact. It
+can be counted, named, opened and shown to be a JPEG, which is strictly stronger
+than any payload field, so the claim is made against the guest filesystem rather
+than through the IPC.
+
+Two apps, both watched, both class `foot`, told apart by `titlePatterns`: one has
+granted the **second consent** (`pictured: true`) and one has not. The pair is
+the point. A run with only the consenting app would pass identically on a plugin
+that photographed everything it watches.
+
+| | |
+|---|---|
+| the write | Record stores exactly **one** picture, and it is the file `PanelModel.captureFileName(identity, occurrence, topologyKey)` names — asked of the plugin's own function, with the topology key read out of the state file the record just wrote |
+| the consent | the withheld app is watched, running and **in the recording**, and has no file. Asserted by name as well as by count |
+| the format | a 30-line SOF parser in node walks the segment chain to a frame header and reads the width. `file` would say only that two bytes are right, and neither host nor guest has an imaging library — walking to a frame marker is the decode this venue can honestly perform. The width must be ≤ 512 |
+| re-record | records again and requires the file to have been **written again** (mtime, not bytes: an idle terminal really can encode to the same JPEG twice) |
+| undo | the layout comes back and the pictures go. Undo cannot put pictures *back* — the re-record overwrote them in place — so the restored recording falls back to icons, asserted as behaviour rather than left as a surprise |
+| forget | the delete point: no picture of this topology survives it |
+| a failed capture | the cache directory is made **uncreatable** and a Record is performed. It must answer `recorded`, the state file must carry the layout with both apps and a timestamp, and no picture may exist. Driven, not argued |
+| a wiped cache | the whole directory is deleted under a live panel. Every chip must go on reporting an icon source, no chip may report a `capturePath`, and nothing may error |
+
+**How a Record is reached.** Through the panel's own `record`, `undoRecord` and
+`forgetLayout` verbs. That matters: pictures are taken by the *record path*, and
+`scripts/record-current` writes through `StateModel` without ever opening a
+panel, so it takes no captures and never could.
+
+**Where the pictures are not.** `~/.cache/omarchy/dock-recall/`, and never the
+state file. A cache is a directory a cleaner is allowed to wipe, the correct
+behaviour when it does is that the map falls back to icons, and keeping the
+pixels out is what preserves the README's "writes one state file" promise byte
+for byte. The test asserts the guest has no `XDG_CACHE_HOME` before it believes
+anything about that directory — a guest that set one would send the plugin
+somewhere else, and every file assertion would look exactly like a pipeline that
+stores nothing.
+
 ## What the panel IPC test asserts
 
 `dock-recall-panel-test.sh` is the first test here that opens the **panel**.
@@ -246,7 +287,20 @@ omarchy-shell dock-recall toggleRow <row key>    # "toggled" | "not-clickable" |
 omarchy-shell dock-recall setPictured <row key> on
                                                  # "on" | "off" | "not-picturable" | "no-row" | "no-state" | "unknown"
 omarchy-shell dock-recall hoverLink <link key>   # the key now hovered, or "none"
+omarchy-shell dock-recall record                 # "recorded" | "refused" | "cannot-record" | "no-state"
+omarchy-shell dock-recall undoRecord             # "undone" | "refused" | "nothing-to-undo"
+omarchy-shell dock-recall forgetLayout           # "forgotten" | "nothing-to-forget" | "no-state"
 ```
+
+The last three exist because **Record is the moment a picture is taken**, and
+until they landed the act had no door a headless test could open:
+`scripts/record-current` writes through `StateModel` without ever instantiating
+a panel, so it takes no captures and never could. Each routes to the panel's own
+`recordLayout` / `undoRecord` / `forgetLayout` — the fresh read, the atomic
+write, the one-shot undo stash and the cache eviction — and each answers what
+*happened*. None of them waits for the pictures: the capture round is
+best-effort and runs after the write, so `"recorded"` is a claim about the state
+file alone.
 
 `setPaused` answers the position the switch is **in afterwards**, which is not
 always the one asked for: a read-only state file refuses the write and the switch
@@ -520,6 +574,27 @@ The limit, pinned in `tests/state.test.js` so it is a decision rather than a
 surprise: unwatching an app removes its identity and takes the grant with it,
 and re-watching starts from the default. Consent is not remembered for an app
 nobody is watching, which is the safe direction.
+
+### The stored picture
+
+`capturePath` is on chips, on the **recorded** map only, and it is **absent**
+when the cache holds no picture for that chip — never `""`, never `null`. It is
+the absolute path of the file, and it is panel-computed rather than
+delegate-reported: it is the claim *the cache has a picture for this identity,
+occurrence and topology*, which is a different sentence from *the chip drew it*.
+The second sentence is `captureSource`, reported by the delegate that bound the
+`Image`.
+
+It is gated on a directory listing rather than on the name simply being
+computable, because an `Image` pointed at a path that is not there draws nothing
+and reports a source anyway — "the panel says it has a picture" has to mean the
+cache does. The listing is re-read when the panel opens and when the topology
+changes; a different desk is a different key prefix.
+
+It is off the Live map on purpose. The cache key is the recording's, and a
+picture is a fact about a recorded layout: the Live tab draws the windows that
+are on screen, and offering it a photograph of one of them answers a question
+nobody asked.
 
 ### The row-to-chip link
 

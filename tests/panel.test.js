@@ -5918,3 +5918,255 @@ test("the /proc maps are reassigned only when they changed", () => {
   assert.ok(forget.slice(0, 500).indexOf("argvByPidText") !== -1, forget.slice(0, 500));
   assert.ok(forget.slice(0, 500).indexOf("procTreeText") !== -1, forget.slice(0, 500));
 });
+
+// ---------------------------------------------------------------------------
+// The capture cache (tick sz6)
+// ---------------------------------------------------------------------------
+//
+// Pictures are keyed on (identityId, occurrence, topologyKey) and stored under
+// ~/.cache/omarchy/dock-recall/ — a CACHE, deliberately, so a cleaner wiping it
+// degrades the map to icons rather than breaking anything, and so the state file
+// stays the one file this plugin writes.
+
+// Two windows of one identity plus a second identity, on the laptop monitor set,
+// so a plan can be asked about occurrence 0 AND occurrence 1.
+function captureDesk() {
+  const identities = [
+    { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot", pictured: true },
+    { id: "browser", patterns: ["^chromium$"], titlePatterns: [], launch: "chromium", pictured: false }
+  ];
+  const clients = [
+    makeClient({ address: "0xaaa", class: "foot", workspace: 1, at: [0, 0] }),
+    makeClient({ address: "0xbbb", class: "foot", workspace: 1, at: [900, 0] }),
+    makeClient({ address: "0xccc", class: "chromium", workspace: 2 })
+  ];
+  const layout = engine.buildLayout(clients, monitorsLaptop, identities, AT);
+  return { identities, clients, layout, chosen: engine.chosenWindows(clients, identities, monitorsLaptop) };
+}
+
+test("a capture file names all three parts of its key, and changes when any of them does", () => {
+  const a = panel.captureFileName("terminal", 0, "Laptop");
+  const b = panel.captureFileName("terminal", 1, "Laptop");
+  const c = panel.captureFileName("browser", 0, "Laptop");
+  const d = panel.captureFileName("terminal", 0, "Laptop | Dell");
+
+  assert.strictEqual(a, panel.captureFileName("terminal", 0, "Laptop"), "and it is stable");
+  assert.strictEqual(new Set([a, b, c, d]).size, 4, "identity, occurrence and topology all move it");
+  for (const name of [a, b, c, d]) {
+    assert.match(name, /^[0-9a-f]{8}-[A-Za-z0-9._-]+-[0-9a-f]{8}-\d+\.jpg$/, name);
+  }
+  // Readable enough to debug from a directory listing.
+  assert.ok(a.indexOf("terminal") !== -1, a);
+  // An occurrence a hand-edited file put junk in still lands on a real number,
+  // because occurrenceOf is the same coercion every other consumer applies.
+  assert.strictEqual(panel.captureFileName("terminal", -1, "Laptop"), a);
+  assert.strictEqual(panel.captureFileName("terminal", "0", "Laptop"), a);
+  // And an entry with no identity names nothing at all, rather than naming the
+  // bare topology prefix.
+  assert.strictEqual(panel.captureFileName("", 0, "Laptop"), "");
+});
+
+test("a hostile identity id becomes a filename, never a path", () => {
+  // An identity id is hand-editable in the state file, so this is user input on
+  // its way into a name that is later handed to `find` and to saveToFile.
+  const nasty = panel.captureFileName("../../../etc/passwd", 0, "Laptop");
+  // THE INVARIANT IS "one path segment", not "no dots". A dot inside a name is
+  // ordinary — `md.obsidian.Obsidian` is a real identity id — and only three
+  // shapes are dangerous: a separator, a name that IS "." or "..", and a
+  // leading "-" or "." (a flag, or a hidden file). The topology prefix and the
+  // ".jpg" suffix mean the whole name can never be "." or ".." either.
+  assert.ok(nasty.indexOf("/") === -1, nasty);
+  assert.match(nasty, /^[0-9a-f]{8}-[A-Za-z0-9._-]+-[0-9a-f]{8}-\d+\.jpg$/);
+  assert.ok(nasty !== "." && nasty !== "..");
+
+  // Two ids that sanitize to the SAME characters still get different files —
+  // that is what the id's own hash is for.
+  assert.notStrictEqual(panel.captureFileName("a/b", 0, "L"), panel.captureFileName("a:b", 0, "L"));
+
+  // A leading dash would read as a flag, a leading dot would hide the file and,
+  // as "..", would name the parent directory.
+  assert.strictEqual(panel.captureSafeSegment("-rf", 8).charAt(0), "_");
+  assert.strictEqual(panel.captureSafeSegment("..", 8).charAt(0), "_");
+  assert.strictEqual(panel.captureSafeSegment("", 8), "_");
+  // Capped, so no id can push the name past a filesystem's limit.
+  assert.strictEqual(panel.captureSafeSegment("x".repeat(500), 40).length, 40);
+});
+
+test("every picture of one recording shares the topology prefix, which is what evicts them", () => {
+  const prefix = panel.captureTopologyPrefix("Laptop | Dell");
+  assert.match(prefix, /^[0-9a-f]{8}-$/);
+  for (const occurrence of [0, 1, 2]) {
+    assert.ok(panel.captureFileName("terminal", occurrence, "Laptop | Dell").indexOf(prefix) === 0);
+  }
+  // A different desk is a different prefix, so forgetting one layout cannot
+  // take another desk's pictures with it.
+  assert.notStrictEqual(prefix, panel.captureTopologyPrefix("Laptop"));
+});
+
+test("a capture plan takes one picture per PICTURED window and none of the rest", () => {
+  const desk = captureDesk();
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen);
+
+  assert.strictEqual(plan.topologyKey, desk.layout.topologyKey);
+  assert.strictEqual(plan.prefix, panel.captureTopologyPrefix(desk.layout.topologyKey));
+
+  // Two terminals are two pictures, at two occurrences, of two DIFFERENT
+  // windows — captures are the only thing that can tell duplicates apart, and a
+  // plan that photographed one window twice would defeat the point.
+  assert.deepStrictEqual(plan.captures.map((c) => c.identityId), ["terminal", "terminal"]);
+  assert.deepStrictEqual(plan.captures.map((c) => c.occurrence), [0, 1]);
+  assert.strictEqual(new Set(plan.captures.map((c) => c.address)).size, 2);
+  assert.strictEqual(new Set(plan.captures.map((c) => c.file)).size, 2);
+
+  // The window each entry names is the one buildLayout numbered that
+  // occurrence, taken from the same chosenWindows index — not a second match.
+  for (const capture of plan.captures) {
+    assert.strictEqual(capture.address,
+      desk.chosen.byId[capture.identityId][capture.occurrence].address);
+    assert.strictEqual(capture.file,
+      panel.captureFileName(capture.identityId, capture.occurrence, plan.topologyKey));
+  }
+
+  // The browser is watched and recorded and NOT pictured, which is the whole
+  // point of the second consent — so it is skipped, and said so.
+  assert.deepStrictEqual(plan.skipped,
+    [{ identityId: "browser", occurrence: 0, reason: "not-pictured" }]);
+});
+
+test("withholding the consent is the default, so a plan for a fresh file is empty", () => {
+  const desk = captureDesk();
+  const withheld = desk.identities.map((i) => Object.assign({}, i, { pictured: false }));
+  const plan = panel.capturePlan(desk.layout, withheld, desk.chosen);
+  assert.deepStrictEqual(plan.captures, []);
+  assert.strictEqual(plan.skipped.length, 3, "and every one of them says why");
+  assert.ok(plan.skipped.every((s) => s.reason === "not-pictured"));
+
+  // Only an explicit true grants it, exactly as the file reader has it: a
+  // truthy value is not a consent.
+  for (const junk of ["true", 1, {}]) {
+    const loose = desk.identities.map((i) => Object.assign({}, i, { pictured: junk }));
+    assert.deepStrictEqual(panel.capturePlan(desk.layout, loose, desk.chosen).captures, []);
+  }
+});
+
+test("a recorded app whose window has gone is skipped, not guessed at", () => {
+  const desk = captureDesk();
+  // The layout still names both terminals; the desk no longer has the second.
+  const fewer = desk.clients.filter((c) => c.address !== "0xbbb");
+  const chosen = engine.chosenWindows(fewer, desk.identities, monitorsLaptop);
+  const plan = panel.capturePlan(desk.layout, desk.identities, chosen);
+
+  assert.deepStrictEqual(plan.captures.map((c) => c.occurrence), [0]);
+  assert.ok(plan.skipped.some((s) => s.identityId === "terminal" && s.reason === "no-window"));
+});
+
+test("a layout with no topology plans nothing, because a picture with no prefix cannot be evicted", () => {
+  const desk = captureDesk();
+  const plan = panel.capturePlan({ topologyKey: "", apps: desk.layout.apps },
+    desk.identities, desk.chosen);
+  assert.deepStrictEqual(plan, { topologyKey: "", prefix: "", captures: [], skipped: [] });
+  assert.deepStrictEqual(panel.capturePlan(null, desk.identities, desk.chosen).captures, []);
+});
+
+test("the capture log line reads as best-effort, and says all four numbers", () => {
+  const plan = {
+    skipped: [
+      { identityId: "browser", occurrence: 0, reason: "not-pictured" },
+      { identityId: "slack", occurrence: 0, reason: "no-window" }
+    ]
+  };
+  const line = panel.captureLogLine(plan, [
+    { ok: true }, { ok: false, reason: "no-frame" }
+  ]);
+  assert.strictEqual(line,
+    "1 picture(s) stored, 1 could not be captured (no-frame), 1 not pictured, 1 no longer open");
+
+  // A failure names its reason, and each distinct one once — the reasons are
+  // the whole diagnostic value of the line, and "no-frame" in particular is the
+  // one real failure mode this feature has (a monitor that is not rendering).
+  assert.strictEqual(
+    panel.captureLogLine(null, [{ ok: false, reason: "no-frame" },
+                                { ok: false, reason: "no-frame" },
+                                { ok: false, reason: "no-handle" },
+                                { ok: false }]),
+    "0 picture(s) stored, 4 could not be captured (no-frame, no-handle, unknown)");
+
+  // A clean round says one thing and does not enumerate zeroes.
+  assert.strictEqual(panel.captureLogLine({ skipped: [] }, [{ ok: true }, { ok: true }]),
+    "2 picture(s) stored");
+  // And a round that stored nothing still leads with the count rather than
+  // reading as a failure: the recording is fine either way.
+  assert.strictEqual(panel.captureLogLine(null, []), "0 picture(s) stored");
+});
+
+test("a listing of the cache is a set of basenames, and a missing directory is an empty one", () => {
+  assert.deepStrictEqual(panel.captureFileIndex("a.jpg\nb.jpg\n"), { "a.jpg": true, "b.jpg": true });
+  // A wiped cache is the normal, correct answer — not an error.
+  assert.deepStrictEqual(panel.captureFileIndex(""), {});
+  assert.deepStrictEqual(panel.captureFileIndex(null), {});
+  assert.deepStrictEqual(panel.captureFileIndex("  \n\n a.jpg \n"), { "a.jpg": true });
+});
+
+test("A SCREENSHOT CANNOT FAIL A RECORD: the capture is last, gated, and off the stack", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  const record = source.slice(source.indexOf("function recordLayout()"));
+  const body = record.slice(0, record.indexOf("\n  }\n"));
+
+  // 1. THE WRITE GATES IT. The capture kickoff has to come after the guarded
+  //    upsertLayout, so every refusal path returns before it.
+  const write = body.indexOf("if (!root.writeState(StateModel.upsertLayout(base, layout))) return false");
+  const capture = body.indexOf("captureAfterRecord");
+  assert.ok(write !== -1, "recordLayout no longer gates on writeState's boolean");
+  assert.ok(capture !== -1, "recordLayout no longer starts a capture at all");
+  assert.ok(capture > write, "the capture is reachable without the layout having been written");
+
+  // 2. IT IS OFF THE RECORDING'S STACK. Qt.callLater puts it in a later
+  //    event-loop turn, so recordLayout has already returned before any capture
+  //    code runs and nothing it does can unwind through the record.
+  assert.ok(body.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout) })") !== -1,
+    "the capture is called synchronously from recordLayout");
+
+  // 3. NOTHING IN THE CAPTURE PATH WRITES THE STATE FILE. The one function it
+  //    reaches, and the whole store, must never call writeState.
+  const after = source.slice(source.indexOf("function captureAfterRecord(layout)"));
+  const afterBody = after.slice(0, after.indexOf("\n  }\n"));
+  assert.strictEqual(afterBody.indexOf("writeState"), -1, afterBody);
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  assert.strictEqual(store.indexOf("writeState"), -1, "the capture store writes the state file");
+  assert.strictEqual(store.indexOf("StateModel"), -1, "the capture store reaches the state model");
+});
+
+test("the pictures are evicted at all three points a recording can end", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // Forget deletes, undo drops what the undone record took, and a re-record
+  // replaces — the third one through captureAfterRecord/capture, which evicts
+  // the topology's prefix before it writes the new set.
+  for (const [name, fn] of [["undoRecord", "function undoRecord()"],
+                            ["forgetLayout", "function forgetLayout()"]]) {
+    const at = source.indexOf(fn);
+    assert.ok(at !== -1, name + " is gone");
+    const body = source.slice(at, source.indexOf("\n  }\n", at));
+    assert.ok(body.indexOf("captureStore.evict(PanelModel.captureTopologyPrefix(") !== -1,
+      name + " no longer evicts this topology's pictures");
+  }
+
+  const after = source.slice(source.indexOf("function captureAfterRecord(layout)"));
+  const afterBody = after.slice(0, after.indexOf("\n  }\n"));
+  assert.ok(afterBody.indexOf("captureStore.evict(plan.prefix") !== -1,
+    "a re-record with the consent withdrawn leaves the old pictures behind");
+
+  // And the eviction of the REPLACED set is a step of the capture sequence, not
+  // a second call the caller has to remember: `find -delete` racing a save is
+  // exactly what ordering them separately would buy.
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  const capture = store.slice(store.indexOf("function capture(plan, done)"));
+  assert.ok(capture.slice(0, 2000).indexOf("_resolveThenWalk") !== -1);
+  assert.ok(store.indexOf("store.evict(store._plan ? store._plan.prefix : \"\", \"re-recorded\")") !== -1,
+    "the capture sequence no longer evicts before it writes");
+});
