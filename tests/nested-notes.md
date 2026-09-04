@@ -410,3 +410,106 @@ four capture PNGs, the `grim` screen scrape they are absent from, the
 `hyprctl monitors`/`workspaces`/`clients` dumps taken while they were hidden, and
 the full sandbox run log. The probe itself was a throwaway; only the bridge it
 exercised is in this repository.
+
+---
+
+# 2026-09-04 — Does the bridge tell the truth about TIME? (tick w25)
+
+Every capture tick in this epic stands on `ToplevelBridge`, and a foundation
+review found it dishonest in exactly the place nothing could test: it treated
+"not in the toplevel model" as permanent, when for the first second of every
+shell's life it means "not there **yet**". This run measured the repaired
+bridge against a real, asynchronously-filling model.
+
+Harness: a throwaway probe over `tests/sandbox-lib.sh` — nested Hyprland 0.56.2,
+a **second** Quickshell hosting the worktree's `ToplevelBridge.qml` (a fresh
+process, so its own toplevel model starts empty and fills, which is the whole
+point). Two `foot` windows opened in the nested instance first. Nothing ran
+against the live session; the isolation footer passed. `ALL PASS`, 13 checks.
+
+## The first tick, which is where the old code lied
+
+At `Component.onCompleted` the model is empty. Two windows that are open,
+mapped and listed by `hyprctl` right then:
+
+    PROBE t0-live  handles=0 pending=2 gone=0 asked=2 settled=false decided=false
+                   refusal='Cannot picture 2 not ready to capture yet.'
+
+`pending`, not `gone`; `decided=false`, so a consumer polls instead of giving
+up. The old code put both in `missing` and the header told callers `missing` was
+not worth retrying — so an honest consumer refused to capture anything, forever.
+
+An address that really is closed looks identical at this moment, and is treated
+identically (`t0-ghost`: `pending=1 gone=0`). It has to be: nothing can tell
+them apart yet. What separates them is the settle.
+
+## The settle, and the flip
+
+The bridge's judgement is a **latch** (the model has been non-empty at least
+once) **and quiescence** (it has held still for `settleMs`, 1200 ms). Measured
+timeline, 100 ms samples:
+
+    t=0                model empty     settled=false  readyGhost=false
+    t=109  entries=2   filled          settled=false  readyGhost=false
+    t=1310 entries=2   held still      settled=true   readyGhost=TRUE
+    PROBE wait-ghost   gone=1 decided=true ok=false waitedMs=1327
+                       refusal='Cannot picture 1 no longer open.'
+
+So a closed window is `false` for 1.3 s and then `true` — **not false forever**,
+which is what `ready()` used to be for exactly this case while the file's own
+header instructed consumers to poll it. The live windows resolved through the
+same wait in 127 ms (`wait-live handles=2 ok=true`).
+
+## A window closed AFTER the model settled
+
+The mirror case, and the one that proves quiescence rather than a one-shot
+latch. Window B was killed once `settled=true`:
+
+    readyB   over the run:  true -> false -> true
+    okB      over the run:  true -> false
+    entries  over the run:  2 -> 1
+    PROBE wait-closed  gone=1 decided=true ok=false waitedMs=600
+
+The model MOVED, so the settle clock restarted and B went back to `pending`
+before it was ever called `gone`. A one-shot "has the model ever filled?" latch
+would have condemned it instantly — which is the same bug as the startup one,
+just later. This is also the case that shows `decided` and `ok` are different
+questions: after the flip `ready()` is true and `allResolved()` is false.
+
+## The deadline, on a wait that can never end by itself
+
+A second bridge instance with `settleMs: 999999` — a model that never settles,
+so a pending answer stays pending — and `deadlineMs: 800`:
+
+    PROBE wait-deadline  timedOut=true waitedMs=846 pending=1
+                         refusal='Cannot picture 1 still not ready to capture after 846ms.'
+
+`resolveWhenReady` is the bounded wait, built once on the bridge so this epic's
+several capture ticks do not each invent one. It matters beyond startup: a
+window on a monitor that is not rendering resolves its handle **perfectly** and
+then never delivers a frame (tick o2x), so the timeout is the only thing that
+ends that capture.
+
+## The QVariant guard, measured rather than assumed
+
+Handing `resolve()` the toplevel model's own `values` — the exact shape a QML
+caller reaches for — is refused out loud, before and after the model fills:
+
+    refusal='Cannot picture anything: the address list arrived as a QML sequence
+             rather than a JavaScript array. Copy it out element by element
+             before it crosses into PanelModel.'
+
+Confirms the learnings-file claim on the argument side: a V4Sequence is still
+not an `Array` to `Object.prototype` in quickshell 0.3.1, and without the guard
+the whole batch returned an empty plan with an empty refusal — "nothing to do,
+everything fine" over windows nobody photographed.
+
+## Also pinned, at every sample
+
+`ready([])` is `true` (nothing was asked, so nothing can change; `asked=0` and
+`ok=true` distinguish it from a successful capture) and `ready(["junk"])` is
+`true` (permanent, and `ok=false`). Both are derived: `pending` is the only
+retryable bucket, so `pending` is the only bucket that gates the predicate.
+
+The probe was a throwaway, as in o2x; only the bridge it exercised is in this
+repository, and every decidable part of it now has a node test.
