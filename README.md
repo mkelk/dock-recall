@@ -314,7 +314,7 @@ fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 ```bash
 node --test 'tests/**/*.test.js'   # 852 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
-qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml
+qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
 ./scripts/dev-install --restart    # install this working tree and restart the shell
 ```
