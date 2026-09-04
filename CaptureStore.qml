@@ -121,7 +121,18 @@ Item {
   // panel's render registries).
   property int generation: 0
 
-  readonly property bool busy: store._queue.length > 0 || store._active
+  // IS A ROUND IN FLIGHT? The one truth, and it is LOAD-BEARING (tick ilg):
+  // `capture()`'s own guard reads it, and so does the panel — `canRecord` is
+  // false while it holds, so a second Record cannot be pressed against a live
+  // round at all. Before that it was read nowhere, and a refused Record was the
+  // only thing standing between two interleaved queues over one compositor
+  // session.
+  //
+  // `_plan` is in the OR beside the two obvious fields because a round is alive
+  // from `capture()`'s first assignment: between there and `_resolveThenWalk`
+  // the queue can be empty and `_active` still false, and that window is a whole
+  // mkdir and a whole `find` wide.
+  readonly property bool busy: store._queue.length > 0 || store._active || store._plan !== null
 
   function log(message) { console.log(store.logPrefix + " " + message) }
   function warn(message) { console.warn(store.logPrefix + " " + message) }
@@ -159,9 +170,16 @@ Item {
     stderr: StdioCollector { waitForEnd: true }
     onExited: function (exitCode) {
       store.files = PanelModel.captureFileIndex(exitCode === 0 ? String(listOut.text || "") : "")
+      // Whether the directory is THERE, which is a different question from
+      // whether it holds anything — and the one an eviction's failure has to be
+      // read against. `find` exits non-zero for a cache directory that was never
+      // created, and that is the state the plugin ships in rather than a fault.
+      store._cacheDirPresent = (exitCode === 0)
       store.generation = store.generation + 1
     }
   }
+
+  property bool _cacheDirPresent: false
 
   // ------------------------------------------------------------- eviction
 
@@ -173,12 +191,23 @@ Item {
   // back from a listing has to be handed to a second process, and a cache
   // directory is a place other software also writes. One process, no name ever
   // leaving the kernel, and nothing outside the prefix can be named.
-  function evict(prefix, reason) {
+  //
+  // ONE AT A TIME, QUEUED, NEVER CLOBBERED (tick ilg). `evictProc` is a single
+  // Process shared by five callers, and the pattern, the reason and the
+  // continuation used to live in properties beside it. A second eviction
+  // therefore SIGTERMed the first and then ran the first's `onExited` against
+  // the SECOND's pattern: the wrong sentence in the log, and — the part that
+  // mattered — the capture round's "now start walking" continuation fired on a
+  // `find` that had been KILLED, breaking the one invariant this sequence has,
+  // that the eviction COMPLETES before the first save. Every request is now a
+  // job carrying its own pattern, reason and continuation, and the jobs run in
+  // the order they were asked for.
+  //
+  // `then` is how the capture sequence chains onto its own eviction; nobody else
+  // passes one.
+  function evict(prefix, reason, then) {
     if (!store.cacheDir || !prefix) return
-    store._evictPattern = String(prefix) + "*"
-    store._evictReason = String(reason || "")
-    evictProc.running = false
-    evictProc.running = true
+    store._enqueueEvict(String(prefix) + "*", reason, then)
   }
 
   // EVERY picture, on every desk. The third answer to the first-Record dialogue
@@ -193,21 +222,69 @@ Item {
   // pattern is what keeps that true if it ever stops being.
   function evictAll(reason) {
     if (!store.cacheDir) return
-    store._evictPattern = "*.jpg"
-    store._evictReason = String(reason || "")
+    store._enqueueEvict("*.jpg", reason, null)
+  }
+
+  // The jobs waiting, and the one running. `_evictPattern` is written by
+  // `_startEvict` alone — it is the running job's pattern and nothing else, so
+  // `evictProc.command` can never describe a job other than the one in flight.
+  property var _evictQueue: []
+  property var _evictJob: null
+  property string _evictPattern: ""
+
+  function _enqueueEvict(pattern, reason, then) {
+    var queue = store._evictQueue.slice()
+    queue.push({
+      pattern: String(pattern),
+      reason: String(reason || ""),
+      then: (typeof then === "function") ? then : null
+    })
+    store._evictQueue = queue
+    store._startEvict()
+  }
+
+  function _startEvict() {
+    if (store._evictJob || store._evictQueue.length === 0) return
+    var job = store._evictQueue[0]
+    store._evictQueue = store._evictQueue.slice(1)
+    store._evictJob = job
+    store._evictPattern = job.pattern
+    // The same false/true idiom the listing and the mkdir use, and here it kills
+    // nothing: this function is only ever reached with no job in flight. It is
+    // needed because `running` is not reliably back to false by the time
+    // `onExited` runs, and assigning `true` to a property that is already true
+    // is not a change and would start nothing.
     evictProc.running = false
     evictProc.running = true
   }
-
-  property string _evictPattern: ""
-  property string _evictReason: ""
 
   Process {
     id: evictProc
     command: ["find", store.cacheDir, "-maxdepth", "1", "-type", "f",
               "-name", store._evictPattern, "-delete"]
-    stderr: StdioCollector { waitForEnd: true }
-    onExited: {
+    stderr: StdioCollector { id: evictErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var job = store._evictJob
+      store._evictJob = null
+
+      // A DELETE THAT FAILED IS SAID OUT LOUD (tick ilg). `find`'s exit code was
+      // ignored and its stderr went to a collector nothing read, so a picture
+      // that could not be removed — a permission, a read-only cache, a full
+      // inode table — left a log line claiming the pictures were dropped. The
+      // whole promise of this feature is that withdrawing consent removes the
+      // files; failing to remove one is precisely the thing a user has to be
+      // able to find out about.
+      //
+      // Read against `_cacheDirPresent`, because the OTHER way `find` exits
+      // non-zero is a cache directory that was never created — the state the
+      // plugin ships in, which the listing swallows for the same reason.
+      if (exitCode !== 0 && store._cacheDirPresent) {
+        var detail = String(evictErr.text || "").replace(/\s+$/, "")
+        store.warn("could not delete " + (job ? job.pattern : "the pictures") + " in "
+          + store.cacheDir + " — some pictures may still be on disk"
+          + (detail ? ": " + detail : " (find exited " + exitCode + ")"))
+      }
+
       // Nothing is logged about the count, because `find -delete` does not
       // report one and a second listing to count what is gone would be a
       // process spawn for a log line. What IS logged is the act and its reason,
@@ -216,16 +293,18 @@ Item {
       // WHICH pictures, because the two evictions delete different things and a
       // line reading "this layout" after "No pictures" would describe an act
       // narrower than the one that ran.
-      if (store._evictReason) {
-        store.log((store._evictPattern === "*.jpg"
+      if (job && job.reason) {
+        store.log((job.pattern === "*.jpg"
           ? "dropped every stored picture, on every desk ("
-          : "dropped the pictures for this layout (") + store._evictReason + ")")
+          : "dropped the pictures for this layout (") + job.reason + ")")
       }
       store.refresh()
-      if (store._evictThen) {
-        var then = store._evictThen
-        store._evictThen = null
-        then()
+      // The continuation belongs to THIS job, and the next job starts whatever
+      // it does — a throw in a round's continuation must not strand the queue.
+      try {
+        if (job && job.then) job.then()
+      } finally {
+        store._startEvict()
       }
     }
   }
@@ -258,27 +337,51 @@ Item {
   property bool _active: false
   property var _current: null
 
+  // BOTH REFUSALS COME BEFORE ANY ROUND STATE IS TOUCHED (tick ilg), and
+  // neither calls `_finish()`.
+  //
+  // That ordering is the whole of this repair. `_finish()` is — correctly, since
+  // tick gox — the place a round tears ITSELF down, resetting everything it
+  // owns. Calling it from a REFUSAL, after `_plan`/`_done`/`_results` had
+  // already been overwritten, meant a second Record during a live round tore the
+  // FIRST round down instead of the second: the first round's `_done` was lost
+  // (so its consent prompt never appeared), `_current` was left alive with a
+  // pending `grabToImage`, and `busy` went false — so the round after that
+  // passed the guard and ran `mkdir` -> `evict` -> walk while an orphan of round
+  // one was still in flight. The orphan then saved a picture over round three's
+  // eviction and settled into round three's queue.
+  //
+  // Before gox, `_finish()` left `_queue` populated, so `busy` stayed true and
+  // the third Record was refused too — the latch bug accidentally hid this one.
+  // Fixing the latch is what exposed it; nothing here reintroduces the latch,
+  // because nothing here writes round state before the guard has passed.
+  //
+  // A refused Record still owes its caller an answer, so `done([])` is called
+  // directly: the caller logs "0 picture(s) stored" and offers no consent
+  // prompt, exactly as it did when `_finish()` handed it the same empty list.
   function capture(plan, done) {
-    var captures = (plan && plan.captures) ? plan.captures : []
-    store._plan = plan
-    store._done = (typeof done === "function") ? done : null
-    store._results = []
+    var callback = (typeof done === "function") ? done : null
 
-    if (!store.cacheDir) {
-      store.warn("no cache directory to store pictures in — nothing was captured")
-      store._finish()
-      return
-    }
-    if (store._active || store._queue.length > 0) {
+    if (store.busy) {
       // One round at a time. A second Record while the first is still
       // photographing would interleave two queues over one compositor session,
       // and the second round's eviction would delete the first round's files
-      // as it wrote them.
+      // as it wrote them. `busy` is also what dims Record in the panel, so
+      // reaching this at all now takes an IPC call or a race with the binding.
       store.warn("a capture round is already running — this Record stored no pictures")
-      store._finish()
+      if (callback) callback([])
+      return
+    }
+    if (!store.cacheDir) {
+      store.warn("no cache directory to store pictures in — nothing was captured")
+      if (callback) callback([])
       return
     }
 
+    var captures = (plan && plan.captures) ? plan.captures : []
+    store._plan = plan
+    store._done = callback
+    store._results = []
     store._queue = captures.slice()
     store._handles = ({})
 
@@ -288,6 +391,16 @@ Item {
     store._evictThen = function () { store._resolveThenWalk() }
     mkdirProc.running = false
     mkdirProc.running = true
+  }
+
+  // The round's continuation, run when the round's OWN eviction job finishes.
+  // `_finish()` clears `_evictThen`, so an abandoned round's eviction — one that
+  // was still queued when the whole-queue deadline fired — completes and then
+  // finds nothing to start.
+  function _runEvictThen() {
+    var then = store._evictThen
+    store._evictThen = null
+    if (then) then()
   }
 
   Process {
@@ -300,7 +413,11 @@ Item {
         store._finish()
         return
       }
-      store.evict(store._plan ? store._plan.prefix : "", "re-recorded")
+      // The directory is there now, so an eviction failing from here on is a
+      // real failure and gets said out loud.
+      store._cacheDirPresent = true
+      store.evict(store._plan ? store._plan.prefix : "", "re-recorded",
+        function () { store._runEvictThen() })
     }
   }
 
@@ -367,9 +484,25 @@ Item {
     // started the capture and a second call errors (spike o2x, measured).
   }
 
+  // Is this entry the step in flight? The head of the queue IS the step: every
+  // path that answers for an entry shifts it off, so an entry that is no longer
+  // the head has already been answered for — or the whole round has been
+  // abandoned underneath it.
+  function _isCurrentEntry(entry) {
+    return !!entry && store._queue.length > 0 && store._queue[0] === entry
+  }
+
   // Record one answer and move on. The only way out of a step, so no path can
   // leave the queue holding an entry it has already answered for.
+  //
+  // IDEMPOTENT PER ENTRY (tick ilg). Two things can answer for the same step —
+  // the per-window guard and the grab callback it outlived — and a second answer
+  // was not merely a duplicate: it pushed an extra result AND shifted the queue
+  // again, so one queue entry was dropped unphotographed and unreported. That
+  // window is missing from `consentCaptureEntries`, so the prompt never shows it
+  // and "Not for these apps" never turns its camera off.
   function _settle(entry, ok, reason) {
+    if (!store._isCurrentEntry(entry)) return
     var results = store._results.slice()
     results.push({
       identityId: entry.identityId,
@@ -388,6 +521,13 @@ Item {
 
   function _onContent(view) {
     var entry = view.entry
+    // THE PER-WINDOW DEADLINE ENDS HERE (tick ilg). It measures exactly one
+    // thing — "does this window ever deliver a frame" — and the frame has just
+    // arrived. Left running, it could fire while `grabToImage` was still on the
+    // render thread: the step was settled "no-frame", the view destroyed, and
+    // the surviving callback then wrote a picture for a capture already reported
+    // failed. The whole-queue deadline below is what still bounds the grab.
+    guard.stop()
     var width = view.sourceSize.width
     var height = view.sourceSize.height
     // FROM sourceSize, never from hyprctl — the two disagree (spike o2x).
@@ -401,6 +541,13 @@ Item {
     var path = store.pathFor(entry.file)
 
     var started = view.grabToImage(function (result) {
+      // THE SAVE ITSELF IS GATED, not just the result (tick ilg). The render
+      // thread answers on its own schedule and the whole-queue deadline can end
+      // this step while it works; a file written after that is a picture no
+      // consent prompt ever showed, that "Not for these apps" cannot reach, and
+      // that can land after `evictAll("declined")` has run. So a callback whose
+      // step is over writes nothing and says nothing.
+      if (!store._isCurrentEntry(entry)) return
       if (!result) {
         store._settle(entry, false, "grab-null")
         return
@@ -422,7 +569,9 @@ Item {
     repeat: false
     onTriggered: {
       var entry = store._current ? store._current.entry : null
-      if (!entry) {
+      // Not the step in flight any more — `_settle` would (rightly) no-op, and
+      // nothing would advance the queue. `_next()` is the honest answer.
+      if (!store._isCurrentEntry(entry)) {
         store._next()
         return
       }
@@ -433,7 +582,14 @@ Item {
   // The whole-queue deadline, on top of the per-window one. Belt to its braces:
   // a step that never even reaches a view (a bridge callback that is never
   // called) would otherwise leave the store busy for the panel's lifetime, and
-  // `busy` is what stops a second Record from interleaving.
+  // `busy` is what stops a second Record from interleaving — and what dims
+  // Record in the panel, so a latched round would be a dead button.
+  //
+  // Since tick ilg it is also the ONLY bound on the grab phase: the per-window
+  // guard stops the moment a frame arrives, so a `grabToImage` whose callback
+  // never comes is caught here rather than after one more step budget. Its
+  // result is honest either way — the entry is reported "timed-out", and a
+  // callback that turns up afterwards finds its step over and writes nothing.
   Timer {
     id: total
     interval: Math.max(1000, store.totalMs)
@@ -462,13 +618,14 @@ Item {
     }
   }
 
-  // THE SINGLE PLACE a round's state is torn down. Every early-return path
-  // between the guard in capture() and a normal completion must reach this —
-  // see the audit above capture(). It resets EVERYTHING the round owns, not
-  // just the two fields `busy` reads, because a partially-torn-down round
+  // THE SINGLE PLACE a round's state is torn down, and ONLY a round's OWN state
+  // (tick ilg): every early-return path AFTER capture()'s guards has to reach
+  // this, and no path before them may — a refusal that called this tore down the
+  // round that was actually running. It resets EVERYTHING the round owns, not
+  // just the fields `busy` reads, because a partially-torn-down round
   // (the queue left populated, say) latches the guard in capture() forever:
-  // the next Record sees `busy` — or the queue-length check right below it —
-  // still true and refuses, silently, for the panel's lifetime.
+  // the next Record sees `busy` still true and refuses, silently, for the
+  // panel's lifetime.
   //
   // `_results` is read into a local BEFORE it is reset, so resetting it here
   // does not touch what `done` receives below.

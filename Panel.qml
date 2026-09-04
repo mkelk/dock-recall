@@ -331,7 +331,8 @@ Item {
   readonly property string emptyHint: PanelModel.emptyStateHint(root.watchedCount)
   // Why Record is unavailable, when it is. Separate from emptyHint because they
   // are different sentences about different problems and can be true at once.
-  readonly property string recordHint: PanelModel.recordBlockedHint(root.statusModel.restoring)
+  readonly property string recordHint: PanelModel.recordBlockedHint(
+    root.statusModel.restoring, captureStore.busy)
   // An identity that matches windows on this desk and wins none of them —
   // every one taken by an identity earlier in the list. It has no row of its
   // own to say so on (its windows are listed under the identity that took
@@ -2416,9 +2417,19 @@ Item {
   // A read-only file dims it too (tick sma): the button's whole act is a write,
   // and an enabled button for a write that will be refused is the affordance
   // lying about what it does. writeRefusalReason says why, in the hint stack.
+  //
+  // AND A CAPTURE ROUND IN FLIGHT DIMS IT TOO (tick ilg). `captureStore.busy`
+  // existed and was read nowhere, so the ONLY thing standing between a second
+  // Record and two interleaved capture queues over one compositor session was
+  // the store refusing — and that refusal ran on top of the live round's own
+  // state. The refusal is now harmless, but the button is the right place to
+  // stop it: a Record pressed against a live round could store no pictures
+  // anyway, and an enabled button for an act that will be half-refused is the
+  // affordance lying about what it does. Bounded by the store's whole-queue
+  // deadline, so this can dim for at most `totalMs`; recordHint says why.
   readonly property bool canRecord: root.stateLoaded && root.haveLiveData
     && root.liveMonitors.length > 0 && !root.statusModel.restoring
-    && root.writeRefusalReason === ""
+    && root.writeRefusalReason === "" && !captureStore.busy
 
   // The same shape for the OTHER footer action (tick 66x). Restore now and a
   // failed row's Retry were lit while `restoreRefusalReason` held: the click
@@ -4582,7 +4593,7 @@ Item {
                   // overwrites, and why it is dim when it is.
                   tooltipText: PanelModel.wrapTooltip(
                     PanelModel.recordTooltip(root.watchedCount, root.topologyName,
-                      root.statusModel.restoring),
+                      root.statusModel.restoring, captureStore.busy),
                     root.footerTooltipColumns)
                   bordered: true
                   hasCursor: root.focusSection === "record"

@@ -5346,9 +5346,20 @@ function learnLaunchLabel(count) {
 // recording overwritten by a snapshot of its own restore, mid-flight. The
 // button therefore goes out for the couple of seconds a cycle lasts, and says
 // why: a control that dims with no explanation reads as broken.
-function recordBlockedHint(restoring) {
-  if (!restoring) return "";
-  return "Restoring… Record is disabled until the restore finishes.";
+//
+// `capturing` is the second reason (tick ilg), and it is the same shape of
+// reason: the previous Record's pictures are still being taken, one window at a
+// time over a single compositor capture session, and a second round interleaved
+// with the first would delete the first's files as it wrote them. It lasts about
+// as long — a fraction of a second per window, bounded by the store's
+// whole-queue deadline — and it says so for the same reason.
+//
+// RESTORING WINS when both hold: it is the one that also stops the Restore side
+// of the panel, and two sentences in a one-line hint is a hint nobody reads.
+function recordBlockedHint(restoring, capturing) {
+  if (restoring) return "Restoring… Record is disabled until the restore finishes.";
+  if (capturing) return "Taking this recording's pictures… Record is disabled until they are done.";
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -5496,8 +5507,8 @@ function restoreTooltip(hasLayout, topologyName, restoreRefusalReason) {
     + " puts it. Safe to press twice.";
 }
 
-function recordTooltip(watchedCount, topologyName, restoring) {
-  if (restoring) return recordBlockedHint(restoring);
+function recordTooltip(watchedCount, topologyName, restoring, capturing) {
+  if (restoring || capturing) return recordBlockedHint(restoring, capturing);
   var count = Number(watchedCount) || 0;
   var where = trim(topologyName);
   // Same EMPTY_TOPOLOGY fallback as restoreTooltip above.

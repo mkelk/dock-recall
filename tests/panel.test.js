@@ -3367,6 +3367,27 @@ test("Record says why it is unavailable while a restore is in flight", () => {
   assert.ok(hint.indexOf("Record") !== -1 && hint.length > 0, hint);
 });
 
+test("Record also says why it is out while the last recording's pictures are still being taken (tick ilg)", () => {
+  // The second blocked reason, and the one the button gained when `busy` became
+  // load-bearing: a control that dims with no explanation reads as broken.
+  const capturing = panel.recordBlockedHint(false, true);
+  assert.ok(capturing.indexOf("Record is disabled") !== -1, capturing);
+  assert.ok(capturing.indexOf("picture") !== -1, capturing);
+  assert.notStrictEqual(capturing, panel.recordBlockedHint(true, false));
+
+  // Restoring wins when both hold — two sentences in a one-line hint is a hint
+  // nobody reads, and restoring is the one that stops the other half of the
+  // panel too.
+  assert.strictEqual(panel.recordBlockedHint(true, true), panel.recordBlockedHint(true, false));
+
+  // The old one-argument callers are unchanged: no capture round, no sentence.
+  assert.strictEqual(panel.recordBlockedHint(false), "");
+  assert.strictEqual(panel.recordBlockedHint(false, false), "");
+
+  // And the tooltip is the same sentence, so the two cannot drift apart.
+  assert.strictEqual(panel.recordTooltip(6, "Laptop", false, true), capturing);
+});
+
 test("the record button says what it will do", () => {
   assert.strictEqual(panel.recordLabel(6, "Laptop + AOC U34"), "Record 6 apps for Laptop + AOC U34");
   assert.strictEqual(panel.recordLabel(1, "Laptop"), "Record 1 app for Laptop");
@@ -6212,8 +6233,12 @@ test("the pictures are evicted at all three points a recording can end", () => {
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
   const capture = store.slice(store.indexOf("function capture(plan, done)"));
   assert.ok(capture.slice(0, 2000).indexOf("_resolveThenWalk") !== -1);
-  assert.ok(store.indexOf("store.evict(store._plan ? store._plan.prefix : \"\", \"re-recorded\")") !== -1,
+  assert.ok(store.indexOf("store.evict(store._plan ? store._plan.prefix : \"\", \"re-recorded\",") !== -1,
     "the capture sequence no longer evicts before it writes");
+  // And the walk is chained onto THAT eviction's own completion, not onto
+  // whichever eviction happens to finish next (tick ilg).
+  assert.ok(store.indexOf("function () { store._runEvictThen() })") !== -1,
+    "the round's continuation is no longer attached to the round's own eviction job");
 });
 
 test("_finish() tears down every piece of round state, and every early-return path between the guard and completion reaches it (tick gox)", () => {
@@ -6246,23 +6271,15 @@ test("_finish() tears down every piece of round state, and every early-return pa
   assert.ok(resultsReadAt < resultsResetAt,
     "_finish() resets _results before reading it into a local — the callback would get []");
 
-  // THE AUDIT: every early-return path between the guard in capture() and a
+  // THE AUDIT: every early-return path AFTER capture()'s guards and before a
   // normal completion must reach _finish(). Each slice below is exactly one
   // such path, isolated the same way the QML itself separates them, and each
   // must contain a call to store._finish().
-  const captureAt = store.indexOf("function capture(plan, done)");
-  const captureBody = store.slice(captureAt, store.indexOf("\n  }\n", captureAt));
-
-  const noCacheDir = captureBody.slice(captureBody.indexOf("if (!store.cacheDir)"),
-    captureBody.indexOf("if (store._active"));
-  assert.ok(noCacheDir.indexOf("store._finish()") !== -1,
-    "capture()'s no-cache-directory path no longer reaches _finish()");
-
-  const alreadyRunning = captureBody.slice(captureBody.indexOf("if (store._active"),
-    captureBody.indexOf("store._queue = captures.slice()"));
-  assert.ok(alreadyRunning.indexOf("store._finish()") !== -1,
-    "capture()'s already-running guard no longer reaches _finish() — this is the guard the bug latched");
-
+  //
+  // capture()'s OWN two refusals are the exception, and tick ilg is why: they
+  // run before a single field of round state is written, so there is nothing to
+  // tear down — and calling _finish() there tore down the round that was
+  // actually running. They are pinned by their own test below.
   const mkdirAt = store.indexOf("id: mkdirProc");
   const mkdirBody = store.slice(mkdirAt, store.indexOf("\n  }\n", mkdirAt));
   const mkdirFail = mkdirBody.slice(mkdirBody.indexOf("if (exitCode !== 0)"),
@@ -6300,6 +6317,197 @@ test("_finish() tears down every piece of round state, and every early-return pa
     "_settle() now short-circuits the round instead of always looping back to _next()");
   assert.ok(settleBody.indexOf("Qt.callLater(function () { store._next() })") !== -1,
     "_settle() no longer loops back to _next(), so its callers would no longer reach the audited path");
+});
+
+// ---------------------------------------------------------------------------
+// A capture round cannot be destroyed by the Record that was refused (tick ilg)
+// ---------------------------------------------------------------------------
+
+test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round state (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  const at = store.indexOf("function capture(plan, done) {");
+  assert.ok(at !== -1, "capture() is gone");
+  const body = store.slice(at, store.indexOf("\n  }\n", at));
+
+  // 1. THE GUARD IS FIRST. `_plan`, `_done` and `_results` used to be assigned
+  //    above it, so a second Record during a live round overwrote the FIRST
+  //    round's fields with the refused one's — and then called _finish(), which
+  //    since tick gox correctly resets everything, tearing down the round that
+  //    was actually running: its `done` lost (so its consent prompt never
+  //    appeared), its view left alive with a pending grab, and `busy` false so
+  //    the NEXT Record was not blocked either.
+  const guard = body.indexOf("if (store.busy)");
+  assert.ok(guard !== -1, "capture() no longer refuses a second round on `busy`");
+  for (const field of ["_plan", "_done", "_results", "_queue", "_handles", "_evictThen"]) {
+    const write = body.indexOf("store." + field + " =");
+    assert.ok(write !== -1, "capture() no longer sets " + field);
+    assert.ok(write > guard,
+      "capture() writes " + field + " before the one-round-at-a-time guard — a refused Record "
+      + "would alter the round that is actually running");
+  }
+
+  // 2. NEITHER REFUSAL CALLS _finish(). The round it would tear down belongs to
+  //    somebody else. This is the assertion that must not be relaxed back: the
+  //    pre-gox latch (a half-reset round leaving `_queue` populated) is NOT the
+  //    way to stop the interleave, and nothing here reintroduces it.
+  const refusals = body.slice(guard, body.indexOf("var captures ="));
+  assert.strictEqual(refusals.indexOf("_finish"), -1,
+    "capture()'s refusal paths call _finish() again — the exact bug tick ilg closed:\n" + refusals);
+
+  // 3. The caller is still answered, with the empty round it always got: it
+  //    logs "0 picture(s) stored" and offers no consent prompt.
+  assert.strictEqual((refusals.match(/callback\(\[\]\)/g) || []).length, 2,
+    "capture()'s two refusals no longer both answer the caller with an empty round:\n" + refusals);
+});
+
+test("`busy` is load-bearing: a live capture round dims Record, and says why (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // It covers the WHOLE round, mkdir and eviction included: between capture()
+  // and _resolveThenWalk the queue can be non-empty but `_active` is still
+  // false, and that window is a process spawn and a `find` wide.
+  const busyAt = store.indexOf("readonly property bool busy:");
+  assert.ok(busyAt !== -1, "captureStore.busy is gone");
+  const busyLine = store.slice(busyAt, store.indexOf("\n", busyAt));
+  for (const field of ["_queue", "_active", "_plan"]) {
+    assert.ok(busyLine.indexOf(field) !== -1,
+      "busy no longer covers " + field + ", so part of a round reads as idle: " + busyLine);
+  }
+
+  // AND SOMETHING READS IT. It was read nowhere at all — verified by grep at
+  // review time — which is how a second Record ever reached the store's refusal.
+  const canAt = panelSrc.indexOf("readonly property bool canRecord:");
+  assert.ok(canAt !== -1, "canRecord is gone");
+  assert.ok(panelSrc.slice(canAt, canAt + 260).indexOf("!captureStore.busy") !== -1,
+    "canRecord does not consult captureStore.busy, so Record is live during a capture round");
+
+  // Both doors onto the act go through canRecord: the button binds it, the
+  // keyboard and the overflow's Re-record call recordLayout(), and the IPC verb
+  // answers "cannot-record" before it ever gets there.
+  const ipc = panelSrc.slice(panelSrc.indexOf("function record(): string {"), panelSrc.length);
+  assert.ok(ipc.slice(0, 200).indexOf("if (!root.canRecord) return \"cannot-record\"") !== -1,
+    "the IPC record verb no longer gates on canRecord");
+  const rec = panelSrc.slice(panelSrc.indexOf("function recordLayout() {"));
+  assert.ok(rec.slice(0, 120).indexOf("if (!root.canRecord) return false") !== -1,
+    "recordLayout no longer gates on canRecord");
+
+  // And the hint under the map says which of the two reasons it is.
+  const hintAt = panelSrc.indexOf("readonly property string recordHint:");
+  assert.ok(panelSrc.slice(hintAt, hintAt + 180).indexOf("captureStore.busy") !== -1,
+    "recordHint never mentions the capture round, so Record dims with no explanation");
+});
+
+test("a late grab cannot write a picture for a capture already reported failed (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // "The step in flight" is the head of the queue, and every path that answers
+  // for an entry shifts it off.
+  const isAt = store.indexOf("function _isCurrentEntry(entry)");
+  assert.ok(isAt !== -1, "_isCurrentEntry is gone");
+  assert.ok(store.slice(isAt, store.indexOf("\n  }\n", isAt)).indexOf("store._queue[0] === entry") !== -1,
+    "_isCurrentEntry no longer means 'the head of the queue'");
+
+  // 1. THE PER-WINDOW GUARD CANNOT OUTLIVE ITS STEP. It measures exactly one
+  //    thing — does this window ever deliver a frame — and stops the moment one
+  //    does. It used to be stopped only at the top of _next(), a LATER turn, so
+  //    it could fire against a grab still on the render thread.
+  const contentAt = store.indexOf("function _onContent(view)");
+  const contentBody = store.slice(contentAt, store.indexOf("\n  }\n", contentAt));
+  const stop = contentBody.indexOf("guard.stop()");
+  assert.ok(stop !== -1, "the per-window guard is no longer stopped when the frame arrives");
+  assert.ok(stop < contentBody.indexOf("view.grabToImage("),
+    "the guard is stopped after the grab is queued, which is the race itself");
+
+  // 2. THE SAVE IS GATED, not just the result. A file written after the step
+  //    ended is a picture no consent prompt ever showed, that "Not for these
+  //    apps" cannot reach, and that can land after evictAll("declined").
+  const grab = contentBody.slice(contentBody.indexOf("view.grabToImage(function (result)"));
+  const gate = grab.indexOf("if (!store._isCurrentEntry(entry)) return");
+  const save = grab.indexOf("saveToFile");
+  assert.ok(gate !== -1, "the grab callback never checks whether its step is still in flight:\n" + grab);
+  assert.ok(save !== -1 && gate < save,
+    "the grab callback saves before it checks its step is still in flight:\n" + grab);
+
+  // 3. _settle IS IDEMPOTENT PER ENTRY. A second answer for one step used to
+  //    push a duplicate result AND shift the queue again — one window silently
+  //    dropped, unphotographed and unreported, and therefore missing from
+  //    consentCaptureEntries.
+  const settleAt = store.indexOf("function _settle(entry, ok, reason)");
+  const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
+  const settleGate = settleBody.indexOf("if (!store._isCurrentEntry(entry)) return");
+  assert.ok(settleGate !== -1, "_settle() is answerable twice for one entry:\n" + settleBody);
+  assert.ok(settleGate < settleBody.indexOf("store._results = results"),
+    "_settle() records the result before checking the entry is still the step in flight");
+
+  // 4. And the guard timer no longer settles blind: with _settle a no-op for a
+  //    stale entry, a guard firing against one would advance nothing at all.
+  const guardAt = store.indexOf("id: guard");
+  const guardBody = store.slice(guardAt, store.indexOf("\n  }\n", guardAt));
+  assert.ok(guardBody.indexOf("if (!store._isCurrentEntry(entry))") !== -1,
+    "the per-window guard settles an entry without checking it is the step in flight:\n" + guardBody);
+  assert.ok(guardBody.indexOf("store._next()") !== -1, guardBody);
+});
+
+test("two evictions cannot cross, and a `find` that failed is not silent (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // ONE Process, five callers. The pattern, the reason and the continuation
+  // lived in properties beside it, so a second eviction SIGTERMed the first and
+  // then ran the first's onExited against the SECOND's pattern: the wrong
+  // sentence logged, and the capture round's "now start walking" continuation
+  // fired on a `find` that had been killed — breaking the stated invariant that
+  // the eviction completes before the first save.
+  assert.ok(store.indexOf("function _enqueueEvict(pattern, reason, then)") !== -1,
+    "evictions are no longer queued as jobs");
+  const startAt = store.indexOf("function _startEvict()");
+  assert.ok(startAt !== -1, "_startEvict is gone");
+  const startBody = store.slice(startAt, store.indexOf("\n  }\n", startAt));
+  assert.ok(startBody.indexOf("if (store._evictJob || store._evictQueue.length === 0) return") !== -1,
+    "_startEvict no longer refuses to start a second find over a running one");
+
+  // NOTHING CAN KILL A RUNNING FIND. The `running = false; running = true`
+  // restart is what SIGTERMed the previous eviction, and it now exists in
+  // exactly ONE place — behind the guard above, where no job is in flight.
+  assert.strictEqual((store.match(/evictProc\.running = false/g) || []).length, 1,
+    "the shared Process is restarted from more than one place again");
+  assert.ok(startBody.indexOf("evictProc.running = false") !== -1,
+    "the one restart is no longer the guarded one inside _startEvict:\n" + startBody);
+  // And the property the old code crossed is gone entirely.
+  assert.strictEqual(store.indexOf("_evictReason"), -1,
+    "the eviction's reason still lives in a property a later caller can overwrite");
+
+  const block = store.slice(store.indexOf("id: evictProc"), store.indexOf("property var _evictThen"));
+  assert.ok(block.indexOf("var job = store._evictJob") !== -1,
+    "onExited no longer reads the job that actually finished:\n" + block);
+  assert.ok(block.indexOf("job.pattern") !== -1 && block.indexOf("job.reason") !== -1,
+    "the log line is still built from shared properties rather than the finished job");
+  assert.ok(block.indexOf("job.then()") !== -1,
+    "the continuation is no longer the finished job's own");
+  assert.ok(block.indexOf("store._startEvict()") !== -1,
+    "nothing starts the next queued eviction, so the queue stalls after one job");
+
+  // A DELETE THAT FAILED IS SAID OUT LOUD. `find`'s exit code was ignored and
+  // its stderr went to a collector nothing read, so an undeletable picture left
+  // a log line claiming the pictures were dropped.
+  assert.ok(block.indexOf("if (exitCode !== 0 && store._cacheDirPresent)") !== -1,
+    "a failed eviction is still silent:\n" + block);
+  assert.ok(block.indexOf("store.warn(") !== -1, block);
+  assert.ok(block.indexOf("evictErr.text") !== -1,
+    "the eviction's stderr still goes to a collector nothing reads");
+  // ...but the MISSING cache directory is not a failure — it is the state the
+  // plugin ships in, and the listing swallows it for exactly the same reason.
+  const listing = store.slice(store.indexOf("id: listProc"), store.indexOf("property bool _cacheDirPresent"));
+  assert.ok(listing.indexOf("store._cacheDirPresent = (exitCode === 0)") !== -1, listing);
 });
 
 // ---------------------------------------------------------------------------
