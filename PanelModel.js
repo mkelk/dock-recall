@@ -5819,8 +5819,101 @@ function emptyStateHint(watchedCount) {
   return "No apps watched yet — click the windows you care about, then record.";
 }
 
+// ---------------------------------------------------------------------------
+// The toplevel bridge — hyprctl address to Wayland handle (tick o2x)
+// ---------------------------------------------------------------------------
+//
+// Everything this plugin knows about a window comes from `hyprctl clients`,
+// where a window IS its address: an opaque `0x…` string. Capturing a picture of
+// that window needs something else entirely — a `Toplevel` handle from the
+// Wayland foreign-toplevel protocol, which is what `ScreencopyView.captureSource`
+// accepts and the only thing it accepts.
+//
+// `Quickshell.Hyprland`'s toplevel model is the join: each of its entries
+// carries BOTH the hyprctl `address` and a `wayland` handle. So the bridge is a
+// lookup, and this is its pure half — the matching, which has a right answer and
+// therefore a test. ToplevelBridge.qml holds the part that cannot be pure: the
+// singleton, and turning an index back into the live handle.
+//
+// It answers with three failure kinds rather than a null, because they mean
+// different things to a caller and this plugin refuses out loud (CLAUDE.md):
+//
+//   invalid  — the string is not an address at all. A bug in the caller.
+//   missing  — a well-formed address the model does not have. The window closed,
+//              or it belongs to another Hyprland instance.
+//   unmapped — the model HAS it, but with no Wayland handle yet. Measured, tick
+//              o2x: for ~1s after the shell starts, `Hyprland.toplevels` is
+//              empty, then fills WITHOUT handles, then the handles arrive over
+//              hyprland-toplevel-mapping-v1. This one is worth retrying; the
+//              other two are not.
+
+function normalizedAddress(value) {
+  var address = trim(value).toLowerCase();
+  if (!address.match(/^(0x)?[0-9a-f]+$/)) return "";
+  return address.indexOf("0x") === 0 ? address : "0x" + address;
+}
+
+// entries: a PLAIN array (copy it out of the QML model first — a QVariant-wrapped
+// V4Sequence is not an Array here, see the QML/JS boundary note in learnings) of
+// { address, hasWayland }, in model order. Indices into it are what comes back,
+// so the caller can pick the live object without this file ever touching one.
+//
+// addresses: the windows wanted, in the order wanted. Repeats are collapsed —
+// a capture queue photographs a window once.
+function resolveToplevels(entries, addresses) {
+  var list = isArray(entries) ? entries : [];
+  var wanted = isArray(addresses) ? addresses : [];
+  var byAddress = {};
+  var i;
+
+  for (i = 0; i < list.length; i++) {
+    var address = normalizedAddress(list[i] && list[i].address);
+    // First wins: an address is unique in one Hyprland instance, and a later
+    // duplicate could only be a stale entry the model has not dropped yet.
+    if (address && own(byAddress, address) === undefined) {
+      byAddress[address] = { index: i, hasWayland: !!(list[i] && list[i].hasWayland) };
+    }
+  }
+
+  var out = { resolved: [], invalid: [], missing: [], unmapped: [] };
+  var seen = {};
+
+  for (i = 0; i < wanted.length; i++) {
+    var raw = wanted[i];
+    var key = normalizedAddress(raw);
+    if (!key) { out.invalid.push(trim(raw)); continue; }
+    if (own(seen, key) !== undefined) continue;
+    seen[key] = true;
+
+    var found = own(byAddress, key);
+    if (found === undefined) { out.missing.push(key); continue; }
+    if (!found.hasWayland) { out.unmapped.push(key); continue; }
+    out.resolved.push({ address: key, index: found.index });
+  }
+
+  return out;
+}
+
+// The one line a refusal needs. Empty when everything resolved, so a caller can
+// use it as the condition as well as the message.
+function toplevelBridgeRefusal(plan) {
+  if (!plan) return "";
+  var parts = [];
+  var invalid = isArray(plan.invalid) ? plan.invalid : [];
+  var missing = isArray(plan.missing) ? plan.missing : [];
+  var unmapped = isArray(plan.unmapped) ? plan.unmapped : [];
+  if (invalid.length) parts.push(invalid.length + " not an address");
+  if (missing.length) parts.push(missing.length + " no longer open");
+  if (unmapped.length) parts.push(unmapped.length + " not ready to capture yet");
+  if (!parts.length) return "";
+  return "Cannot picture " + parts.join(", ") + ".";
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
+    normalizedAddress: normalizedAddress,
+    resolveToplevels: resolveToplevels,
+    toplevelBridgeRefusal: toplevelBridgeRefusal,
     // Exported for the QML side as much as for the tests: an identity-id lookup
     // in Panel.qml has to go through this too (tick 8hp).
     own: own,

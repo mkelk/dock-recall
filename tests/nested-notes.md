@@ -286,3 +286,127 @@ one of these signals that could not be produced by anything else.
 **Rule for future runs:** never treat a VM screendump as evidence that a session
 is locked. Use `omarchy-shell lock isLocked` plus the `LOCK` blocker, and prove
 the input path with a wrong password before the right one.
+
+---
+
+# 2026-09-04 — Can we photograph a window we cannot see? (tick o2x)
+
+The Recorded map wants a picture of each watched window, taken when the user
+presses Record and shown later with the app closed. The whole feature stands on
+one question, so it was asked first and alone, in the nested sandbox.
+
+**R1 — can a window that no monitor is showing be captured? YES.**
+**R2 — does the hosted `grabToImage` pattern work? YES.**
+
+Both measured with `tests/sandbox-lib.sh` (nested Hyprland 0.56.2, quickshell
+0.3.1). Nothing ran against the live session; the isolation footer passed on
+every run.
+
+## The stage, and how "not visible" was established
+
+Three independent facts, all recorded before a single capture was taken:
+
+1. **The window's workspace belongs to a monitor that IS rendering.** A headless
+   output (`hyprctl output create headless dr-cap`) was created inside the nested
+   compositor and BOTH workspaces moved onto it with
+   `hl.dsp.workspace.move({ workspace = "N", monitor = "dr-cap" })` — hidden one
+   first, so the shown one ends up active. `hyprctl workspaces -j` then reports
+   ws 2 and ws 11 both on `dr-cap`.
+2. **No monitor is showing that workspace.** `hyprctl monitors -j` reports
+   active workspaces `[1, 11]`; the targets sit on ws 2, and no special
+   workspace is open.
+3. **A screen scrape does not contain them.** `grim -o dr-cap` — the whole of
+   what is on screen — comes back green and yellow, the two visible windows.
+   Neither the red nor the blue window is anywhere in it.
+
+Each window is a `foot` with a solid background (`-o colors.background=ff0000`),
+so "is this really that window's picture?" is answerable by one pixel rather than
+by eye.
+
+## The result
+
+Four windows, two hidden and two visible, captured in one interleaved queue:
+
+    hidden  ff0000 -> 952x1070, 99.9959% red
+    hidden  0000ff -> 952x1070, 99.9786% blue
+    visible 00ff00 -> 952x1070, 99.9935% green
+    visible ffff00 -> 952x1070, 99.9935% yellow
+
+The red capture is 2,043,026 of 2,043,700 pixels pure `#FF0000` — it is that
+window, not a blank frame and not the screen. Repeated across three runs with the
+hidden window first, second and third in the queue, so its position cannot
+explain the outcome.
+
+## The one case where capture does NOT work
+
+**A window on a monitor that is not rendering at all never delivers a frame.**
+In the sandbox that monitor is `WAYLAND-1`, the nested compositor's own surface,
+parked on a hidden special workspace of the live session and therefore never
+given a frame callback. Two independent symptoms:
+
+- `grim -o WAYLAND-1` **blocks forever** (hence the `timeout 8` around it).
+- `ScreencopyView.hasContent` never flips, and the capture times out.
+
+The first attempt at R1 put the hidden window there and got a NO that meant
+nothing about the product. On a real desk the equivalent is a monitor that is off
+or asleep. **Every capture needs a timeout as well as a callback**, and a "no
+frame" answer must be reported as such rather than treated as an empty picture.
+
+## What the capture tick has to know
+
+- **`HyprlandToplevel.address` has no `0x` prefix.** The model returns
+  `"562be03ac9a0"` where `hyprctl clients` says `"0x562be03ac9a0"`. Normalizing
+  is load-bearing, not tidiness — that is `PanelModel.normalizedAddress`.
+- **The model fills in asynchronously, in two stages.** For roughly the first
+  second `Hyprland.toplevels` is empty; `refreshToplevels()` posts a request and
+  returns, so reading `.values` in the same tick reads nothing. Poll
+  `ToplevelBridge.ready(addresses)`; never sleep, never read once.
+- **Do not call `captureFrame()` in the tick that creates the view.** With
+  `live: false`, assigning `captureSource` already starts one capture, and the
+  extra call answers *"Cannot capture frame, as no recording context is ready"*.
+  The four-window run does not call it at all and captures everything.
+- **`hyprctl clients` geometry and the captured size can disagree.** After the
+  workspace moved to `dr-cap`, `hyprctl` still reported the hidden windows as
+  700x801 while their captures came back 952x1070 — the tile size on the new
+  monitor. Size the picture from `ScreencopyView.sourceSize`, not from the
+  recorded window box.
+- **The host window may be 1x1.** Every run above used a 1x1 background layer
+  surface (`WlrLayershell.layer: WlrLayer.Background`,
+  `exclusionMode: ExclusionMode.Ignore`, `focusable: false`) with the
+  `ScreencopyView` sized to the source and overflowing it. `grabToImage` still
+  returns the full 952x1070 image, so the hosting window need not be anywhere
+  near the size of what it captures — but it does have to exist and be rendering.
+
+## The sequencing pattern for N windows
+
+One in flight, a fresh view each time, a deadline on every step:
+
+    next():
+      destroy the previous view; stop the guard timer
+      if the queue is empty -> done
+      view = ScreencopyView.createObject(stage, { captureSource: handle })
+      start the guard timer            // hasContent may never arrive
+
+    view.onHasContentChanged:          // first async hop: Wayland round-trip
+      if (!hasContent) return
+      view.grabToImage(function (result) {      // second: render-thread job
+        result.saveToFile(path)
+        Qt.callLater(next)             // callLater, not a direct call — the
+      }, Qt.size(sourceSize.width, sourceSize.height))
+                                       // grab callback runs off the render sync
+
+    guard.onTriggered:                 // the monitor is not rendering
+      record "no frame"; next()
+
+A **fresh view per window** is not fussiness: reuse a single view and
+`hasContent` is already `true` from the previous window, so the handler either
+never fires or fires on the old buffer. Creating N views at once opens N capture
+sessions on the compositor simultaneously.
+
+## Where the evidence is
+
+`.devmeta/increments/increment-06-bwf/evidence/o2x/` in the dev repository — the
+four capture PNGs, the `grim` screen scrape they are absent from, the
+`hyprctl monitors`/`workspaces`/`clients` dumps taken while they were hidden, and
+the full sandbox run log. The probe itself was a throwaway; only the bridge it
+exercised is in this repository.
