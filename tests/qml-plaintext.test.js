@@ -29,6 +29,13 @@
 // declare PlainText on their contentItem, which is why the tooltip carrying a
 // raw window title is not a hole; that is asserted below too, so a shell that
 // dropped it would be caught here rather than on screen.
+//
+// AND ONE STRUCTURAL GUARD, at the bottom. This is the repository's source-scan
+// file — node cannot instantiate QML, so a claim about which COMPONENT the panel
+// used can only be made by reading the tree — and "the header is a PanelHero" is
+// exactly that shape of claim. It sits here rather than in a file of its own
+// because it is one assertion and it shares this file's whole premise: the scan
+// is the assertion.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -251,4 +258,63 @@ test("the shell components the panel draws untrusted strings through are plain t
         `${relative}:${block.line} no longer declares textFormat: Text.PlainText`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// THE HEADER IS A PanelHero (tick 05q)
+// ---------------------------------------------------------------------------
+//
+// The payload proves the header reports the right strings — `headerTitle` and
+// `headerMeta` — and nothing more. A hand-rolled `Item` with a title Text, a
+// meta Text and the same two `reportHeader` calls would pass every acceptance
+// assertion identically, which means the DoD's "the header is a `PanelHero`"
+// had nothing pinning it at all.
+//
+// It matters because the reason for using the shell's component is structural
+// rather than cosmetic: `PanelHero` RESERVES the trailing control's width
+// itself, and the hand-rolled version it replaced chained four anchors
+// right-to-left so that every addition to the row was another link in that
+// chain. A drift back to a hand-rolled header would not show up in any string.
+//
+// Node cannot instantiate QML, so this reads the tree. That is the same tactic
+// tests/state.test.js uses for the writeRefusal call sites and
+// tests/migration.test.js for the bash snippet inside Service.qml: there is no
+// second copy of the logic, only the question of who does what.
+test("the panel's header is the shell's PanelHero, and it is what reports the header", () => {
+  const source = fs.readFileSync(PANEL_QML, "utf8");
+
+  // The component is the shell's, so the import that brings it in has to be
+  // there — a file that lost `qs.Ui` would not compile, but a file that grew a
+  // local `PanelHero.qml` would, and would be a different component under the
+  // same name.
+  assert.match(source, /^import qs\.Ui$/m, "Panel.qml no longer imports the shell's Ui module");
+  assert.ok(!fs.existsSync(path.join(REPO_ROOT, "PanelHero.qml")),
+    "a local PanelHero.qml would shadow the shell's component of the same name");
+
+  // Exactly one, declared as an element rather than mentioned in prose.
+  const declarations = source.match(/^\s*PanelHero\s*\{/gm) || [];
+  assert.strictEqual(declarations.length, 1,
+    "expected exactly one PanelHero element in Panel.qml, found " + declarations.length);
+
+  // And it is THE header: the block that reports `headerTitle` and `headerMeta`
+  // into the payload is inside the PanelHero, bound to the hero's own `title`
+  // and `meta`. That is the join a hand-rolled Item would break — it could still
+  // report the same two strings, but not off a PanelHero's properties.
+  const start = source.indexOf("PanelHero {");
+  let depth = 0;
+  let end = -1;
+  for (let i = source.indexOf("{", start); i < source.length; i++) {
+    if (source[i] === "{") depth += 1;
+    else if (source[i] === "}" && --depth === 0) { end = i; break; }
+  }
+  assert.ok(end > start, "unbalanced braces after the PanelHero declaration");
+  const hero = source.slice(start, end);
+
+  assert.match(hero, /root\.reportHeader\(\{\s*title:\s*hero\.title,\s*meta:\s*hero\.meta\s*\}\)/,
+    "the payload's headerTitle/headerMeta no longer come from the PanelHero's own properties");
+  // The two things the shell's component owns and the hand-rolled one did not:
+  // the icon slot and the reserved trailing control. Both are handed components,
+  // and dropping either is the drift this test exists to catch.
+  assert.match(hero, /iconComponent:/, "the hero no longer carries the monitor glyph");
+  assert.match(hero, /trailingControl:/, "the hero no longer reserves the pause switch's width");
 });

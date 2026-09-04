@@ -510,15 +510,13 @@ Item {
   property double nowMs: Date.now()
 
   // "recorded 3 days ago", from the RECORDING's own timestamp and never from a
-  // file mtime: the state file holds every topology's layout, so its mtime is
-  // the last time any of them changed and a stale recording under a fresh mtime
-  // is exactly the lie this line exists to prevent. It is what will make the
-  // next epic's captures honest about their own age.
+  // file mtime. WHY not the mtime, and what ABSENT means beside null, are both
+  // in the payload contract's one normative place: tests/acceptance/README.md,
+  // "Absent vs `null` — the normative statement".
   //
-  // "" for a recording that carries no timestamp, and "" when there is no
-  // recording at all — the two are different sentences, and the payload keeps
-  // them apart (null vs the key being absent) even though the header has
-  // nothing to say in either case.
+  // "" here for a recording that carries no timestamp AND for no recording at
+  // all — the header has nothing to say in either case; the payload is what
+  // keeps the two apart.
   readonly property string recordedAgeLabel: root.recordedLayout
     ? PanelModel.recordedAgeLabel(root.recordedLayout.recordedAt, root.nowMs) : ""
 
@@ -2561,21 +2559,16 @@ Item {
   //     ]
   //   }
   //
-  // ABSENT vs `null`, and the difference is the contract:
+  // ABSENT vs `null` is the payload's contract, and it is NORMATIVE in
+  // tests/acceptance/README.md, "Absent vs `null` — the normative statement".
+  // Read it there; it is not restated here, and adding a field to this payload
+  // means extending that section rather than four copies of it.
   //
-  //   absent  — the panel has nothing to say about this key at all: the thing it
-  //             describes does not exist (`recordedAt` when this topology has no
-  //             recording), or a later tick computes it and has not landed.
-  //   null    — computed, and the answer is genuinely empty. `recordedAt: null`
-  //             is a recording that carries NO timestamp; every draw-time field
-  //             (renderPath, placed, width, height, iconSource, iconResolved,
-  //             treatment, fillState, edgeTone, badgeValue, badgeFocused) is
-  //             null while the delegate has not drawn yet.
-  //
-  // So a consumer asks `has("k")` first and only then looks at the value, and a
-  // later tick ADDS its key to the objects below rather than un-nulling one.
-  // The two states above were the same value before (null for both), which the
-  // dated-header tick could not have told apart.
+  // What is local to this file: every draw-time field (renderPath, placed,
+  // width, height, iconSource, iconResolved, treatment, fillState, edgeTone,
+  // badgeValue, badgeFocused, pictured) is present-and-`null` while the delegate
+  // has not reported yet — which is `reported()` below, and is why that helper
+  // exists rather than a bare property read.
   //
   // `key`, `renderPath`, `placed`, `width`, `height` and `monitorName` are
   // exact from the start, because every later assertion keys on them. The four

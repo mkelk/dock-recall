@@ -40,6 +40,14 @@
 #                  warning never fires either. A positioned chip must therefore
 #                  also report placed:true AND clear the 16×10 floor. A 1-pixel
 #                  chip fails this test.
+#   name         — the app the chip stands for, and it is the ODD ONE OUT: every
+#                  other draw-time chip field is reported by the delegate that
+#                  drew it, and this one is read straight off the model — so
+#                  "the chip reports what it drew" is weakest exactly here. It is
+#                  required non-empty on every chip on both paths, and the two
+#                  single-instance windows are pinned against the ROW that names
+#                  the same app, which IS delegate-reported. One name per app
+#                  across both surfaces is also what the hover promises.
 #   monitorName  — on chips AND workspaces. The workspace render registry keys
 #                  on the monitor because a stale recording can name one
 #                  workspace id under two monitors; dropping it from the payload
@@ -100,10 +108,8 @@
 #                  headerMeta has to contain the string, and the Live tab's has
 #                  to not, because when a layout was recorded is a fact about
 #                  the other tab. Derived from the recording's own recordedAt
-#                  and never from a file mtime — one state file holds every
-#                  topology's layout, so its mtime is the last time ANY of them
-#                  changed, and a stale recording under a fresh mtime is the lie
-#                  this line exists to prevent.
+#                  and never from a file mtime; WHY is in README.md, under
+#                  "Absent vs `null` — the normative statement".
 #   pictured,    — THE SECOND CONSENT (tick qnc), on chips and on rows.
 #   picturable     Watching an app lets the tool MOVE its windows; picturing it
 #                  lets the tool PHOTOGRAPH them and keep the picture on disk,
@@ -124,11 +130,10 @@
 #                  which the identity never loaded looks identical unless
 #                  something names the seeded window.
 #
-# ABSENT vs null in the payload — the convention the later ticks inherit, spelled
-# out in tests/acceptance/README.md: a key the panel has nothing to say about is
-# ABSENT (a field no tick has implemented yet; `recordedAt` when this topology
-# has no recording), and `null` means computed-and-genuinely-empty (`recordedAt`
-# null is a recording that carries no timestamp). Consumers ask `has("k")` first.
+# ABSENT vs null in the payload — the convention every assertion below is
+# written against. It is NORMATIVE in README.md beside this file, under "Absent
+# vs `null` — the normative statement", and is deliberately not restated here:
+# the next field added to the payload should mean one edit, not four.
 #
 # BOTH RENDER PATHS, in one panel session. Panel.qml draws a workspace either
 # absolutely-positioned (chips at their real rectangles, scaled) or as the
@@ -370,6 +375,7 @@ STATE_SHAPE='
   (.chips|type) == "array" and (.workspaces|type) == "array"
   and (.chips|length) > 0
   and ([.chips[]|select((.key|type) == "string" and (.key|length) > 0
+        and (.name|type) == "string" and (.name|length) > 0
         and (.monitorName|type) == "string" and (.monitorName|length) > 0
         and (.renderPath == "positioned" or .renderPath == "fallback")
         and (.placed|type) == "boolean"
@@ -494,6 +500,19 @@ capture_live_state() {
     and ([$state.chips[]|select(.key == $noicon)|.linkKey] as $link
          | [.rows[]|select(.linkKey == $link[0]
              and .iconResolved == false and (.iconSource|length) > 0)]|length) == 1
+    # THE CHIP NAME, and it is the odd one out: every other draw-time chip field
+    # is reported by the delegate that drew it, and this one is read straight off
+    # the model — so "the chip reports what it drew" is weakest exactly here.
+    # STATE_SHAPE requires every chip to carry a non-empty one; this pins the two
+    # single-instance windows against the ROW that names the same app, which is
+    # delegate-reported. One name per app across both surfaces is also what the
+    # hover promises: the row and the chips that light up with it are one thing.
+    and ([$state.chips[]|select(.key == $addr)] as $chip
+         | [.rows[]|select(.linkKey == $chip[0].linkKey
+             and .name == $chip[0].name)]|length) == 1
+    and ([$state.chips[]|select(.key == $noicon)] as $chip
+         | [.rows[]|select(.linkKey == $chip[0].linkKey
+             and .name == $chip[0].name)]|length) == 1
   ' >/dev/null
 }
 
@@ -963,10 +982,10 @@ fi
 pass "panel IPC reports the recording's own timestamp ($reported_at)"
 
 # And the same fact in words, derived from THAT stamp rather than from a file
-# mtime — the state file holds every topology's layout, so its mtime is the last
-# time any of them changed. Present on both tabs (it is a fact about the
-# recording, not about the tab); only the RECORDED tab puts it in the header,
-# which the two view predicates assert from opposite sides.
+# mtime (why: README.md, "Absent vs `null` — the normative statement"). Present
+# on both tabs — it is a fact about the recording, not about the tab — while only
+# the RECORDED tab puts it in the header, which the two view predicates assert
+# from opposite sides.
 if ! printf '%s' "$LIVE_JSON" | jq -e 'has("recordedAge")' >/dev/null; then
   diagnostics
   fail "panel IPC reports how old the recording is" \

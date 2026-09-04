@@ -336,7 +336,7 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 926 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 928 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml CaptureStore.qml ConsentPrompt.qml
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see

@@ -3277,6 +3277,51 @@ test("the recorded age is read in the recording's own units", () => {
   assert.strictEqual(ago(400 * 24 * 60 * 60 * 1000), "recorded 1 year ago");
 });
 
+test("the last five days of the year do not read as twelve months", () => {
+  // The cosmetic bug epic c7f's retro caught (tick 05q): `days < 365` with
+  // `floor(days / 30)` made 360 to 364 days say "12 months ago" — a unit nobody
+  // uses out loud, and one the very next day replaces with "1 year ago".
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  const days = (n) =>
+    panel.recordedAgeLabel(new Date(now - n * 24 * 60 * 60 * 1000).toISOString(), now);
+
+  assert.strictEqual(days(359), "recorded 11 months ago");
+  for (const n of [360, 361, 362, 363, 364]) {
+    assert.strictEqual(days(n), "recorded 11 months ago", n + " days");
+  }
+  assert.strictEqual(days(365), "recorded 1 year ago", "and the year still starts where it did");
+
+  // CLAMPED, not rounded up into a 360-day year: every bucket on this ladder
+  // FLOORS, so a label may understate an age and never overstate it. 29 days is
+  // "29 days ago" rather than "1 month ago" for exactly the same reason.
+  assert.strictEqual(days(29), "recorded 29 days ago");
+  assert.strictEqual(days(30), "recorded 1 month ago");
+
+  // And the whole ladder is monotone — no label names a smaller age than the one
+  // a day earlier, which is the thing a clamp can get wrong.
+  const rank = ["day", "month", "year"];
+  let previous = "";
+  let lastRank = -1;
+  let lastCount = -1;
+  // From day 1, because day 0 is "recorded just now" — the one rung of the
+  // ladder that names no unit at all.
+  for (let n = 1; n <= 800; n++) {
+    const label = days(n);
+    const parts = /^recorded (\d+) (day|month|year)s? ago$/.exec(label);
+    assert.ok(parts, n + " days produced an unparseable label: " + label);
+    const unit = rank.indexOf(parts[2]);
+    const count = Number(parts[1]);
+    if (unit === lastRank) {
+      assert.ok(count >= lastCount, "went backwards at " + n + " days: " + previous + " -> " + label);
+    } else {
+      assert.ok(unit > lastRank, "changed to a smaller unit at " + n + " days: " + previous + " -> " + label);
+    }
+    lastRank = unit;
+    lastCount = count;
+    previous = label;
+  }
+});
+
 test("a recording with no timestamp says nothing rather than guessing", () => {
   const now = Date.parse("2026-09-03T12:00:00.000Z");
   // null is what StateModel.normalizeLayout writes for a layout that carries no

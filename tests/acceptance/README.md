@@ -192,7 +192,8 @@ identity and not the flag:
 
 The seed's `version` is **hardcoded 3**, which is the one place this directory
 does not read `StateModel.STATE_VERSION`: the file *is* a v3 file, and reading
-the current version would silently stop testing anything the day v5 lands. What
+the current version would silently stop testing anything the day the schema
+moves on. What
 the test does read out of `StateModel` is that 3 is genuinely in the past, so a
 future bump makes the seed staler rather than inert.
 
@@ -210,9 +211,10 @@ It then proves three things in sequence:
    headless test can drive. So the test performs the plugin's own write path
    itself: `StateModel.parseState` → `serializeState` → temp-and-rename, the
    same serialization `Panel.writeState` writes. `parseState` is the code under
-   test, not a re-implementation of it. The file that lands is v4, subject
+   test, not a re-implementation of it. The file that lands is at the current
+schema version, subject
    emptied, control verbatim.
-3. **the file the user is left with** — the persisted v4 file is reloaded by the
+3. **the file the user is left with** — the persisted, upgraded file is reloaded by the
    live service (no second migration announced), a second dock event runs, and
    nothing strays and nothing times out.
 
@@ -347,7 +349,19 @@ would be a second writer with none of that discipline.
 }
 ```
 
-### Absent vs `null`
+### Absent vs `null` — the normative statement
+
+**This section is the payload contract.** `Panel.qml`, `PanelModel.js` and
+`dock-recall-panel-test.sh` all obey it and all three now *cite* it rather than
+restate it. That is deliberate and it is the whole reason it is written down
+here: the rationale used to be spelled out in full in four places, so the next
+field added to the payload meant four edits, three of them in files nowhere near
+the code that changed. Four copies of a rule is four chances for one of them to
+go quietly stale, and a stale copy of a contract is worse than no copy — a reader
+who finds it has no way to know it is the old one.
+
+Here, and nowhere else. Add a field to the payload and this is the paragraph to
+extend.
 
 The fields the rest of increment 06-bwf fills in — `fillState`, `treatment`,
 `badgeValue` — are **not in the payload at all** until the tick that computes
@@ -387,7 +401,8 @@ both sides — the recorded payload's `headerMeta` must contain `recordedAge`, a
 the live payload's must not mention "recorded ".
 
 No schema change was needed: `recordedAt` has been a normalized layout field
-since v1 (`StateModel.normalizeLayout`), so `STATE_VERSION` stands at 4.
+since v1 (`StateModel.normalizeLayout`), so the dated header cost the schema
+nothing.
 
 `renderPath`, `placed`, `width`, `height`, `iconSource` and `iconResolved` are
 `null` while the delegate that draws the chip has not reported yet — a transient
@@ -490,6 +505,17 @@ chain of right-to-left anchors it replaces did not.
 `headerTitle` and `headerMeta` are what the hero was **handed**; `topologyName`
 is what the panel computed. They agree by construction, which is what makes a
 disagreement worth failing on.
+
+That the header **is** a `PanelHero` is not something this payload can show: a
+hand-rolled `Item` with two `Text` elements and the same two `reportHeader` calls
+would report the same strings. It is pinned in `tests/qml-plaintext.test.js`
+instead — the repository's source-scan file — which requires exactly one
+`PanelHero` element in `Panel.qml`, requires the `headerTitle`/`headerMeta` report
+to be bound to *that element's* own `title` and `meta`, and requires it to still
+be handed the icon component and the trailing control. Those last two are the
+structural reason for using the shell's component at all: the hero reserves the
+trailing control's width itself, and the chain of four right-to-left anchors it
+replaced grew a link with every addition to the row.
 
 The status badge deliberately did **not** move into the hero's `detail` pill.
 That pill has one fixed border colour, and `PanelModel.badgeFor` maps six states
@@ -656,6 +682,18 @@ hover on either surface sets — driving a real pointer would need a
 `zwlr_virtual_pointer_v1` client, which is a live-session rig this increment does
 not use. The test requires that the key lights its row *and* its chips **and
 nothing else**, then that clearing it darkens both.
+
+### The chip's name
+
+`name` is the odd one out among the chip's fields: every other draw-time value is
+reported by the delegate that drew it, and this one is read straight off the
+model — so "the chip reports what it drew" is weakest exactly where nothing was
+pinning it. It now is. Every chip on both paths must carry a non-empty one, and
+the two single-instance windows are checked against the **row** that names the
+same app, found through the `linkKey` the chip reports. The row's name *is*
+delegate-reported, so the pair is two sites rather than one value read twice —
+and one name per app across both surfaces is what the hover already promises:
+the row and the chips that light up with it are one thing.
 
 ### The fields that are exact from the first tick
 

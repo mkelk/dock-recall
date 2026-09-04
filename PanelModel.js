@@ -5535,10 +5535,9 @@ function headerMeta(badgeText, watchedCount, extra) {
 //
 // From the recording's OWN `recordedAt` — a field the schema has carried since
 // v1 and StateModel.normalizeLayout preserves — and never from a file mtime.
-// The state file is one file holding every topology's layout, so its mtime is
-// the last time ANY of them changed; a stale recording under a fresh mtime is
-// exactly the lie this line exists to prevent, and it is the reason the next
-// epic's captures can be honest about their own age.
+// WHY not the mtime is written out once, in tests/acceptance/README.md under
+// "Absent vs `null` — the normative statement"; it is the payload contract's
+// section and this line is one of its consumers.
 //
 // `nowMs` is passed in. This file is clock-free (see CLAUDE.md), and that is
 // also what makes every case below testable rather than observable.
@@ -5581,7 +5580,19 @@ function recordedAgeLabel(recordedAt, nowMs) {
   if (age < DAY_MS) return "recorded " + plural(Math.floor(age / HOUR_MS), "hour") + " ago";
   var days = Math.floor(age / DAY_MS);
   if (days < 30) return "recorded " + plural(days, "day") + " ago";
-  if (days < 365) return "recorded " + plural(Math.floor(days / 30), "month") + " ago";
+  // THE MONTH BUCKET IS CLAMPED AT ELEVEN, and that is the fix for a cosmetic
+  // bug the epic c7f retro caught: 360 to 364 days is `days < 365` and
+  // `floor(days / 30)` is 12, so the label read "12 months ago" — a unit nobody
+  // uses out loud, and one the very next day replaces with "1 year ago".
+  //
+  // Clamped rather than moved to a 360-day year, because every other bucket here
+  // FLOORS: a label may round an age down, never up, and 360 days is not a year
+  // however close it reads. "11 months ago" is the same understatement "29 days
+  // ago" makes at the other end of the same ladder, and the sequence stays
+  // monotone across the boundary — 11 months, 11 months, then 1 year.
+  if (days < 365) {
+    return "recorded " + plural(Math.min(11, Math.floor(days / 30)), "month") + " ago";
+  }
   return "recorded " + plural(Math.floor(days / 365), "year") + " ago";
 }
 

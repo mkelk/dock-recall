@@ -1409,10 +1409,13 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 // recorded WINDOW, so a second window of one identity is recorded at
 // occurrence 1 (pinned in tests/record.test.js).
 //
-// STATE_VERSION has since moved on to 4, which is a generation about
-// IDENTITIES rather than entries — it adds `titlePatterns` — so a file written
-// today carries that line per identity too. No layout entry changed shape for
-// it.
+// STATE_VERSION has moved on since, and every generation after v3 has been
+// about IDENTITIES or about the file as a whole rather than about entries —
+// `titlePatterns`, then `pictured`, then `pictureConsent` — so a file written
+// today carries more than this paragraph describes, and NO layout entry has
+// changed shape since v3. The current number is StateModel.STATE_VERSION and is
+// deliberately not repeated here: a generation named in prose is a generation
+// that goes stale, which is exactly what this sentence did.
 
 // The tab order to believe for `client`'s group.
 //

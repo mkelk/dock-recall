@@ -50,8 +50,9 @@
 #            disk is asserted STILL v3 — that contract is behaviour too.
 #   phase 2  the WRITE, through the plugin's own StateModel (parse + serialize +
 #            atomic rename, the exact byte path Panel.writeState takes): the
-#            file that lands on disk is v4, subject emptied, control verbatim.
-#   phase 3  the persisted v4 file back under the live service, second dock
+#            file that lands on disk is at the CURRENT schema version, subject
+#            emptied, control verbatim.
+#   phase 3  the persisted, upgraded file back under the live service, second dock
 #            event: still converged. The loop closes on the file a user would
 #            actually be left with.
 #
@@ -240,7 +241,7 @@ screenshot "success-dock-recall-appid-01-docked"
 # whole point is that reading it performs a migration. Reading STATE_VERSION
 # here — which the round-trip test does for its own seed, correctly, because it
 # wants a file that is ALREADY current — would silently stop testing anything
-# the day v5 lands. What is asserted from StateModel instead is that v3 is
+# the day the schema moves on. What is asserted from StateModel instead is that v3 is
 # genuinely in the past.
 CURRENT_VERSION=$(node -e 'process.stdout.write(String(require(process.argv[1] + "/StateModel.js").STATE_VERSION))' "$PLUGIN_DIR" 2>/dev/null)
 [[ $CURRENT_VERSION =~ ^[0-9]+$ ]] ||
@@ -432,7 +433,7 @@ node -e '
   fail "the emptied subject is repair-eligible and the control is not"
 pass "the emptied subject is repair-eligible and the control is left alone"
 
-# ------------------------- 7. the persisted v4 file, back under the live service
+# --------------------- 7. the persisted, upgraded file, back under the live service
 
 # The loop closes here. Everything above proved the migration; this proves the
 # file a user is actually left with still converges when the dock comes and goes.
