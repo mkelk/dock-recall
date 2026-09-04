@@ -121,7 +121,9 @@ thinks is happening:
   windows; the camera lets it **photograph** them when you press Record, so the
   Recorded map can show the window even when the app is closed. It is off until
   you switch it on, it is per app, and switching it off again leaves the app
-  watched. Unticking an app takes its camera consent with it.
+  watched. **Switching a camera off deletes that app's stored pictures, on every
+  desk**, and the map stops drawing them at once. Unticking an app takes its
+  camera consent — and its pictures — with it.
 - **Recorded captures** — a chip on the Recorded tab draws the picture taken
   when you recorded, underneath its icon and its name, so a closed app is
   recognisable rather than a grey label. The pictures live in
@@ -133,8 +135,10 @@ thinks is happening:
   actually stores a picture, the panel shows you the pictures it just took and
   offers three answers: **Keep pictures**, **Not for these apps**, or **No
   pictures**. Not for these apps switches those apps' cameras off and deletes
-  what was just taken; No pictures switches every camera off and deletes every
-  stored picture, on every desk. The answer lives in the state file, so it
+  every picture of them, on every desk — the camera it withdraws is not a
+  per-desk grant, so neither is the delete; No pictures switches every camera off
+  and deletes every stored picture, on every desk. The answer lives in the state
+  file, so it
   survives a shell restart and you are not asked again. Escape, or a click
   outside it, dismisses it *without* answering — the question is still owed, and
   it comes back at the next Record.

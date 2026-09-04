@@ -76,6 +76,15 @@
 #                     apps" is driven end to end: the cameras go off AND the
 #                     pictures already taken are deleted, because either half
 #                     alone is the wrong behaviour.
+#   EVERY DESK      — and this one needs TWO topologies, because an eviction
+#                     keyed on the desk you happen to be plugged into passes
+#                     every other assertion in this file. A second headless
+#                     output is docked, a picture is stored on each side of it,
+#                     and then the camera is switched off ONCE: both have to go.
+#                     The same for unticking the app, and for "Not for these
+#                     apps" answered after the desk changed while the prompt was
+#                     up — which is the case where the panel is looking at one
+#                     desk's pictures and `topologyKey` names another.
 #   ONE CAPTURE GONE — the file is deleted and the panel re-summoned. It must be
 #                     offered no picture at all. Asserted on a FRESH panel
 #                     because that is the honest shape: within one session a
@@ -124,6 +133,14 @@ APP_CLASS="foot"
 PANEL_NAMESPACE="mkelk-dock-recall"
 IPC_TARGET="dock-recall"
 
+# A SECOND DESK, for the assertions that are about "every desk" (tick sp7). The
+# fake dock is `hyprctl output create headless`, the same trick the roundtrip
+# test docks with — a second monitor changes the topology key, so a Record on
+# each side of it stores its picture under a different prefix. One desk cannot
+# prove any of those claims: an eviction keyed on the desk you are plugged into
+# passes every single-topology assertion in this file.
+DOCK_OUTPUT="dr-cap-dock"
+
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
 TOPOLOGY_KEY=""
@@ -149,6 +166,49 @@ window_address() {
   clients | jq -r --arg t "$1" 'first(.[]|select(.initialTitle==$t)|.address)//empty'
 }
 window_here() { [[ -n $(window_address "$1") ]]; }
+
+monitor_id() {
+  hyprctl monitors all -j | jq -r --arg n "$1" 'first(.[]|select(.name==$n)|.id)//empty'
+}
+monitor_present() { [[ -n $(monitor_id "$1") ]]; }
+monitor_absent() { ! monitor_present "$1"; }
+
+# The app list's key for the app that has the camera, found the way a finger
+# finds it: from the WINDOW, through the chip that draws it, to the row it is
+# linked to. Not from `.pictured`, because half the assertions below start with
+# the camera already off — and not from the row's name, because both windows are
+# class `foot` and only their titles differ.
+#
+# The link key is a live-map fact, so the caller puts the panel on the live map
+# first.
+pictured_row_key() {
+  local address link
+  address=$(window_address "$PICTURED_TITLE")
+  [[ -n $address ]] || return 1
+  link=$(panel_state_json | jq -r --arg a "$address" \
+    'first(.chips[]|select(.key == $a)|.linkKey)//empty')
+  [[ -n $link ]] || return 1
+  panel_state_json | jq -r --arg l "$link" 'first(.rows[]|select(.linkKey == $l)|.key)//empty'
+}
+
+# Every topology the state file has a layout for, and the picture each one would
+# hold for the pictured app — asked of the plugin's own naming function, exactly
+# as EXPECTED_FILE is, so the test agrees with the code about the key by
+# construction and disagrees loudly about everything else.
+expected_files_for_all_layouts() {
+  node -e '
+    var fs = require("fs");
+    var panel = require(process.argv[1] + "/PanelModel.js");
+    var state = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+    var keys = Object.keys((state && state.layouts) || {}).sort();
+    var out = [];
+    for (var i = 0; i < keys.length; i++) out.push(panel.captureFileName(process.argv[3], 0, keys[i]));
+    process.stdout.write(out.sort().join("\n"));
+  ' "$PLUGIN_DIR" "$STATE" "$1"
+}
+
+layout_count() { jq -r '(.layouts|keys|length)//0' "$STATE" 2>/dev/null; }
+layouts_are() { [[ $(layout_count) -eq "$1" ]]; }
 
 # base-test.sh's wait_until aborts on timeout, which is right for most steps but
 # leaves no room to dump diagnostics first. poll returns instead.
@@ -226,6 +286,9 @@ cleanup() {
   # ~/.cache/omarchy left behind would break every later test that touches a
   # cache, and it is this test's own doing.
   chmod 700 "$CACHE_PARENT" 2>/dev/null
+  # And the fake dock goes, however this ended: a headless output left behind is
+  # a different desk for every test after this one.
+  monitor_present "$DOCK_OUTPUT" && hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
   omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
   pkill -f "foot --title=$PICTURED_TITLE" 2>/dev/null
   pkill -f "foot --title=$WITHHELD_TITLE" 2>/dev/null
@@ -958,6 +1021,265 @@ if ! poll 30 declined_reported; then
     "a row or a chip still reports pictured after \"Not for these apps\""
 fi
 pass "\"Not for these apps\": the cameras are off, the pictures just taken are deleted, and the answer is on disk"
+
+# ------- 10d. A CAMERA IS A FACT ABOUT AN APP, NOT ABOUT A DESK (tick sp7)
+#
+# EVERYTHING ABOVE THIS LINE IS ONE TOPOLOGY, and that is exactly how the bug
+# survived a whole epic: an eviction keyed on the desk you happen to be plugged
+# into passes every single-desk assertion in this file. So from here on there are
+# TWO, and each claim is made across both.
+#
+# The promise being tested is the one the epic exists to keep: a user who
+# withdraws consent gets the pictures deleted. Not the pictures on this desk —
+# the pictures. A camera is a field on an IDENTITY and has no topology in it, so
+# a withdrawal that reached one desk left the others holding photographs of an
+# app whose camera is off, with nobody who would ever come back for them: a
+# Record's eviction only runs for the desk you are on, and so does Forget.
+#
+# PAUSED FIRST. Docking and undocking are monitor events, and the service acts on
+# them — restoring layouts and moving the two windows about while the assertions
+# below are about the panel's own eviction. Pausing is the first-party way to say
+# "watch nothing for a moment", and it leaves every panel act available.
+paused_answer=$(omarchy-shell "$IPC_TARGET" setPaused on 2>&1)
+[[ $paused_answer == "paused" ]] ||
+  fail "the plugin can be paused for the two-desk round (captures)" "setPaused on answered '$paused_answer'"
+
+live_answer=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
+[[ $live_answer == "live" ]] ||
+  fail "the panel shows the live map for the row lookup (captures)" "setView live answered '$live_answer'"
+
+PICTURED_ROW_KEY=""
+find_row() { PICTURED_ROW_KEY=$(pictured_row_key); [[ -n $PICTURED_ROW_KEY ]]; }
+if ! poll 30 find_row; then
+  diagnostics
+  fail "the pictured app has a row the camera can be driven on (captures)" \
+    "no row links to the window titled $PICTURED_TITLE"
+fi
+
+camera_on=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&1)
+[[ $camera_on == "on" ]] ||
+  fail "the camera can be switched back on (captures)" "setPictured '$PICTURED_ROW_KEY' on answered '$camera_on'"
+
+# DESK ONE.
+rm -rf "$CACHE_DIR"
+desk_a_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $desk_a_record == "recorded" ]] ||
+  fail "panel IPC records on the first desk (captures)" "record answered '$desk_a_record'"
+if ! poll 40 cache_is 1; then
+  diagnostics
+  fail "the first desk stored its picture (captures)" "$CACHE_DIR holds $(cache_count)"
+fi
+DESK_A_FILE=$(cache_files)
+
+# DESK TWO. A second monitor is a different topology key, so the Record below
+# files its layout and its picture under a different prefix — which is the whole
+# point: two files, one per desk, for one app with one camera.
+hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the fake dock appeared (captures)" 20 monitor_present "$DOCK_OUTPUT"
+
+# The panel has to have SEEN the new desk before it can record for it — a Record
+# on a stale monitor list would file the second layout under the first key and
+# quietly turn this into a one-desk test again.
+docked_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && layouts_are 2; }
+if ! poll 60 docked_record; then
+  diagnostics
+  fail "panel IPC records a SECOND topology (captures)" \
+    "after docking $DOCK_OUTPUT the state file still holds $(layout_count) layout(s)"
+fi
+if ! poll 40 cache_is 2; then
+  diagnostics
+  fail "each desk stores its own picture (captures)" \
+    "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
+fi
+
+# BY NAME, not by count. Two files whose only difference is the topology hash,
+# both named by the plugin's own captureFileName for the two keys the state file
+# actually carries.
+want_two=$(expected_files_for_all_layouts "$PICTURED_IDENTITY")
+[[ $(cache_files) == "$want_two" ]] ||
+  fail "the two desks' pictures are keyed on their two topologies (captures)" \
+    "the cache holds '$(cache_files | tr '\n' ' ')', expected '$(printf '%s' "$want_two" | tr '\n' ' ')'"
+[[ $(printf '%s\n' "$want_two" | grep -c .) -eq 2 ]] ||
+  fail "the second desk really is a second topology (captures)" \
+    "both layouts name the same picture — the dock did not change the topology key"
+pass "two desks, two recordings, two pictures of one app — $(cache_files | tr '\n' ' ')"
+
+# THE WITHDRAWAL. One click on one camera, on the desk that is plugged in now.
+camera_off=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" off 2>&1)
+[[ $camera_off == "off" ]] ||
+  fail "the camera can be switched off (captures)" "setPictured '$PICTURED_ROW_KEY' off answered '$camera_off'"
+
+if ! poll 30 cache_is 0; then
+  diagnostics
+  fail "switching a camera off deletes that app's pictures on EVERY desk" \
+    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the other desk's copies survived the withdrawal"
+fi
+withdrawn=$(jq -r --arg id "$PICTURED_IDENTITY" \
+  'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
+[[ $withdrawn == "false" ]] ||
+  fail "the withdrawal reached the state file (captures)" "$PICTURED_IDENTITY reports pictured '$withdrawn'"
+
+# AND THE MAP STOPS DRAWING IT. The delete is a process and the listing that
+# follows it is another; the gate that makes this immediate is the flag.
+withdrawn_view=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
+[[ $withdrawn_view == "recorded" ]] ||
+  fail "the recorded map opens after the withdrawal (captures)" "setView recorded answered '$withdrawn_view'"
+if ! poll 30 capture_gone; then
+  diagnostics
+  fail "the map stops drawing a picture whose camera has been switched off" \
+    "a chip still reports a capture after the camera went off"
+fi
+pass "one camera switched off: BOTH desks' pictures deleted, and the map stopped drawing them"
+
+# ---------- 10e. \"Not for these apps\" deletes what it is LOOKING AT (sp7)
+#
+# The two ways the old code got this wrong, in one drive:
+#
+#   · it evicted the LIVE topology's prefix, so a dock or an undock while the
+#     prompt was up pointed the delete at a desk the user was not looking at and
+#     left the very pictures on screen;
+#   · the answer withdraws the camera GLOBALLY, so every other desk's copies
+#     stayed behind cameras that were off.
+#
+# So: build a picture on each desk, ask the question on the SECOND desk, UNDOCK
+# while the prompt is up, and then answer. Nothing may survive.
+camera_back=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&1)
+[[ $camera_back == "on" ]] ||
+  fail "the camera goes back on for the refusal round (captures)" "setPictured answered '$camera_back'"
+
+hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the fake dock went for the first desk's record (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+undocked_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 1; }
+if ! poll 60 undocked_record; then
+  diagnostics
+  fail "the first desk has a picture again (captures)" "$CACHE_DIR holds $(cache_count)"
+fi
+
+# The question has to be owed again to be answered differently, and the only
+# honest way to reach that is the file — `pictureConsent` is user-editable like
+# everything else in it. Nothing else is touched.
+node -e '
+  var fs = require("fs");
+  var StateModel = require(process.argv[1] + "/StateModel.js");
+  var statePath = process.argv[2];
+  var state = StateModel.parseState(fs.readFileSync(statePath, "utf8")).state;
+  fs.writeFileSync(statePath + ".tmp",
+    StateModel.serializeState(StateModel.setPictureConsent(state, "unasked")));
+  fs.renameSync(statePath + ".tmp", statePath);
+' "$PLUGIN_DIR" "$STATE" || fail "the state file can be set back to unasked again (captures)"
+if ! poll 30 unasked_again; then
+  diagnostics
+  fail "the panel picks up the reset answer for the refusal round (captures)" \
+    "the panel still reports an answered consent"
+fi
+
+# Dock, and ask the question THERE — so the pictures the prompt is showing are
+# the second desk's.
+hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the fake dock came back for the prompt (captures)" 20 monitor_present "$DOCK_OUTPUT"
+prompt_on_desk_two() {
+  [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2 \
+    && panel_state_json | jq -e '.consentOpen == true' >/dev/null
+}
+if ! poll 60 prompt_on_desk_two; then
+  diagnostics
+  fail "the prompt is asked on the second desk (captures)" \
+    "$CACHE_DIR holds $(cache_count) and consentOpen is $(panel_state_json | jq -r '.consentOpen|tostring')"
+fi
+
+# WHICH desk's picture the prompt is showing, because that is the half the old
+# code got wrong: it deleted the prefix of whatever desk was plugged in when the
+# button was pressed, not the one the pictures on screen belong to.
+DESK_B_FILE=$(cache_files | grep -vxF "$DESK_A_FILE" | head -1)
+[[ -n $DESK_B_FILE && $DESK_B_FILE != "$DESK_A_FILE" ]] ||
+  fail "the second desk stored a picture of its own (captures)" \
+    "the cache holds '$(cache_files | tr '\n' ' ')' and the first desk's is '$DESK_A_FILE'"
+consent_shows_desk_two() {
+  panel_state_json | jq -e --arg id "$PICTURED_IDENTITY" --arg url "file://$CACHE_DIR/$DESK_B_FILE" '
+    .consentOpen == true
+    and .pictureConsent == "unasked"
+    and ([.consentChoices[]|.id] == ["keep", "not-these", "none"])
+    and ((.consentCaptures|length) == 1)
+    and (.consentCaptures[0].identityId == $id)
+    and (.consentCaptures[0].source == $url)
+    and (.consentCaptures[0].ready == true)' >/dev/null
+}
+if ! poll 30 consent_shows_desk_two; then
+  diagnostics
+  fail "the prompt shows the SECOND desk's picture (captures)" \
+    "the strip does not report a ready thumbnail at file://$CACHE_DIR/$DESK_B_FILE"
+fi
+screenshot "success-dock-recall-captures-03-consent-two-desks"
+
+# THE TOPOLOGY CHANGES WHILE THE PROMPT IS UP. The panel is still showing the
+# second desk's pictures; `root.topologyKey` now names the first.
+hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the desk changed under the open prompt (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+still_asking() { panel_state_json | jq -e '.consentOpen == true' >/dev/null; }
+if ! poll 20 still_asking; then
+  diagnostics
+  fail "the prompt survives a topology change (captures)" \
+    "the panel closed the consent prompt when the desk changed, so this round proves nothing"
+fi
+
+declined_two=$(omarchy-shell "$IPC_TARGET" answerConsent not-these 2>&1)
+[[ $declined_two == "not-these" ]] ||
+  fail "the panel records the refusal on the changed desk (captures)" \
+    "answerConsent not-these answered '$declined_two'"
+
+if ! poll 30 cache_is 0; then
+  diagnostics
+  fail "\"Not for these apps\" deletes what it is looking at, on every desk" \
+    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the answer evicted the desk that happened to be plugged in rather than the app's pictures"
+fi
+pass "\"Not for these apps\" answered after the desk changed under the prompt: BOTH desks' pictures gone"
+
+# ------------- 10f. UNTICKING AN APP TAKES ITS PICTURES WITH IT (tick sp7)
+#
+# The README has always promised "Unticking an app takes its camera consent with
+# it". It took the FLAG — the field lives on the identity that goes — and left
+# the photographs, on every desk, with the ghost chip still rendering them and no
+# camera button left to press. This is the half a user would actually check.
+untick_camera=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&1)
+[[ $untick_camera == "on" ]] ||
+  fail "the camera goes back on for the untick round (captures)" "setPictured answered '$untick_camera'"
+
+untick_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 1; }
+if ! poll 60 untick_record; then
+  diagnostics
+  fail "there is a picture to untick away (captures)" "$CACHE_DIR holds $(cache_count)"
+fi
+hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the fake dock came back for the untick round (captures)" 20 monitor_present "$DOCK_OUTPUT"
+untick_record_two() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2; }
+if ! poll 60 untick_record_two; then
+  diagnostics
+  fail "both desks have a picture to untick away (captures)" \
+    "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
+fi
+
+untick_answer=$(omarchy-shell "$IPC_TARGET" toggleRow "$PICTURED_ROW_KEY" 2>&1)
+[[ $untick_answer == "toggled" ]] ||
+  fail "panel IPC unticks the pictured app (captures)" "toggleRow '$PICTURED_ROW_KEY' answered '$untick_answer'"
+
+if ! poll 30 cache_is 0; then
+  diagnostics
+  fail "unticking an app deletes its pictures, on every desk" \
+    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the README's promise is still only about the flag"
+fi
+unwatched=$(jq -r --arg id "$PICTURED_IDENTITY" \
+  '[.identities[]|select(.id == $id)]|length' "$STATE" 2>/dev/null)
+[[ $unwatched == "0" ]] ||
+  fail "the untick reached the state file (captures)" \
+    "$PICTURED_IDENTITY is still in the watched list after toggleRow"
+pass "unticking the app deleted its pictures on both desks — the README's promise, in full"
+
+hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the fake dock removed (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+unpaused_answer=$(omarchy-shell "$IPC_TARGET" setPaused off 2>&1)
+[[ $unpaused_answer == "active" ]] ||
+  fail "the plugin is active again after the two-desk round (captures)" \
+    "setPaused off answered '$unpaused_answer'"
 
 # --------------------------------------------------------- 11. leave it closed
 

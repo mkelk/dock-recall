@@ -207,7 +207,32 @@ Item {
   // passes one.
   function evict(prefix, reason, then) {
     if (!store.cacheDir || !prefix) return
-    store._enqueueEvict(String(prefix) + "*", reason, then)
+    store._enqueueEvict([String(prefix) + "*"], "dropped the pictures for this layout",
+      reason, then)
+  }
+
+  // EVERY PICTURE OF THESE APPS, ON EVERY DESK (tick sp7). The eviction a
+  // WITHDRAWN CAMERA needs, and the one this store had no shape for.
+  //
+  // A camera is a fact about an app, not about a desk. Withdrawing one and
+  // deleting a single topology's copies left every other desk's holding
+  // photographs with nobody who would ever clean them: Record's eviction runs
+  // only for the desk you are on, and so does Forget. So "switch this camera
+  // off" has to reach the pictures wherever they were taken, and that is what
+  // PanelModel.captureIdentityPatterns names — the file name with the topology
+  // segment wildcarded.
+  //
+  // ONE process for the whole list: withdrawing five cameras at once ("Not for
+  // these apps") is one act, and five sequential `find` spawns would be five
+  // moments at which it is half done.
+  function evictIdentities(identityIds, reason) {
+    if (!store.cacheDir) return
+    var names = PanelModel.captureIdentityPatterns(identityIds)
+    // Nothing to name is not the same as "name everything": an empty list here
+    // must delete nothing, exactly as an empty prefix does above.
+    if (!names.length) return
+    store._enqueueEvict(names,
+      "dropped every stored picture of " + names.length + " app(s), on every desk", reason, null)
   }
 
   // EVERY picture, on every desk. The third answer to the first-Record dialogue
@@ -222,20 +247,26 @@ Item {
   // pattern is what keeps that true if it ever stops being.
   function evictAll(reason) {
     if (!store.cacheDir) return
-    store._enqueueEvict("*.jpg", reason, null)
+    store._enqueueEvict(["*.jpg"], "dropped every stored picture, on every desk", reason, null)
   }
 
-  // The jobs waiting, and the one running. `_evictPattern` is written by
-  // `_startEvict` alone — it is the running job's pattern and nothing else, so
-  // `evictProc.command` can never describe a job other than the one in flight.
+  // The jobs waiting, and the one running. `_evictMatch` is written by
+  // `_startEvict` alone — it is the running job's match expression and nothing
+  // else, so `evictProc.command` can never describe a job other than the one in
+  // flight.
+  //
+  // A job carries its own SENTENCE as well as its own names, because the three
+  // evictions delete different things and a line reading "this layout" after
+  // "No pictures" describes an act narrower than the one that ran.
   property var _evictQueue: []
   property var _evictJob: null
-  property string _evictPattern: ""
+  property var _evictMatch: []
 
-  function _enqueueEvict(pattern, reason, then) {
+  function _enqueueEvict(names, sentence, reason, then) {
     var queue = store._evictQueue.slice()
     queue.push({
-      pattern: String(pattern),
+      names: names.slice(),
+      sentence: String(sentence),
       reason: String(reason || ""),
       then: (typeof then === "function") ? then : null
     })
@@ -243,12 +274,27 @@ Item {
     store._startEvict()
   }
 
+  // `find`'s match expression for one job: one `-name`, or several ORed inside
+  // a group. Each piece is its own argv element, so the parentheses need no
+  // quoting — there is no shell to quote them from.
+  function _matchArgs(names) {
+    if (names.length === 1) return ["-name", names[0]]
+    var out = ["("]
+    for (var i = 0; i < names.length; i++) {
+      if (i > 0) out.push("-o")
+      out.push("-name")
+      out.push(names[i])
+    }
+    out.push(")")
+    return out
+  }
+
   function _startEvict() {
     if (store._evictJob || store._evictQueue.length === 0) return
     var job = store._evictQueue[0]
     store._evictQueue = store._evictQueue.slice(1)
     store._evictJob = job
-    store._evictPattern = job.pattern
+    store._evictMatch = store._matchArgs(job.names)
     // The same false/true idiom the listing and the mkdir use, and here it kills
     // nothing: this function is only ever reached with no job in flight. It is
     // needed because `running` is not reliably back to false by the time
@@ -260,8 +306,8 @@ Item {
 
   Process {
     id: evictProc
-    command: ["find", store.cacheDir, "-maxdepth", "1", "-type", "f",
-              "-name", store._evictPattern, "-delete"]
+    command: ["find", store.cacheDir, "-maxdepth", "1", "-type", "f"]
+      .concat(store._evictMatch).concat(["-delete"])
     stderr: StdioCollector { id: evictErr; waitForEnd: true }
     onExited: function (exitCode) {
       var job = store._evictJob
@@ -280,7 +326,7 @@ Item {
       // plugin ships in, which the listing swallows for the same reason.
       if (exitCode !== 0 && store._cacheDirPresent) {
         var detail = String(evictErr.text || "").replace(/\s+$/, "")
-        store.warn("could not delete " + (job ? job.pattern : "the pictures") + " in "
+        store.warn("could not delete " + (job ? job.names.join(", ") : "the pictures") + " in "
           + store.cacheDir + " — some pictures may still be on disk"
           + (detail ? ": " + detail : " (find exited " + exitCode + ")"))
       }
@@ -290,14 +336,10 @@ Item {
       // process spawn for a log line. What IS logged is the act and its reason,
       // so the sequence in the log reads as the user's own sequence.
       //
-      // WHICH pictures, because the two evictions delete different things and a
-      // line reading "this layout" after "No pictures" would describe an act
-      // narrower than the one that ran.
-      if (job && job.reason) {
-        store.log((job.pattern === "*.jpg"
-          ? "dropped every stored picture, on every desk ("
-          : "dropped the pictures for this layout (") + job.reason + ")")
-      }
+      // The sentence is the JOB's, because the three evictions delete different
+      // things and a line reading "this layout" after "No pictures" would
+      // describe an act narrower than the one that ran.
+      if (job && job.reason) store.log(job.sentence + " (" + job.reason + ")")
       store.refresh()
       // The continuation belongs to THIS job, and the next job starts whatever
       // it does — a throw in a round's continuation must not strand the queue.

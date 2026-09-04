@@ -1415,9 +1415,21 @@ Item {
   // does. `captureStore.generation` is read so this re-evaluates when the
   // listing changes — `files` is mutated in place, exactly as the panel's own
   // render registries are.
+  //
+  // AND GATED ON THE CAMERA (tick sp7). Withdrawing a camera — the row's button,
+  // "Not for these apps", or unticking the app — deletes that identity's
+  // pictures on every desk, but a `find` is a process and a listing is another,
+  // and until both have come back `captureStore.has()` still answers yes. Two
+  // frames of the photograph a user has just withdrawn is exactly the moment
+  // this feature must not have, so the gate is `pictured` and the delete is what
+  // makes it true on disk as well as on screen.
+  //
+  // It also covers the case no eviction can: a recorded-but-unwatched ghost has
+  // no identity in the file at all, so it has no camera, so it draws no picture.
   function captureFileFor(identityId, occurrence) {
     if (captureStore.generation < 0) return ""
     if (!identityId || !root.topologyKey) return ""
+    if (!root.picturedOf(identityId)) return ""
     var name = PanelModel.captureFileName(identityId, occurrence, root.topologyKey)
     return captureStore.has(name) ? name : ""
   }
@@ -1646,7 +1658,21 @@ Item {
       // "the write succeeded" has never been the same claim as "something
       // changed", and only `added` can tell them apart.
       if (chip.identityId) {
-        root.log("unwatched \"" + chip.identityId + "\" — " + next.length + " identities")
+        // UNWATCHING TAKES THE PICTURES WITH IT (tick sp7), on every desk.
+        //
+        // The README has always promised "Unticking an app takes its camera
+        // consent with it", and until this tick it took the FLAG: the identity
+        // went, and with it the `pictured` field that lived on it — but the
+        // photographs stayed, the recorded map's ghost chip went on rendering
+        // them, and there was no longer even a camera button to press. This is
+        // the harder half of the same promise, and the one a user would actually
+        // check.
+        //
+        // AFTER the write, like every other eviction in this file: a refused
+        // write must not take the pictures with it.
+        captureStore.evictIdentities([chip.identityId], "unwatched")
+        root.log("unwatched \"" + chip.identityId + "\" — " + next.length + " identities;"
+          + " its stored pictures are deleted, on every desk")
       } else if (added) {
         root.log("watching \"" + added.id + "\" — " + next.length + " identities"
           + (inlineLaunch ? " (launch derived in the same write: " + inlineLaunch + ")" : ""))
@@ -1863,9 +1889,26 @@ Item {
       return
     }
     if (!root.writeState(StateModel.setPictured(fresh, identityId, want === true))) return
+    // SWITCHING A CAMERA OFF DELETES THE PICTURES (tick sp7), on every desk, and
+    // AFTER the write like every other eviction here.
+    //
+    // Until this tick it deleted nothing at all: the flag was written, the log
+    // said "Record will store no picture of it" — true about the FUTURE only —
+    // and the photographs already on disk stayed, with the Recorded map going on
+    // drawing them until some unrelated act happened to clear their prefix.
+    // Per-app withdrawal was absent from the whole eviction set. A camera is the
+    // control this feature gives a user over their own pictures; a control that
+    // only governs the next one is not that control.
+    //
+    // The map stops drawing them in the same instant rather than when the
+    // listing comes back — captureFileFor is gated on `pictured` — so the delete
+    // being asynchronous is not a window in which the user still sees what they
+    // just withdrew.
+    if (want !== true) captureStore.evictIdentities([identityId], "camera switched off")
     root.log(want === true
       ? "picturing \"" + identityId + "\" — Record will store a picture of its windows"
-      : "no longer picturing \"" + identityId + "\" — Record will store no picture of it")
+      : "no longer picturing \"" + identityId + "\" — its stored pictures are deleted,"
+        + " on every desk, and Record will store no more")
   }
 
   // The flip. Computed against the panel's copy and re-checked against the file
@@ -2207,10 +2250,13 @@ Item {
   //
   //   Keep pictures      — records the answer. Nothing is deleted, nobody's
   //                        camera moves.
-  //   Not for these apps — the apps in the strip lose their camera, and the
-  //                        pictures just taken are deleted. THESE apps: the ones
-  //                        the user is looking at. Other apps, and other desks,
-  //                        are untouched.
+  //   Not for these apps — the apps in the strip lose their camera, and every
+  //                        picture of them is deleted, on every desk (tick sp7).
+  //                        THESE apps: the ones the user is looking at. Other
+  //                        apps are untouched — but not other DESKS, because the
+  //                        camera it withdraws is not a per-desk grant and a
+  //                        photograph left on a desk whose camera is off is one
+  //                        nothing would ever come back for.
   //   No pictures        — every camera goes off and EVERY stored picture is
   //                        deleted, on every desk. Not a standing gate on top of
   //                        the per-app consent, deliberately: `pictured` already
@@ -2247,14 +2293,28 @@ Item {
     // THE PICTURES, AFTER THE WRITE, like every other eviction in this file: a
     // refused write must not take the pictures with it.
     //
-    // "Not for these apps" evicts by TOPOLOGY PREFIX rather than file by file,
-    // and that is exact rather than approximate: a capture round evicts the
-    // whole prefix before it writes anything (CaptureStore.capture), so the
-    // files under this desk's prefix ARE the round's files and nothing else.
-    // "No pictures" reaches further, across every desk, because that is what the
-    // answer says.
+    // "Not for these apps" evicts BY IDENTITY, on every desk (tick sp7). It used
+    // to evict this desk's topology prefix, which was wrong twice over and both
+    // ways were reachable by ordinary use:
+    //
+    //   · the answer withdraws the camera GLOBALLY (clearPictured takes no
+    //     topology), so a user who pressed Escape on desk A's prompt and then
+    //     answered "Not for these apps" on desk B kept desk A's pictures of
+    //     exactly those apps — cameras off, and nothing left that would ever
+    //     clean them: Record's eviction only runs for the desk you are on, and
+    //     so does Forget;
+    //   · it read the LIVE topologyKey rather than the round's, so a dock while
+    //     the prompt was up deleted another desk's pictures and left the ones
+    //     the user was looking at while pressing the button.
+    //
+    // The identity patterns have no topology segment at all, so "every desk"
+    // includes the one the prompt's own pictures were taken on whatever the
+    // panel has since docked into — which is the whole point.
+    //
+    // "No pictures" still reaches further: every app, not only the ones in the
+    // strip.
     if (answer === "not-these") {
-      captureStore.evict(PanelModel.captureTopologyPrefix(root.topologyKey), "declined")
+      captureStore.evictIdentities(ids, "declined")
     } else if (answer === "none") {
       captureStore.evictAll("declined")
     }

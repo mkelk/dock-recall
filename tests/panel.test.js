@@ -6467,7 +6467,7 @@ test("two evictions cannot cross, and a `find` that failed is not silent (tick i
   // sentence logged, and the capture round's "now start walking" continuation
   // fired on a `find` that had been killed — breaking the stated invariant that
   // the eviction completes before the first save.
-  assert.ok(store.indexOf("function _enqueueEvict(pattern, reason, then)") !== -1,
+  assert.ok(store.indexOf("function _enqueueEvict(names, sentence, reason, then)") !== -1,
     "evictions are no longer queued as jobs");
   const startAt = store.indexOf("function _startEvict()");
   assert.ok(startAt !== -1, "_startEvict is gone");
@@ -6489,7 +6489,8 @@ test("two evictions cannot cross, and a `find` that failed is not silent (tick i
   const block = store.slice(store.indexOf("id: evictProc"), store.indexOf("property var _evictThen"));
   assert.ok(block.indexOf("var job = store._evictJob") !== -1,
     "onExited no longer reads the job that actually finished:\n" + block);
-  assert.ok(block.indexOf("job.pattern") !== -1 && block.indexOf("job.reason") !== -1,
+  assert.ok(block.indexOf("job.names") !== -1 && block.indexOf("job.reason") !== -1
+    && block.indexOf("job.sentence") !== -1,
     "the log line is still built from shared properties rather than the finished job");
   assert.ok(block.indexOf("job.then()") !== -1,
     "the continuation is no longer the finished job's own");
@@ -6508,6 +6509,167 @@ test("two evictions cannot cross, and a `find` that failed is not silent (tick i
   // plugin ships in, and the listing swallows it for exactly the same reason.
   const listing = store.slice(store.indexOf("id: listProc"), store.indexOf("property bool _cacheDirPresent"));
   assert.ok(listing.indexOf("store._cacheDirPresent = (exitCode === 0)") !== -1, listing);
+});
+
+// ---------------------------------------------------------------------------
+// Withdrawing consent deletes the pictures, on every desk (tick sp7)
+// ---------------------------------------------------------------------------
+
+// `find -name` is fnmatch, so the pattern is testable against real file names
+// rather than only against itself. Everything but the two wildcards this
+// codebase puts in is escaped, so a metacharacter that leaked out of an
+// identity id would show up as a MISS here and not as a silently wider match.
+function globToRegExp(glob) {
+  return new RegExp("^" + String(glob)
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\?/g, ".")
+    .replace(/\*/g, ".*") + "$");
+}
+
+test("a withdrawn camera names EVERY picture of that app, on every desk (tick sp7)", () => {
+  const mine = "obsidian";
+  const theirs = "slack";
+  const pattern = panel.captureIdentityPattern(mine);
+  const re = globToRegExp(pattern);
+
+  // The topology segment is wildcarded and the occurrence is left open, so one
+  // pattern names this app's pictures wherever and however often they were
+  // taken. This is the whole repair: a camera is a fact about an APP, and an
+  // eviction keyed on the desk you happen to be plugged into left every other
+  // desk's copies with nobody who would ever come back for them.
+  for (const key of ["Laptop", "Laptop + AOC U34", "", "eDP-1|DP-3|HDMI-A-1"]) {
+    for (const occurrence of [0, 1, 7, 23]) {
+      const name = panel.captureFileName(mine, occurrence, key);
+      assert.ok(re.test(name), pattern + " does not name " + name);
+      assert.ok(!re.test(panel.captureFileName(theirs, occurrence, key)),
+        pattern + " also names another app's picture: " + panel.captureFileName(theirs, occurrence, key));
+    }
+  }
+
+  // And it names nothing else in the directory.
+  assert.ok(!re.test("readme.txt"));
+  assert.ok(!re.test(panel.captureFileName(mine, 0, "Laptop").replace(/\.jpg$/, ".png")));
+});
+
+test("the identity pattern carries no glob metacharacter of its own (tick sp7)", () => {
+  // captureSafeSegment maps everything outside [A-Za-z0-9._-] to "_", so the
+  // only "?" and "*" in a pattern are the ones captureIdentityPattern puts
+  // there: eight for the topology hash, one for the occurrence. An id that could
+  // contribute its own would be a user-editable string widening a delete.
+  for (const id of ["a?b", "a*b", "../../etc/passwd", "[a-z]", "**", "?", "-rf", ".hidden"]) {
+    const pattern = panel.captureIdentityPattern(id);
+    assert.strictEqual((pattern.match(/\?/g) || []).length, 8, id + " -> " + pattern);
+    assert.strictEqual((pattern.match(/\*/g) || []).length, 1, id + " -> " + pattern);
+    assert.strictEqual(pattern.indexOf("["), -1, id + " -> " + pattern);
+  }
+
+  // Two ids that SANITIZE the same are still told apart, by the hash that
+  // captureFileName uses for exactly the same reason.
+  const a = panel.captureIdentityPattern("a/b");
+  const b = panel.captureIdentityPattern("a?b");
+  assert.notStrictEqual(a, b);
+  assert.ok(!globToRegExp(a).test(panel.captureFileName("a?b", 0, "Laptop")));
+  assert.ok(globToRegExp(a).test(panel.captureFileName("a/b", 0, "Laptop")));
+
+  // An empty id names NOTHING, for the reason captureFileName returns "" for
+  // one: a caller must not be able to build a pattern that matches every file.
+  assert.strictEqual(panel.captureIdentityPattern(""), "");
+  assert.strictEqual(panel.captureIdentityPattern("   "), "");
+  assert.strictEqual(panel.captureIdentityPattern(null), "");
+  assert.deepStrictEqual(panel.captureIdentityPatterns(["", null, "  "]), []);
+
+  // The list form is de-duplicated: one act, one name per app.
+  assert.deepStrictEqual(panel.captureIdentityPatterns(["obsidian", "obsidian", "slack"]),
+    [panel.captureIdentityPattern("obsidian"), panel.captureIdentityPattern("slack")]);
+  assert.deepStrictEqual(panel.captureIdentityPatterns(null), []);
+});
+
+test("EVERY WAY OF WITHDRAWING A CAMERA DELETES THE PICTURES, on every desk (tick sp7)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  const bodyOf = (marker) => {
+    const at = source.indexOf(marker);
+    assert.ok(at !== -1, marker + " is gone");
+    return source.slice(at, source.indexOf("\n  }\n", at));
+  };
+
+  // 1. THE CONSENT ANSWER. "Not for these apps" withdraws the camera globally
+  //    (clearPictured takes no topology), so it has to delete globally too — and
+  //    it must not read the LIVE topologyKey, which a dock can change while the
+  //    prompt is up, pointing the delete at a desk the user is not looking at.
+  const answer = bodyOf("function answerConsent(answer) {");
+  assert.ok(answer.indexOf("captureStore.evictIdentities(ids, \"declined\")") !== -1,
+    "the consent answer no longer evicts by identity:\n" + answer);
+  assert.strictEqual(answer.indexOf("captureTopologyPrefix"), -1,
+    "the consent answer still evicts one desk's prefix — the other desks keep the pictures forever");
+  // The eviction is still AFTER the write: a refused write must not take the
+  // pictures with it.
+  assert.ok(answer.indexOf("if (!root.writeState(next)) return false")
+    < answer.indexOf("captureStore.evictIdentities"), answer);
+
+  // 2. THE PER-APP CAMERA. It used to write the flag, log a sentence about the
+  //    future, and delete nothing at all.
+  const setPictured = bodyOf("function setPicturedFor(identityId, want) {");
+  assert.ok(setPictured.indexOf("captureStore.evictIdentities([identityId]") !== -1,
+    "switching a camera off still deletes nothing:\n" + setPictured);
+  assert.ok(setPictured.indexOf("if (want !== true) captureStore.evictIdentities") !== -1,
+    "the eviction is not gated on the withdrawal — granting a camera would delete");
+  assert.ok(setPictured.indexOf("StateModel.setPictured(fresh") < setPictured.indexOf("evictIdentities"),
+    "the pictures go before the write that withdraws the camera is known to have landed");
+
+  // 3. UNWATCHING, which is what makes the README's promise true: it took the
+  //    camera FLAG (the field lives on the identity that goes), never the files.
+  const toggle = bodyOf("function toggleChip(chip) {");
+  assert.ok(toggle.indexOf("captureStore.evictIdentities([chip.identityId], \"unwatched\")") !== -1,
+    "unticking an app still leaves its photographs on disk:\n" + toggle);
+  assert.ok(toggle.indexOf("if (root.writeState(StateModel.setIdentities")
+    < toggle.indexOf("evictIdentities"), "the pictures go before the unwatch is written");
+
+  // 4. THE STORE'S SIDE: one process for the whole list, built from the pure
+  //    function, and an empty list deletes nothing — exactly as an empty prefix
+  //    does.
+  const evictIds = store.slice(store.indexOf("function evictIdentities(identityIds, reason)"));
+  const evictBody = evictIds.slice(0, evictIds.indexOf("\n  }\n"));
+  assert.ok(evictBody.indexOf("PanelModel.captureIdentityPatterns(identityIds)") !== -1, evictBody);
+  assert.ok(evictBody.indexOf("if (!names.length) return") !== -1,
+    "an empty identity list no longer refuses — it would name every file:\n" + evictBody);
+  // Several names go into ONE find, as an -o group.
+  const match = store.slice(store.indexOf("function _matchArgs(names)"));
+  const matchBody = match.slice(0, match.indexOf("\n  }\n"));
+  assert.ok(matchBody.indexOf("\"-o\"") !== -1 && matchBody.indexOf("\"(\"") !== -1, matchBody);
+});
+
+test("the map stops drawing a picture the camera has been taken off (tick sp7)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // A `find` is a process and the listing that follows it is another, so
+  // `captureStore.has()` goes on answering yes for the frames in between. The
+  // gate is the FLAG, which is written synchronously — so the photograph stops
+  // being drawn in the same instant the camera goes off, and the delete is what
+  // makes that true on disk as well.
+  const at = source.indexOf("function captureFileFor(identityId, occurrence) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+  const gate = body.indexOf("if (!root.picturedOf(identityId)) return \"\"");
+  assert.ok(gate !== -1,
+    "the chip's capture is not gated on the camera, so a withdrawn picture keeps rendering:\n" + body);
+  assert.ok(gate < body.indexOf("captureStore.has(name)"),
+    "the listing is consulted before the camera is:\n" + body);
+
+  // ONE gate, in the funnel both readers go through — the chip's Image and the
+  // panelState payload. A second copy in MapWorkspace's Image would let
+  // `captureSource` (which the payload reports as BOUND) name a picture the
+  // chip is not drawing.
+  const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
+    map.indexOf("// THE VEIL"));
+  assert.ok(image.indexOf("source: chipTab.captureSource") !== -1, image);
+  assert.strictEqual(image.indexOf("pictured"), -1,
+    "the Image derives the camera a second time, so the reported source and the drawn one can differ");
 });
 
 // ---------------------------------------------------------------------------

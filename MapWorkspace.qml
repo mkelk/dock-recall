@@ -537,6 +537,18 @@ BorderSurface {
               // for the reason the icon pair is: the payload has to carry what
               // was BOUND, not a second derivation that could agree with the
               // cache while the Image drew nothing.
+              //
+              // THE CAMERA GATE IS THE PANEL'S, NOT A SECOND ONE HERE (tick
+              // sp7). `panel.captureFileFor` already answers "" for an identity
+              // whose camera is off, so a withdrawn picture stops being drawn in
+              // the same frame the flag is written — before the `find` that
+              // deletes it has even been spawned. Adding `&& chipTab.pictured`
+              // to the Image below as well would be a SECOND derivation of the
+              // same fact, and this property — the one the payload reports as
+              // bound — would then be able to name a picture the chip is not
+              // drawing. That is precisely the disagreement the paragraph above
+              // exists to prevent, so the gate stays in the one place both
+              // readers go through.
               readonly property string captureSource: panel.captureSourceOf(
                 chipTab.modelData.identityId, chipTab.modelData.occurrence)
 

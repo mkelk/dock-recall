@@ -6141,6 +6141,11 @@ function toplevelBridgeRefusal(verdict, waitedMs) {
 
 var CAPTURE_SUFFIX = ".jpg";
 var CAPTURE_ID_CHARS = 40;
+// How wide a captureHash is, in characters. Named because two things depend on
+// it agreeing: the padding below, and the "?" run in captureIdentityPattern
+// that stands for a whole topology segment. A drift between them would make
+// "delete this app's pictures on every desk" delete nothing at all, silently.
+var CAPTURE_HASH_CHARS = 8;
 
 // FNV-1a, 32-bit, as 8 hex digits. Not a security hash and not asked to be —
 // it is a short, stable, dependency-free name for an arbitrary string.
@@ -6156,7 +6161,7 @@ function captureHash(text) {
     hash = (hash + ((hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24))) >>> 0;
   }
   var hex = hash.toString(16);
-  while (hex.length < 8) hex = "0" + hex;
+  while (hex.length < CAPTURE_HASH_CHARS) hex = "0" + hex;
   return hex;
 }
 
@@ -6196,6 +6201,58 @@ function captureFileName(identityId, occurrence, topologyKey) {
   return captureTopologyPrefix(topologyKey)
     + captureSafeSegment(id, CAPTURE_ID_CHARS) + "-" + captureHash(id)
     + "-" + occurrenceOf(occurrence) + CAPTURE_SUFFIX;
+}
+
+// EVERY PICTURE OF ONE IDENTITY, ON EVERY DESK, as a `find -name` glob (tick
+// sp7).
+//
+// The other eviction key is the topology prefix, and it answers "this
+// recording". This one answers the OTHER question the consent model asks, and
+// the one it had no answer for at all: a camera is a fact about an APP, not
+// about a desk, so switching it off has to reach the pictures of that app
+// wherever they were taken. Withdrawing a camera and deleting one desk's copy
+// left the others with nobody who would ever clean them — Record's eviction
+// only runs for the desk you are on, and Forget only touches the desk you are
+// on.
+//
+// captureFileName is <topology>-<id>-<idhash>-<occurrence>.jpg, and the
+// topology segment is exactly CAPTURE_HASH_CHARS hex digits, so a run of "?"
+// that long is that segment and cannot be anything else. The occurrence is left
+// open, because every window of the app goes.
+//
+// SAFE BY CONSTRUCTION, exactly as captureTopologyPrefix is: captureSafeSegment
+// maps everything outside [A-Za-z0-9._-] to "_", so no character an identity id
+// carries can become a glob metacharacter, and the hash is hex. The only "?"
+// and "*" in the result are the ones this function puts there — and the store
+// hands the whole pattern to find(1) as one argv element, with no shell in
+// between to expand anything.
+//
+// "" for an empty id, for the reason captureFileName returns "" for one: a
+// caller must not be able to build a pattern that matches every file by
+// accident.
+function captureIdentityPattern(identityId) {
+  var id = (typeof identityId === "string") ? trim(identityId) : "";
+  if (!id) return "";
+  var desk = "";
+  for (var i = 0; i < CAPTURE_HASH_CHARS; i++) desk += "?";
+  return desk + "-" + captureSafeSegment(id, CAPTURE_ID_CHARS) + "-" + captureHash(id)
+    + "-*" + CAPTURE_SUFFIX;
+}
+
+// The same for a list, de-duplicated and with the empty ids dropped. One act —
+// "Not for these apps" over a strip of five — is one list, so the store can do
+// it in one process rather than five.
+function captureIdentityPatterns(identityIds) {
+  var ids = isArray(identityIds) ? identityIds : [];
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < ids.length; i++) {
+    var pattern = captureIdentityPattern(ids[i]);
+    if (!pattern || own(seen, pattern)) continue;
+    seen[pattern] = true;
+    out.push(pattern);
+  }
+  return out;
 }
 
 // WHICH PICTURES A RECORD SHOULD TAKE, and which it deliberately will not.
@@ -6521,6 +6578,8 @@ if (typeof module !== "undefined") {
     captureSafeSegment: captureSafeSegment,
     captureTopologyPrefix: captureTopologyPrefix,
     captureFileName: captureFileName,
+    captureIdentityPattern: captureIdentityPattern,
+    captureIdentityPatterns: captureIdentityPatterns,
     capturePlan: capturePlan,
     captureLogLine: captureLogLine,
     captureFileIndex: captureFileIndex,
