@@ -17,11 +17,18 @@
 // `Text { }` to Panel.qml without `textFormat: Text.PlainText` and this fails,
 // naming the line.
 //
-// SCOPE. Panel.qml only — it is the file that draws untrusted strings. The
-// shell's own components the panel uses (Ui/PanelToolTip, Ui/Toggle,
-// Ui/PanelHero) already declare PlainText on their contentItem, which is why
-// the tooltip carrying a raw window title is not a hole; that is asserted below
-// too, so a shell that dropped it would be caught here rather than on screen.
+// SCOPE. Panel.qml and MapWorkspace.qml — between them, every file that draws
+// untrusted strings. A later tick extracted the map's ~900 lines out of
+// Panel.qml into MapWorkspace.qml, and the Text elements this file cares about
+// most went with it: chipLabel, which renders a window title an application
+// chose for itself, plus tagLabel and workspaceBadgeText. The scan follows
+// them there rather than stopping at the file's old boundary — each file gets
+// its own exact block-count check, so a Text added to either one without
+// `textFormat` still fails, naming the right file and line. The shell's own
+// components the panel uses (Ui/PanelToolTip, Ui/Toggle, Ui/PanelHero) already
+// declare PlainText on their contentItem, which is why the tooltip carrying a
+// raw window title is not a hole; that is asserted below too, so a shell that
+// dropped it would be caught here rather than on screen.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -30,6 +37,7 @@ const path = require("node:path");
 
 const REPO_ROOT = path.join(__dirname, "..");
 const PANEL_QML = path.join(REPO_ROOT, "Panel.qml");
+const MAP_WORKSPACE_QML = path.join(REPO_ROOT, "MapWorkspace.qml");
 
 // Every `Text { ... }` block in a QML file, as { line, body }.
 //
@@ -168,27 +176,43 @@ test("a brace inside a comment does not swallow the rest of the file", () => {
   assert.ok(!/textFormat/.test(blocks[1].body));
 });
 
-test("every Text in Panel.qml declares textFormat: Text.PlainText", () => {
-  const source = fs.readFileSync(PANEL_QML, "utf8");
-  const blocks = textBlocks(source);
+// One scan target per file this suite guards, each with its own exact
+// block-count check (assertScannedEveryText) and its own floor — a *minimum*
+// sanity check that the scanner still matched something, distinct from the
+// exact count. Panel.qml's stays high because the file is still full of
+// static chrome; MapWorkspace.qml's is low because the map only has the three
+// Text elements the extraction carried over (chipLabel, tagLabel,
+// workspaceBadgeText) — a floor of 20 there would never trip even if the
+// scanner stopped matching two of the three.
+const SCAN_TARGETS = [
+  { label: "Panel.qml", file: PANEL_QML, minBlocks: 20 },
+  { label: "MapWorkspace.qml", file: MAP_WORKSPACE_QML, minBlocks: 2 },
+];
 
-  // Every Text the file declares is a Text this scan parsed. The trap a
-  // source-scanning test falls into is that nothing checked is nothing failed,
-  // and a floor only catches the version of it where NOTHING matched.
-  assertScannedEveryText("Panel.qml", source, blocks);
-  assert.ok(blocks.length > 20,
-    `expected Panel.qml to contain many Text elements, found ${blocks.length}` +
-    " — the block scanner has most likely stopped matching");
+for (const target of SCAN_TARGETS) {
+  test(`every Text in ${target.label} declares textFormat: Text.PlainText`, () => {
+    const source = fs.readFileSync(target.file, "utf8");
+    const blocks = textBlocks(source);
 
-  const unguarded = blocks
-    .filter((b) => !/^\s*textFormat:\s*Text\.PlainText\s*$/m.test(b.body))
-    .map((b) => `Panel.qml:${b.line}`);
+    // Every Text the file declares is a Text this scan parsed. The trap a
+    // source-scanning test falls into is that nothing checked is nothing
+    // failed, and a floor only catches the version of it where NOTHING
+    // matched.
+    assertScannedEveryText(target.label, source, blocks);
+    assert.ok(blocks.length > target.minBlocks,
+      `expected ${target.label} to contain Text elements, found ${blocks.length}` +
+      " — the block scanner has most likely stopped matching");
 
-  assert.deepStrictEqual(unguarded, [],
-    "these Text elements do not declare textFormat: Text.PlainText, so Qt will" +
-    " render markup an application put in its own window title:\n  " +
-    unguarded.join("\n  "));
-});
+    const unguarded = blocks
+      .filter((b) => !/^\s*textFormat:\s*Text\.PlainText\s*$/m.test(b.body))
+      .map((b) => `${target.label}:${b.line}`);
+
+    assert.deepStrictEqual(unguarded, [],
+      `these Text elements in ${target.label} do not declare` +
+      " textFormat: Text.PlainText, so Qt will render markup an application" +
+      " put in its own window title:\n  " + unguarded.join("\n  "));
+  });
+}
 
 test("the shell components the panel draws untrusted strings through are plain too", () => {
   // The panel hands a raw window TITLE to PanelToolTip and a row name to
