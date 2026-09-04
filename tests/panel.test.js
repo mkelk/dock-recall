@@ -15,6 +15,18 @@ const monitorsLaptop = loadFixture("monitors-laptop.json");
 const LAPTOP_KEY = "Samsung Display Corp. ATNA60HR07-0";
 const AT = "2026-08-15T18:30:00Z";
 
+// QML source with its comments removed, for the source audits below that assert
+// an expression is ABSENT. Those files explain themselves at length, and a
+// comment warning "never write `store._queue[0] === entry` again" would fail the
+// very assertion it is documenting (tick 070). Line comments only — neither QML
+// file here uses a block comment, and neither has a `//` inside a string.
+function qmlCode(source) {
+  return String(source).split("\n").map(function (line) {
+    var at = line.indexOf("//");
+    return at === -1 ? line : line.slice(0, at);
+  }).join("\n");
+}
+
 // The panel always resolves a client through the ONE matcher the engine owns.
 // engine.matchClient answers with the identity ID (or null), which is exactly
 // what PanelModel's `resolve` callback is specified to return.
@@ -6300,10 +6312,26 @@ test("_finish() tears down every piece of round state, and every early-return pa
   assert.ok(nextEmpty.indexOf("store._finish()") !== -1,
     "_next()'s normal-completion path (empty queue) no longer reaches _finish()");
 
+  // The whole-queue deadline reaches _finish() through the shared loud-abandon
+  // path (tick 070), which is also the guard's impossible-state exit — one
+  // implementation of "a round that cannot proceed fails loudly", not one per
+  // caller. Both halves are pinned: the deadline delegates, and the delegate
+  // both warns and tears the round down.
   const totalAt = store.indexOf("id: total");
   const totalBody = store.slice(totalAt, store.indexOf("\n  }\n", totalAt));
-  assert.ok(totalBody.indexOf("store._finish()") !== -1,
-    "the whole-queue deadline no longer reaches _finish()");
+  assert.ok(totalBody.indexOf("store._abandonRound(") !== -1,
+    "the whole-queue deadline no longer ends the round through _abandonRound():\n" + totalBody);
+  const abandonAt = store.indexOf("function _abandonRound(sentence, reason)");
+  assert.ok(abandonAt !== -1, "_abandonRound is gone");
+  const abandonBody = store.slice(abandonAt, store.indexOf("\n  }\n", abandonAt));
+  assert.ok(abandonBody.indexOf("store._finish()") !== -1,
+    "_abandonRound() no longer reaches _finish(), so an abandoned round latches `busy` forever");
+  assert.ok(abandonBody.indexOf("store.warn(sentence)") !== -1,
+    "_abandonRound() no longer says anything — a round that gives up in silence is tick 070 again");
+  assert.ok(abandonBody.indexOf("guard.stop()") !== -1 && abandonBody.indexOf("total.stop()") !== -1,
+    "_abandonRound() leaves a timer armed over a round that is over:\n" + abandonBody);
+  assert.ok(abandonBody.indexOf("store._results = results") !== -1,
+    "_abandonRound() drops the windows it abandoned instead of reporting them");
 
   // The remaining exits — _settle()'s callers (no-handle, view-create-failed,
   // empty-source, grab-null, save-failed, grab-refused) and the per-window
@@ -6311,7 +6339,7 @@ test("_finish() tears down every piece of round state, and every early-return pa
   // records one entry's result and loops back to _next() via Qt.callLater,
   // which drains to the empty-queue path pinned above. Pinned here by
   // confirming _settle() itself never tears the round down early.
-  const settleAt = store.indexOf("function _settle(entry, ok, reason)");
+  const settleAt = store.indexOf("function _settle(step, ok, reason)");
   const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
   assert.strictEqual(settleBody.indexOf("_finish"), -1,
     "_settle() now short-circuits the round instead of always looping back to _next()");
@@ -6409,11 +6437,14 @@ test("a late grab cannot write a picture for a capture already reported failed (
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
 
   // "The step in flight" is the head of the queue, and every path that answers
-  // for an entry shifts it off.
-  const isAt = store.indexOf("function _isCurrentEntry(entry)");
-  assert.ok(isAt !== -1, "_isCurrentEntry is gone");
-  assert.ok(store.slice(isAt, store.indexOf("\n  }\n", isAt)).indexOf("store._queue[0] === entry") !== -1,
-    "_isCurrentEntry no longer means 'the head of the queue'");
+  // for a step shifts it off. Asked as a NUMBER since tick 070 — see the
+  // regression test below for why an object could never answer it.
+  const isAt = store.indexOf("function _isCurrentStep(step)");
+  assert.ok(isAt !== -1, "_isCurrentStep is gone");
+  const isBody = store.slice(isAt, store.indexOf("\n  }\n", isAt));
+  assert.ok(isBody.indexOf("step === store._step") !== -1
+    && isBody.indexOf("store._queue.length > 0") !== -1,
+    "_isCurrentStep no longer means 'this step, and the queue still has a head':\n" + isBody);
 
   // 1. THE PER-WINDOW GUARD CANNOT OUTLIVE ITS STEP. It measures exactly one
   //    thing — does this window ever deliver a frame — and stops the moment one
@@ -6430,7 +6461,7 @@ test("a late grab cannot write a picture for a capture already reported failed (
   //    ended is a picture no consent prompt ever showed, that "Not for these
   //    apps" cannot reach, and that can land after evictAll("declined").
   const grab = contentBody.slice(contentBody.indexOf("view.grabToImage(function (result)"));
-  const gate = grab.indexOf("if (!store._isCurrentEntry(entry)) return");
+  const gate = grab.indexOf("if (!store._isCurrentStep(step)) return");
   const save = grab.indexOf("saveToFile");
   assert.ok(gate !== -1, "the grab callback never checks whether its step is still in flight:\n" + grab);
   assert.ok(save !== -1 && gate < save,
@@ -6440,20 +6471,136 @@ test("a late grab cannot write a picture for a capture already reported failed (
   //    push a duplicate result AND shift the queue again — one window silently
   //    dropped, unphotographed and unreported, and therefore missing from
   //    consentCaptureEntries.
-  const settleAt = store.indexOf("function _settle(entry, ok, reason)");
+  const settleAt = store.indexOf("function _settle(step, ok, reason)");
   const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
-  const settleGate = settleBody.indexOf("if (!store._isCurrentEntry(entry)) return");
-  assert.ok(settleGate !== -1, "_settle() is answerable twice for one entry:\n" + settleBody);
+  const settleGate = settleBody.indexOf("if (!store._isCurrentStep(step)) return");
+  assert.ok(settleGate !== -1, "_settle() is answerable twice for one step:\n" + settleBody);
   assert.ok(settleGate < settleBody.indexOf("store._results = results"),
-    "_settle() records the result before checking the entry is still the step in flight");
+    "_settle() records the result before checking the step is still in flight");
+
+  //    AND THE TOKEN IS BURNT (tick 070). Shifting the queue was enough while
+  //    the subject was the entry object — the shifted-off entry could never be
+  //    the head again. A number survives the shift, so answering a step has to
+  //    END it, or the second answer for step N lands on the entry that has just
+  //    become the head: this same dropped window, one layer down.
+  assert.ok(settleBody.indexOf("store._step = store._step + 1") !== -1,
+    "_settle() no longer ends the step it answered, so a second answer for it "
+    + "would be accepted against the NEXT window:\n" + settleBody);
+  assert.ok(settleBody.indexOf("store._step = store._step + 1")
+    < settleBody.indexOf("store._queue = store._queue.slice(1)"),
+    "_settle() shifts the queue before it ends the step:\n" + settleBody);
 
   // 4. And the guard timer no longer settles blind: with _settle a no-op for a
-  //    stale entry, a guard firing against one would advance nothing at all.
+  //    stale step, a guard firing against one would advance nothing at all.
   const guardAt = store.indexOf("id: guard");
   const guardBody = store.slice(guardAt, store.indexOf("\n  }\n", guardAt));
-  assert.ok(guardBody.indexOf("if (!store._isCurrentEntry(entry))") !== -1,
-    "the per-window guard settles an entry without checking it is the step in flight:\n" + guardBody);
-  assert.ok(guardBody.indexOf("store._next()") !== -1, guardBody);
+  assert.ok(guardBody.indexOf("if (!store._isCurrentStep(step))") !== -1,
+    "the per-window guard settles a step without checking it is the one in flight:\n" + guardBody);
+  // NOT _next() (tick 070): _next() rebuilds a view for the SAME queue head, so
+  // a mismatch that does not correct itself is an invisible loop — a fresh
+  // compositor capture session every stepMs, no result and no log line.
+  //
+  // Read against the CODE and not the file text: the comment beside this branch
+  // has to be able to name the call it is warning about.
+  const guardCode = qmlCode(guardBody);
+  assert.strictEqual(guardCode.indexOf("store._next()"), -1,
+    "the per-window guard retries the step by calling _next() again — the silent "
+    + "respawn loop tick 070 closed:\n" + guardBody);
+  assert.ok(guardBody.indexOf("store._abandonRound(") !== -1,
+    "the per-window guard's impossible state is silent again:\n" + guardBody);
+});
+
+// ---------------------------------------------------------------------------
+// The step in flight is a NUMBER, because an object cannot cross into a view
+// (tick 070)
+// ---------------------------------------------------------------------------
+
+test("no answer for a capture step is carried in a QML property as a JS object (tick 070)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // THE BUG, measured in the nested sandbox 2026-09-04 and reproduced from the
+  // acceptance VM's symptom: the round went silent after its own eviction and
+  // stored nothing.
+  //
+  // `Component.createObject(parent, { entry: entry })` passes its properties
+  // through a QVariantMap, so the queue entry arrived in the view as a DEEP
+  // COPY. Every path that answered for a step then asked
+  // `store._queue[0] === entry` against that copy and got `false` — for ever.
+  // The instrumented run:
+  //
+  //   entry===head false   head===head2 true   entry.address===head.address true
+  //
+  // so the grab callback returned before saving, `_settle` returned before
+  // recording, and the guard fell into its "not the step in flight" branch and
+  // called `_next()` — which built another view for the SAME head, every 6 s,
+  // with no result and no log line, until the whole-queue deadline ended the
+  // round 45 s later.
+  //
+  // The repair is that the step's identity is an integer, which the property
+  // boundary cannot copy into something else.
+
+  // 1. THE VIEW CARRIES A NUMBER. Not an object, and not "any property called
+  //    entry" — the whole failure was that an object survives the crossing as
+  //    data while losing the only thing being asked about it.
+  const componentAt = store.indexOf("id: viewComponent");
+  const componentBody = qmlCode(store.slice(componentAt, store.indexOf("\n  }\n", componentAt)));
+  assert.ok(/property\s+int\s+step\s*:/.test(componentBody),
+    "the capture view no longer carries an integer step:\n" + componentBody);
+  assert.strictEqual(/property\s+var\s+entry\s*:/.test(componentBody), false,
+    "the capture view carries the queue entry in a `property var` again — it "
+    + "arrives there as a copy, and every answer about it is discarded:\n" + componentBody);
+
+  // 2. AND THAT IS WHAT createObject IS HANDED. A properties map carrying the
+  //    entry is the crossing itself.
+  const nextAt = store.indexOf("function _next()");
+  const nextBody = store.slice(nextAt, store.indexOf("\n  }\n", nextAt));
+  assert.ok(nextBody.indexOf("createObject(stage, { captureSource: handle, step: step })") !== -1,
+    "the view is created with something other than the step number:\n" + nextBody);
+  assert.ok(nextBody.indexOf("store._step = store._step + 1") !== -1,
+    "_next() no longer claims a step number for the window it is about to start");
+
+  // 3. NOTHING COMPARES JS OBJECT IDENTITY ANYWHERE IN THIS FILE. `===` between
+  //    two objects that crossed a QML property is the whole defect, and the
+  //    exact expression that was there must not come back.
+  const code = qmlCode(store);
+  assert.strictEqual(code.indexOf("store._queue[0] === entry"), -1,
+    "the round identifies its step by object identity again");
+  assert.strictEqual(code.indexOf("_isCurrentEntry"), -1,
+    "_isCurrentEntry is back — it can only ever answer false");
+
+  // 4. EVERY ANSWER GOES THROUGH THE NUMBER. The three that can answer for a
+  //    step — the frame handler, the grab callback and the per-window guard —
+  //    plus _settle itself.
+  for (const [name, needle] of [
+    ["_onContent", "function _onContent(view)"],
+    ["_settle", "function _settle(step, ok, reason)"],
+  ]) {
+    const at = store.indexOf(needle);
+    assert.ok(at !== -1, name + " is gone");
+    assert.ok(store.slice(at, store.indexOf("\n  }\n", at)).indexOf("store._isCurrentStep(") !== -1,
+      name + " no longer asks whether its step is the one in flight");
+  }
+  const guardAt = store.indexOf("id: guard");
+  const guardBody = store.slice(guardAt, store.indexOf("\n  }\n", guardAt));
+  assert.ok(guardBody.indexOf("store._current ? store._current.step : 0") !== -1,
+    "the per-window guard no longer reads the step off the view it armed for:\n" + guardBody);
+
+  // 5. A ROUND THAT CANNOT PROCEED FAILS LOUDLY. Both exits that end a round
+  //    without draining it go through the same warn-and-tear-down, and the
+  //    whole-queue deadline is the outer bound on all of it.
+  const abandonAt = store.indexOf("function _abandonRound(sentence, reason)");
+  assert.ok(abandonAt !== -1, "_abandonRound is gone");
+  const abandonBody = store.slice(abandonAt, store.indexOf("\n  }\n", abandonAt));
+  assert.ok(abandonBody.indexOf("store.warn(sentence)") !== -1
+    && abandonBody.indexOf("store._finish()") !== -1,
+    "a round that gives up no longer both says so and tears itself down:\n" + abandonBody);
+  const totalBody = store.slice(store.indexOf("id: total"),
+    store.indexOf("\n  }\n", store.indexOf("id: total")));
+  assert.ok(totalBody.indexOf("store._abandonRound(") !== -1
+    && guardBody.indexOf("store._abandonRound(") !== -1,
+    "the deadline and the guard no longer share the one loud exit");
 });
 
 test("two evictions cannot cross, and a `find` that failed is not silent (tick ilg)", () => {

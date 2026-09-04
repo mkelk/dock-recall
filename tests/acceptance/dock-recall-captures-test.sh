@@ -152,6 +152,28 @@ DOCK_OUTPUT="dr-cap-dock"
 
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
+# HOW LONG A CAPTURE ROUND IS GIVEN, READ OUT OF THE STORE ITSELF (tick 070).
+#
+# Every wait below that is really a wait on a capture round used to be a flat
+# `poll 40`, and CaptureStore's own whole-queue deadline is 45 s. Those two
+# numbers disagree, and the disagreement is not academic: a round that is merely
+# SLOW is failed here five seconds before the store would have said a word about
+# it, so the diagnostics dump lands on a log that is still legitimately quiet and
+# the reader is left with "the round went silent" for something that had not
+# finished. That is exactly how tick 070's real bug was first mis-read.
+#
+# So the number is the store's, plus headroom for the record, the mkdir, the
+# eviction `find` and the listing that bracket the round — and it is READ from
+# the source rather than copied, because a copied constant is a constant that
+# drifts. A round that genuinely hangs is still caught: it is caught by the
+# store, which warns, and then by this poll a few seconds later.
+CAPTURE_TOTAL_MS=$(sed -n 's/^[[:space:]]*property int totalMs:[[:space:]]*\([0-9]\{1,\}\).*/\1/p' \
+  "$PLUGIN_SRC/CaptureStore.qml" | head -1)
+[[ $CAPTURE_TOTAL_MS =~ ^[0-9]+$ ]] ||
+  fail "the capture round's deadline can be read from CaptureStore.qml (captures)" \
+    "no 'property int totalMs' in $PLUGIN_SRC/CaptureStore.qml — got '$CAPTURE_TOTAL_MS'"
+ROUND_S=$(( CAPTURE_TOTAL_MS / 1000 + 15 ))
+
 TOPOLOGY_KEY=""
 EXPECTED_FILE=""
 
@@ -618,10 +640,10 @@ WITHHELD_FILE=$(node -e '
   process.stdout.write(panel.captureFileName(process.argv[2], 0, process.argv[3]));
 ' "$PLUGIN_DIR" "$WITHHELD_IDENTITY" "$TOPOLOGY_KEY")
 
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "Record stored one picture (captures)" \
-    "after 40s $CACHE_DIR holds $(cache_count) picture(s): $(cache_files | tr '\n' ' ')"
+    "after ${ROUND_S}s $CACHE_DIR holds $(cache_count) picture(s): $(cache_files | tr '\n' ' ')"
 fi
 
 stored=$(cache_files)
@@ -715,7 +737,7 @@ consent_offered() {
     and (.consentCaptures[0].ready == true)
     and ((.consentCaptures[0].name|length) > 0)' >/dev/null
 }
-if ! poll 40 consent_offered; then
+if ! poll "$ROUND_S" consent_offered; then
   diagnostics
   fail "the first Record with picturable apps puts the panel in the consent state" \
     "no payload with consentOpen, pictureConsent 'unasked', the three answers, and one ready thumbnail"
@@ -905,7 +927,7 @@ pass "a capture deleted from the cache: the chip is back to its icon and its nam
 restore_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $restore_record == "recorded" ]] ||
   fail "panel IPC records after the fallback round (captures)" "record answered '$restore_record'"
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "the picture is back after the fallback round (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
@@ -926,7 +948,7 @@ rerecord_answer=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 
 # Still exactly one file, still under the same key — a re-record REPLACES a
 # topology's pictures rather than accumulating them.
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "a re-record replaces the pictures rather than adding to them (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
@@ -938,7 +960,7 @@ fi
 # is that the file is rewritten at all, which is what a pipeline that had
 # quietly stopped writing would fail.
 changed() { [[ $(stat -c %y "$CACHE_DIR/$EXPECTED_FILE" 2>/dev/null) != "$before_mtime" ]]; }
-if ! poll 40 changed; then
+if ! poll "$ROUND_S" changed; then
   diagnostics
   fail "a re-record rewrites the picture (captures)" \
     "$EXPECTED_FILE was not written again by the second Record (mtime still $before_mtime)"
@@ -972,7 +994,7 @@ pass "undo restores the previous layout and drops its pictures — the map falls
 
 record_again=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $record_again == "recorded" ]] || fail "panel IPC records again (captures)" "record answered '$record_again'"
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "recording again stores the picture again (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
@@ -1055,7 +1077,7 @@ pass "a record whose pictures cannot be stored is still a complete record — la
 recovered_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $recovered_record == "recorded" ]] ||
   fail "panel IPC records again once the cache is writable (captures)" "record answered '$recovered_record'"
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "a failed capture round must not disable every Record after it" \
     "$CACHE_DIR holds $(cache_count) after a Record with a writable cache — the earlier failed round left the store latched"
@@ -1068,7 +1090,7 @@ pass "a Record after the failed one stores a picture: the failed round did not l
 # over an empty cache would pass this on a plugin that never deletes anything.
 final_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $final_record == "recorded" ]] || fail "panel IPC records before the forget (captures)" "record answered '$final_record'"
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "there is a picture to forget (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
@@ -1125,7 +1147,7 @@ fi
 asked_again_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $asked_again_record == "recorded" ]] ||
   fail "panel IPC records after the restart (captures)" "record answered '$asked_again_record'"
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "the record after the restart stores a picture (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
@@ -1166,7 +1188,7 @@ fi
 reask_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $reask_record == "recorded" ]] ||
   fail "panel IPC records for the second ask (captures)" "record answered '$reask_record'"
-if ! poll 40 consent_offered; then
+if ! poll "$ROUND_S" consent_offered; then
   diagnostics
   fail "the prompt comes back once the question is owed again (captures)" \
     "no payload with consentOpen and the three answers"
@@ -1253,7 +1275,7 @@ rm -rf "$CACHE_DIR"
 desk_a_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $desk_a_record == "recorded" ]] ||
   fail "panel IPC records on the first desk (captures)" "record answered '$desk_a_record'"
-if ! poll 40 cache_is 1; then
+if ! poll "$ROUND_S" cache_is 1; then
   diagnostics
   fail "the first desk stored its picture (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
@@ -1274,7 +1296,7 @@ if ! poll 60 docked_record; then
   fail "panel IPC records a SECOND topology (captures)" \
     "after docking $DOCK_OUTPUT the state file still holds $(layout_count) layout(s)"
 fi
-if ! poll 40 cache_is 2; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
   fail "each desk stores its own picture (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"

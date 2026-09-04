@@ -664,3 +664,95 @@ window carries the other's numbers" is a live failure mode, and it is what the
 into the same empty string, because jq's `//` treats a literal `false` as
 absent. Both cases happen to want the same thing here, so it worked by accident;
 `// false` says what is meant.
+
+---
+
+# 2026-09-04 — Where the capture round went silent (tick 070)
+
+Run: a throwaway probe over `tests/sandbox-lib.sh` (nested Hyprland 0.56.2,
+Lua-configured, quickshell 0.3.1). Nothing ran against the live session; the
+isolation footer passed on every run. The subject is the acceptance VM's
+`not ok - Record stored one picture (captures)`: the layout was written, the
+round logged `dropped the pictures for this layout (re-recorded)` and then said
+nothing at all, and the cache stayed empty.
+
+## The stage the probe rebuilt
+
+The captures acceptance test's, inside the nested compositor: two `foot` windows
+told apart by `--title=`, floated at aspect ratios five times apart (tick z65),
+two seeded identities of which one is `pictured`, a `headless` output for the
+windows to live on, and a Record driven through the panel's own
+`dock-recall record` IPC. `sandbox_up`'s generated `shell.qml` was replaced with
+one that gives the panel an id and adds a probe-only `IpcHandler` whose verb
+calls `dockPanel.open("{}")` — there is no `omarchy-shell` in the sandbox to
+summon it, and Record is a panel act.
+
+It reproduced first time: `record` answered `recorded`, and the cache held
+nothing 60 s later.
+
+## The stall, and it is not where the chain reads as if it were
+
+`capture()` → `mkdir` → `evict` → `job.then` → `_runEvictThen` → `_resolveThenWalk`
+is intact, and instrumentation walked all of it:
+
+    CAPDBG _resolveThenWalk: addresses=["0x557bcc230660"]
+    CAPDBG _resolveThenWalk: total armed at 45000ms, running=true
+    CAPDBG bridge callback: ok=true handles=1 timedOut=false waitedMs=0
+    CAPDBG _next: creating view for 0x557bcc230660 host=true screen=sbx-cap
+    CAPDBG _next: queue=1 current=view      <- 6 s later, and again, and again…
+
+The queue never moved. The per-window guard fired every `stepMs`, took its
+"not the step in flight" branch, and called `_next()` — which destroys the view
+and builds another one **for the same queue head**. Seven times, then the
+whole-queue deadline ended the round at 45 s.
+
+**`_isCurrentEntry(entry)` could never be true.** The decisive sample:
+
+    entry={"address":"0x557bcc230660","file":"432df7d1-…-0.jpg",
+           "identityId":"dr-pictured","occurrence":0}
+    head ={"identityId":"dr-pictured","occurrence":0,
+           "address":"0x557bcc230660","file":"432df7d1-…-0.jpg"}
+    entry===head false   head===head2 true   entry.address===head.address true
+
+`Component.createObject(parent, { entry: entry })` passes its property map
+through a QVariantMap, so the queue entry arrives in the view's `property var`
+as a **deep copy** — the key order alone gives it away, a QVariantMap sorts them.
+Reading `store._queue[0]` twice DOES give one object (`head===head2 true`), so it
+is the view's property that is the boundary and nothing else.
+
+Every path that answered for a step was handed that copy: the grab callback
+returned before saving, `_settle` returned before recording, the guard respawned.
+**A round in that state writes nothing and logs nothing** — which is exactly what
+the VM showed, because the test polls 40 s and the store's `totalMs` is 45 s, so
+the run failed and dumped its diagnostics five seconds before the store would
+have said a word.
+
+The repair is that a step's identity is an `int` the boundary cannot copy into
+something else, plus a loud shared abandon so the guard's impossible state can
+never be a silent loop again.
+
+## The rule this is an instance of
+
+**Never compare JS object identity across a QML property boundary.** A `var`
+property assigned from JS in the same object keeps its reference; one populated
+through `createObject`'s property map, or through any QVariant conversion, does
+not. If two sides must agree on "the same thing", agree on a number.
+
+## What this sandbox could NOT prove, and how that was established
+
+**`hasContent` never arrives here**, so no JPEG was written in any run and the
+fixed round reports `no-frame` rather than a picture. That is not the panel
+sitting over the capture host: a second, bare `CaptureStore` with its own 1x1
+host was driven directly, with the panel CLOSED and then OPEN, and both answered
+`no-frame`. And the output IS rendering — `grim -o sbx-cap` came back with a
+46 KB PNG in the same run. So the frame path is a limitation of this stage
+(tick o2x captured on a nested headless output by moving BOTH workspaces onto it,
+which this probe did not do), not of the round.
+
+**The picture itself is the VM's to prove.** What the sandbox settles is that the
+round now recognises its own answers, advances its queue, and reports:
+
+    0 picture(s) stored, 1 could not be captured (no-frame), 1 not pictured
+
+within one step budget, where before it said nothing for 45 s and then
+`timed-out`.

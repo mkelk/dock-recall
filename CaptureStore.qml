@@ -395,6 +395,42 @@ Item {
   property bool _active: false
   property var _current: null
 
+  // WHICH STEP IS IN FLIGHT, AS A NUMBER (tick 070). It counts up by one in
+  // `_next()` for every step that is started, and the view created for that step
+  // carries the same number.
+  //
+  // A NUMBER AND NOT THE ENTRY OBJECT, and this is the whole of tick 070's
+  // repair. The three things that answer for a step — the frame handler, the
+  // grab callback and the per-window guard — used to be handed `view.entry` and
+  // ask `store._queue[0] === entry`. That comparison CAN NEVER BE TRUE:
+  // `Component.createObject(parent, { entry: entry })` passes its properties
+  // through a QVariantMap, so what comes back out of the view's `property var`
+  // is a DEEP COPY of the queue entry, equal in every field and identical to
+  // nothing. Measured in the nested sandbox, 2026-09-04:
+  //
+  //   entry={"address":"0x557bcc230660","file":"432df7d1-…-0.jpg",
+  //          "identityId":"dr-pictured","occurrence":0}
+  //   head ={"identityId":"dr-pictured","occurrence":0,
+  //          "address":"0x557bcc230660","file":"432df7d1-…-0.jpg"}
+  //   entry===head false   head===head2 true   entry.address===head.address true
+  //
+  // — the key order alone gives the copy away (a QVariantMap sorts them), and
+  // reading `store._queue[0]` twice DOES give one object, so it is the view's
+  // property that is the boundary and nothing else.
+  //
+  // What that cost: every answer for a step was discarded as stale. The grab
+  // callback returned before saving, `_settle` returned before recording, and
+  // the guard fell into its "not the step in flight" branch and called `_next()`
+  // — which destroyed the view and built another one for the SAME queue head,
+  // every 6 s, until the whole-queue deadline ended the round 45 s later with
+  // one window "timed-out" and no picture. No line in between. That is the
+  // acceptance VM's silent round, reproduced exactly.
+  //
+  // An integer crosses the boundary as itself. `_isCurrentStep` is the same
+  // question `_isCurrentEntry` asked — is the head of the queue still this
+  // step? — asked in a currency the boundary cannot copy.
+  property int _step: 0
+
   // BOTH REFUSALS COME BEFORE ANY ROUND STATE IS TOUCHED (tick ilg), and
   // neither calls `_finish()`.
   //
@@ -523,17 +559,23 @@ Item {
       return
     }
 
+    // The step this window is, claimed before anything can answer for it.
+    store._step = store._step + 1
+    var step = store._step
+
     var entry = store._queue[0]
     var handle = Object.prototype.hasOwnProperty.call(store._handles, entry.address)
       ? store._handles[entry.address] : null
     if (!handle) {
-      store._settle(entry, false, "no-handle")
+      store._settle(step, false, "no-handle")
       return
     }
 
-    var view = viewComponent.createObject(stage, { captureSource: handle, entry: entry })
+    // `step`, not `entry`: a JS object handed to createObject arrives in the
+    // view as a COPY and can never be compared back (see `_step` above).
+    var view = viewComponent.createObject(stage, { captureSource: handle, step: step })
     if (!view) {
-      store._settle(entry, false, "view-create-failed")
+      store._settle(step, false, "view-create-failed")
       return
     }
     store._current = view
@@ -542,25 +584,48 @@ Item {
     // started the capture and a second call errors (spike o2x, measured).
   }
 
-  // Is this entry the step in flight? The head of the queue IS the step: every
-  // path that answers for an entry shifts it off, so an entry that is no longer
-  // the head has already been answered for — or the whole round has been
-  // abandoned underneath it.
-  function _isCurrentEntry(entry) {
-    return !!entry && store._queue.length > 0 && store._queue[0] === entry
+  // Is this step the one in flight? The head of the queue IS the step: every
+  // path that answers for a step shifts it off and `_next()` claims a new
+  // number, so a step that is no longer `_step` has already been answered for —
+  // or the whole round has been abandoned underneath it.
+  //
+  // `step > 0` rejects the default: a view created without one, or a `_current`
+  // that is gone, must not accidentally match step zero.
+  function _isCurrentStep(step) {
+    return step > 0 && step === store._step && store._queue.length > 0
+  }
+
+  // The entry the step in flight is about, or null. The head of the queue, and
+  // it is only ever asked for behind `_isCurrentStep`.
+  function _currentEntry() {
+    return store._queue.length > 0 ? store._queue[0] : null
   }
 
   // Record one answer and move on. The only way out of a step, so no path can
   // leave the queue holding an entry it has already answered for.
   //
-  // IDEMPOTENT PER ENTRY (tick ilg). Two things can answer for the same step —
+  // IDEMPOTENT PER STEP (tick ilg). Two things can answer for the same step —
   // the per-window guard and the grab callback it outlived — and a second answer
   // was not merely a duplicate: it pushed an extra result AND shifted the queue
   // again, so one queue entry was dropped unphotographed and unreported. That
   // window is missing from `consentCaptureEntries`, so the prompt never shows it
   // and "Not for these apps" never turns its camera off.
-  function _settle(entry, ok, reason) {
-    if (!store._isCurrentEntry(entry)) return
+  //
+  // The subject is the STEP NUMBER and the entry is read from the queue (tick
+  // 070): a caller holding a view's copy of the entry could never be recognised
+  // as the step in flight, so every answer was thrown away and the queue never
+  // moved.
+  function _settle(step, ok, reason) {
+    if (!store._isCurrentStep(step)) return
+    var entry = store._currentEntry()
+    // THE TOKEN IS BURNT HERE, and that is what keeps this idempotent. Shifting
+    // the queue used to be enough on its own, because the subject was the entry
+    // object and the shifted-off entry could never be the head again. A NUMBER
+    // survives the shift, so answering a step has to end it explicitly —
+    // otherwise the second answer for step N (the grab callback the guard
+    // outlived) would be accepted against the entry that has just become the
+    // head, which is tick ilg's dropped window wearing a different hat.
+    store._step = store._step + 1
     var results = store._results.slice()
     results.push({
       identityId: entry.identityId,
@@ -578,7 +643,11 @@ Item {
   }
 
   function _onContent(view) {
-    var entry = view.entry
+    var step = view.step
+    // A view whose step is over answers for nothing — it is about to be
+    // destroyed, and the round has moved on.
+    if (!store._isCurrentStep(step)) return
+    var entry = store._currentEntry()
     // THE PER-WINDOW DEADLINE ENDS HERE (tick ilg). It measures exactly one
     // thing — "does this window ever deliver a frame" — and the frame has just
     // arrived. Left running, it could fire while `grabToImage` was still on the
@@ -590,7 +659,7 @@ Item {
     var height = view.sourceSize.height
     // FROM sourceSize, never from hyprctl — the two disagree (spike o2x).
     if (!(width > 0) || !(height > 0)) {
-      store._settle(entry, false, "empty-source")
+      store._settle(step, false, "empty-source")
       return
     }
 
@@ -605,18 +674,18 @@ Item {
       // consent prompt ever showed, that "Not for these apps" cannot reach, and
       // that can land after `evictAll("declined")` has run. So a callback whose
       // step is over writes nothing and says nothing.
-      if (!store._isCurrentEntry(entry)) return
+      if (!store._isCurrentStep(step)) return
       if (!result) {
-        store._settle(entry, false, "grab-null")
+        store._settle(step, false, "grab-null")
         return
       }
       // saveToFile picks the format from the suffix, and the suffix is .jpg —
       // so a chip-sized photograph of a window is tens of kilobytes rather than
       // the megabyte a PNG of the same pixels would be.
-      store._settle(entry, result.saveToFile(path) === true, "save-failed")
+      store._settle(step, result.saveToFile(path) === true, "save-failed")
     }, Qt.size(targetWidth, targetHeight))
 
-    if (!started) store._settle(entry, false, "grab-refused")
+    if (!started) store._settle(step, false, "grab-refused")
   }
 
   // The per-window deadline. Measurement 4: the handle resolves, the monitor is
@@ -626,15 +695,57 @@ Item {
     interval: Math.max(250, store.stepMs)
     repeat: false
     onTriggered: {
-      var entry = store._current ? store._current.entry : null
-      // Not the step in flight any more — `_settle` would (rightly) no-op, and
-      // nothing would advance the queue. `_next()` is the honest answer.
-      if (!store._isCurrentEntry(entry)) {
-        store._next()
+      var step = store._current ? store._current.step : 0
+      // NOT THE STEP IN FLIGHT: AN IMPOSSIBLE STATE, AND IT SAYS SO (tick 070).
+      // `_next()` arms this timer for the step it has just claimed, `_onContent`
+      // stops it the moment a frame arrives, and nothing else moves `_step`, so
+      // this branch cannot be reached by any sequence the round can perform.
+      //
+      // It used to call `store._next()`, which is the shape of the bug this tick
+      // closed: `_next()` destroys the view and builds another one for the SAME
+      // queue head, so a mismatch that is not self-correcting becomes a silent
+      // loop — a fresh compositor capture session every `stepMs`, no result, no
+      // log line, until the whole-queue deadline ends the round. A round that
+      // cannot proceed has to say so, and stop.
+      if (!store._isCurrentStep(step)) {
+        store._abandonRound("capture round cannot proceed — the per-window deadline fired for step "
+          + step + " while step " + store._step + " is in flight over "
+          + store._queue.length + " remaining window(s); abandoning the round rather than retrying it",
+          "round-broken")
         return
       }
-      store._settle(entry, false, "no-frame")
+      store._settle(step, false, "no-frame")
     }
+  }
+
+  // END THE ROUND, OUT LOUD (tick 070). The one way a round dies without
+  // draining its queue, shared by the whole-queue deadline and by the per-window
+  // guard's impossible state, so "a round that cannot proceed fails loudly"
+  // has one implementation rather than one per caller.
+  //
+  // Every window still in the queue gets a result with `reason`, because the
+  // consent prompt and the log line are built from the results and a window that
+  // is simply absent from them is a window nobody can be told about.
+  function _abandonRound(sentence, reason) {
+    store.warn(sentence)
+    guard.stop()
+    total.stop()
+    if (store._current) {
+      store._current.destroy()
+      store._current = null
+    }
+    var abandoned = store._queue.slice()
+    var results = store._results.slice()
+    for (var i = 0; i < abandoned.length; i++) {
+      results.push({
+        identityId: abandoned[i].identityId, occurrence: abandoned[i].occurrence,
+        address: abandoned[i].address, file: abandoned[i].file,
+        ok: false, reason: String(reason)
+      })
+    }
+    store._results = results
+    store.refresh()
+    store._finish()
   }
 
   // The whole-queue deadline, on top of the per-window one. Belt to its braces:
@@ -654,25 +765,9 @@ Item {
     repeat: false
     onTriggered: {
       if (!store._active) return
-      store.warn("capture round ran out of time after " + total.interval
-        + "ms — " + store._queue.length + " window(s) unphotographed; the recording is unaffected")
-      guard.stop()
-      if (store._current) {
-        store._current.destroy()
-        store._current = null
-      }
-      var abandoned = store._queue.slice()
-      var results = store._results.slice()
-      for (var i = 0; i < abandoned.length; i++) {
-        results.push({
-          identityId: abandoned[i].identityId, occurrence: abandoned[i].occurrence,
-          address: abandoned[i].address, file: abandoned[i].file,
-          ok: false, reason: "timed-out"
-        })
-      }
-      store._results = results
-      store.refresh()
-      store._finish()
+      store._abandonRound("capture round ran out of time after " + total.interval
+        + "ms — " + store._queue.length + " window(s) unphotographed; the recording is unaffected",
+        "timed-out")
     }
   }
 
@@ -712,7 +807,11 @@ Item {
     id: viewComponent
 
     ScreencopyView {
-      property var entry: null
+      // THE STEP THIS VIEW IS FOR, and deliberately an `int` (tick 070). It used
+      // to be `property var entry` carrying the queue entry itself, and a JS
+      // object assigned through `createObject`'s property map arrives here as a
+      // copy — so the round could never recognise its own answers. See `_step`.
+      property int step: 0
       live: false
       paintCursor: false
       visible: true
