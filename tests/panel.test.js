@@ -672,6 +672,76 @@ test("the icon index answers for watched identities and for bare window classes"
   assert.ok(Object.keys(index).every((k) => k.indexOf("id:") === 0 || k.indexOf("class:") === 0));
 });
 
+test("the icon index's inputs are the CLASSES, and a retitled window is not one", () => {
+  // What the panel binds on instead of the client list itself. liveClients is
+  // reassigned whenever the text of `hyprctl clients -j` differs, and that JSON
+  // carries window TITLES — so on a busy desk it is a new array on most 2 s
+  // ticks, carrying the same classes. This is the question whose answer decides
+  // whether the index has to be rebuilt at all.
+  const before = [
+    { class: "foot", title: "vim PanelModel.js", address: "0x1" },
+    { class: OBSIDIAN_CLASS, title: "Notes", address: "0x2" }
+  ];
+  const retitled = [
+    { class: "foot", title: "vim Panel.qml", address: "0x1" },
+    { class: OBSIDIAN_CLASS, title: "Notes — edited", address: "0x2" }
+  ];
+  assert.strictEqual(panel.clientClassKey(before), panel.clientClassKey(retitled));
+
+  // A SET, not a list: order is Hyprland's business, and a second window of an
+  // app the panel already knows about needs no rebuild either.
+  assert.strictEqual(panel.clientClassKey(before),
+    panel.clientClassKey([before[1], before[0], { class: "foot", address: "0x3" }]));
+
+  // A window of a class the panel has NOT seen does change it, which is the
+  // whole point — that app has an icon nobody has looked up yet.
+  assert.notStrictEqual(panel.clientClassKey(before),
+    panel.clientClassKey(before.concat([{ class: "org.gnome.Nautilus", address: "0x4" }])));
+
+  // The same expression iconNameIndex uses: class, else initialClass, and a
+  // client with neither contributes nothing rather than an empty entry.
+  assert.strictEqual(panel.clientClassKey([{ initialClass: "foot" }]), "foot");
+  assert.strictEqual(panel.clientClassKey([{ class: "  " }, {}, null]), "");
+  assert.strictEqual(panel.clientClassKey(null), "");
+  // A window may call itself anything, `__proto__` included, and the de-dup map
+  // must not find Object.prototype's member instead of an absent one.
+  assert.strictEqual(panel.clientClassKey(
+    [{ class: "__proto__" }, { class: "__proto__" }, { class: "constructor" }]),
+    "__proto__\nconstructor");
+});
+
+test("the desktop-file parse is done once per scan, not once per lookup", () => {
+  // The memo, and the invariant it rests on: `files` is REPLACED, never edited
+  // in place, so reference equality is a sound answer to "same scan".
+  const files = [
+    { path: "/usr/share/applications/thing.desktop",
+      text: "[Desktop Entry]\nType=Application\nExec=thing\nStartupWMClass=thing\nIcon=thing-icon\n" }
+  ];
+
+  const first = panel.parsedDesktopEntries(files, false);
+  assert.strictEqual(panel.parsedDesktopEntries(files, false), first,
+    "the same file list parses to the same array, not an equal one");
+
+  // The two callers disagree about requireCommand — launch resolution wants
+  // entries that can run, the icon lookup wants all of them — and one slot
+  // apiece is what stops them evicting each other on every alternate call.
+  const withCommand = panel.parsedDesktopEntries(files, true);
+  assert.notStrictEqual(withCommand, first);
+  assert.strictEqual(panel.parsedDesktopEntries(files, true), withCommand);
+  assert.strictEqual(panel.parsedDesktopEntries(files, false), first);
+
+  // A NEW scan is a new array, and it is parsed afresh — a cache that answered
+  // for it would be serving a desktop that has changed under it.
+  const rescanned = [{ path: files[0].path, text: files[0].text }];
+  const second = panel.parsedDesktopEntries(rescanned, false);
+  assert.notStrictEqual(second, first);
+  assert.deepStrictEqual(second, first);
+
+  // And the answers are the answers, memo or not.
+  assert.strictEqual(panel.iconNameFromDesktopFiles(["^thing$"], second), "thing-icon");
+  assert.strictEqual(panel.launchFromDesktopFiles(["^thing$"], rescanned), "thing");
+});
+
 test("a chip asks by identity first and by class second", () => {
   const index = {
     "id:obsidian": "obsidian",
@@ -4911,6 +4981,27 @@ test("the menu lists every recorded layout, current one first and marked", () =>
   assert.strictEqual(panel.overflowMenuRows(
     [layoutRow(DOCKED_KEY, 6)], LAPTOP_KEY, [])[0].name, "AOC U34G2G + Samsung ATNA60HR07-0");
   assert.strictEqual(rows[1].appLabel, "6 apps");
+});
+
+test("two desks can share a menu row's NAME, so the row carries a key that is its own", () => {
+  // The hazard behind keying the overflow render registry on topologyKey rather
+  // than on the name Panel.qml draws. humanizeTopology keeps a make and a model
+  // and drops the rest, so two desks whose EDID serials differ — genuinely two
+  // recordings, two rows, one of them possibly `current` — arrive at one string.
+  const twinA = "AOC Inc. U34G2G 0x00001234 | Samsung Display Corp. ATNA60HR07-0";
+  const twinB = "AOC Inc. U34G2G 0x0000ABCD | Samsung Display Corp. ATNA60HR07-0";
+  const rows = panel.overflowMenuRows(
+    [layoutRow(twinA, 3), layoutRow(twinB, 5)], twinB, monitorsLaptop);
+
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(rows[0].name, rows[1].name, "the display name really does collide");
+  // And exactly one of them is the desk you are sitting at, which is the field
+  // a shared registry slot would have handed to both.
+  assert.deepStrictEqual(rows.map((r) => r.current), [true, false]);
+  // The key does not collide, is on the row, and is what the delegate reports
+  // under.
+  assert.notStrictEqual(rows[0].topologyKey, rows[1].topologyKey);
+  assert.strictEqual(new Set(rows.map((r) => r.topologyKey)).size, 2);
 });
 
 test("the mini glyph draws one box per monitor, and stops at three", () => {

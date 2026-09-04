@@ -2087,17 +2087,35 @@ function desktopBasename(path) {
   return text;
 }
 
+// Compiled patterns, keyed by their source string — engine.js's COMPILED_PATTERNS
+// invariant, restated here because QML's .js imports cannot see each other (see
+// the header of this file), and the same paragraph applies word for word: one
+// pattern string always compiles to the same regex, the flags are fixed at "i"
+// with no /g anywhere (a global regex carries `lastIndex` between calls, and
+// sharing one would make `.test` answer differently depending on who asked
+// last), a pattern that does not compile caches its `null`, and the "re:" prefix
+// keeps a pattern spelled `__proto__` off Object.prototype's members.
+//
+// It earns its keep here for the same shape of reason it did there: the four
+// desktop-file passes call this once per candidate per file per pass, so a
+// single iconNameIndex over 158 files recompiled the same handful of patterns
+// thousands of times. A memo of a pure function, not a decision.
+var COMPILED_PATTERNS = {};
+
 // Compile a stored pattern the way engine.compilePattern does — case
-// insensitive, and a typo simply never matches rather than throwing. Repeated
-// here rather than imported because QML's .js imports cannot see each other
-// (see the header of this file).
+// insensitive, and a typo simply never matches rather than throwing.
 function compilePattern(pattern) {
   if (typeof pattern !== "string" || !pattern) return null;
+  var key = "re:" + pattern;
+  if (Object.prototype.hasOwnProperty.call(COMPILED_PATTERNS, key)) return COMPILED_PATTERNS[key];
+  var compiled = null;
   try {
-    return new RegExp(pattern, "i");
+    compiled = new RegExp(pattern, "i");
   } catch (e) {
-    return null;
+    compiled = null;
   }
+  COMPILED_PATTERNS[key] = compiled;
+  return compiled;
 }
 
 function matchesAnyPattern(text, patterns) {
@@ -2146,7 +2164,33 @@ function matchesAnyPattern(text, patterns) {
 // list without that filter — "which entry is this window's app" is a question a
 // file with no Exec can still answer, and an entry with no Icon simply falls
 // through to the next pass.
+// The parse, memoized on the IDENTITY of the file list.
+//
+// WHY. `iconNameIndex` is asked from a QML binding on `liveClients`, and
+// liveClients is reassigned whenever the text of `hyprctl clients -j` differs —
+// which, because that JSON carries window TITLES, is most 2 s ticks on a desk
+// where anything is happening. Each re-evaluation reparsed all 158 desktop
+// files, on the GUI thread, in the same pass that rebuilds the map: measured at
+// 8.4 ms per tick on this machine, ~12 ms on the reviewer's.
+//
+// THE CACHE INVARIANT: `files` is REPLACED, never edited in place. Every
+// producer of it in this project builds a fresh array (desktopFilesFromDump
+// returns one, and Panel.qml assigns that whole array to root.desktopFiles), so
+// reference equality is a sound answer to "is this the same scan". A caller that
+// mutated a file's `text` under a kept reference would get the previous parse;
+// do not become that caller. The result is likewise treated as read-only by
+// every caller — matchDesktopEntry and the icon lookup only ever read it.
+//
+// TWO SLOTS, because the two callers disagree on `requireCommand` — launch
+// resolution wants entries that can run, the icon lookup wants all of them —
+// and a single slot would thrash between them and cache nothing.
+var PARSED_DESKTOP_ENTRIES = { withCommand: null, all: null };
+
 function parsedDesktopEntries(files, requireCommand) {
+  var slot = requireCommand ? "withCommand" : "all";
+  var cached = PARSED_DESKTOP_ENTRIES[slot];
+  if (cached && cached.files === files) return cached.parsed;
+
   var list = isArray(files) ? files : [];
   var parsed = [];
 
@@ -2161,6 +2205,7 @@ function parsedDesktopEntries(files, requireCommand) {
     parsed.push({ path: trim(file.path), entry: entry, command: command });
   }
 
+  PARSED_DESKTOP_ENTRIES[slot] = { files: files, parsed: parsed };
   return parsed;
 }
 
@@ -2248,6 +2293,38 @@ function iconNameFromDesktopFiles(patterns, parsed) {
 // An identity is looked up by its own `patterns`, which is what
 // launchFromDesktopFiles already uses and therefore what makes the icon come
 // from the same entry the launch command did.
+// The only thing iconNameIndex reads off a client, as one comparable string.
+//
+// The index is keyed by window CLASS, and a client list changes far more often
+// than the set of classes in it: Panel.qml reassigns `liveClients` whenever the
+// text of `hyprctl clients -j` differs, and that JSON carries window TITLES, so
+// a browser tab switch is a new array with the same classes in it. This lets the
+// panel ask "did the answer's inputs change" instead of "did the input object
+// change" — a `string` property notifies only on a different VALUE, where a
+// `var` holding a fresh array notifies every time.
+//
+// Sorted and de-duplicated so the answer is about the SET, not the order
+// Hyprland happened to list windows in, and derived from exactly the expression
+// iconNameIndex uses below, so the two can never disagree about what a client's
+// class is.
+function clientClassKey(clients) {
+  var list = isArray(clients) ? clients : [];
+  var seen = {};
+  var names = [];
+  for (var i = 0; i < list.length; i++) {
+    var client = list[i];
+    var className = trim(client && (client.class || client.initialClass));
+    // "cls:" for the same reason engine.js prefixes its pattern cache: a window
+    // may call itself `__proto__`, and a bare object key would then find
+    // Object.prototype's member instead of an absent one.
+    if (!className || seen["cls:" + className]) continue;
+    seen["cls:" + className] = true;
+    names.push(className);
+  }
+  names.sort();
+  return names.join("\n");
+}
+
 function iconNameIndex(identities, clients, desktopFiles) {
   var parsed = parsedDesktopEntries(desktopFiles, false);
   var identityList = isArray(identities) ? identities : [];
@@ -4380,20 +4457,6 @@ function boxRect(box) {
   return { x: box.realX, y: box.realY, width: box.logicalWidth, height: box.logicalHeight };
 }
 
-// One workspace of the map, with the two things the drawing needs beyond its
-// slots.
-//
-// `aspect` is the monitor's shape, not the workspace's: a workspace fills its
-// monitor, so a box drawn at any other ratio would put every window inside it
-// at the wrong one — which is the whole point of drawing windows to scale.
-//
-// `fallback` is the branch. Absolutely-positioned rects need EVERY slot in the
-// workspace to have one: mixing a positioned window with a stacked leftover
-// would draw the leftover on top of whatever happens to be under it. One slot
-// without geometry (a v1 recording, a read that came back without the field)
-// therefore drops the whole workspace back to the equal-slot column, which is
-// the layout this panel drew before rects existed and is still honest — it just
-// says less.
 // The key a workspace is named by when a bare id is not enough. Both sides of
 // the comparison build it here so they cannot spell it differently — the same
 // discipline Panel.qml's render registry follows, and for the same reason: a
@@ -4428,6 +4491,20 @@ function focusedWorkspaceKey(monitors) {
   return "";
 }
 
+// One workspace of the map, with the two things the drawing needs beyond its
+// slots.
+//
+// `aspect` is the monitor's shape, not the workspace's: a workspace fills its
+// monitor, so a box drawn at any other ratio would put every window inside it
+// at the wrong one — which is the whole point of drawing windows to scale.
+//
+// `fallback` is the branch. Absolutely-positioned rects need EVERY slot in the
+// workspace to have one: mixing a positioned window with a stacked leftover
+// would draw the leftover on top of whatever happens to be under it. One slot
+// without geometry (a v1 recording, a read that came back without the field)
+// therefore drops the whole workspace back to the equal-slot column, which is
+// the layout this panel drew before rects existed and is still honest — it just
+// says less.
 function workspaceModel(id, name, rect, slots) {
   var fallback = false;
   for (var s = 0; s < slots.length; s++) {
@@ -5794,6 +5871,7 @@ if (typeof module !== "undefined") {
     launchFromDesktopFilesForClass: launchFromDesktopFilesForClass,
     iconNameFromDesktopFiles: iconNameFromDesktopFiles,
     iconNameIndex: iconNameIndex,
+    clientClassKey: clientClassKey,
     iconNameFor: iconNameFor,
     identitiesNeedingLaunch: identitiesNeedingLaunch,
     shellWords: shellWords,

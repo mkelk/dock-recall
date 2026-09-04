@@ -468,8 +468,24 @@ Item {
   // identity id / window class -> icon NAME, for the whole panel frame. One
   // pass over the desktop dump rather than one per chip; see
   // PanelModel.iconNameIndex.
+  //
+  // NOT bound on `liveClients`, and that is the point. liveClients is
+  // reassigned whenever the TEXT of `hyprctl clients -j` differs, and that JSON
+  // carries window titles — so on a desk where anything at all is happening it
+  // is a new array on most 2 s ticks, with the same window classes in it. Bound
+  // directly, this rebuilt the whole index (158 desktop files parsed, four
+  // passes per key) on the GUI thread, in the same pass that rebuilds the map,
+  // and handed every chip a new object to re-resolve its icon from.
+  //
+  // So the dependency is the CLASS KEY — a string, which notifies only when its
+  // value differs — and the clients themselves are snapshotted when it does. A
+  // window opening under a class the panel has not seen changes the key and
+  // rebuilds the index; a browser retitling itself does neither.
+  readonly property string iconClassKey: PanelModel.clientClassKey(root.liveClients)
+  property var iconClients: []
+  onIconClassKeyChanged: root.iconClients = root.liveClients
   readonly property var iconNames: PanelModel.iconNameIndex(
-    root.identities, root.liveClients, root.desktopFiles)
+    root.identities, root.iconClients, root.desktopFiles)
 
   // ------------------------------------------- when this layout was recorded
   //
@@ -2142,19 +2158,31 @@ Item {
     root.mergeRenderReport(root.rowReports, key, report)
   }
 
-  // The overflow menu's rows, by name, written by the delegates that draw them.
+  // The overflow menu's rows, by TOPOLOGY KEY, written by the delegates that
+  // draw them.
+  //
+  // By the key and not by the name, for the reason every other registry here
+  // has a purpose-built one (workspaceRenderKey was invented for exactly this
+  // hazard): `name` is a DISPLAY string, and humanizeTopology truncates a desk
+  // to two monitor labels. Two desks whose EDID serials differ but whose make
+  // and model do not both humanize to "Laptop + AOC U34G2G", so both delegates
+  // wrote to one slot and both rows then reported whichever finished last —
+  // including its `current` flag, which is the one field in the payload that is
+  // about identity rather than about drawing. `topologyKey` is unique by
+  // construction and already on the row.
+  //
   // Unlike the chip/row registries this is NOT scoped to "while the popup is
   // up" (tick be1 found that assumption false: the delegates are declared as
   // direct Popup.contentItem children, so QML creates them once, whenever the
   // Repeater's model first goes non-empty, and never destroys them merely
   // because the popup closes). Same discipline as chipRenderReports/rowReports
   // instead: never reset, and panelState() below iterates the MODEL
-  // (overflowModel.rows) and looks a report up by name, so a name the current
+  // (overflowModel.rows) and looks a report up by key, so a layout the current
   // model does not carry can never enter the payload even though the store
   // itself is never cleared.
   property var overflowRowReports: ({})
-  function reportOverflowRow(name, report) {
-    root.mergeRenderReport(root.overflowRowReports, name, report)
+  function reportOverflowRow(topologyKey, report) {
+    root.mergeRenderReport(root.overflowRowReports, topologyKey, report)
   }
 
   function reportWorkspaceRender(key, report) {
@@ -2270,19 +2298,19 @@ Item {
     // The overflow menu's rows, and ONLY while it is open — the store itself
     // (tick be1) is never cleared, since its delegates outlive the popup being
     // closed, so visibility here is what keeps a shut menu reporting nothing.
-    // Iterated from the MODEL, same discipline chips/rows use above: a name
-    // the current overflowModel.rows does not carry (a forgotten layout whose
+    // Iterated from the MODEL, same discipline chips/rows use above: a layout
+    // the current overflowModel.rows does not carry (a forgotten one whose
     // delegate has not been destroyed yet, or one the store still remembers
-    // under a name no row has any more) can never enter the payload, and a
-    // name the model DOES carry but no delegate has reported yet (a fresh row,
-    // this same tick) is skipped rather than reported half-drawn.
+    // under a key no row has any more) can never enter the payload, and a key
+    // the model DOES carry but no delegate has reported yet (a fresh row, this
+    // same tick) is skipped rather than reported half-drawn.
     var layouts = []
     if (root.overflowOpen) {
       var menuRows = root.overflowModel.rows
       for (var mi = 0; mi < menuRows.length; mi++) {
         var menuRowModel = menuRows[mi]
         if (!menuRowModel) continue
-        var row = root.overflowRowReports[menuRowModel.name] || null
+        var row = root.overflowRowReports[menuRowModel.topologyKey] || null
         if (row) layouts.push({ name: row.name, current: !!row.current })
       }
     }
@@ -2832,7 +2860,11 @@ Item {
                         // "the overflow still lists the recorded layouts"
                         // is a claim about rows that exist rather than about a
                         // model that could have produced them.
-                        Component.onCompleted: root.reportOverflowRow(menuRow.modelData.name, {
+                        // Keyed by the layout's topologyKey — unique — while
+                        // the payload still carries the display `name`, which
+                        // is what a consumer reads. Two desks can share a name;
+                        // they cannot share a key.
+                        Component.onCompleted: root.reportOverflowRow(menuRow.modelData.topologyKey, {
                           name: String(menuRow.modelData.name),
                           current: menuRow.modelData.current === true
                         })
@@ -3198,7 +3230,9 @@ Item {
                               Component.onCompleted: workspaceSlot.reportRender()
 
                               // The drawing area, inside the border and under the
-                              // "ws N" label.
+                              // workspace number badge (`workspaceLabel` below —
+                              // tick o9o replaced the flat "ws N" caption with
+                              // it, and the id outlived the wording).
                               readonly property real canvasWidth: Math.max(1, workspaceFlow.grid.boxW
                                 - workspaceSlot.contentLeftInset - workspaceSlot.contentRightInset)
                               // A workspace fills its monitor, so its box is the
@@ -3810,6 +3844,26 @@ Item {
                                           // 1×1 warm-up answer, for ever.
                                           onWidthChanged: chipTab.reportRender()
                                           onHeightChanged: chipTab.reportRender()
+                                          // The same handler the app row carries,
+                                          // for the same reason. This report
+                                          // captures values taken straight off
+                                          // `modelData` — the key it is filed
+                                          // under, and `linkKey` — and NOTHING
+                                          // else here fires when modelData is
+                                          // replaced under a delegate that
+                                          // survives. That it cannot happen today
+                                          // is a fact about QQuickRepeater
+                                          // regenerating its delegates on any
+                                          // model change, which is a claim about
+                                          // a component's internals rather than
+                                          // about this file; the `sm1` family of
+                                          // defects is what "nothing told this
+                                          // delegate to report again" costs, and
+                                          // two delegates reporting the same kind
+                                          // of value should not disagree about
+                                          // when to do it. Cheap, and idempotent:
+                                          // reportChipRender merges into a store.
+                                          onModelDataChanged: chipTab.reportRender()
                                           Component.onCompleted: chipTab.reportRender()
 
                                           // The tab strip divides the slot's
@@ -4393,9 +4447,12 @@ Item {
                   // forced — so the report captured iconSource's fresh value
                   // beside iconResolved's stale pre-scan one. `iconResolvedOf`
                   // itself was never wrong; nothing told this delegate to report
-                  // again once ITS value changed. The chip's identical property
-                  // (line ~3664) has always carried this handler, which is why
-                  // only the row's payload showed the disagreement.
+                  // again once ITS value changed. The chip delegate `chipTab`
+                  // has the identical property and has always carried this
+                  // handler, which is why only the row's payload showed the
+                  // disagreement. (Named, not cited by line number: a line
+                  // reference is wrong at the next insertion above it, and this
+                  // one was 120 lines out.)
                   onIconResolvedChanged: appRow.reportRender()
                   onLinkedChanged: appRow.reportRender()
                   onModelDataChanged: appRow.reportRender()

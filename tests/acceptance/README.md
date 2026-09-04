@@ -431,10 +431,17 @@ glance uses. The six are enumerated in `tests/panel.test.js`; the VM drives
 `setPaused` and watches the switch position and the badge move together, because
 `Paused` outranks `Drifted` on the badge exactly as it does on the bar glyph.
 
-`overflowLayouts` is reported by the menu's row **delegates**, which exist only
-while the popup is up. A shut menu therefore lists nothing however many layouts
-are on disk, and a non-empty list is evidence that rows were drawn rather than
-that a model could have produced them.
+`overflowLayouts` is reported by the menu's row **delegates**. A shut menu lists
+nothing however many layouts are on disk — the delegates outlive the popup being
+closed (tick `be1`), so it is `panelState()` that gates on `overflowOpen` — and a
+non-empty list is evidence that rows were drawn rather than that a model could
+have produced them.
+
+The delegates report under the layout's `topologyKey`, not its display `name`:
+`humanizeTopology` truncates a desk to two monitor labels, so two desks with the
+same make and model and different EDID serials share a name, and keying on it
+would have both rows carrying whichever delegate finished last — `current`
+included. The payload still carries the name, which is what a consumer reads.
 
 ### The app list
 
