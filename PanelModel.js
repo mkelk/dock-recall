@@ -5833,7 +5833,7 @@ function emptyStateHint(watchedCount) {
 }
 
 // ---------------------------------------------------------------------------
-// The toplevel bridge — hyprctl address to Wayland handle (tick o2x)
+// The toplevel bridge — hyprctl address to Wayland handle (ticks o2x, w25)
 // ---------------------------------------------------------------------------
 //
 // Everything this plugin knows about a window comes from `hyprctl clients`,
@@ -5846,25 +5846,90 @@ function emptyStateHint(watchedCount) {
 // carries BOTH the hyprctl `address` and a `wayland` handle. So the bridge is a
 // lookup, and this is its pure half — the matching, which has a right answer and
 // therefore a test. ToplevelBridge.qml holds the part that cannot be pure: the
-// singleton, and turning an index back into the live handle.
+// live QObject, and THE CLOCK (see `classifyToplevels` below).
 //
-// It answers with three failure kinds rather than a null, because they mean
-// different things to a caller and this plugin refuses out loud (CLAUDE.md):
+// It answers with kinds rather than a null, because they mean different things
+// to a caller and this plugin refuses out loud (CLAUDE.md):
 //
 //   invalid  — the string is not an address at all. A bug in the caller.
-//   missing  — a well-formed address the model does not have. The window closed,
-//              or it belongs to another Hyprland instance.
+//   missing  — a well-formed address the model does not have. Either the window
+//              closed, or the model has not got to it yet — and which of those
+//              it is, is not a question this file can answer. See
+//              `classifyToplevels`.
 //   unmapped — the model HAS it, but with no Wayland handle yet. Measured, tick
 //              o2x: for ~1s after the shell starts, `Hyprland.toplevels` is
 //              empty, then fills WITHOUT handles, then the handles arrive over
-//              hyprland-toplevel-mapping-v1. This one is worth retrying; the
-//              other two are not.
+//              hyprland-toplevel-mapping-v1. Always worth retrying.
 
+// An hyprctl address, in one spelling. Applied to BOTH sides of every
+// comparison, which is the only reason a lookup works at all: the model's
+// `HyprlandToplevel.address` has no `0x` prefix ("562be03ac9a0") where hyprctl
+// prints one ("0x562be03ac9a0"), measured in tick o2x.
 function normalizedAddress(value) {
+  // A STRING, and only a string. `trim()` stringifies whatever it is handed, so
+  // without this line `normalizedAddress(1234)` answered "0x1234": a number
+  // that never came from hyprctl quietly became a valid address, and the caller
+  // that passed the wrong thing was never told (tick w25).
+  if (typeof value !== "string") return "";
   var address = trim(value).toLowerCase();
   if (!address.match(/^(0x)?[0-9a-f]+$/)) return "";
-  return address.indexOf("0x") === 0 ? address : "0x" + address;
+  var digits = address.indexOf("0x") === 0 ? address.slice(2) : address;
+  // Leading zeros are not part of the number. Nothing prints them today, but
+  // "0x0000562b…" and "0x562b…" are the same window, and without this they land
+  // in different buckets — one of them the bucket a caller is told not to retry.
+  return "0x" + digits.replace(/^0+(?=.)/, "");
 }
+
+// The QML toplevel model, copied into a plain array of { address, hasWayland }.
+//
+// Takes an ARRAY-LIKE deliberately. `Hyprland.toplevels.values` is a
+// QVariant-wrapped V4Sequence: it indexes and has `.length`, but it is NOT an
+// Array to `Object.prototype`, so `isArray()` — which everything else in this
+// file guards with — would reject the only value this is ever called with
+// (.tick/learnings.md § QML/JS boundary). Anything without a usable numeric
+// length is an empty snapshot rather than a crash: the model is null for part
+// of a shell's startup.
+function toplevelSnapshot(values) {
+  var out = [];
+  // A string has a `.length` and indexes, and would otherwise snapshot as one
+  // empty entry per character.
+  if (!values || typeof values === "string") return out;
+  var length = Number(values.length);
+  if (!(length > 0)) return out;
+  for (var i = 0; i < length; i++) {
+    var entry = values[i];
+    out.push({
+      address: entry && typeof entry.address === "string" ? entry.address : "",
+      hasWayland: !!(entry && entry.wayland)
+    });
+  }
+  return out;
+}
+
+// The `addresses` argument, checked before anything is built out of it.
+//
+// `entries` has been copied out of the QML model since o2x; this side was not
+// guarded at all, and the same QVariant wrapper arriving here made a whole
+// batch read as "nothing to do, everything fine" — an empty plan with an empty
+// refusal. That is the exact failure .tick/learnings.md records as having
+// hidden a broken model for two live rounds, and it is the opposite of what
+// this plugin does with an ambiguity (CLAUDE.md, "Refusals are a feature").
+//
+// Returns "" for a real Array — including an empty one, which is a legitimate
+// "photograph nothing" — and a sentence naming the fix otherwise.
+function toplevelAddressListRefusal(addresses) {
+  if (isArray(addresses)) return "";
+  if (addresses && typeof addresses !== "string"
+      && typeof addresses.length === "number" && isFinite(addresses.length)
+      && addresses.length >= 0) {
+    return "Cannot picture anything: the address list arrived as a QML sequence "
+      + "rather than a JavaScript array. Copy it out element by element before "
+      + "it crosses into PanelModel.";
+  }
+  return "Cannot picture anything: no list of addresses was given.";
+}
+
+
 
 // entries: a PLAIN array (copy it out of the QML model first — a QVariant-wrapped
 // V4Sequence is not an Array here, see the QML/JS boundary note in learnings) of
@@ -5890,11 +5955,22 @@ function resolveToplevels(entries, addresses) {
 
   var out = { resolved: [], invalid: [], missing: [], unmapped: [] };
   var seen = {};
+  var seenInvalid = {};
 
   for (i = 0; i < wanted.length; i++) {
     var raw = wanted[i];
     var key = normalizedAddress(raw);
-    if (!key) { out.invalid.push(trim(raw)); continue; }
+    if (!key) {
+      // De-duplicated like the good addresses are: a queue that asks for the
+      // same junk string twice has one bug, and the refusal should say "1 not
+      // an address", not "2".
+      var label = trim(raw);
+      if (own(seenInvalid, label) === undefined) {
+        seenInvalid[label] = true;
+        out.invalid.push(label);
+      }
+      continue;
+    }
     if (own(seen, key) !== undefined) continue;
     seen[key] = true;
 
@@ -5907,17 +5983,103 @@ function resolveToplevels(entries, addresses) {
   return out;
 }
 
-// The one line a refusal needs. Empty when everything resolved, so a caller can
-// use it as the condition as well as the message.
-function toplevelBridgeRefusal(plan) {
-  if (!plan) return "";
+// The taxonomy with TIME folded in — the one judgement resolveToplevels cannot
+// make, and the reason `missing` used to be a lie.
+//
+// `Hyprland.toplevels` is EMPTY for about a second after a shell starts and
+// then fills INCREMENTALLY (measured, tick o2x). So a well-formed address the
+// model does not have means one of two opposite things, and no pure function
+// can tell them apart, because the difference is elapsed time and this file is
+// clock-free by rule (CLAUDE.md: the brain has no clock).
+//
+// `settled` is the caller's answer to "has the model finished filling in?".
+// ToplevelBridge.qml owns the clock and works it out; this function only
+// applies it. Given it, every address lands in exactly one bucket:
+//
+//   resolved — the model has it, with a handle. Done.
+//   pending  — unmapped, or missing while the model is still filling. RETRY.
+//   gone     — missing after the model settled. The window closed. PERMANENT.
+//   invalid  — not an address at all. PERMANENT, and a bug in the caller.
+//
+// and the two questions a consumer actually has get separate answers:
+//
+//   decided — nothing here can change any more, so STOP POLLING. It is NOT
+//             "everything worked": a closed window and a junk string are both
+//             decided. This is the poll predicate.
+//   ok      — everything worked.
+//
+// `asked` is how many distinct addresses were understood, so "nothing was
+// asked" is distinguishable from "everything worked" — both of which otherwise
+// present as an empty refusal.
+function classifyToplevels(entries, addresses, settled) {
+  var plan = resolveToplevels(entries, addresses);
+  var pending = [];
+  var gone = [];
+  var i;
+
+  for (i = 0; i < plan.unmapped.length; i++) pending.push(plan.unmapped[i]);
+  for (i = 0; i < plan.missing.length; i++) {
+    if (settled) gone.push(plan.missing[i]);
+    else pending.push(plan.missing[i]);
+  }
+
+  return {
+    resolved: plan.resolved,
+    invalid: plan.invalid,
+    missing: plan.missing,
+    unmapped: plan.unmapped,
+    pending: pending,
+    gone: gone,
+    settled: !!settled,
+    asked: plan.resolved.length + plan.invalid.length
+      + plan.missing.length + plan.unmapped.length,
+    decided: pending.length === 0,
+    ok: pending.length === 0 && gone.length === 0 && plan.invalid.length === 0
+  };
+}
+
+// One resolved entry, re-checked against the live model row its index points
+// at. Pure so the rule has a test; the QML side reads the row and passes what
+// it found.
+//
+// The index came out of a SNAPSHOT, and the model moves. It does not only drop
+// entries: a reorder leaves a perfectly live handle at that index belonging to
+// a DIFFERENT window, and a caller handed that would photograph the wrong
+// window under the address it asked for and have no way to notice. So the
+// address is re-checked, not just the handle's existence.
+function toplevelHandleStillValid(want, rowAddress, rowHasWayland) {
+  if (!want || !rowHasWayland) return false;
+  return normalizedAddress(rowAddress) === want.address;
+}
+
+// The one line a refusal needs. Empty only when nothing failed, so a caller can
+// use it as the condition as well as the message — but `asked` is what says
+// whether anything was attempted at all.
+//
+// Reads the time-aware buckets when they are there and falls back to the raw
+// plan's `missing`/`unmapped` when they are not, so handing this a bare
+// `resolveToplevels` result still refuses out loud instead of answering "".
+//
+// `waitedMs`, when positive, says the pending ones ran out of time rather than
+// simply not being ready yet — the difference between "ask again in a moment"
+// and "this window is never going to answer" (tick o2x: a monitor that is not
+// rendering never delivers a frame).
+function toplevelBridgeRefusal(verdict, waitedMs) {
+  if (!verdict) return "";
   var parts = [];
-  var invalid = isArray(plan.invalid) ? plan.invalid : [];
-  var missing = isArray(plan.missing) ? plan.missing : [];
-  var unmapped = isArray(plan.unmapped) ? plan.unmapped : [];
+  var waited = Number(waitedMs) || 0;
+  var invalid = isArray(verdict.invalid) ? verdict.invalid : [];
+  var gone = isArray(verdict.gone) ? verdict.gone
+    : (isArray(verdict.missing) ? verdict.missing : []);
+  var pending = isArray(verdict.pending) ? verdict.pending
+    : (isArray(verdict.unmapped) ? verdict.unmapped : []);
   if (invalid.length) parts.push(invalid.length + " not an address");
-  if (missing.length) parts.push(missing.length + " no longer open");
-  if (unmapped.length) parts.push(unmapped.length + " not ready to capture yet");
+  if (gone.length) parts.push(gone.length + " no longer open");
+  if (pending.length) {
+    parts.push(waited > 0
+      ? pending.length + " still not ready to capture after " + waited + "ms"
+      : pending.length + " not ready to capture yet");
+  }
   if (!parts.length) return "";
   return "Cannot picture " + parts.join(", ") + ".";
 }
@@ -5925,7 +6087,11 @@ function toplevelBridgeRefusal(plan) {
 if (typeof module !== "undefined") {
   module.exports = {
     normalizedAddress: normalizedAddress,
+    toplevelSnapshot: toplevelSnapshot,
+    toplevelAddressListRefusal: toplevelAddressListRefusal,
     resolveToplevels: resolveToplevels,
+    classifyToplevels: classifyToplevels,
+    toplevelHandleStillValid: toplevelHandleStillValid,
     toplevelBridgeRefusal: toplevelBridgeRefusal,
     // Exported for the QML side as much as for the tests: an identity-id lookup
     // in Panel.qml has to go through this too (tick 8hp).
