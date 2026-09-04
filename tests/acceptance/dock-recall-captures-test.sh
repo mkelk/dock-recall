@@ -50,6 +50,25 @@
 #                     path and nothing erroring. That is the degradation this
 #                     feature is designed around, and the reason the pictures
 #                     are a cache rather than state.
+#   THE DRAWING     — `capturePath` is what the PANEL says (the cache holds a
+#                     file for this chip) and `captureSource` is what the CHIP
+#                     says (the file:// URL its Image bound, reported only once
+#                     that Image is Ready). Two keys, two claims, agreeing by
+#                     construction — so a chip reporting a path and no source is
+#                     one the map decided not to draw.
+#   BOTH RENDER PATHS — the layout's geometry is stripped so the recorded map
+#                     drops to the stacked fallback, and the SAME file has to be
+#                     drawn there, on a chip that still reports its name. The
+#                     cache key carries no geometry, so this is literally one
+#                     picture on two paths and not a second recording. The
+#                     Recorded map is entirely the fallback in the field, and
+#                     the project's learnings record it engaging silently and
+#                     hiding a broken model for two live rounds.
+#   ONE CAPTURE GONE — the file is deleted and the panel re-summoned. It must be
+#                     offered no picture at all. Asserted on a FRESH panel
+#                     because that is the honest shape: within one session a
+#                     chip that has already decoded its picture goes on drawing
+#                     it, and the shell destroys the panel on hide anyway.
 #
 # HOW A RECORD IS REACHED. Through the panel's own IpcHandler — `dock-recall
 # record`, `undoRecord`, `forgetLayout` — which route to root.recordLayout,
@@ -407,22 +426,150 @@ view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 [[ $view_answer == "recorded" ]] ||
   fail "the panel shows the recorded map (captures)" "setView recorded answered '$view_answer'"
 
+# TWO KEYS, TWO CLAIMS, and they are deliberately not one. `capturePath` is the
+# PANEL's answer — the cache holds a file for this identity, occurrence and
+# topology. `captureSource` is what the CHIP is drawing: the delegate reports it
+# only once its Image says Ready, so it is never a claim the map could not make
+# good on. They agree by construction here, which is what makes a disagreement
+# worth failing on.
+#
+# Both are ABSENT, never present-and-empty, for the chip that has no picture:
+# the payload convention is that a key the panel has nothing to say about is not
+# there at all, and "" would be a second spelling of the same silence.
+CAPTURE_URL="file://$CACHE_DIR/$EXPECTED_FILE"
+[[ $CACHE_DIR/$EXPECTED_FILE =~ ^[A-Za-z0-9/._~-]+$ ]] ||
+  fail "the capture path needs no percent-encoding (captures)" \
+    "$CACHE_DIR/$EXPECTED_FILE contains a character Util.fileUrl would escape"
+
 capture_reported() {
-  panel_state_json | jq -e --arg path "$CACHE_DIR/$EXPECTED_FILE" '
-    ([.chips[]|select(has("capturePath") and .capturePath == $path)]|length) == 1
+  panel_state_json | jq -e --arg path "$CACHE_DIR/$EXPECTED_FILE" --arg url "$CAPTURE_URL" --arg want "$1" '
+    ([.chips[]|select(has("capturePath") and .capturePath == $path
+       and has("captureSource") and .captureSource == $url
+       and .pictured == true and .renderPath == $want)]|length) == 1
     and ([.chips[]|select(has("capturePath"))]|length) == 1
-    # ABSENT, never present-and-empty. The payload convention is that a key the
-    # panel has nothing to say about is not there at all, and an empty string
-    # would be a second spelling of the same silence for a consumer to get
-    # wrong.
-    and ([.chips[]|select(has("capturePath") and (.capturePath|length) == 0)]|length) == 0' >/dev/null
+    and ([.chips[]|select(has("captureSource"))]|length) == 1
+    and ([.chips[]|select(has("capturePath") and (.capturePath|length) == 0)]|length) == 0
+    and ([.chips[]|select(has("captureSource") and (.captureSource|length) == 0)]|length) == 0
+    # Every chip still has its icon. A capture fills in UNDERNEATH the icon and
+    # the name, and does not replace either.
+    and ([.chips[]|select((.iconSource|type) == "string" and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
 }
-if ! poll 30 capture_reported; then
+if ! poll 30 capture_reported positioned; then
   diagnostics
   fail "the panel reports the stored picture, and only for the chip that has one" \
-    "no chip reports capturePath '$CACHE_DIR/$EXPECTED_FILE', or more than one does, or a chip reports it empty"
+    "no POSITIONED chip reports capturePath '$CACHE_DIR/$EXPECTED_FILE' and captureSource '$CAPTURE_URL', or more than one does, or a chip reports one empty"
 fi
-pass "the Recorded map reports the capture path for the pictured chip, and the key is ABSENT for the other"
+pass "POSITIONED: the Recorded map draws the capture — path and source agree, and both keys are ABSENT for the chip with none"
+
+# ------------------------------ 5b. THE FALLBACK PATH, with the same picture
+#
+# The Recorded map is the one that is routinely the STACKED FALLBACK — a v1
+# recording, or any read that came back without geometry, drops a workspace to
+# it, and Panel.qml's positioned branch never runs there. The project's own
+# learnings record the fallback engaging silently and hiding a broken model for
+# two live rounds, so a capture asserted only on the positioned path is a
+# capture half-asserted.
+#
+# The layout is rewritten WITHOUT at/size, which is exactly what makes the
+# workspace fall back — and the pictures stay valid, because the cache key is
+# (identity, occurrence, topology) and carries no geometry at all. So this is
+# the same file, on the other render path, with nothing re-recorded.
+node -e '
+  var fs = require("fs");
+  var StateModel = require(process.argv[1] + "/StateModel.js");
+  var statePath = process.argv[2], key = process.argv[3];
+  var state = StateModel.parseState(fs.readFileSync(statePath, "utf8")).state;
+  var layout = StateModel.layoutFor(state, key);
+  if (!layout) { console.error("no layout for " + key); process.exit(1); }
+  var stripped = {
+    topologyKey: layout.topologyKey,
+    recordedAt: layout.recordedAt,
+    apps: layout.apps.map(function (app) {
+      return { identityId: app.identityId, occurrence: app.occurrence,
+               monitorDescription: app.monitorDescription, workspaceId: app.workspaceId,
+               floating: app.floating, group: app.group };
+    })
+  };
+  fs.writeFileSync(statePath + ".tmp", StateModel.serializeState(StateModel.upsertLayout(state, stripped)));
+  fs.renameSync(statePath + ".tmp", statePath);
+' "$PLUGIN_DIR" "$STATE" "$TOPOLOGY_KEY" ||
+  fail "the layout can be rewritten without geometry (captures)"
+
+fallback_capture() {
+  panel_state_json | jq -e --arg url "$CAPTURE_URL" '
+    (.chips|length) > 0
+    and ([.chips[]|select(.renderPath == "fallback")]|length) == (.chips|length)
+    and ([.chips[]|select(has("captureSource") and .captureSource == $url
+          and .pictured == true)]|length) == 1
+    # AND THE NAME SURVIVES IT. The stacked rows are 17 px tall and this is
+    # where names came back after a size ladder silently took every one of them
+    # away; a capture that cost them their label would undo that just as
+    # quietly. The tiers that draw a name are pill and strip, and this asks for
+    # the OUTCOME rather than for a tier by name.
+    and ([.chips[]|select(has("captureSource")
+          and (.treatment == "pill" or .treatment == "strip"))]|length) == 1
+    and ([.chips[]|select((.name|type) == "string" and (.name|length) > 0)]|length) == (.chips|length)
+    and ([.chips[]|select((.iconSource|type) == "string" and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
+}
+if ! poll 40 fallback_capture; then
+  diagnostics
+  fail "the FALLBACK path draws the same capture, and still draws the name" \
+    "after stripping the layout's geometry, no fallback chip reports captureSource '$CAPTURE_URL' at a tier that carries a name"
+fi
+pass "FALLBACK: the same picture on the stacked path, on a chip that still reports its name and its icon"
+
+# ------------------- 5c. a capture deleted under the panel falls back
+#
+# ONE file, not the whole directory (that is step 8), and the assertion is made
+# after the panel is summoned AGAIN — which is deliberate and is the honest
+# shape of this behaviour rather than a convenience.
+#
+# Within one panel session a chip that has already decoded its picture goes on
+# drawing it: Qt holds the decoded image, and a photograph the plugin
+# legitimately took does not become wrong because the file behind it was
+# removed. What must be true is that a panel opened AFTER the file went never
+# offers it — and that is guaranteed structurally, because `captureSourceOf` is
+# gated on a directory listing re-read on every open, so the Image is never
+# even pointed at a file that is not there. No source, no path, no error, and
+# the chip is what it was before this epic: its icon and its name.
+#
+# That is also the real user's case. The shell destroys the panel's Loader on
+# hide, so "a cleaner ran while I was not looking" is always a fresh panel.
+rm -f "$CACHE_DIR/$EXPECTED_FILE"
+omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
+poll 20 panel_layer_absent
+omarchy-shell shell summon "$PLUGIN_ID" '{}' >/dev/null 2>&1
+if ! poll 30 panel_layer_present; then
+  diagnostics
+  fail "the panel comes back after a capture was deleted (captures)" "no panel layer"
+fi
+deleted_view=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
+[[ $deleted_view == "recorded" ]] ||
+  fail "the recorded map opens after a capture was deleted (captures)" "setView recorded answered '$deleted_view'"
+
+capture_gone() {
+  panel_state_json | jq -e '
+    (.chips|length) > 0
+    and ([.chips[]|select(has("captureSource"))]|length) == 0
+    and ([.chips[]|select(has("capturePath"))]|length) == 0
+    and ([.chips[]|select((.iconSource|type) == "string" and (.iconSource|length) > 0)]|length) == (.chips|length)
+    and ([.chips[]|select((.name|type) == "string" and (.name|length) > 0)]|length) == (.chips|length)' >/dev/null
+}
+if ! poll 40 capture_gone; then
+  diagnostics
+  fail "a capture deleted under the panel falls back to the icon" \
+    "a chip still reports a capture for a file that is no longer there, or lost its icon or its name"
+fi
+pass "a capture deleted from the cache: the chip is back to its icon and its name, offered no picture, nothing errored"
+
+# Put the geometry and the picture back for the steps that follow.
+restore_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $restore_record == "recorded" ]] ||
+  fail "panel IPC records after the fallback round (captures)" "record answered '$restore_record'"
+if ! poll 40 cache_is 1; then
+  diagnostics
+  fail "the picture is back after the fallback round (captures)" "$CACHE_DIR holds $(cache_count)"
+fi
 
 # ------------------------------------------------- 6. RE-RECORD overwrites
 

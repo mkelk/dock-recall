@@ -122,6 +122,13 @@ thinks is happening:
   Recorded map can show the window even when the app is closed. It is off until
   you switch it on, it is per app, and switching it off again leaves the app
   watched. Unticking an app takes its camera consent with it.
+- **Recorded captures** — a chip on the Recorded tab draws the picture taken
+  when you recorded, underneath its icon and its name, so a closed app is
+  recognisable rather than a grey label. The pictures live in
+  `~/.cache/omarchy/dock-recall/`, not in your recordings: delete that directory
+  and the map goes back to icons with nothing lost. Forgetting a layout deletes
+  its pictures, re-recording replaces them, and undoing a record takes them with
+  it.
 - **Record layout / Restore now** — record the current arrangement for the current
   topology, or replay the recording immediately without waiting for a cable.
 - **Undo record** — immediately after recording, put the previous recording back.
@@ -319,7 +326,7 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 900 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 905 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml ToplevelBridge.qml MapWorkspace.qml CaptureStore.qml
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see

@@ -526,6 +526,32 @@ BorderSurface {
               readonly property bool pictured: panel.picturedOf(
                 chipTab.modelData.identityId)
 
+              // THE STORED PICTURE, as a URL the Image below binds (tick vbh).
+              // "" when this chip has none — an unpictured app, a recording
+              // taken before the consent was granted, a cache a cleaner has
+              // wiped — and "" on the LIVE map always, because a photograph of
+              // a window laid over the window itself is a staler picture of the
+              // same thing.
+              //
+              // Held as a property rather than written straight into the Image
+              // for the reason the icon pair is: the payload has to carry what
+              // was BOUND, not a second derivation that could agree with the
+              // cache while the Image drew nothing.
+              readonly property string captureSource: panel.captureSourceOf(
+                chipTab.modelData.identityId, chipTab.modelData.occurrence)
+
+              // Is that picture actually ON THE CHIP? The source is what the
+              // Image was pointed at; this is whether it arrived. They differ
+              // for a real reason: the panel's cache listing is re-read when it
+              // opens and when the desk changes, not on a timer, so a file
+              // deleted under a live panel leaves a source that names a file
+              // that is no longer there. The Image's own status is the only
+              // thing that knows, and it is what the payload reports — so
+              // `captureSource` in the payload always means "this chip is
+              // drawing this", never "the panel thinks it could".
+              readonly property bool captureDrawn:
+                chipCapture.status === Image.Ready
+
               // WHICH OF FIVE DRAWINGS THIS CHIP EARNS, from the size it
               // actually got. The ladder:
               //
@@ -575,6 +601,19 @@ BorderSurface {
                   // The second consent, from the same delegate and on both
                   // render paths, for the same reason the icon pair is.
                   pictured: chipTab.pictured,
+                  // The picture this chip IS DRAWING — the bound source, but
+                  // only once the Image reports Ready. "" here becomes an
+                  // ABSENT key in the payload, never an empty string, which
+                  // would be a second spelling of "nothing to say".
+                  //
+                  // Gated on the status rather than reported raw, because the
+                  // raw source is a claim the panel makes and this is a claim
+                  // the CHIP makes. A capture deleted under a live panel leaves
+                  // the panel's `capturePath` standing (its listing is stale by
+                  // one open) and takes this away, and that disagreement is the
+                  // information: the cache index says there is a picture, the
+                  // chip could not draw it.
+                  captureSource: chipTab.captureDrawn ? chipTab.captureSource : "",
                   // The tier the drawing below branches on, from the same
                   // property those bindings read — so a consumer can
                   // reproduce it with chipTreatment(width, height) on the two
@@ -603,6 +642,12 @@ BorderSurface {
               onIconSourceChanged: chipTab.reportRender()
               onIconResolvedChanged: chipTab.reportRender()
               onPicturedChanged: chipTab.reportRender()
+              onCaptureSourceChanged: chipTab.reportRender()
+              // Both, per the report-site rule: a site must carry an onXChanged
+              // for EVERY property it captures (.tick/learnings.md, tick sm1).
+              // The image load is asynchronous, so `captureDrawn` lands after
+              // `captureSource` and nothing else would report it.
+              onCaptureDrawnChanged: chipTab.reportRender()
               onTreatmentChanged: chipTab.reportRender()
               // The slot owns both colour channels, so the chip has to be
               // told when they move — a tick that changes watched changes the
@@ -640,13 +685,78 @@ BorderSurface {
               width: chipRow.width / chipSlot.modelData.chips.length
               height: chipRow.height
 
+              // THE STORED PICTURE (tick vbh), and where it sits is the whole
+              // design: FIRST in document order, so it is the chip's GROUND.
+              // QML paints siblings in the order they are declared, so the veil
+              // below it quietens it and the icon and the name paint on top —
+              // the capture fills in UNDERNEATH the content rather than
+              // replacing it.
+              //
+              // IT CANNOT PUSH THE NAME OUT. It is a sibling of `chipContent`,
+              // not a member of it: the Column that lays out the pill, the icon
+              // and the label never sees this item and its width is unchanged
+              // by it. That matters here more than anywhere — the Recorded map
+              // is entirely the FALLBACK path, whose 210x17 stacked rows are
+              // where names were only just restored (tick ajp), and a capture
+              // that cost them their label would undo that silently.
+              //
+              // The pill's own translucent ground is what keeps the name
+              // legible over a photograph, which is exactly what its comment
+              // has always said it was for.
+              //
+              // NO EMPTY-IMAGE FLASH, and no broken picture: `visible` is gated
+              // on Image.Ready, so a source that is still loading, has failed,
+              // or was never set draws nothing at all and the chip is what it
+              // was before this tick — its icon and its name.
+              //
+              // A DELETED CAPTURE, in two halves. `panel.captureSourceOf` is
+              // gated on a directory listing that is re-read whenever the panel
+              // opens and whenever the desk changes, so a panel opened after a
+              // cleaner ran never points an Image at a file that is not there —
+              // and since the shell destroys the panel's Loader on hide, that is
+              // every real "it went while I was not looking". Within ONE session
+              // a chip that has already decoded its picture goes on drawing it,
+              // which is right: a photograph the plugin legitimately took does
+              // not become wrong because the file behind it was removed. The one
+              // seam is an EXTERNAL delete followed by a re-evaluation of this
+              // binding in the same session, which logs Qt's own "Cannot open"
+              // and then draws nothing — correct, and noisy in the shell log
+              // rather than in the panel.
+              //
+              // PreserveAspectCrop with clip, because the chip is the window's
+              // own rectangle scaled and the picture is the same window: the
+              // proportions already agree, and cropping the last pixel of a
+              // rounding difference reads better than a letterbox bar.
+              //
+              // `cache: false` because the path does not change when the
+              // picture does. A re-record writes a new file at the same name,
+              // and Qt's image cache would happily serve the old pixels for the
+              // rest of the panel session.
+              Image {
+                id: chipCapture
+                anchors.fill: parent
+                visible: chipCapture.status === Image.Ready
+                source: chipTab.captureSource
+                asynchronous: true
+                cache: false
+                clip: true
+                fillMode: Image.PreserveAspectCrop
+                // Decoded at the size it is DRAWN at, in physical pixels — a
+                // 512px JPEG decoded at full size for a 40px chip is bytes and
+                // milliseconds nobody sees. Floored so a warm-up frame with no
+                // width does not ask for a 0x0 decode.
+                sourceSize.width: Math.max(1, Math.round(chipTab.width * Screen.devicePixelRatio))
+                sourceSize.height: Math.max(1, Math.round(chipTab.height * Screen.devicePixelRatio))
+              }
+
               // THE VEIL, and it is a layer rather than a colour: it sits
               // over everything the chip's own rectangle draws and under
               // everything the content draws, so a centred icon reads against
-              // a quietened ground. Today that ground is the chip's colour
-              // field; in the next epic it is the window's captured picture,
-              // and the veil is what stops a busy screenshot from swallowing
-              // the icon. Declared FIRST so the content paints on top of it —
+              // a quietened ground. That ground is the chip's colour field, or
+              // — since tick vbh — the captured picture above, and the veil is
+              // what stops a busy screenshot from swallowing the icon on the
+              // one tier that has nothing else to separate them. Declared after
+              // the capture and before the content so it lands between them —
               // QML draws siblings in document order.
               Rectangle {
                 anchors.fill: parent

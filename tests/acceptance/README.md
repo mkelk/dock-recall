@@ -250,6 +250,8 @@ that photographed everything it watches.
 | forget | the delete point: no picture of this topology survives it |
 | a failed capture | the cache directory is made **uncreatable** and a Record is performed. It must answer `recorded`, the state file must carry the layout with both apps and a timestamp, and no picture may exist. Driven, not argued |
 | a wiped cache | the whole directory is deleted under a live panel. Every chip must go on reporting an icon source, no chip may report a `capturePath`, and nothing may error |
+| both render paths | the layout's geometry is stripped so the recorded map drops to the stacked fallback, and the **same file** must still be drawn there — at a tier that carries the app's name |
+| one capture deleted | the file goes and the panel is re-summoned. It must be offered no picture at all: no `captureSource`, no `capturePath`, icon and name intact. Asserted on a fresh panel because that is the honest shape — within one session a chip that already decoded its picture goes on drawing it, and the shell destroys the panel on hide anyway |
 
 **How a Record is reached.** Through the panel's own `record`, `undoRecord` and
 `forgetLayout` verbs. That matters: pictures are taken by the *record path*, and
@@ -595,6 +597,24 @@ It is off the Live map on purpose. The cache key is the recording's, and a
 picture is a fact about a recorded layout: the Live tab draws the windows that
 are on screen, and offering it a photograph of one of them answers a question
 nobody asked.
+
+`captureSource` is the second half, and the two are deliberately not one key.
+`capturePath` is what the **panel** says — the cache holds a file for this chip.
+`captureSource` is what the **chip** says: the `file://` URL its `Image` was
+bound to, reported only once that `Image` says `Ready`, so it never claims a
+picture the map could not make good on. They agree by construction, which is
+what makes a disagreement worth failing on — a chip reporting a path and no
+source is one the map decided not to draw.
+
+The capture is drawn as the chip's **ground**: first in document order, so the
+veil quietens it and the icon and the name paint on top, and it is a *sibling*
+of the content Column rather than a member of it. That is what keeps it from
+pushing the name out — and it matters most on the **fallback** path, whose
+210 x 17 stacked rows are the whole Recorded map and are where names were only
+just restored. The test asserts the same picture on both paths, on a chip that
+still reports its name and its icon, and it reaches the fallback by stripping
+the layout's geometry rather than by re-recording: the cache key carries no
+geometry, so it is literally the same file on the other render path.
 
 ### The row-to-chip link
 

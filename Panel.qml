@@ -1403,6 +1403,24 @@ Item {
     return name ? captureStore.pathFor(name) : ""
   }
 
+  // The same picture as a URL an Image can be bound to, or "" (tick vbh).
+  //
+  // Util.fileUrl, not a hand-built "file://" + path: it percent-encodes each
+  // segment, and a home directory with a space in it is the ordinary case that
+  // breaks the hand-built one. The panel already resolves its icon paths this
+  // way (AppLibrary.iconSource), so the map has one spelling of "a local file"
+  // rather than two.
+  //
+  // ONLY ON THE RECORDED MAP, for the reason capturePathFor's payload half is:
+  // the cache key is the recording's, and the Live tab draws the windows that
+  // are on screen. A photograph of a window laid over the window itself is a
+  // second, staler picture of the same thing.
+  function captureSourceOf(identityId, occurrence) {
+    if (!root.showRecorded) return ""
+    var path = root.capturePathFor(identityId, occurrence)
+    return path ? Util.fileUrl(path) : ""
+  }
+
   // Re-read the directory when the panel opens: a cleaner may have run since it
   // was last up, and the listing is what tells "there is a picture for this
   // chip" from "there was one". The other re-read is on a topology change, and
@@ -2516,8 +2534,18 @@ Item {
             })
             // ADDED rather than assigned above, because the payload's rule is
             // that a key the panel has nothing to say about is ABSENT — and
-            // "this chip has no stored picture" is exactly that.
+            // "this chip has no stored picture" is exactly that. Never "",
+            // which would be a second spelling of the same silence.
+            //
+            // TWO KEYS, TWO CLAIMS, and they are deliberately not one.
+            // `capturePath` is the panel's own answer — the cache holds a file
+            // for this identity, occurrence and topology. `captureSource` is
+            // what the DELEGATE bound its Image to. They agree by construction,
+            // which is what makes a disagreement worth failing on: a chip that
+            // reports a path and no source is one the map decided not to draw.
             if (capturePath) chips[chips.length - 1].capturePath = capturePath
+            var drawnCapture = root.reported(report, "captureSource")
+            if (drawnCapture) chips[chips.length - 1].captureSource = drawnCapture
           }
         }
       }

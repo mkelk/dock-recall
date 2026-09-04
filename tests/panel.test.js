@@ -6170,3 +6170,111 @@ test("the pictures are evicted at all three points a recording can end", () => {
   assert.ok(store.indexOf("store.evict(store._plan ? store._plan.prefix : \"\", \"re-recorded\")") !== -1,
     "the capture sequence no longer evicts before it writes");
 });
+
+// ---------------------------------------------------------------------------
+// The Recorded map draws its captures (tick vbh)
+// ---------------------------------------------------------------------------
+//
+// The rendering itself cannot be proven here — no scene graph, no pixels. What
+// CAN be proven, and is exactly what would break silently, is the STRUCTURE the
+// rendering depends on: where the capture sits relative to the veil and the
+// content, that it is not a member of the Column that lays the name out, and
+// that it draws nothing until it is ready. The VM's IpcHandler assertions carry
+// the rest.
+
+test("the capture is the chip's GROUND: before the veil, before the content", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  const capture = source.indexOf("id: chipCapture");
+  const veil = source.indexOf("visible: chipTab.treatment === \"veiled\"");
+  const content = source.indexOf("id: chipContent");
+  assert.ok(capture !== -1, "the capture Image is gone");
+  assert.ok(veil !== -1 && content !== -1);
+
+  // QML paints siblings in document order, so this IS the layer order: the
+  // picture underneath, the veil quietening it, the icon and the name on top.
+  // Reordering these three is a visual change with no other symptom.
+  assert.ok(capture < veil, "the veil is painted under the capture, so it quietens nothing");
+  assert.ok(veil < content, "the veil is painted over the icon and the name");
+});
+
+test("A CAPTURE CANNOT PUSH THE NAME OUT: it is a sibling of the content, not a member", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // The Recorded map is entirely the FALLBACK path — 210x17 stacked rows —
+  // which is where names came back in tick ajp after a size ladder silently
+  // took every one of them away. A capture inside `chipContent` would take a
+  // share of the Column's width and could do it again.
+  const contentAt = source.indexOf("id: chipContent");
+  const captureAt = source.indexOf("id: chipCapture");
+  assert.ok(captureAt < contentAt, "the capture is declared inside the content Column");
+
+  // It fills the CHIP, not a slot in a layout.
+  const block = source.slice(captureAt, contentAt);
+  assert.ok(block.indexOf("anchors.fill: parent") !== -1, block);
+
+  // And the label is still gated on the tiers that carry a name, with nothing
+  // about a capture in that condition — the ladder decides the treatment and
+  // the capture fills in underneath it.
+  const label = source.slice(source.indexOf("id: chipLabel"));
+  const visible = label.slice(label.indexOf("visible:"), label.indexOf("visible:") + 60);
+  assert.ok(visible.indexOf("chipPill.hasLabel") !== -1, visible);
+  assert.strictEqual(visible.indexOf("captureSource"), -1,
+    "the label's visibility now depends on whether there is a capture");
+});
+
+test("no empty-image flash, and a deleted capture is not an error", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+  const block = source.slice(source.indexOf("id: chipCapture"), source.indexOf("id: chipContent"));
+
+  // Ready and nothing else: a source that is loading, that failed, or that was
+  // never set all draw nothing at all, and the chip is what it was before this
+  // tick. That one binding is the whole of "falls back to its icon with nothing
+  // erroring".
+  assert.ok(block.indexOf("visible: chipCapture.status === Image.Ready") !== -1, block);
+  // The path does not change when the picture does — a re-record writes a new
+  // file at the same name — so the image cache must not answer for it.
+  assert.ok(block.indexOf("cache: false") !== -1, block);
+});
+
+test("the ladder's cutoffs are exactly what epic c7f ratified — captures did not move them", () => {
+  // Restated here rather than imported, for the reason the VM test restates
+  // them in jq: a test that asked chipTreatment what chipTreatment thinks would
+  // agree with a wrong answer. This is the guard that a tick which fills a
+  // picture in UNDER the ladder did not quietly retune it.
+  assert.strictEqual(panel.chipTreatment(140, 56), "pill");
+  assert.strictEqual(panel.chipTreatment(139, 56), "badge");
+  assert.strictEqual(panel.chipTreatment(56, 40), "badge");
+  assert.strictEqual(panel.chipTreatment(55, 40), "veiled");
+  assert.strictEqual(panel.chipTreatment(210, 17), "strip");
+  assert.strictEqual(panel.chipTreatment(24, 16), "veiled");
+  assert.strictEqual(panel.chipTreatment(23, 16), "field");
+  assert.strictEqual(panel.chipTreatment(24, 15), "field");
+});
+
+test("the capture source is a fact about the RECORDED map, and a file URL", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const fn = source.slice(source.indexOf("function captureSourceOf(identityId, occurrence)"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+
+  // The Live tab draws the windows that are on screen; a photograph of one laid
+  // over the window itself is a staler picture of the same thing.
+  assert.ok(body.indexOf("if (!root.showRecorded) return \"\"") !== -1, body);
+  // Util.fileUrl, not a hand-built "file://" + path: it percent-encodes each
+  // segment, and a home directory with a space in it is the ordinary case that
+  // breaks the hand-built one.
+  assert.ok(body.indexOf("Util.fileUrl(path)") !== -1, body);
+
+  // And the payload adds both keys only when they have something to say.
+  const state = source.slice(source.indexOf("function panelState()"));
+  assert.ok(state.indexOf("if (capturePath) chips[chips.length - 1].capturePath = capturePath") !== -1);
+  assert.ok(state.indexOf("if (drawnCapture) chips[chips.length - 1].captureSource = drawnCapture") !== -1);
+});
