@@ -273,7 +273,6 @@ Item {
     onExited: function (exitCode) {
       if (exitCode !== 0) {
         store.warn("could not create " + store.cacheDir + " — this Record stored no pictures")
-        store._evictThen = null
         store._finish()
         return
       }
@@ -320,7 +319,6 @@ Item {
 
     if (store._queue.length === 0) {
       total.stop()
-      store._active = false
       store.refresh()
       store._finish()
       return
@@ -435,18 +433,31 @@ Item {
         })
       }
       store._results = results
-      store._queue = []
-      store._active = false
       store.refresh()
       store._finish()
     }
   }
 
+  // THE SINGLE PLACE a round's state is torn down. Every early-return path
+  // between the guard in capture() and a normal completion must reach this —
+  // see the audit above capture(). It resets EVERYTHING the round owns, not
+  // just the two fields `busy` reads, because a partially-torn-down round
+  // (the queue left populated, say) latches the guard in capture() forever:
+  // the next Record sees `busy` — or the queue-length check right below it —
+  // still true and refuses, silently, for the panel's lifetime.
+  //
+  // `_results` is read into a local BEFORE it is reset, so resetting it here
+  // does not touch what `done` receives below.
   function _finish() {
     var done = store._done
     var results = store._results
     store._done = null
     store._active = false
+    store._queue = []
+    store._handles = ({})
+    store._evictThen = null
+    store._plan = null
+    store._results = []
     if (done) done(results)
   }
 

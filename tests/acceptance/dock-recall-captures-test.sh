@@ -704,6 +704,25 @@ fi
 chmod 700 "$CACHE_PARENT"
 pass "a record whose pictures cannot be stored is still a complete record — layout written, stamped, no picture"
 
+# ------------------ 9b. a failed round must not disable every Record after it
+
+# THE REAL PROPERTY (tick gox). The mkdir failure above filled the store's
+# queue before it aborted; if the teardown after that abort left the queue
+# non-empty, the guard in the store's capture() reads it as "a round is
+# already running" and every Record from here on refuses silently, having
+# stored nothing, for the rest of the panel's life. The cache parent is
+# writable again (restored just above) — this Record's cache is fine, so if
+# it still stores nothing, the previous round's failure is what latched it.
+recovered_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $recovered_record == "recorded" ]] ||
+  fail "panel IPC records again once the cache is writable (captures)" "record answered '$recovered_record'"
+if ! poll 40 cache_is 1; then
+  diagnostics
+  fail "a failed capture round must not disable every Record after it" \
+    "$CACHE_DIR holds $(cache_count) after a Record with a writable cache — the earlier failed round left the store latched"
+fi
+pass "a Record after the failed one stores a picture: the failed round did not latch the store"
+
 # ----------------------------------------------------- 10. FORGET deletes
 
 # Put the pictures back first, so forgetting has something to delete: a forget

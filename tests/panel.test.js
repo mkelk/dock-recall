@@ -6171,6 +6171,92 @@ test("the pictures are evicted at all three points a recording can end", () => {
     "the capture sequence no longer evicts before it writes");
 });
 
+test("_finish() tears down every piece of round state, and every early-return path between the guard and completion reaches it (tick gox)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // THE BUG: _finish() used to clear only `_done` and `_active`, leaving
+  // `_queue` populated after an early abort (a failed mkdir, say). The next
+  // captureAll() then hit `if (store._active || store._queue.length > 0)`,
+  // read it as "a round is already running", and refused — silently, for the
+  // rest of the panel's life. `_finish()` must reset everything a round
+  // writes into, not just the two fields `busy` reads.
+  const finishAt = store.indexOf("function _finish()");
+  assert.ok(finishAt !== -1, "_finish() is gone");
+  const finishBody = store.slice(finishAt, store.indexOf("\n  }\n", finishAt));
+
+  for (const field of ["_done", "_active", "_queue", "_handles", "_evictThen", "_plan", "_results"]) {
+    assert.ok(new RegExp("store\\." + field + "\\s*=").test(finishBody),
+      "_finish() no longer resets " + field + " — a round left with this set latches the guard");
+  }
+
+  // The callback must still get the results it was going to get: `results` is
+  // read out of store._results BEFORE _finish() resets that property.
+  const resultsReadAt = finishBody.indexOf("var results = store._results");
+  const resultsResetAt = finishBody.indexOf("store._results = []");
+  const callbackAt = finishBody.indexOf("done(results)");
+  assert.ok(resultsReadAt !== -1 && resultsResetAt !== -1 && callbackAt !== -1,
+    "_finish()'s shape changed under this test");
+  assert.ok(resultsReadAt < resultsResetAt,
+    "_finish() resets _results before reading it into a local — the callback would get []");
+
+  // THE AUDIT: every early-return path between the guard in capture() and a
+  // normal completion must reach _finish(). Each slice below is exactly one
+  // such path, isolated the same way the QML itself separates them, and each
+  // must contain a call to store._finish().
+  const captureAt = store.indexOf("function capture(plan, done)");
+  const captureBody = store.slice(captureAt, store.indexOf("\n  }\n", captureAt));
+
+  const noCacheDir = captureBody.slice(captureBody.indexOf("if (!store.cacheDir)"),
+    captureBody.indexOf("if (store._active"));
+  assert.ok(noCacheDir.indexOf("store._finish()") !== -1,
+    "capture()'s no-cache-directory path no longer reaches _finish()");
+
+  const alreadyRunning = captureBody.slice(captureBody.indexOf("if (store._active"),
+    captureBody.indexOf("store._queue = captures.slice()"));
+  assert.ok(alreadyRunning.indexOf("store._finish()") !== -1,
+    "capture()'s already-running guard no longer reaches _finish() — this is the guard the bug latched");
+
+  const mkdirAt = store.indexOf("id: mkdirProc");
+  const mkdirBody = store.slice(mkdirAt, store.indexOf("\n  }\n", mkdirAt));
+  const mkdirFail = mkdirBody.slice(mkdirBody.indexOf("if (exitCode !== 0)"),
+    mkdirBody.indexOf("store.evict("));
+  assert.ok(mkdirFail.indexOf("store._finish()") !== -1,
+    "mkdirProc's failure path no longer reaches _finish() — this is the exact path tick gox found broken");
+
+  const walkAt = store.indexOf("function _resolveThenWalk()");
+  const walkBody = store.slice(walkAt, store.indexOf("\n  }\n", walkAt));
+  const walkEmpty = walkBody.slice(0, walkBody.indexOf("var addresses"));
+  assert.ok(walkEmpty.indexOf("store._finish()") !== -1,
+    "_resolveThenWalk()'s empty-queue path no longer reaches _finish()");
+
+  const nextAt = store.indexOf("function _next()");
+  const nextBody = store.slice(nextAt, store.indexOf("\n  }\n", nextAt));
+  const nextEmpty = nextBody.slice(nextBody.indexOf("if (store._queue.length === 0)"),
+    nextBody.indexOf("var entry = store._queue[0]"));
+  assert.ok(nextEmpty.indexOf("store._finish()") !== -1,
+    "_next()'s normal-completion path (empty queue) no longer reaches _finish()");
+
+  const totalAt = store.indexOf("id: total");
+  const totalBody = store.slice(totalAt, store.indexOf("\n  }\n", totalAt));
+  assert.ok(totalBody.indexOf("store._finish()") !== -1,
+    "the whole-queue deadline no longer reaches _finish()");
+
+  // The remaining exits — _settle()'s callers (no-handle, view-create-failed,
+  // empty-source, grab-null, save-failed, grab-refused) and the per-window
+  // guard timer (no-frame) — never return out of the round at all: each
+  // records one entry's result and loops back to _next() via Qt.callLater,
+  // which drains to the empty-queue path pinned above. Pinned here by
+  // confirming _settle() itself never tears the round down early.
+  const settleAt = store.indexOf("function _settle(entry, ok, reason)");
+  const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
+  assert.strictEqual(settleBody.indexOf("_finish"), -1,
+    "_settle() now short-circuits the round instead of always looping back to _next()");
+  assert.ok(settleBody.indexOf("Qt.callLater(function () { store._next() })") !== -1,
+    "_settle() no longer loops back to _next(), so its callers would no longer reach the audited path");
+});
+
 // ---------------------------------------------------------------------------
 // The Recorded map draws its captures (tick vbh)
 // ---------------------------------------------------------------------------
