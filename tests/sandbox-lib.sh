@@ -15,7 +15,14 @@
 #
 #   THE THREE ISOLATION RULES, enforced by sandbox_verdict:
 #     1. the nested compositor's window lives on a special workspace that is
-#        never toggled open, so nothing appears on any visible workspace;
+#        never toggled open, so nothing appears on any visible workspace.
+#        Rule 1 is now also enforced from the OTHER side, where it cannot be
+#        skipped by not calling this library at all: the launch wrapper below
+#        stamps DR_NESTED_SANDBOX_PID and tests/nested.lua refuses to configure
+#        without it, so a bare `Hyprland -c tests/nested.lua` aborts instead of
+#        opening a window on the user's desk (tick n1s;
+#        sandbox_probe_unmarked_start proves it, tests/sandbox-nested-guard.sh
+#        runs it);
 #     2. nothing steals focus — the live `activewindow` is compared
 #        before/after (this one and the visible-workspace check are AMBIGUOUS:
 #        your own clicking about during the run trips them too, so they fail
@@ -85,6 +92,12 @@ NESTED_SIG=""
 NESTED_WD=""
 QS_PID=""
 FAILURES=0
+
+# Only ever set by sandbox_probe_unmarked_start, and only if the park guard in
+# tests/nested.lua FAILED to stop an unmarked start: the socket directory of a
+# compositor that should never have come up. Teardown removes it.
+UNMARKED_SIG=""
+UNMARKED_PID=""
 
 # Set by sandbox_up when the harness declines to host Panel.qml (omarchy-shell's
 # Commons/Ui modules are not where SHELL_DIR says); a scenario that asserts on
@@ -196,6 +209,11 @@ cleanup() {
   echo "--- teardown ---"
   [[ -n $QS_PID ]] && kill_wait "$QS_PID"
   [[ -n $NESTED_PID ]] && kill_wait "$NESTED_PID"
+  # A guard probe's compositor exists only when the guard did not hold. It is
+  # parked on the special workspace like every start here, so it was never
+  # visible — but it must not outlive the run either.
+  [[ -n $UNMARKED_PID ]] && kill_wait "$UNMARKED_PID"
+  [[ -n $UNMARKED_SIG ]] && rm -rf "${XDG_RUNTIME_DIR:?}/hypr/$UNMARKED_SIG"
   # Hyprland does not remove its own socket directory when it is killed, and a
   # drift of dead instance dirs is what the adoption probe reads. NESTED_SIG is
   # only ever set for a directory whose `hyprland.lock` pid was VERIFIED to be
@@ -396,11 +414,18 @@ STUB
   # plugin's own `foot --app-id=dr-sim`, and whatever the user's shell rc does
   # with a real HOME. Redirecting only the Quickshell that hosts the plugin is not
   # enough: exports have to happen here, before Hyprland is exec'd.
+  # ONE wrapper, two callers. `sandbox_probe_unmarked_start` runs this same file
+  # with marked=unmarked to prove the guard in tests/nested.lua, and a second
+  # copy of a launcher would be a second copy of the HOME redirect and the
+  # notify-send stub — the two things that keep a failed start off the user's
+  # desk. One definition, so the failure case is contained exactly as the real
+  # one is.
   cat > "$SBOX/launch-nested.sh" <<'LAUNCH'
 #!/bin/bash
-# $1 = sandbox root, $2 = nested Hyprland config.
-sbox="$1"; conf="$2"
-echo $$ > "$sbox/nested.pid"
+# $1 = sandbox root, $2 = nested Hyprland config, $3 = tag for this start's pid
+# and log files, $4 = "marked" to stamp the parked-launch marker.
+sbox="$1"; conf="$2"; tag="$3"; marked="$4"
+echo $$ > "$sbox/$tag.pid"
 
 # The redirect every client of the nested compositor inherits. HOME is the one
 # that matters (Service.qml derives its state dir from HOME); the XDG_* vars go
@@ -418,7 +443,18 @@ export XDG_DATA_HOME="$sbox/home/.local/share"
 # guard on the one path that was measured reaching the live desktop.
 export PATH="$sbox/bin:$PATH"
 
-exec Hyprland -c "$conf" > "$sbox/nested-hyprland.log" 2>&1
+# THE PARK MARKER, and the reason tests/nested.lua will configure at all. It
+# holds the pid of the process that is about to BECOME Hyprland — `exec` below
+# keeps the pid — and nested.lua compares it against /proc/self/stat, so a
+# process that merely inherited this environment cannot pass the check. Nothing
+# else in the tree sets it: a bare `Hyprland -c tests/nested.lua` from a shell
+# has no marker at all and aborts before a surface exists. See the guard block
+# at the top of tests/nested.lua for why the desktop needs this.
+if [[ $marked == marked ]]; then
+  export DR_NESTED_SANDBOX_PID="$$"
+fi
+
+exec Hyprland -c "$conf" > "$sbox/$tag-hyprland.log" 2>&1
 LAUNCH
   chmod +x "$SBOX/launch-nested.sh"
 
@@ -436,7 +472,7 @@ LAUNCH
     esac
   done
 
-  live dispatch "hl.dsp.exec_cmd([[ [workspace $SPECIAL_WS silent] $SBOX/launch-nested.sh $SBOX $NESTED_CONF ]])" >/dev/null
+  live dispatch "hl.dsp.exec_cmd([[ [workspace $SPECIAL_WS silent] $SBOX/launch-nested.sh $SBOX $NESTED_CONF nested marked ]])" >/dev/null
 
   # The wrapper writes its pid before exec'ing Hyprland, so this pid IS the nested
   # compositor's — and it is what every later ownership question is answered
@@ -588,6 +624,90 @@ EOF
   poll 20 bash -c "grep -qF 'state-dir ready' '$SBOX/qs.log'" || note "warning: no state-dir line yet"
   (( PANEL_HOSTED )) && note "Panel.qml hosted too (qs.Commons/qs.Ui resolved from $SHELL_DIR)"
   return 0
+}
+
+# ============================================== sandbox_probe_unmarked_start
+#
+# Proves the park guard at the top of tests/nested.lua: a start that does NOT
+# come through the parked launch path must not produce a compositor.
+#
+# THE CONTAINMENT, which is the whole reason this lives in the library.
+#
+# Proving a guard against `Hyprland -c tests/nested.lua` means ATTEMPTING that
+# start — and that attempt is precisely what put a window in front of the human,
+# twice. So the attempt is made through the SAME parked dispatch sandbox_up
+# uses, with the marker deliberately withheld:
+#
+#   - if the guard holds, nothing comes up and the refusal is in the log;
+#   - if the guard is BROKEN, the compositor that comes up is parked on
+#     $SPECIAL_WS with `silent`, exactly like the legitimate one, so the failure
+#     is still invisible — it is reported here instead of appearing on screen.
+#
+# A bare `Hyprland -c` is never run to prove a guard against bare `Hyprland -c`.
+#
+# sandbox_up is the CONTROL arm and has already run by the time this is called:
+# the same wrapper, the same config, the same dispatch, marker present — and a
+# compositor answered hyprctl. Without that arm, "nothing came up" would be
+# equally consistent with a harness that cannot start Hyprland at all.
+sandbox_probe_unmarked_start() {
+  echo "=== park guard: an UNMARKED start must not produce a compositor ==="
+
+  local before pid="" d lockpid sock_seen=0 alive=1 i
+  before=$(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | sort)
+  rm -f "$SBOX/unmarked.pid" "$SBOX/unmarked-hyprland.log"
+
+  live dispatch "hl.dsp.exec_cmd([[ [workspace $SPECIAL_WS silent] $SBOX/launch-nested.sh $SBOX $NESTED_CONF unmarked unmarked ]])" >/dev/null
+
+  for i in $(seq 60); do
+    pid=$(cat "$SBOX/unmarked.pid" 2>/dev/null)
+    [[ -n $pid ]] && break
+    sleep 0.25
+  done
+  if [[ -z $pid ]]; then
+    fail "park guard: the unmarked launch wrapper never wrote a pid — the probe never ran"
+    return
+  fi
+  UNMARKED_PID="$pid"
+  note "unmarked start dispatched as pid $pid, parked on $SPECIAL_WS like every start here"
+
+  # Watch for BOTH answers at once: the process going away (the guard held), and
+  # an IPC socket appearing under our pid (it did not). Polling for the socket
+  # inside the same loop means a compositor that comes up and then exits cannot
+  # slip past between two checks.
+  for i in $(seq 80); do          # 20 s
+    while read -r d; do
+      [[ -n $d ]] || continue
+      [[ -S $XDG_RUNTIME_DIR/hypr/$d/.socket.sock ]] || continue
+      lockpid=$(sed -n 1p "$XDG_RUNTIME_DIR/hypr/$d/hyprland.lock" 2>/dev/null | tr -d '[:space:]')
+      if [[ $lockpid == "$pid" ]]; then sock_seen=1; UNMARKED_SIG="$d"; fi
+    done < <(comm -13 <(echo "$before") <(ls "$XDG_RUNTIME_DIR/hypr" 2>/dev/null | sort))
+    if ! kill -0 "$pid" 2>/dev/null; then alive=0; break; fi
+    sleep 0.25
+  done
+
+  if (( alive == 0 )); then
+    pass "park guard: the unmarked start ended by itself — nothing is left running"
+    UNMARKED_PID=""
+  else
+    fail "park guard: the unmarked start is STILL RUNNING after 20s (pid $pid) — nested.lua configured a compositor it was never meant to"
+  fi
+
+  if (( sock_seen == 0 )); then
+    pass "park guard: it opened no Hyprland IPC socket — the abort landed before a compositor existed"
+  else
+    fail "park guard: an unmarked start produced a working compositor ($UNMARKED_SIG). It was parked, so nothing was visible — but the guard did not hold."
+  fi
+
+  # A silent death would be the worse bug: an abort nobody can read looks
+  # exactly like a Hyprland that failed to build.
+  local log="$SBOX/unmarked-hyprland.log"
+  if grep -qF "REFUSING TO CONFIGURE" "$log" 2>/dev/null; then
+    pass "park guard: it said why, in its own log"
+    note "$(grep -F "REFUSING TO CONFIGURE" "$log" | head -1)"
+  else
+    fail "park guard: nothing in $log names a reason; a start that just disappears is indistinguishable from a broken harness"
+    [[ -f $log ]] && sed -n '1,20p' "$log"
+  fi
 }
 
 # =============================================================== sandbox_verdict

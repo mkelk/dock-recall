@@ -513,3 +513,86 @@ retryable bucket, so `pending` is the only bucket that gates the predicate.
 
 The probe was a throwaway, as in o2x; only the bridge it exercised is in this
 repository, and every decidable part of it now has a node test.
+
+---
+
+# 2026-09-04 — The sandbox refuses to start unparked (tick n1s)
+
+Run: `tests/sandbox-nested-guard.sh` over `tests/sandbox-lib.sh`. Machine: the
+dev box, Hyprland 0.56.2, Omarchy 4 "Quattro". Nothing ran against the live
+session; the isolation footer passed. `ALL PASS`.
+
+## The hole
+
+`sandbox_up` parks the nested compositor behind
+`hl.dsp.exec_cmd([[ [workspace special:dr-sandbox silent] … ]])` and then
+VERIFIES the parking (`sandbox-lib.sh`: the window is on `$SPECIAL_WS`, no
+monitor is showing it). That check is good and is untouched. But it only runs
+if you go through `sandbox_up`. A direct `Hyprland -c tests/nested.lua` skips
+the prefix, skips the check, and opens an ordinary window on the user's desktop
+mid-session. It happened twice; the human stopped the run both times.
+
+`tests/nested.lua` could not fix this by carrying a parking rule — it
+configures the INNER compositor, and the window belongs to the outer one. So it
+refuses to configure at all instead.
+
+## The guard
+
+The launch wrapper exports `DR_NESTED_SANDBOX_PID="$$"` and then `exec`s
+Hyprland, so the value IS the compositor's pid. `nested.lua` reads its own pid
+from `/proc/self/stat` and calls `os.exit(1)` unless the two match.
+
+**A pid, not a flag.** Everything the sandbox launches inherits the wrapper's
+environment, so a bare flag would be a skeleton key handed to every process in
+the nested world — including a probe that then ran `Hyprland -c` from in there.
+A pid cannot be inherited into being true: one fork and the marker is false.
+
+**`os.exit`, not `error()`.** A Lua error trips Hyprland's emergency mode
+("A lua config error resulted in no binds being registered"), which starts a
+compositor anyway — the exact outcome the guard exists to prevent. `os` and
+`io` are both open in Hyprland's Lua (Omarchy's own config uses `os.getenv` and
+`io.popen`), and the exit lands during config parse, before a backend exists.
+A `kill -9` on our own pid is the fallback if a future build removes `os.exit`.
+
+## Proving it without putting a window on the desk
+
+The failure case is *attempting* the thing that caused the incident. So the
+attempt goes out through the **same parked dispatch** with the marker withheld
+(`sandbox_probe_unmarked_start`): if the guard is ever broken, the compositor
+it wrongly starts is parked and silent like the legitimate one, and the failure
+is reported rather than displayed. **A bare `Hyprland -c` is never run to prove
+a guard against bare `Hyprland -c`.**
+
+`sandbox_up` is the control arm — same wrapper, same config, same dispatch,
+marker present — and a compositor came up. Measured, one run:
+
+    control: the MARKED start produced a working compositor (…_1788551611_… answers hyprctl)
+    control: the guard let the legitimate path through without a word
+    park guard: the unmarked start ended by itself — nothing is left running
+    park guard: it opened no Hyprland IPC socket — the abort landed before a compositor existed
+    park guard: it said why, in its own log
+      nested.lua: REFUSING TO CONFIGURE — no DR_NESTED_SANDBOX_PID in the
+      environment, so this start did not come through the parked launch path
+
+## Correction: `disable_logo` was never the red banner
+
+`.tick/learnings.md` blames `nested.lua`'s `misc.disable_logo` for a red
+*"Your config has errors"* overlay on every nested start. **It does not
+produce one.** Measured both ways in the sandbox, with the key in and out:
+
+    hyprctl configerrors  ->  blank (two newlines), both times
+
+and no "Your config has errors" anywhere in `hyprland.log` or on stdout. The
+LUA config manager IGNORES an unknown table key silently; only the hyprlang
+parser errors on one. `misc:disable_logo` is genuinely not a key 0.56.2 has
+(`misc:disable_hyprland_logo` is the real spelling and is still set), so the
+line was dead weight and is gone — but the banner has another cause, still
+unidentified.
+
+Two more things worth knowing, both of which broke a first draft of this check:
+
+- Hyprland's config diagnostics go to `$XDG_RUNTIME_DIR/hypr/<sig>/hyprland.log`,
+  **not** to the stdout the launch wrapper captures. A grep over
+  `$SBOX/nested-hyprland.log` for "config error" passes whatever the config says.
+- `hyprctl configerrors` answers **blank** on a clean instance, not the string
+  `"no errors"` its own `--help` line suggests.

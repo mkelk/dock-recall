@@ -25,7 +25,11 @@
 #   6. tests/sandbox-reserved-id.sh       an identity id that collides with an
 #                                         Object.prototype key survives the round
 #                                         trip.
-#   7. tests/acceptance/run.sh            Tier C: a disposable Omarchy VM — real
+#   7. tests/sandbox-nested-guard.sh      the sandbox itself: a nested compositor
+#                                         started OUTSIDE the parked launch path
+#                                         refuses to configure, so it can never
+#                                         again open a window on the user's desk.
+#   8. tests/acceptance/run.sh            Tier C: a disposable Omarchy VM — real
 #                                         install, real Quickshell, real
 #                                         Hyprland. Minutes.
 #
@@ -36,7 +40,7 @@
 #
 # WHAT IT DOES NOT RUN: `tests/sim-dock.sh` and anything else that drives the
 # LIVE session. That is a venue to ask a human for, never a step in an
-# unattended gate. Steps 4-6 run a second Hyprland parked on a special
+# unattended gate. Steps 4-7 run a second Hyprland parked on a special
 # workspace and assert the live desk is untouched, which is why they are safe
 # here; the acceptance VM is headless for the same reason.
 #
@@ -144,6 +148,9 @@ step "tests/sandbox-future-version.sh --both" \
 
 step "tests/sandbox-reserved-id.sh" \
   ./tests/sandbox-reserved-id.sh
+
+step "tests/sandbox-nested-guard.sh" \
+  ./tests/sandbox-nested-guard.sh
 
 step "tests/acceptance/run.sh" \
   ./tests/acceptance/run.sh
