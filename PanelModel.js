@@ -4692,15 +4692,33 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
 // The morph: which chips are the same thing on both maps
 // ---------------------------------------------------------------------------
 
-// Flatten a map model to one entry per chip, carrying only what a morph needs:
-// what the chip IS (`linkKey`), where it sits (monitor, workspace) and the
-// normalized rect inside its monitor. Everything else on a chip is presentation
-// and none of the morph's business.
+// Flatten a map model to one entry per chip, carrying what a morph needs: what
+// the chip IS (`linkKey`), which chip it is (`key`), where it sits (monitor,
+// workspace, and its address WITHIN the map) and the window's normalized rect.
+// Everything else on a chip is presentation and none of the morph's business.
 //
-// `rect` is null for a chip on a FALLBACK workspace — a v1 recording knows an
-// app was on a desk but not where inside it, so the whole workspace drops to the
-// stacked layout and no chip in it has geometry. That is a real state, not a
-// defect, and it is why `rect` is nullable here rather than assumed.
+// `rect` IS THE WINDOW'S FRACTION, NOT THE RECTANGLE THE CHIP IS DRAWN AT, and
+// confusing the two is the mistake this comment exists to stop. It is the INPUT
+// to `chipRectsForCanvas`, which applies the 16x10 minimum floor and the
+// pairwise anti-superimposition barriers before anything reaches the screen. A
+// small window measures 6x4 here and is DRAWN at 16x10 — a 2.6x error, on
+// exactly the chip the floor exists for. So a consumer must resolve a drawn
+// rectangle through `chipRectsForCanvas` over the whole workspace, which is why
+// every entry carries its `slotIndex`: without it the consumer has to walk the
+// map a second time to find out which slot it came from, and a second walk is
+// where two answers to one question start to differ (tick 3xi).
+//
+// `fallback` IS NOT "this chip has no rect". A workspace is fallback if ANY ONE
+// of its slots lacks a rect, and MapWorkspace then draws EVERY chip in it as a
+// stacked row at x:0 across the full canvas — rect ignored, including the
+// perfectly good rects the other chips still carry. So a chip can have a rect
+// and still not be drawn at one, and only `fallback` can tell you.
+//
+// A TAB GROUP IS ONE WINDOW'S WORTH OF SCREEN however many tabs are in it —
+// `slotsForClients` says so in as many words — so every member of a group
+// carries the SAME slot rect and is drawn as a segment of it. `group`,
+// `tabIndex` and `groupSize` are what let a consumer find its segment instead
+// of collapsing four tabs onto one rectangle.
 function morphChipEntries(map) {
   var out = [];
   var monitors = (map && map.monitors) || [];
@@ -4711,12 +4729,18 @@ function morphChipEntries(map) {
       var workspace = workspaces[w];
       var slots = (workspace && workspace.slots) || [];
       for (var s = 0; s < slots.length; s++) {
-        var chips = (slots[s] && slots[s].chips) || [];
+        var slot = slots[s];
+        var chips = (slot && slot.chips) || [];
         for (var c = 0; c < chips.length; c++) {
           var chip = chips[c];
           if (!chip) continue;
           out.push({
             linkKey: trim(chip.linkKey),
+            // THE UNIQUE PER-CHIP HANDLE. `linkKey` is not one: an unwatched
+            // window never has its occurrence folded in, so two unwatched
+            // windows of a class genuinely share `class:<cls>`. `key` is the
+            // window address on the live map and `recorded-<instanceKey>` on
+            // the recorded one. Index animation state by THIS.
             key: trim(chip.key),
             identityId: trim(chip.identityId),
             occurrence: chip.occurrence === undefined || chip.occurrence === null
@@ -4725,7 +4749,24 @@ function morphChipEntries(map) {
             monitorLabel: trim(box.label),
             workspaceId: workspace.id,
             workspaceKey: workspaceKey(box.name, workspace.id),
-            rect: chip.rect || null
+            // Where this chip is in the map, so a consumer can reach its slot
+            // without searching for it.
+            monitorIndex: m,
+            workspaceIndex: w,
+            slotIndex: s,
+            chipIndex: c,
+            // Whether this workspace draws stacked rather than positioned.
+            fallback: workspace.fallback === true,
+            // A tab group's members share one rectangle and divide it.
+            group: slot.group === true,
+            tabIndex: chip.tabIndex || 0,
+            groupSize: chip.groupSize || 1,
+            // COPIED, not aliased: these entries cross into a consumer that may
+            // treat them as scratch, and the object behind `chip.rect` is the
+            // one the panel is drawing from.
+            rect: chip.rect
+              ? { rx: chip.rect.rx, ry: chip.rect.ry, rw: chip.rect.rw, rh: chip.rect.rh }
+              : null
           });
         }
       }
@@ -4764,25 +4805,40 @@ function mapMorphPairs(liveMap, recordedMap) {
   var live = morphChipEntries(liveMap);
   var recorded = morphChipEntries(recordedMap);
 
-  // Bucketed rather than a flat map: a linkKey SHOULD be unique within one map,
-  // but "should" is not a thing to build on. Duplicates pair up in the order
-  // they were drawn and any surplus falls out to the one-sided lists, so a
-  // repeated key degrades to "some of these are new" instead of silently
-  // dropping a chip or pairing one chip with two others.
+  // BUCKETED, BECAUSE A linkKey IS NOT UNIQUE. It is unique per WATCHED
+  // instance — `instanceLinkKeyFor` folds the occurrence in once an identity has
+  // several — but it returns early for an unwatched window, so two unwatched
+  // windows of one class always share `class:<cls>`. That is the ordinary state
+  // of any unwatched app with two windows, not a pathology. Members pair in the
+  // order they were drawn and any surplus falls out to the one-sided lists, so a
+  // repeated key degrades to "some of these are new" instead of dropping a chip
+  // or pairing one chip with two others.
+  //
+  // THE BUCKET KEY IS NAMESPACED, and that is not decoration. A bare
+  // `byKey["__proto__"] = []` invokes Object.prototype's setter: no own property
+  // is created, `own()` stays false for ever, and every duplicate re-assigns —
+  // dropping one chip and duplicating another while a length-based exhaustiveness
+  // check still passes, because the two numbers match. `own()` repairs
+  // `constructor`, `toString`, `valueOf` and `hasOwnProperty`; `__proto__` is the
+  // one member of the family it cannot, which is exactly what
+  // tests/reserved-ids.test.js exists to say. One prefix makes the whole family
+  // unreachable.
   var byKey = {};
   var order = [];
   for (var r = 0; r < recorded.length; r++) {
     var rk = recorded[r].linkKey;
     if (!rk) continue;
-    if (!own(byKey, rk)) { byKey[rk] = []; order.push(rk); }
-    byKey[rk].push(recorded[r]);
+    var rb = "k:" + rk;
+    if (!own(byKey, rb)) { byKey[rb] = []; order.push(rb); }
+    byKey[rb].push(recorded[r]);
   }
 
   var pairs = [];
   var liveOnly = [];
   for (var l = 0; l < live.length; l++) {
     var entry = live[l];
-    var bucket = entry.linkKey && own(byKey, entry.linkKey) ? byKey[entry.linkKey] : null;
+    var lb = "k:" + entry.linkKey;
+    var bucket = entry.linkKey && own(byKey, lb) ? byKey[lb] : null;
     if (!bucket || !bucket.length) { liveOnly.push(entry); continue; }
     var mate = bucket.shift();
     pairs.push({
@@ -4797,9 +4853,16 @@ function mapMorphPairs(liveMap, recordedMap) {
       // treat it differently.
       monitorChanged: entry.monitorName !== mate.monitorName,
       workspaceChanged: entry.workspaceKey !== mate.workspaceKey,
-      // Both ends have geometry, so this pair can be TRANSLATED. Without it
-      // there is nothing to move between and the caller must cross-fade.
-      geometry: !!(entry.rect && mate.rect)
+      // CAN THIS PAIR BE TRANSLATED AT ALL? Both ends need a rect AND both ends
+      // need to be on a positioned workspace — a fallback workspace draws its
+      // chips as stacked rows and ignores their rects, including the good rects
+      // the chips that are not the reason for the fallback still carry. Without
+      // this clause the morph flies half a workspace in from rectangles nothing
+      // was ever drawn at, while the other half cross-fades correctly.
+      //
+      // `true` does not mean "here are your two rectangles": `rect` is the
+      // window's fraction, not the drawn chip. See morphChipEntries.
+      geometry: !!(entry.rect && mate.rect) && !entry.fallback && !mate.fallback
     });
   }
 
@@ -6739,12 +6802,14 @@ if (typeof module !== "undefined") {
     captureSafeSegment: captureSafeSegment,
     captureTopologyPrefix: captureTopologyPrefix,
     captureFileName: captureFileName,
-    morphChipEntries: morphChipEntries,
-    mapMorphPairs: mapMorphPairs,
     captureIdentityPattern: captureIdentityPattern,
     captureIdentityPatterns: captureIdentityPatterns,
     capturePlan: capturePlan,
     captureLogLine: captureLogLine,
+
+    morphChipEntries: morphChipEntries,
+    mapMorphPairs: mapMorphPairs,
+
     captureFileIndex: captureFileIndex,
     consentChoices: consentChoices,
     isConsentChoice: isConsentChoice,

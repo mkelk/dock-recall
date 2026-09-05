@@ -411,3 +411,51 @@ test("a hand-written layout naming __proto__ throws, and that is a known limit",
   assert.strictEqual(parsed.state.identities.length, 1);
   assert.strictEqual(parsed.state.identities[0].id, "__proto__");
 });
+
+// --------------------------------------------------- the morph's bucket (jpu)
+//
+// "A future map keyed by an identity id belongs here too" — this is one. The
+// Live -> Recorded morph buckets recorded chips by linkKey to pair them with
+// live ones, and the foundation review found that a bare `__proto__` key drops
+// one chip and duplicates another while a length-based exhaustiveness check
+// still passes, because the two counts match.
+//
+// own() repairs the rest of the family; __proto__ is the one it cannot, because
+// assigning to it invokes Object.prototype's setter and creates no own property
+// at all. The fix namespaces the bucket key, which makes the whole family
+// unreachable rather than repairing one name — so this test also stands for
+// `constructor`, `toString` and the others.
+
+test("the morph's pairing bucket survives every reserved identity name", () => {
+  const panel = require("../PanelModel.js");
+
+  const chipOf = (linkKey, key) => ({
+    linkKey, key, identityId: linkKey, occurrence: 0,
+    rect: { rx: 0, ry: 0, rw: 0.5, rh: 0.5 }, tabIndex: 0, groupSize: 1
+  });
+  const mapOf = (chips) => ({
+    monitors: [{
+      name: "eDP-1", label: "eDP-1",
+      workspaces: [{
+        id: 1, name: "1", fallback: false,
+        slots: chips.map((c) => ({ key: c.key, group: false, rect: c.rect, chips: [c] }))
+      }]
+    }]
+  });
+
+  for (const name of ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf"]) {
+    // Two recorded chips under one reserved key, and one live chip to pair with
+    // the first of them. Nothing may be lost and nothing may be duplicated.
+    const recorded = mapOf([chipOf(name, name + "-a"), chipOf(name, name + "-b")]);
+    const live = mapOf([chipOf(name, name + "-live")]);
+    const result = panel.mapMorphPairs(live, recorded);
+
+    assert.strictEqual(result.pairs.length, 1, name + ": the live chip found a mate");
+    assert.strictEqual(result.recordedOnly.length, 1, name + ": the surplus is reported once");
+
+    const seen = result.pairs.map((p) => p.recorded.key)
+      .concat(result.recordedOnly.map((e) => e.key)).sort();
+    assert.deepStrictEqual(seen, [name + "-a", name + "-b"],
+      name + ": both recorded chips survive, and neither is duplicated");
+  }
+});

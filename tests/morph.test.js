@@ -27,6 +27,8 @@ function resolver(identities) {
 // so a case can be stated in one place instead of reverse-engineered out of a
 // fixture — but see the last test, which runs the real builders end to end so
 // this shape cannot quietly stop matching the real one.
+const RECT = { rx: 0, ry: 0, rw: 0.5, rh: 0.5 };
+
 function mapOf(monitors) {
   return {
     monitors: monitors.map((m) => ({
@@ -35,17 +37,23 @@ function mapOf(monitors) {
       workspaces: (m.workspaces || []).map((w) => ({
         id: w.id,
         name: String(w.id),
-        slots: (w.chips || []).map((c) => ({
-          key: c.key || c.linkKey,
-          group: false,
-          rect: c.rect === undefined ? { x: 0, y: 0, width: 0.5, height: 0.5 } : c.rect,
-          chips: [{
+        // A workspace is fallback when ANY ONE of its slots lacks a rect — the
+        // others keep theirs and are still drawn stacked. That asymmetry is the
+        // whole of blocker 1.
+        fallback: w.fallback === true || (w.chips || []).some((c) => c.rect === null),
+        slots: (w.slots || (w.chips || []).map((c) => ({ group: false, chips: [c] }))).map((s) => ({
+          key: s.chips[0].key || s.chips[0].linkKey,
+          group: s.group === true,
+          rect: s.chips[0].rect === undefined ? RECT : s.chips[0].rect,
+          chips: s.chips.map((c, i) => ({
             linkKey: c.linkKey,
             key: c.key || c.linkKey,
             identityId: c.identityId || c.linkKey.replace(/^id:/, ""),
             occurrence: c.occurrence || 0,
-            rect: c.rect === undefined ? { x: 0, y: 0, width: 0.5, height: 0.5 } : c.rect
-          }]
+            tabIndex: s.group === true ? i : 0,
+            groupSize: s.group === true ? s.chips.length : 1,
+            rect: c.rect === undefined ? RECT : c.rect
+          }))
         }))
       }))
     }))
@@ -60,13 +68,27 @@ function chip(linkKey, extra) {
 // is the property that makes the morph safe: a chip that belongs to none of them
 // is a chip the animation forgets on screen, and nothing else in the pipeline
 // would notice.
+//
+// MULTISETS, NOT LENGTHS. This compared counts until the foundation review
+// proved that useless: a run that DROPS one chip and DUPLICATES another passes
+// a length check, because the two numbers still match — which is exactly what
+// the `__proto__` bucket key did. Comparing the chips themselves is what makes
+// this assertion load-bearing rather than decorative.
+function identify(entry) {
+  return [entry.monitorName, entry.workspaceId, entry.slotIndex, entry.chipIndex, entry.key]
+    .join("|");
+}
+
 function assertExhaustive(result, liveMap, recordedMap) {
-  const liveCount = panel.morphChipEntries(liveMap).length;
-  const recordedCount = panel.morphChipEntries(recordedMap).length;
-  assert.strictEqual(result.pairs.length + result.liveOnly.length, liveCount,
-    "every live chip is either paired or live-only");
-  assert.strictEqual(result.pairs.length + result.recordedOnly.length, recordedCount,
-    "every recorded chip is either paired or recorded-only");
+  const sorted = (list) => list.map(identify).sort();
+  assert.deepStrictEqual(
+    sorted(result.pairs.map((p) => p.live).concat(result.liveOnly)),
+    sorted(panel.morphChipEntries(liveMap)),
+    "every live chip appears exactly once, as a pair or as live-only");
+  assert.deepStrictEqual(
+    sorted(result.pairs.map((p) => p.recorded).concat(result.recordedOnly)),
+    sorted(panel.morphChipEntries(recordedMap)),
+    "every recorded chip appears exactly once, as a pair or as recorded-only");
 }
 
 // ------------------------------------------------------------- the plain case
@@ -152,12 +174,12 @@ test("two instances of one identity are told apart the way the rest of the panel
   assert.notStrictEqual(first, second, "the panel's own key distinguishes two instances");
 
   const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
-    chip(first, { rect: { x: 0, y: 0, width: 0.4, height: 0.4 } }),
-    chip(second, { rect: { x: 0.5, y: 0, width: 0.4, height: 0.4 } })
+    chip(first, { rect: { rx: 0, ry: 0, rw: 0.4, rh: 0.4 } }),
+    chip(second, { rect: { rx: 0.5, ry: 0, rw: 0.4, rh: 0.4 } })
   ] }] }]);
   const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 2, chips: [
-    chip(second, { rect: { x: 0, y: 0.5, width: 0.4, height: 0.4 } }),
-    chip(first, { rect: { x: 0.5, y: 0.5, width: 0.4, height: 0.4 } })
+    chip(second, { rect: { rx: 0, ry: 0.5, rw: 0.4, rh: 0.4 } }),
+    chip(first, { rect: { rx: 0.5, ry: 0.5, rw: 0.4, rh: 0.4 } })
   ] }] }]);
 
   const result = panel.mapMorphPairs(live, recorded);
@@ -168,8 +190,8 @@ test("two instances of one identity are told apart the way the rest of the panel
     assert.strictEqual(p.live.linkKey, p.recorded.linkKey);
   });
   const moved = result.pairs.find((p) => p.linkKey === first);
-  assert.deepStrictEqual(moved.live.rect, { x: 0, y: 0, width: 0.4, height: 0.4 });
-  assert.deepStrictEqual(moved.recorded.rect, { x: 0.5, y: 0.5, width: 0.4, height: 0.4 });
+  assert.deepStrictEqual(moved.live.rect, { rx: 0, ry: 0, rw: 0.4, rh: 0.4 });
+  assert.deepStrictEqual(moved.recorded.rect, { rx: 0.5, ry: 0.5, rw: 0.4, rh: 0.4 });
   assertExhaustive(result, live, recorded);
 });
 
@@ -263,27 +285,164 @@ test("the real live and recorded maps of one desk pair up chip for chip", () => 
   const recordedIds = layout.apps.map((a) => a.identityId);
   assert.ok(recordedIds.length >= 2, "the fixture records more than one app");
 
+  // THE INSTANCE INDEX IS BUILT ONCE AND SHARED, because that is what
+  // production does: Panel.qml builds it and hands it to all three models
+  // precisely so a row, a live chip and a recorded chip cannot spell one
+  // instance's key differently. Letting each builder make its own here would
+  // pin a different property than the one that ships — a shared
+  // recorded-or-running index can raise `instances`, which turns a bare
+  // `id:<app>` into an occurrence-qualified key on the live side.
+  const instances = panel.instanceIndex(
+    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, layout);
   const live = panel.liveMapModel(
-    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, 480, 240);
-  const recorded = panel.recordedMapModel(layout, monitorsLaptop, recordedIds, 480, 240);
+    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, 480, 240, null, instances);
+  const recorded = panel.recordedMapModel(
+    layout, monitorsLaptop, recordedIds, 480, 240, instances);
 
   const result = panel.mapMorphPairs(live, recorded);
 
   // The recording was taken from this very desk, so every recorded chip has a
   // live counterpart. That is the strongest statement this fixture can make and
   // it is exactly the one that breaks if the two maps ever stop agreeing on
-  // linkKey — the failure this test exists to catch.
+  // linkKey — the failure this test exists to catch. It cannot pass vacuously:
+  // the pair count below forbids the "recorded map came out empty" escape.
   assert.strictEqual(result.recordedOnly.length, 0,
     "a layout recorded from this desk left a recorded chip unmatched: "
     + result.recordedOnly.map((e) => e.linkKey).join(", "));
   assert.ok(result.pairs.length >= 2, "at least the recorded apps paired up");
   result.pairs.forEach((p) => {
     assert.ok(p.linkKey, "every pair is keyed");
-    assert.strictEqual(p.monitorChanged, false, "nothing moved: one monitor, same desk");
+    assert.ok(p.live.key && p.recorded.key, "and every end has its unique handle");
   });
   assertExhaustive(result, live, recorded);
+
+  // `monitorChanged` is deliberately NOT asserted here: this fixture has one
+  // monitor and both maps iterate the same mapGeometry boxes, so false is
+  // structurally guaranteed and would be an assertion that cannot fail. The
+  // cross-monitor case is pinned above, on a map built to have two.
+
+  // THE TAB GROUP, which only the real builders produce. The fixture has a
+  // group on one workspace, and it is the case finding 3 was about: every
+  // member shares the slot's rectangle, so the segment index is the only thing
+  // that can tell them apart on screen.
+  // Asserted unconditionally, not behind an `if`: this fixture HAS a group, and
+  // a guarded assertion is one that goes quiet the day the fixture changes —
+  // which is precisely when somebody needs to be told.
+  const grouped = result.pairs.filter((p) => p.live.group);
+  assert.ok(grouped.length > 1, "the fixture's tab group reached the morph as a group");
+  const sizes = grouped.map((p) => p.live.groupSize);
+  assert.ok(sizes.every((n) => n === grouped.length),
+    "every member reports the group's real size");
+  assert.deepStrictEqual(grouped.map((p) => p.live.tabIndex).sort(),
+    grouped.map((_, i) => i),
+    "and the members occupy consecutive segments of the one pill");
+  const groupRects = grouped.map((p) => JSON.stringify(p.live.rect));
+  assert.strictEqual(new Set(groupRects).size, 1,
+    "a tab group is one window's worth of screen, so its members share a rectangle");
 
   // Live-only is allowed and expected — an unwatched window is on the live map
   // and in no recording. What matters is that it is ACCOUNTED for, which
   // assertExhaustive just checked.
+});
+
+// ------------------------------------- what the foundation review found (jpu)
+//
+// Three separate things made `geometry: true` a promise the contract could not
+// keep, and each of them is a case a Motion consumer meets on its first day.
+
+test("a FALLBACK workspace cannot be translated, even for the chips that do have rects", () => {
+  // The trap: a workspace is fallback if ANY ONE of its slots lacks a rect, and
+  // MapWorkspace then draws EVERY chip in it as a stacked row — rect ignored,
+  // including the perfectly good rects the other chips still carry. Before this
+  // clause the morph flew half a workspace in from rectangles nothing was ever
+  // drawn at while the other half cross-faded correctly.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal"),                 // a good rect
+    chip("id:obsidian", { rect: null })  // the one that drops the whole workspace
+  ] }] }]);
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal"), chip("id:obsidian")
+  ] }] }]);
+
+  const result = panel.mapMorphPairs(live, recorded);
+  const terminal = result.pairs.find((p) => p.linkKey === "id:terminal");
+  assert.ok(terminal.live.rect, "the chip does still carry a rect");
+  assert.strictEqual(terminal.live.fallback, true, "but its workspace draws stacked");
+  assert.strictEqual(terminal.geometry, false,
+    "a chip on a stacked workspace must cross-fade, whatever rect it carries");
+  assertExhaustive(result, live, recorded);
+});
+
+test("a tab group's members are told apart, and know they share one rectangle", () => {
+  // slotsForClients' own rule: a tab group is ONE window's worth of screen
+  // however many tabs are in it. Every member therefore carries the SAME slot
+  // rect and is drawn as a segment of it, so without tabIndex and groupSize a
+  // consumer collapses the whole group onto one rectangle.
+  const group = {
+    group: true,
+    chips: [chip("id:obsidian"), chip("id:telegram"), chip("id:slack")]
+  };
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, slots: [group] }] }]);
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, slots: [group] }] }]);
+
+  const result = panel.mapMorphPairs(live, recorded);
+  assert.strictEqual(result.pairs.length, 3);
+  result.pairs.forEach((p) => {
+    assert.strictEqual(p.live.group, true, "each member knows it is a tab");
+    assert.strictEqual(p.live.groupSize, 3, "and how many segments the pill has");
+  });
+  assert.deepStrictEqual(result.pairs.map((p) => p.live.tabIndex).sort(), [0, 1, 2],
+    "each member knows WHICH segment it is");
+  // All three share the slot's rectangle, which is exactly why the index above
+  // is the only thing that can tell them apart on screen.
+  const rects = result.pairs.map((p) => JSON.stringify(p.live.rect));
+  assert.strictEqual(new Set(rects).size, 1, "one rectangle, divided");
+  assertExhaustive(result, live, recorded);
+});
+
+test("every entry carries its address in the map, so nobody walks it twice", () => {
+  // `rect` is the WINDOW's fraction, not the drawn chip: chipRectsForCanvas
+  // applies a 16x10 floor and anti-superimposition barriers over the whole
+  // workspace before anything reaches the screen. A consumer therefore has to
+  // resolve the drawn rectangle through that function, which needs the slot
+  // index — and re-deriving it by searching the map is the class of defect
+  // tick 3xi already cost this project.
+  const live = mapOf([{ name: "eDP-1", workspaces: [
+    { id: 1, chips: [chip("id:terminal")] },
+    { id: 2, chips: [chip("id:obsidian")] }
+  ] }]);
+  const entries = panel.morphChipEntries(live);
+  assert.deepStrictEqual(
+    entries.map((e) => [e.monitorIndex, e.workspaceIndex, e.slotIndex, e.chipIndex]),
+    [[0, 0, 0, 0], [0, 1, 0, 0]]);
+});
+
+test("a __proto__ linkKey neither drops a chip nor duplicates one", () => {
+  // own() repairs constructor, toString, valueOf and hasOwnProperty; __proto__
+  // is the one member of the family it cannot, because assigning to it invokes
+  // Object.prototype's setter and creates no own property at all. Unreachable
+  // through the real builders today — every production linkKey is prefixed —
+  // but morphChipEntries reads whatever map it is handed, and the standing rule
+  // in tests/reserved-ids.test.js is that a new identity-keyed map belongs in
+  // that suite. The bucket key is namespaced, which makes the whole family
+  // unreachable rather than repairing one name.
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("__proto__", { key: "proto-a" }), chip("__proto__", { key: "proto-b" })
+  ] }] }]);
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [] }] }]);
+
+  const result = panel.mapMorphPairs(live, recorded);
+  assert.deepStrictEqual(result.recordedOnly.map((e) => e.key).sort(), ["proto-a", "proto-b"],
+    "both chips survive, and neither is duplicated");
+  assertExhaustive(result, live, recorded);
+});
+
+test("the rect handed out is a copy, not the one the panel is drawing from", () => {
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [chip("id:terminal")] }] }]);
+  const source = live.monitors[0].workspaces[0].slots[0].chips[0].rect;
+  const entry = panel.morphChipEntries(live)[0];
+
+  assert.notStrictEqual(entry.rect, source, "a consumer must not be able to reach the map");
+  entry.rect.rx = 999;
+  assert.strictEqual(source.rx, 0, "and writing to it cannot corrupt what is on screen");
 });
