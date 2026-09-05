@@ -4689,6 +4689,135 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
 }
 
 // ---------------------------------------------------------------------------
+// The morph: which chips are the same thing on both maps
+// ---------------------------------------------------------------------------
+
+// Flatten a map model to one entry per chip, carrying only what a morph needs:
+// what the chip IS (`linkKey`), where it sits (monitor, workspace) and the
+// normalized rect inside its monitor. Everything else on a chip is presentation
+// and none of the morph's business.
+//
+// `rect` is null for a chip on a FALLBACK workspace — a v1 recording knows an
+// app was on a desk but not where inside it, so the whole workspace drops to the
+// stacked layout and no chip in it has geometry. That is a real state, not a
+// defect, and it is why `rect` is nullable here rather than assumed.
+function morphChipEntries(map) {
+  var out = [];
+  var monitors = (map && map.monitors) || [];
+  for (var m = 0; m < monitors.length; m++) {
+    var box = monitors[m];
+    var workspaces = (box && box.workspaces) || [];
+    for (var w = 0; w < workspaces.length; w++) {
+      var workspace = workspaces[w];
+      var slots = (workspace && workspace.slots) || [];
+      for (var s = 0; s < slots.length; s++) {
+        var chips = (slots[s] && slots[s].chips) || [];
+        for (var c = 0; c < chips.length; c++) {
+          var chip = chips[c];
+          if (!chip) continue;
+          out.push({
+            linkKey: trim(chip.linkKey),
+            key: trim(chip.key),
+            identityId: trim(chip.identityId),
+            occurrence: chip.occurrence === undefined || chip.occurrence === null
+              ? 0 : chip.occurrence,
+            monitorName: trim(box.name),
+            monitorLabel: trim(box.label),
+            workspaceId: workspace.id,
+            workspaceKey: workspaceKey(box.name, workspace.id),
+            rect: chip.rect || null
+          });
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// WHICH CHIPS ARE THE SAME THING ON BOTH MAPS, and where each of them sits on
+// either side. The Live -> Recorded morph animates the pairs; everything else
+// enters or leaves.
+//
+// THE KEY IS `linkKey` AND IT IS NOT A NEW RULE. Three things already have to
+// agree for hover to work — a row's linkKey, a live chip's linkKey and a
+// recorded chip's linkKey — and Panel.qml builds the instance index ONCE and
+// hands it to all three models precisely so they cannot spell it differently.
+// A morph asks the same question hover asks ("are these two the same app
+// instance?"), so it must ask it with the same string. Inventing a second
+// keying rule here is how the two would drift apart, and it is the defect tick
+// 3xi found in the capture path wearing different clothes.
+//
+// `instanceLinkKeyFor` folds occurrence into the key only when an identity has
+// several instances, so two windows of one app are told apart and a single
+// window is not burdened with an index it does not need.
+//
+// PAIRS CARRY BOTH ENDS, NOT A DIRECTION. The caller knows which tab it is
+// moving to; baking "from"/"to" in here would mean a second function, or a flag,
+// for the same fact. `live` and `recorded` are the two ends and the direction is
+// the caller's.
+//
+// EXHAUSTIVE BY CONSTRUCTION: every chip on either map lands in exactly one of
+// `pairs`, `liveOnly` and `recordedOnly`. A chip that quietly belonged to none
+// of them would be a chip the morph forgets on screen, so the arithmetic is
+// something the tests can assert rather than trust.
+function mapMorphPairs(liveMap, recordedMap) {
+  var live = morphChipEntries(liveMap);
+  var recorded = morphChipEntries(recordedMap);
+
+  // Bucketed rather than a flat map: a linkKey SHOULD be unique within one map,
+  // but "should" is not a thing to build on. Duplicates pair up in the order
+  // they were drawn and any surplus falls out to the one-sided lists, so a
+  // repeated key degrades to "some of these are new" instead of silently
+  // dropping a chip or pairing one chip with two others.
+  var byKey = {};
+  var order = [];
+  for (var r = 0; r < recorded.length; r++) {
+    var rk = recorded[r].linkKey;
+    if (!rk) continue;
+    if (!own(byKey, rk)) { byKey[rk] = []; order.push(rk); }
+    byKey[rk].push(recorded[r]);
+  }
+
+  var pairs = [];
+  var liveOnly = [];
+  for (var l = 0; l < live.length; l++) {
+    var entry = live[l];
+    var bucket = entry.linkKey && own(byKey, entry.linkKey) ? byKey[entry.linkKey] : null;
+    if (!bucket || !bucket.length) { liveOnly.push(entry); continue; }
+    var mate = bucket.shift();
+    pairs.push({
+      linkKey: entry.linkKey,
+      live: entry,
+      recorded: mate,
+      // The two facts a morph wants to know before it starts: does this chip
+      // cross a monitor, and does it change workspace? Both are ordinary — an
+      // app recorded on the dock and running on the laptop screen is the case
+      // this whole plugin exists for — but a chip that crosses a monitor is
+      // travelling further than the map is wide, and the animation may want to
+      // treat it differently.
+      monitorChanged: entry.monitorName !== mate.monitorName,
+      workspaceChanged: entry.workspaceKey !== mate.workspaceKey,
+      // Both ends have geometry, so this pair can be TRANSLATED. Without it
+      // there is nothing to move between and the caller must cross-fade.
+      geometry: !!(entry.rect && mate.rect)
+    });
+  }
+
+  var recordedOnly = [];
+  for (var o = 0; o < order.length; o++) {
+    var left = byKey[order[o]];
+    for (var i = 0; i < left.length; i++) recordedOnly.push(left[i]);
+  }
+  // A recorded chip with no linkKey at all cannot be matched to anything, but it
+  // is still on the map and still has to be accounted for.
+  for (var n = 0; n < recorded.length; n++) {
+    if (!recorded[n].linkKey) recordedOnly.push(recorded[n]);
+  }
+
+  return { pairs: pairs, liveOnly: liveOnly, recordedOnly: recordedOnly };
+}
+
+// ---------------------------------------------------------------------------
 // The flat list under the map
 // ---------------------------------------------------------------------------
 
@@ -6610,6 +6739,8 @@ if (typeof module !== "undefined") {
     captureSafeSegment: captureSafeSegment,
     captureTopologyPrefix: captureTopologyPrefix,
     captureFileName: captureFileName,
+    morphChipEntries: morphChipEntries,
+    mapMorphPairs: mapMorphPairs,
     captureIdentityPattern: captureIdentityPattern,
     captureIdentityPatterns: captureIdentityPatterns,
     capturePlan: capturePlan,
