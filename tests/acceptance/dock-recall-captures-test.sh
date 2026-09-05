@@ -270,6 +270,36 @@ cache_files() {
 cache_count() { cache_files | grep -c . ; }
 cache_is() { [[ $(cache_count) -eq "$1" ]]; }
 
+# THE PANEL'S OWN VIEW OF THE DESK — waited for after EVERY dock and undock.
+#
+# `monitor_present`/`monitor_absent` are the COMPOSITOR's answer, and the
+# compositor is not what builds the topology key: recordLayout reads the panel's
+# own copy of the monitor list, which arrives an event later. A record made
+# inside that window files the layout — and its picture — under the desk that
+# just went away, and a count-only check cannot see it, because one file is one
+# file whichever desk it belongs to.
+#
+# Tick m1p fixed exactly this at ONE of the six desk changes in this file and
+# left a learning saying the siblings were "a defect waiting for the first run
+# that reaches it". The first run that reached one failed here. So it is fixed
+# as a CLASS: every transition below waits for the panel, not for hyprctl.
+panel_topology() { panel_state_json | jq -r '.topologyName // ""'; }
+panel_sees_dock()    { panel_state_json | jq -e --arg d "$DOCK_OUTPUT" '(.topologyName|contains($d))' >/dev/null; }
+panel_sees_no_dock() { panel_state_json | jq -e --arg d "$DOCK_OUTPUT" '(.topologyName|contains($d))|not' >/dev/null; }
+
+await_panel_docked() {
+  poll 30 panel_sees_dock && return 0
+  diagnostics
+  fail "the panel noticed the dock ($1)" \
+    "the panel still reports topology \"$(panel_topology)\" after $DOCK_OUTPUT appeared"
+}
+await_panel_undocked() {
+  poll 30 panel_sees_no_dock && return 0
+  diagnostics
+  fail "the panel noticed the undock ($1)" \
+    "the panel still reports topology \"$(panel_topology)\" after $DOCK_OUTPUT was removed"
+}
+
 # A structural decode, not a magic-number peek. Walks the JPEG segment chain to
 # a start-of-frame marker and prints "<width>x<height>"; anything that is not a
 # JPEG with a real frame header prints nothing and exits 1.
@@ -1308,6 +1338,7 @@ DESK_A_FILE=$(cache_files)
 # point: two files, one per desk, for one app with one camera.
 hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock appeared (captures)" 20 monitor_present "$DOCK_OUTPUT"
+await_panel_docked "two desks"
 
 # The panel has to have SEEN the new desk before it can record for it — a Record
 # on a stale monitor list would file the second layout under the first key and
@@ -1391,14 +1422,7 @@ wait_until "the fake dock went for the first desk's record (captures)" 20 monito
 # exactly what happened: the gate stored the DOCKED desk's picture here, and the
 # second desk's step then re-recorded the same topology forever, never reaching
 # two. So gate on the observable that belongs to the thing under test.
-panel_sees_undocked() {
-  panel_state_json | jq -e --arg d "$DOCK_OUTPUT" '(.topologyName|contains($d))|not' >/dev/null
-}
-if ! poll 30 panel_sees_undocked; then
-  diagnostics
-  fail "the panel noticed the undock before the record (captures)" \
-    "the panel still reports topology \"$(panel_state_json | jq -r '.topologyName')\" after $DOCK_OUTPUT was removed"
-fi
+await_panel_undocked "the first desk’s record"
 
 undocked_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 1; }
 if ! poll 60 undocked_record; then
@@ -1446,6 +1470,7 @@ fi
 # the second desk's.
 hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock came back for the prompt (captures)" 20 monitor_present "$DOCK_OUTPUT"
+await_panel_docked "the prompt on the second desk"
 prompt_on_desk_two() {
   [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2 \
     && panel_state_json | jq -e '.consentOpen == true' >/dev/null
@@ -1484,6 +1509,7 @@ screenshot "success-dock-recall-captures-03-consent-two-desks"
 # second desk's pictures; `root.topologyKey` now names the first.
 hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the desk changed under the open prompt (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+await_panel_undocked "the desk changing under the prompt"
 still_asking() { panel_state_json | jq -e '.consentOpen == true' >/dev/null; }
 if ! poll 20 still_asking; then
   diagnostics
@@ -1520,6 +1546,7 @@ if ! poll 60 untick_record; then
 fi
 hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock came back for the untick round (captures)" 20 monitor_present "$DOCK_OUTPUT"
+await_panel_docked "the untick round"
 untick_record_two() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2; }
 if ! poll 60 untick_record_two; then
   diagnostics
@@ -1545,6 +1572,7 @@ pass "unticking the app deleted its pictures on both desks — the README's prom
 
 hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock removed (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+await_panel_undocked "after the untick round"
 unpaused_answer=$(omarchy-shell "$IPC_TARGET" setPaused off 2>&1)
 [[ $unpaused_answer == "active" ]] ||
   fail "the plugin is active again after the two-desk round (captures)" \
