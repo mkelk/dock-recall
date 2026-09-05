@@ -31,6 +31,10 @@ BarWidget {
   id: root
   moduleName: "mkelk.dock-recall"
 
+  // Every duration and curve in this file, from the plugin's one statement of
+  // them. See Motion.qml for why they are not spelled here.
+  readonly property Motion motion: Motion {}
+
   readonly property string logPrefix: "[dock-recall]"
   readonly property string statusPath: Quickshell.env("HOME") + "/.local/state/omarchy/dock-recall.status.json"
 
@@ -259,7 +263,7 @@ BarWidget {
         clip: true
 
         Behavior on opacity {
-          NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+          NumberAnimation { duration: root.motion.duration; easing.type: root.motion.easingType }
         }
 
         // The restore sweep: a band of the bar's own background travelling
@@ -276,7 +280,7 @@ BarWidget {
             running: root.sweeping
             from: -sweepBand.width
             to: screen.width
-            duration: 1400
+            duration: root.motion.sweepDuration
             loops: Animation.Infinite
           }
         }

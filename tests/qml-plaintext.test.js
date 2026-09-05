@@ -381,3 +381,61 @@ test("the panel's header is the shell's PanelHero, and it is what reports the he
   assert.match(hero, /iconComponent:/, "the hero no longer carries the monitor glyph");
   assert.match(hero, /trailingControl:/, "the hero no longer reserves the pause switch's width");
 });
+
+// ---------------------------------------------------------------------------
+// Motion: one statement of how long things take (tick oas)
+// ---------------------------------------------------------------------------
+//
+// Omarchy's theme has colour, spacing and radius tokens and NO animation tokens,
+// so a plugin that animates either copies the shell's numbers or invents its
+// own — and either way the number ends up spelled in every file that moves.
+// This project has already paid for a value living in two places four times in
+// two increments (the test count drifted three times; the payload contract's
+// rationale was written out in four files), and the fix each time was to
+// nominate ONE normative site. Motion.qml is that site, and this is the guard
+// that keeps it one.
+//
+// Same glob discipline as everything above it, and for the reason tick md1
+// established: a hand-written list of files rots silently the moment somebody
+// adds a fifth.
+
+test("no QML file spells an animation duration or curve of its own", () => {
+  const files = qmlFiles();
+  assert.ok(files.length >= 7, "the glob found the repository's QML files");
+
+  const offenders = [];
+  let scanned = 0;
+  for (const { label, file } of files) {
+    // Motion.qml is the one place the numbers are allowed to be literals. That
+    // is what it is FOR.
+    if (label === "Motion.qml") continue;
+    scanned += 1;
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    lines.forEach((line, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
+      // A literal number after `duration:`, or a literal Easing curve. A
+      // binding — `duration: root.motion.duration` — is exactly what this rule
+      // asks for and must pass.
+      if (/\bduration\s*:\s*-?\d/.test(line) || /\beasing\.type\s*:\s*Easing\./.test(line)) {
+        offenders.push(label + ":" + (i + 1) + "  " + line.trim());
+      }
+    });
+  }
+
+  assert.ok(scanned >= 6, "more than Motion.qml itself was scanned");
+  assert.deepStrictEqual(offenders, [],
+    "these animations spell their own timing instead of reading Motion.qml:\n  "
+    + offenders.join("\n  "));
+});
+
+test("Motion.qml states the tokens the rest of the plugin reads", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Motion.qml"), "utf8");
+  // The three the plugin actually consumes. Named individually rather than
+  // counted, because "some tokens exist" is not what any caller needs.
+  assert.match(source, /readonly property int duration:\s*\d+/,
+    "Motion.qml no longer states a transition duration");
+  assert.match(source, /readonly property int easingType:\s*Easing\.\w+/,
+    "Motion.qml no longer states a curve");
+  assert.match(source, /readonly property int sweepDuration:\s*\d+/,
+    "Motion.qml no longer states the bar sweep's duration");
+});
