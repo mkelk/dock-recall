@@ -5087,8 +5087,25 @@ function morphDrawnChipRect(map, entry, canvasWidth, canvasHeight, floorWidth, f
   var slot = drawn[entry.slotIndex];
   if (!slot) return null;
 
-  var size = (entry.group === true && entry.groupSize > 1) ? entry.groupSize : 1;
-  var index = size > 1 ? Math.max(0, Math.min(size - 1, entry.tabIndex || 0)) : 0;
+  // THE SEGMENT IS DIVIDED BY WHAT THE MAP ACTUALLY DREW, not by what the
+  // compositor said the group contained.
+  //
+  // MapWorkspace lays a group out as `chipRow.width / slot.chips.length` in
+  // ARRAY ORDER, so the drawn member count and the drawn index are the only two
+  // numbers that can put a flight on top of its chip. `groupSize` comes from
+  // Hyprland's `grouped` array and counts members the map never drew:
+  // `slotsForClients` skips a member missing from the workspace's client list,
+  // and `isMappable` has already dropped a window with no class at all (read
+  // mid-move, which is that skip's own stated reason). A group of three with one
+  // such member draws TWO chips and reports groupSize 3 — measured on the real
+  // builders, the flight came out {x:0,width:66.67} against a chip drawn at
+  // {x:0,width:100}, a third of a slot wide where the chip is half.
+  //
+  // The recorded map was right only by accident. Both sides now ask the same
+  // question the layout asks.
+  var members = (slots[entry.slotIndex] && slots[entry.slotIndex].chips) || [];
+  var size = (entry.group === true && members.length > 1) ? members.length : 1;
+  var index = size > 1 ? Math.max(0, Math.min(size - 1, entry.chipIndex || 0)) : 0;
   var width = slot.width / size;
   return { x: slot.x + index * width, y: slot.y, width: width, height: slot.height };
 }

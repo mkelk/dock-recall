@@ -845,3 +845,52 @@ test("on the real maps of one desk, every geometry pair resolves to two drawn re
   assert.ok(morph.pairs.length >= 2, "the fixture desk pairs more than one chip");
   assert.ok(flown >= 1, "and at least one of them is genuinely translatable");
 });
+
+test("a tab group's flight is divided by the members the map DREW, not by the group Hyprland reported", () => {
+  // The defect (kw9 correctness review, reproduced against the real builders):
+  // `groupSize` comes from Hyprland's `grouped` array and counts members the map
+  // never drew — slotsForClients skips a member missing from the workspace's
+  // client list, and isMappable has already dropped a window with no class at
+  // all. A group of three with one such member draws TWO chips and reports
+  // groupSize 3, so the flight came out a third of a slot wide against a chip
+  // half a slot wide, offset by a sixth.
+  //
+  // Built by hand precisely BECAUSE the well-formed case cannot show it: mapOf
+  // above always sets groupSize to the drawn length, which is the agreement the
+  // bug breaks.
+  const slotRect = { rx: 0, ry: 0, rw: 1, rh: 1 };
+  const map = {
+    monitors: [{
+      name: "eDP-1", label: "eDP-1",
+      workspaces: [{
+        id: 1, name: "1", fallback: false,
+        slots: [{
+          key: "0xA", group: true, rect: slotRect,
+          chips: [
+            // TWO chips drawn, each claiming a group of THREE.
+            { linkKey: "id:a", key: "0xA", identityId: "a", occurrence: 0,
+              tabIndex: 0, groupSize: 3, rect: slotRect },
+            { linkKey: "id:c", key: "0xC", identityId: "c", occurrence: 0,
+              tabIndex: 1, groupSize: 3, rect: slotRect }
+          ]
+        }]
+      }]
+    }]
+  };
+
+  const entries = panel.morphChipEntries(map);
+  assert.strictEqual(entries.length, 2, "two chips were drawn");
+  assert.strictEqual(entries[0].groupSize, 3, "and each still reports the compositor's group of three");
+
+  const first = panel.morphDrawnChipRect(map, entries[0], 200, 250, 16, 10);
+  const second = panel.morphDrawnChipRect(map, entries[1], 200, 250, 16, 10);
+
+  // Halves of the slot, because two chips were drawn — not thirds.
+  assert.strictEqual(first.width, 100,
+    "the flight is as wide as the chip the Row laid out, not as wide as a third of the slot");
+  assert.strictEqual(second.width, 100);
+  assert.strictEqual(first.x, 0);
+  assert.strictEqual(second.x, 100, "the second segment starts where the first ends");
+  // And together they tile the slot exactly: no gap, no overlap.
+  assert.strictEqual(first.width + second.width, 200);
+});

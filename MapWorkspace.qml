@@ -284,8 +284,29 @@ BorderSurface {
     // reason they are enumerated rather than assumed to cover each other, and
     // the Flow's first pass runs before its width is known — a report taken only
     // at completion is the warm-up answer, for ever.
+    // THE KEY IS FROZEN AT CREATION, and that is what makes the missing
+    // `onRenderKeyChanged` here correct rather than merely absent.
+    //
+    // The report-site rule (.tick/learnings.md, tick sm1) is one handler per
+    // captured property, and `workspaceSlot.reportRender()` above obeys it. This
+    // site cannot, because `renderKey` is bound to `panel.showRecorded`: on a
+    // view flip the OUTGOING delegate's key flips to the incoming view before Qt
+    // destroys it, so a handler here would re-report the outgoing map's geometry
+    // under the incoming map's key — overwriting the very rect the flight's
+    // destination end is resolved from. Freezing the key at creation makes it a
+    // constant, so there is nothing left to watch and the rule is satisfied
+    // rather than argued around.
+    // Latched on FIRST report, not bound: a `readonly property … : expression`
+    // is still a binding and would re-evaluate on the very flip this exists to
+    // survive. Empty until then, and the first report is the one that fixes it.
+    property string canvasKey: ""
+
     function reportCanvas() {
-      panel.reportWorkspaceCanvas(workspaceSlot.renderKey, workspaceCanvas)
+      if (!workspaceCanvas.canvasKey) {
+        workspaceCanvas.canvasKey = panel.workspaceRenderKey(
+          panel.showRecorded, workspaceSlot.monitorName, workspaceSlot.modelData.id)
+      }
+      panel.reportWorkspaceCanvas(workspaceCanvas.canvasKey, workspaceCanvas)
     }
 
     // THE BOX'S OWN POSITION IS HALF THE ANSWER, and it is watched from INSIDE

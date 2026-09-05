@@ -1002,17 +1002,19 @@ pass "a tick moves the chip fill between unwatched and watched, and the ${motion
 # subshell — the caller would carry on with an empty string and the guard would
 # have done nothing.
 RUNS_NOW=""
+SETTLED_NOW=""
 read_runs() {
   RUNS_NOW=$(panel_state_json | jq -r '.morph.runs' 2>/dev/null)
-  if ! [[ $RUNS_NOW =~ ^[0-9]+$ ]]; then
+  SETTLED_NOW=$(panel_state_json | jq -r '.morph.settled' 2>/dev/null)
+  if ! [[ $RUNS_NOW =~ ^[0-9]+$ ]] || ! [[ $SETTLED_NOW =~ ^[0-9]+$ ]]; then
     diagnostics
-    fail "the morph counter is readable (motion)" \
-      "morph.runs came back as '$RUNS_NOW' before $1 — the panel is not answering at all, which is not the same fact as a morph that did not run"
+    fail "the morph counters are readable (motion)" \
+      "morph.runs/settled came back as '$RUNS_NOW'/'$SETTLED_NOW' before $1 — the panel is not answering at all, which is not the same fact as a morph that did not run"
   fi
 }
 
 read_runs "the switch to the recorded map"
-runs_before="$RUNS_NOW"
+runs_before="$RUNS_NOW"; settled_before="$SETTLED_NOW"
 
 view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 if [[ $view_answer != "recorded" ]]; then
@@ -1038,14 +1040,25 @@ echo "# morph.active caught up in $active_hits of 8 reads straight after the swi
 # `started` and `settled` by its own `finished`, so this one predicate says a
 # morph BEGAN, that it ENDED, and that the flag went down again — none of which
 # needs the 120ms window to be caught.
+# `settled == runs` IS NOT AN INVARIANT, and asserting it would have been a trap
+# laid for a future run rather than a check. `restart()` emits `stopped`, not
+# `finished` — Panel.qml documents that deliberately — so ONE mid-morph reversal
+# leaves runs permanently one ahead of settled, and this predicate could never be
+# satisfied again for the life of that panel. The gate passes today only because
+# its own switches are seconds apart; a human double-tapping the view toggle
+# while reproducing it by hand would get a hard failure reporting nothing wrong.
+#
+# So assert what is actually monotone: a morph STARTED (runs went up) and one
+# ENDED (settled went up) and the flag is down. That survives a reversal, and it
+# still fails if either counter stops moving.
 morph_ran_and_ended() {
-  panel_state_json | jq -e --argjson before "$1" \
-    '.morph.runs > $before and .morph.settled == .morph.runs and .morph.active == false' >/dev/null
+  panel_state_json | jq -e --argjson runs "$1" --argjson settled "$2" \
+    '.morph.runs > $runs and .morph.settled > $settled and .morph.active == false' >/dev/null
 }
-if ! poll 30 morph_ran_and_ended "$runs_before"; then
+if ! poll 30 morph_ran_and_ended "$runs_before" "$settled_before"; then
   diagnostics
   fail "switching to the recorded map runs a morph and finishes it" \
-    "after setView recorded the payload never reported runs above $runs_before with settled caught up and active false: $(panel_state_json | jq -c '.morph|{active, runs, settled}' 2>&1)"
+    "after setView recorded the payload never reported runs above $runs_before with settled also above $settled_before and active false: $(panel_state_json | jq -c '.morph|{active, runs, settled}' 2>&1)"
 fi
 pass "LIVE -> RECORDED: a morph started and finished (runs $runs_before -> $(panel_state_json | jq -r '.morph.runs'), settled caught up, flag down)"
 
@@ -1070,13 +1083,13 @@ pass "the pair is TRANSLATED, and the overlay's own list says between which two 
 # ---------------------------- 8. RECORDED -> LIVE: the flight turns around
 
 read_runs "the switch back to the live map"
-runs_before_back="$RUNS_NOW"
+runs_before_back="$RUNS_NOW"; settled_before_back="$SETTLED_NOW"
 back=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
 if [[ $back != "live" ]]; then
   diagnostics
   fail "panel IPC switches back to the live map (motion)" "setView live answered '$back'"
 fi
-if ! poll 30 morph_ran_and_ended "$runs_before_back"; then
+if ! poll 30 morph_ran_and_ended "$runs_before_back" "$settled_before_back"; then
   diagnostics
   fail "switching back runs a second morph and finishes it" \
     "after setView live the payload never reported runs above $runs_before_back with settled caught up: $(panel_state_json | jq -c '.morph|{active, runs, settled}' 2>&1)"
@@ -1148,14 +1161,14 @@ node -e '
   fail "the layout can be rewritten without geometry (motion)"
 
 read_runs "the switch to the stacked recorded map"
-runs_before_fallback="$RUNS_NOW"
+runs_before_fallback="$RUNS_NOW"; settled_before_fallback="$SETTLED_NOW"
 fallback_view=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 if [[ $fallback_view != "recorded" ]]; then
   diagnostics
   fail "panel IPC switches to the stacked recorded map (motion)" \
     "setView recorded answered '$fallback_view'"
 fi
-if ! poll 30 morph_ran_and_ended "$runs_before_fallback"; then
+if ! poll 30 morph_ran_and_ended "$runs_before_fallback" "$settled_before_fallback"; then
   diagnostics
   fail "a morph with nothing to fly still runs and ends on the fallback path" \
     "after setView recorded on a geometry-less layout the payload never reported runs above $runs_before_fallback with settled caught up: $(panel_state_json | jq -c '.morph|{active, runs, settled}' 2>&1)"

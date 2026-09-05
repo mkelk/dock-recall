@@ -4591,7 +4591,15 @@ Item {
                         sourceSize.width: Math.max(1, side)
                         sourceSize.height: Math.max(1, side)
                         fillMode: Image.PreserveAspectFit
-                        asynchronous: true
+                        // LOADED SYNCHRONOUSLY, unlike every other icon in this
+                        // panel, because this delegate lives about 120ms and is
+                        // rebuilt whenever the flight list recomputes. An async
+                        // load would resolve after the rectangle it belongs to
+                        // had already been destroyed, so the comment above —
+                        // "the app's icon in it" — would have been false on
+                        // screen for every flight. It is a cached, chip-sized
+                        // icon on a rectangle at most Style.space(16) across.
+                        asynchronous: false
                         source: root.iconSourceOf(flyingChip.modelData.identityId, "")
                       }
                     }
