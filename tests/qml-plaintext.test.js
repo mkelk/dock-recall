@@ -56,6 +56,16 @@ const PANEL_QML = path.join(REPO_ROOT, "Panel.qml");
 
 // THE SET, from a glob and not from a list. See SCOPE above for why that is the
 // whole point of this file rather than a convenience.
+const QML_FILE_COUNT = 8;   // BarWidget, CaptureStore, ConsentPrompt, MapWorkspace,
+                            // Motion, Panel, Service, ToplevelBridge.
+                            //
+                            // Spelled ONCE. It was spelled three times with two
+                            // different numbers, two of them stale, in the file
+                            // whose own thesis is that a guard must not rot —
+                            // and moving a QML file into a subdirectory was
+                            // measured leaving two of the three guards green
+                            // while they silently scanned one file fewer.
+
 function qmlFiles() {
   return fs.readdirSync(REPO_ROOT)
     .filter((name) => name.endsWith(".qml"))
@@ -253,8 +263,8 @@ test("every Text in every QML file this plugin ships declares textFormat: Text.P
   // THE GLOB ITSELF IS THE FIRST THING THAT CAN GO WRONG. A rename, a move into
   // a subdirectory, a readdir that answers nothing: every one of those turns
   // this whole test green by scanning nothing at all. The plugin's entry points
-  // are its QML files and it has seven of them.
-  assert.ok(files.length >= 7,
+  // are its QML files, and QML_FILE_COUNT above is how many — spelled once.
+  assert.strictEqual(files.length, QML_FILE_COUNT,
     "the QML glob found " + files.length + " file(s) (" + files.map((f) => f.label).join(", ")
     + "). The plugin ships its QML at the repository root — if a file moved into a"
     + " subdirectory, this scan is no longer looking at it.");
@@ -401,7 +411,7 @@ test("the panel's header is the shell's PanelHero, and it is what reports the he
 
 test("no QML file spells an animation duration or curve of its own", () => {
   const files = qmlFiles();
-  assert.ok(files.length >= 7, "the glob found the repository's QML files");
+  assert.strictEqual(files.length, QML_FILE_COUNT, "the glob found the repository's QML files");
 
   const offenders = [];
   let scanned = 0;
@@ -416,7 +426,13 @@ test("no QML file spells an animation duration or curve of its own", () => {
       // A literal number after `duration:`, or a literal Easing curve. A
       // binding — `duration: root.motion.duration` — is exactly what this rule
       // asks for and must pass.
-      if (/\bduration\s*:\s*-?\d/.test(line) || /\beasing\.type\s*:\s*Easing\./.test(line)) {
+      // `easing.type: Easing.X` AND the grouped form, `easing { type: Easing.X }`,
+      // whose inner line carries no `easing.` prefix at all. The second is
+      // idiomatic QML and slipped straight through: a probe with a bound
+      // duration and a grouped curve passed all nine of these tests.
+      if (/\bduration\s*:\s*-?\d/.test(line)
+        || /\beasing\.type\s*:\s*Easing\./.test(line)
+        || /\btype\s*:\s*Easing\./.test(line)) {
         offenders.push(label + ":" + (i + 1) + "  " + line.trim());
       }
     });
@@ -466,7 +482,7 @@ test("Motion.qml states the tokens the rest of the plugin reads", () => {
 
 test("no Behavior animates a property its own file declares readonly", () => {
   const files = qmlFiles();
-  assert.ok(files.length >= 8, "the glob found the repository's QML files");
+  assert.strictEqual(files.length, QML_FILE_COUNT, "the glob found the repository's QML files");
 
   const offenders = [];
   for (const { label, file } of files) {
