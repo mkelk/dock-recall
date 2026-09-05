@@ -5065,7 +5065,23 @@ Item {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     elide: Text.ElideRight
-                    width: Math.min(implicitWidth, Math.round(appRow.width * 0.45))
+                    // A FIXED COLUMN, NOT A CONTENT WIDTH (tick 5jl, second
+                    // pass — found live, by unwatching an app).
+                    //
+                    // This was `Math.min(implicitWidth, 45%)`, so the caption
+                    // was as wide as whatever it happened to say — and every
+                    // control on the row anchors leftwards off it. Unwatch an
+                    // app and its caption grows from "eDP-1 · ws 3" to
+                    // "eDP-1 · ws 3 · recorded · no longer watched", which
+                    // dragged that row's camera, switch and whole bordered box
+                    // visibly inward while its neighbours stayed put. Reserving
+                    // the camera's column fixed the first ragged edge; this is
+                    // the same defect one step further out, and the same answer.
+                    //
+                    // The width is the old CAP, so nothing that fits today
+                    // starts eliding; a longer caption elides and keeps its
+                    // tooltip, which is what the tooltip is already for.
+                    width: Math.round(appRow.width * 0.45)
                     horizontalAlignment: Text.AlignRight
                     anchors.right: parent.right
                     anchors.rightMargin: Style.spacing.rowPaddingX
