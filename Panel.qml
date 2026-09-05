@@ -1784,7 +1784,40 @@ Item {
   // started by the first successful desktop read of this session and not again:
   // a live client list arrives a process spawn after the panel does, so `opened`
   // alone is too early to plan from.
+  //
+  // AND IT IS TRIGGERED FROM ALL THREE OF ITS PRECONDITIONS, WHICH IS THE
+  // REPAIR (tick 2zi, second pass — one whole acceptance VM cycle).
+  //
+  // The first VM run drew no live picture at all and left NO LINE in the log,
+  // because this function was called exactly once, at the only moment it could
+  // not succeed. `monitorsProc.onExited` commits the two halves of a desktop
+  // snapshot TOGETHER and sets the flag LAST:
+  //
+  //     root.liveClients = root.pendingClients      <- fires onLiveClientsChanged
+  //     ...                                            (this function ran HERE)
+  //     root.haveLiveData = true                    <- seven lines later
+  //
+  // so on a fresh panel the trigger fired while `haveLiveData` was still false,
+  // the guard below returned, the latch stayed down — and nothing ever called
+  // again, because the panel DEDUPES the client read on its raw text (see
+  // clientsProc) and an idle desk therefore never reassigns `liveClients` a
+  // second time. A desk where a window happens to open would have hidden it; the
+  // VM's desk sits still between the summon and the assertion, which is the
+  // worst case and the honest one.
+  //
+  // The commit order is not the thing to change: publishing "we have data"
+  // before the data is exactly the half-snapshot that pairing exists to prevent.
+  // What was wrong is that a function guarded on three preconditions was
+  // triggered by two of them. `haveLiveData` is the one that lands LAST, so it
+  // is the one that must trigger, and now all three do — the function is latched
+  // and its guards are cheap, so extra calls cost nothing and a missing one
+  // costs a VM cycle.
   property bool liveRoundStarted: false
+
+  // The precondition that arrives last, and therefore the trigger that matters.
+  // Kept here beside the latch rather than next to the read that sets it,
+  // because this is the fact it is about.
+  onHaveLiveDataChanged: root.startLiveRound()
 
   function startLiveRound() {
     if (!root.opened || !root.haveLiveData) return

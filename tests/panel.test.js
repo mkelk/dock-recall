@@ -7344,6 +7344,68 @@ test("ONE ROUND PER PANEL SESSION, started by the first client list and discarde
   assert.ok(clients.slice(0, 900).indexOf("root.startLiveRound()") !== -1, clients.slice(0, 900));
 });
 
+test("THE LAST PRECONDITION TO ARRIVE IS A TRIGGER — the one an acceptance VM caught", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // WHAT THIS COST: one acceptance VM cycle, and it left no line in the log to
+  // go on. `startLiveRound` is guarded on `opened && haveLiveData` and was
+  // triggered by `onOpenedChanged` and `onLiveClientsChanged` — two of its three
+  // preconditions. The third is set LAST inside the very handler that fires the
+  // second, so on a fresh panel the trigger ran at the one moment the guard
+  // could not pass; the latch stayed down, and the panel's own dedupe on the raw
+  // client text meant an idle desk never fired it again.
+  //
+  // This pins the FACT and the REPAIR together, because either alone rots. The
+  // fact: the flag is committed after the clients, deliberately — publishing "we
+  // have data" before the data is the half-snapshot that pairing exists to
+  // prevent. The repair: the flag therefore has to be a trigger too.
+  const at = source.indexOf("id: monitorsProc");
+  const commit = source.slice(at, source.indexOf("\n  }\n", at));
+  const clientsAt = commit.indexOf("root.liveClients = root.pendingClients");
+  const flagAt = commit.indexOf("root.haveLiveData = true");
+  assert.ok(clientsAt !== -1 && flagAt !== -1, commit);
+  assert.ok(clientsAt < flagAt,
+    "the snapshot commit order changed; re-read why startLiveRound has three triggers:\n" + commit);
+
+  assert.ok(source.indexOf("onHaveLiveDataChanged: root.startLiveRound()") !== -1,
+    "the precondition that lands LAST does not trigger the round it gates");
+});
+
+test("A LIVE ROUND IS A BRACKET: it says when it opens and when it closes", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
+
+  // THE DIAGNOSIS THAT COULD NOT BE MADE. The first VM run of this feature
+  // failed with no line from this file anywhere in a 400-line log, and three
+  // different faults produce exactly that silence: a round never started, a
+  // round started with an empty plan, and a round that started and stalled. An
+  // unclosed bracket is now a stall and a bracket around zero is a desk with no
+  // cameras on — tick 070's lesson, applied one VM cycle earlier than last time.
+  const start = store.slice(store.indexOf("function start(plan) {"),
+    store.indexOf("function clear()"));
+  assert.ok(start.indexOf("liveStore.log(\"live picture round: \"") !== -1,
+    "a live round no longer says it is starting:\n" + start);
+  // BEFORE the empty-plan return, or an empty round is silent again — which is
+  // the state this repair exists to end.
+  assert.ok(start.indexOf("liveStore.log(\"live picture round: \"")
+    < start.indexOf("if (liveStore._queue.length === 0)"), start);
+  // And a refused round is loud too, though no user pressed anything.
+  assert.ok(start.indexOf("liveStore.warn(") !== -1 && start.indexOf("already running") !== -1,
+    "a round refused because another is running says nothing:\n" + start);
+
+  // The closing line is UNCONDITIONAL once a round has opened one. Gating it on
+  // there being something to report is exactly how an empty round became
+  // indistinguishable from a round that never ran.
+  const finish = store.slice(store.indexOf("function _finish() {"));
+  const body = finish.slice(0, finish.indexOf("\n  }\n"));
+  assert.ok(body.indexOf("if (plan) {") !== -1,
+    "the round's end line is conditional on more than the round having started:\n" + body);
+  assert.ok(body.indexOf("liveCaptureLogLine(plan, results)") !== -1, body);
+});
+
 test("the chip's report carries an onXChanged for EVERY property it captures (tick sm1)", () => {
   const fs = require("node:fs");
   const path = require("node:path");

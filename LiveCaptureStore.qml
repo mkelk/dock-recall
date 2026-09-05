@@ -184,19 +184,39 @@ Item {
   // The plan is PanelModel.liveCapturePlan's: `{ captures: [{ address,
   // identityId, occurrence }], skipped: [...] }`. It carries no prefix and no
   // file names, because there is no file.
+  // A ROUND THAT DOES NOTHING SAYS SO, AND THIS IS WHY (tick 2zi, second pass).
+  //
+  // The first VM run of this feature failed with NO LINE FROM THIS FILE ANYWHERE
+  // in a 400-line log, and that absence was the whole diagnosis — because three
+  // completely different faults produce it: a round never started, a round
+  // started with an EMPTY PLAN (which reached `_finish()` and logged nothing,
+  // since the end line was gated on there being something to report), and a
+  // round that started and stalled. One silence, three causes, and nothing in
+  // the evidence a VM leaves behind to tell them apart.
+  //
+  // So a round is a BRACKET: one line when it opens saying what it is about to
+  // do, one when it closes saying what happened, both unconditional once
+  // `start()` has been called. An unclosed bracket is a stall and names itself;
+  // a bracket around zero is a desk with no cameras on and says that too. Tick
+  // 070's lesson — a stalled recorded round was invisible for 45 seconds —
+  // applied before it costs a second VM cycle rather than after.
   function start(plan) {
     if (liveStore.busy) {
       // One round at a time, exactly as the recorded store has one: two queues
       // over one compositor session is the interleave tick ilg exists to stop.
-      // Unlike Record this is not user-pressed, so it is a debug fact rather
-      // than a refusal to say out loud.
+      // Said out loud even though no user pressed anything, per the bracket rule
+      // above: a round that does not happen must not be silent.
+      liveStore.warn("a live picture round is already running — this one took no pictures")
       return
     }
     var captures = (plan && plan.captures) ? plan.captures : []
+    var withheld = (plan && plan.skipped) ? plan.skipped.length : 0
     liveStore._plan = plan
     liveStore._results = []
     liveStore._queue = captures.slice()
     liveStore._handles = ({})
+    liveStore.log("live picture round: " + captures.length + " window(s) to photograph, "
+      + withheld + " not pictured")
     if (liveStore._queue.length === 0) {
       liveStore._finish()
       return
@@ -535,7 +555,15 @@ Item {
     liveStore._handles = ({})
     liveStore._plan = null
     liveStore._results = []
-    if (plan && (results.length || (plan.captures && plan.captures.length))) {
+    // THE CLOSING BRACKET, and it is UNCONDITIONAL once a round has opened one.
+    // `_plan` is non-null exactly when `start()` has run and this round has not
+    // been torn down yet, so this line pairs one-for-one with the opening line
+    // and nothing else — a `clear()` on a panel that never ran a round stays
+    // silent, and an empty round now says "0 live picture(s)" rather than
+    // nothing at all. It used to be gated on there being something to report,
+    // which is precisely how an empty round became indistinguishable from one
+    // that never started (see `start()`).
+    if (plan) {
       liveStore.log(PanelModel.liveCaptureLogLine(plan, results))
     }
   }
