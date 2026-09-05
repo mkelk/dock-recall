@@ -370,6 +370,49 @@ BorderSurface {
         Behavior on color { ColorAnimation { id: fillFade; duration: panel.motion.duration } }
         Behavior on edgeColor { ColorAnimation { id: edgeFade; duration: panel.motion.duration } }
 
+        // THE DRIFT BREATHE (tick 4qm) — the epic's fourth named motion, and the
+        // only one that is a LOOP rather than a transition.
+        //
+        // A drifted chip is the one thing on this map the user is meant to act
+        // on, and until now it said so with colour alone: the accent edge, which
+        // an ordinary watched chip also wears (an Omarchy theme has no amber —
+        // see panel.driftTone and the gap it documents). A slow pulse is the
+        // second channel, and it costs no new token and no new colour.
+        //
+        // IT MODULATES ALPHA, NOT THE TONE. `edgeColor` stays exactly what it
+        // was — it is the reported channel, and `edgeTone` is derived from the
+        // same precedence — so the payload keeps saying "drift" at full strength
+        // while only the drawing breathes. Folding the pulse into edgeColor
+        // would have made the fade Behavior above fight it every step.
+        //
+        // ONLY WHILE DRIFTED, so an in-sync desk animates nothing at all — the
+        // same rule the bar's sweep follows. `alwaysRunToEnd` lets a chip that
+        // stops drifting finish the half-breath it is in rather than snapping.
+        property real driftBreathe: 1.0
+        readonly property color breathingEdge: chipSlot.anyDrifted
+          ? Qt.rgba(chipSlot.edgeColor.r, chipSlot.edgeColor.g, chipSlot.edgeColor.b,
+              chipSlot.edgeColor.a * chipSlot.driftBreathe)
+          : chipSlot.edgeColor
+
+        SequentialAnimation {
+          id: driftBreathing
+          running: chipSlot.anyDrifted
+          loops: Animation.Infinite
+          alwaysRunToEnd: true
+          NumberAnimation {
+            target: chipSlot; property: "driftBreathe"
+            from: 1.0; to: 0.45
+            duration: panel.motion.breatheDuration
+            easing.type: panel.motion.easingType
+          }
+          NumberAnimation {
+            target: chipSlot; property: "driftBreathe"
+            from: 0.45; to: 1.0
+            duration: panel.motion.breatheDuration
+            easing.type: panel.motion.easingType
+          }
+        }
+
         // WHICH FILL, as a word — the state channel, and the reason it is a
         // channel at all.
         //
@@ -556,7 +599,7 @@ BorderSurface {
           ? Border.none()
           : Border.controlSpec(chipSlot.anyDrifted ? "selected"
               : (chipSlot.highlighted ? "hover-cursor" : "normal"),
-            chipSlot.edgeColor, chipSlot.edgeColor)
+            chipSlot.breathingEdge, chipSlot.breathingEdge)
         // A ghost is drawn quieter than a running window, and a chip entering
         // on a view switch is drawn quieter still while it arrives. The two are
         // multiplied rather than one overriding the other: a recorded ghost
@@ -794,6 +837,16 @@ BorderSurface {
                   fillMotionMs: chipTab.fillMotionMs,
                   edgeMotionMs: chipTab.edgeMotionMs,
                   motionEasing: chipTab.motionEasing,
+                  // THE DRIFT BREATHE (tick 4qm). Half a breath's duration, off
+                  // the animation object, and whether it is RUNNING — which is
+                  // the assertion that matters, because a loop bound to a chip
+                  // that is not drifted would pulse the whole map, and a loop
+                  // that never runs is not motion. `breathing` must agree with
+                  // `drifted` on every chip, and a test can check that without
+                  // knowing anything about the curve.
+                  breatheMs: chipTab.breatheMs,
+                  breathing: chipTab.breathing,
+                  drifted: chipSlot.anyDrifted,
                   // WHICH SIDE OF THE MORPH THIS CHIP IS ON (tick gug), from
                   // the same lookup its slot's opacity binding reads. The
                   // panel could answer this about the chip without asking the
@@ -829,6 +882,14 @@ BorderSurface {
               // that matters is the DURATION being non-zero.
               readonly property int motionEasing: fillFade.easing.type
 
+              // HALF A BREATH, off the loop's own first leg, and whether the
+              // loop is running. `driftBreathing` lives on the SLOT — a fused
+              // tab group is one pill with one edge, so it breathes once, not
+              // once per tab — and every chip in it reports the same pair, the
+              // way the fill and edge tones already do.
+              readonly property int breatheMs: driftBreathing.duration
+              readonly property bool breathing: driftBreathing.running
+
               // This chip's place in the pure matcher's answer: "paired" on
               // both maps, "live-only" or "recorded-only" on one, "" for a
               // window no pairing has classified yet. Held as a property rather
@@ -840,6 +901,10 @@ BorderSurface {
               onFillMotionMsChanged: chipTab.reportRender()
               onEdgeMotionMsChanged: chipTab.reportRender()
               onMotionEasingChanged: chipTab.reportRender()
+              onBreatheMsChanged: chipTab.reportRender()
+              // The one that genuinely moves under a live delegate: a chip
+              // starts and stops drifting while the panel is open.
+              onBreathingChanged: chipTab.reportRender()
               // The pairing is rebuilt on every desktop read, so this one DOES
               // move under a live delegate — a window opening on the other map
               // can turn a "live-only" chip into a "paired" one without
@@ -867,6 +932,10 @@ BorderSurface {
                 function onFillStateChanged() { chipTab.reportRender() }
                 function onEdgeToneChanged() { chipTab.reportRender() }
                 function onLinkHoveredChanged() { chipTab.reportRender() }
+                // Reported beside `breathing`, and the pair is the assertion:
+                // a chip that drifts must breathe and a chip that does not must
+                // not. Neither alone says that.
+                function onAnyDriftedChanged() { chipTab.reportRender() }
                 // The flight flag lives on the slot for the same reason the two
                 // colour channels do — it is the rectangle that stands aside —
                 // and it moves twice per morph, up and down. Per the report-site

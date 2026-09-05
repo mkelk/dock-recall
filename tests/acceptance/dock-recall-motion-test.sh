@@ -343,6 +343,11 @@ MOTION_SHAPE='
   and ([.chips[]|select(.fillMotionMs != $state.morph.durationMs
         or .edgeMotionMs != $state.morph.durationMs)]|length) == 0
   and ([.chips[]|select(.motionEasing != 0)]|length) == 0
+  and ([.chips[]|select((.breatheMs|type) == "number" and .breatheMs > 0
+        and (.breathing|type) == "boolean"
+        and (.drifted|type) == "boolean")]|length) == (.chips|length)
+  and ([.chips[]|select(.breathing != .drifted)]|length) == 0
+  and ([.chips[]|select(.breatheMs <= .fillMotionMs)]|length) == 0
   and (([.chips[]|.key]|sort)
        == (if .showRecorded
            then ([.morph.pairs[]|.recordedKey] + [.morph.recordedOnly[]|.key])|sort

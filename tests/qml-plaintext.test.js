@@ -438,4 +438,6 @@ test("Motion.qml states the tokens the rest of the plugin reads", () => {
     "Motion.qml no longer states a curve");
   assert.match(source, /readonly property int sweepDuration:\s*\d+/,
     "Motion.qml no longer states the bar sweep's duration");
+  assert.match(source, /readonly property int breatheDuration:\s*\d+/,
+    "Motion.qml no longer states the drift breathe's half-period");
 });

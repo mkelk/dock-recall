@@ -3314,6 +3314,13 @@ Item {
               fillMotionMs: root.reported(report, "fillMotionMs"),
               edgeMotionMs: root.reported(report, "edgeMotionMs"),
               motionEasing: root.reported(report, "motionEasing"),
+              // THE DRIFT BREATHE (tick 4qm), reported with the fact it must
+              // agree with. `breathing` alone could be a loop pulsing the whole
+              // map; `drifted` alone says nothing about motion. The pair is the
+              // assertion, and neither half carries it.
+              breatheMs: root.reported(report, "breatheMs"),
+              breathing: root.reported(report, "breathing"),
+              drifted: root.reported(report, "drifted"),
               // WHICH SIDE OF THE MORPH THIS CHIP IS ON (tick gug), as the
               // CHIP was told it — the slot's opacity binding reads the same
               // property. Reported rather than looked up here for the reason

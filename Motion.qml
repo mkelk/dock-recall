@@ -46,4 +46,15 @@ QtObject {
   // states. It keeps its own number because sharing one with the toggles would
   // be a coincidence dressed as a rule.
   readonly property int sweepDuration: 1400
+
+  // HALF A BREATH on a drifted chip's edge — the same kind of thing as the
+  // sweep, and it keeps its own number for the same reason. Slower than the
+  // sweep on purpose: the sweep says "I am working on it right now" and should
+  // read as activity, while a drift breathe says "this one needs you" about a
+  // desk that may sit untouched for minutes. At 1100ms each way a chip breathes
+  // roughly every 2.2 seconds, which is near the slow end of what reads as
+  // alive rather than as a blink. Whether it is the RIGHT number is the human's
+  // gate (tick 0c7) — a loop is the most intrusive motion in this plugin and
+  // the easiest to get wrong.
+  readonly property int breatheDuration: 1100
 }
