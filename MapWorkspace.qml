@@ -411,7 +411,13 @@ BorderSurface {
           running: chipSlot.anyDrifted
           loops: Animation.Infinite
           alwaysRunToEnd: true
+          // The id is on the LEG, not on the group: a SequentialAnimation has no
+          // `duration` of its own — it is the sum of its children and Qt does
+          // not expose it — so reading `driftBreathing.duration` yielded
+          // undefined and the report failed with "Unable to assign [undefined]
+          // to int". Half a breath is the honest number to report anyway.
           NumberAnimation {
+            id: breatheIn
             target: chipSlot; property: "driftBreathe"
             from: 1.0; to: 0.45
             duration: panel.motion.breatheDuration
@@ -899,7 +905,7 @@ BorderSurface {
               // tab group is one pill with one edge, so it breathes once, not
               // once per tab — and every chip in it reports the same pair, the
               // way the fill and edge tones already do.
-              readonly property int breatheMs: driftBreathing.duration
+              readonly property int breatheMs: breatheIn.duration
               readonly property bool breathing: driftBreathing.running
 
               // This chip's place in the pure matcher's answer: "paired" on
