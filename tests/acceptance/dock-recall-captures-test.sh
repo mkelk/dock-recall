@@ -1370,10 +1370,47 @@ camera_back=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&
 
 hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock went for the first desk's record (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+
+# WAIT FOR THE PANEL, NOT FOR HYPRCTL (tick m1p). monitor_absent above is the
+# COMPOSITOR's answer, and the compositor is not what builds the topology key:
+# recordLayout reads the panel's own copy of the monitor list, which arrives an
+# event later. Recording into that window files the layout — and its picture —
+# under the desk that was just unplugged, and the count-only check below cannot
+# see it, because one file is one file whichever desk it belongs to. That is
+# exactly what happened: the gate stored the DOCKED desk's picture here, and the
+# second desk's step then re-recorded the same topology forever, never reaching
+# two. So gate on the observable that belongs to the thing under test.
+panel_sees_undocked() {
+  panel_state_json | jq -e --arg d "$DOCK_OUTPUT" '(.topologyName|contains($d))|not' >/dev/null
+}
+if ! poll 30 panel_sees_undocked; then
+  diagnostics
+  fail "the panel noticed the undock before the record (captures)" \
+    "the panel still reports topology \"$(panel_state_json | jq -r '.topologyName')\" after $DOCK_OUTPUT was removed"
+fi
+
 undocked_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 1; }
 if ! poll 60 undocked_record; then
   diagnostics
   fail "the first desk has a picture again (captures)" "$CACHE_DIR holds $(cache_count)"
+fi
+
+# AND IT IS THE FIRST DESK'S PICTURE, BY NAME — the same discipline as the two
+# desks above, for the same reason. The undocked layout is the state file's key
+# that does not name the dock, and the file it should have is the plugin's own
+# captureFileName for it. A count would accept either desk's copy.
+UNDOCKED_KEY=$(jq -r --arg d "$DOCK_OUTPUT" 'first(.layouts|keys[]|select(contains($d)|not))//empty' "$STATE" 2>/dev/null)
+[[ -n $UNDOCKED_KEY ]] ||
+  fail "the first desk's layout is in the state file (captures)" \
+    "no layout key without \"$DOCK_OUTPUT\" in $STATE — the record went to the wrong desk"
+undocked_want=$(node -e '
+  var panel = require(process.argv[1] + "/PanelModel.js");
+  process.stdout.write(panel.captureFileName(process.argv[2], 0, process.argv[3]));
+' "$PLUGIN_DIR" "$PICTURED_IDENTITY" "$UNDOCKED_KEY")
+if [[ $(cache_files) != "$undocked_want" ]]; then
+  diagnostics
+  fail "the first desk's picture is the FIRST desk's (captures)" \
+    "the cache holds '$(cache_files | tr '\n' ' ')', expected '$undocked_want' for topology \"$UNDOCKED_KEY\""
 fi
 
 # The question has to be owed again to be answered differently, and the only
