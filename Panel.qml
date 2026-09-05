@@ -4923,11 +4923,26 @@ Item {
                     readonly property bool pictured: root.picturedOf(appRow.modelData.identityId)
                     readonly property color tone: rowCamera.pictured ? Color.accent : root.faintForeground
 
+                    // THE COLUMN IS RESERVED WHETHER OR NOT IT DRAWS (tick 5jl).
+                    //
+                    // This used to collapse to width 0 when hidden, so "the
+                    // toggle beside it takes the space back rather than
+                    // anchoring against a gap". That traded one row's gap for
+                    // the whole list's alignment: the toggle, and therefore
+                    // every row's right edge, sat at a different x depending on
+                    // whether that app could be photographed. On a real desk
+                    // with two class rows among eleven it simply reads as
+                    // broken — which is how it was found, on the first look at
+                    // the live panel, by a human. No payload assertion in this
+                    // increment could see it, because alignment is not a value.
+                    //
+                    // A column that is sometimes empty is a column. A column
+                    // that is sometimes absent is a ragged edge.
                     visible: rowCamera.picturable
-                    width: rowCamera.visible ? Style.font.iconLarge : 0
+                    width: Style.font.iconLarge
                     height: Style.font.iconLarge
                     anchors.right: rowLaunch.left
-                    anchors.rightMargin: rowCamera.visible ? Style.space(8) : 0
+                    anchors.rightMargin: Style.space(8)
                     anchors.verticalCenter: parent.verticalCenter
                     opacity: rowCamera.pictured ? 1.0 : 0.75
 
