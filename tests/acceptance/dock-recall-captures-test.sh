@@ -313,6 +313,17 @@ diagnostics() {
   echo "--- panel state (raw) ---" >&2
   panel_state_json | head -c 3000 >&2
   echo >&2
+  echo "--- shell log: errors, and anything naming our QML (UNFILTERED) ---" >&2
+  # THE FILTERED LOG BELOW CANNOT SHOW A PANEL THAT NEVER LOADED, and that cost
+  # a whole VM cycle: a QML error carries no "[dock-recall]" prefix, so a panel
+  # that failed to construct left `dr_log` looking perfectly healthy — the
+  # service and the bar widget had both said their piece — while the one thing
+  # this test needs had silently not been built. `qmllint` cannot see it either;
+  # it exits 0 on an unknown id and on a handler for a signal that does not
+  # exist. So the raw log is dumped first, narrowed to lines that could name a
+  # fault or one of our files.
+  shell_log | grep -iE "error|warning|cannot|unable|is not a type|unexpected|mkelk|\\.qml" \
+    | tail -30 >&2
   echo "--- [dock-recall] log ---" >&2
   dr_log | tail -30 >&2
   capture_service_log
