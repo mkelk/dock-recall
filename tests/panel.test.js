@@ -6743,7 +6743,7 @@ test("EVERY WAY OF WITHDRAWING A CAMERA DELETES THE PICTURES, on every desk (tic
     return source.slice(at, source.indexOf("\n  }\n", at));
   };
 
-  // 1. THE CONSENT ANSWER. "Not for these apps" withdraws the camera globally
+  // 1. THE CONSENT ANSWER. "Delete these" withdraws the camera globally
   //    (clearPictured takes no topology), so it has to delete globally too — and
   //    it must not read the LIVE topologyKey, which a dock can change while the
   //    prompt is up, pointing the delete at a desk the user is not looking at.
@@ -6946,11 +6946,25 @@ test("the map stops drawing a picture the camera has been taken off (tick sp7)",
   // panelState payload. A second copy in MapWorkspace's Image would let
   // `captureSource` (which the payload reports as BOUND) name a picture the
   // chip is not drawing.
+  //
+  // Since tick 2zi the Image binds `pictureSource`, which is the UNION of the
+  // recorded source and the live one — declared in the delegate, from the two
+  // reported properties themselves, so it still cannot be a second derivation of
+  // either gate. The assertion that matters is unchanged: no camera question is
+  // asked inside the Image.
   const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
     map.indexOf("// THE VEIL"));
-  assert.ok(image.indexOf("source: chipTab.captureSource") !== -1, image);
+  assert.ok(image.indexOf("source: chipTab.pictureSource") !== -1, image);
   assert.strictEqual(image.indexOf("pictured"), -1,
     "the Image derives the camera a second time, so the reported source and the drawn one can differ");
+
+  // And `pictureSource` is exactly the two reported properties and nothing else.
+  const union = map.slice(map.indexOf("readonly property string pictureSource:"));
+  const unionBody = union.slice(0, union.indexOf("\n\n"));
+  assert.ok(unionBody.indexOf("chipTab.captureSource") !== -1
+    && unionBody.indexOf("chipTab.liveSource") !== -1, unionBody);
+  assert.strictEqual(unionBody.indexOf("panel."), -1,
+    "the drawn source reaches past the two reported properties to ask the panel again:\n" + unionBody);
 });
 
 // ---------------------------------------------------------------------------
@@ -7062,12 +7076,326 @@ test("the capture source is a fact about the RECORDED map, and a file URL", () =
 });
 
 // ---------------------------------------------------------------------------
+// LIVE PICTURES (tick 2zi) — the Live map draws the windows as they are NOW
+// ---------------------------------------------------------------------------
+//
+// The human's ratified choice, in full (epic tsp): live pictures are held in
+// MEMORY ONLY. Photographed when the panel opens, drawn from memory, NEVER
+// written to disk, discarded when the panel closes. The parts with a right
+// answer are pure and live here; the machinery is QML and is pinned at the
+// source, the way every other QML gate in this file is.
+
+// One live desk, as the instance index has it: two apps with a camera on
+// (`pictured` twice, at two occurrences), one watched app without one, and one
+// address the index does not carry at all — an unwatched window, which has no
+// identity and so cannot be planned.
+function liveDesk() {
+  return {
+    instances: {
+      byAddress: {
+        "0xaa": { identityId: "terminal", occurrence: 0, index: 0, instances: 2 },
+        "0xbb": { identityId: "terminal", occurrence: 1, index: 1, instances: 2 },
+        "0xcc": { identityId: "browser", occurrence: 0, index: 0, instances: 1 },
+        "0xdd": { identityId: "editor", occurrence: 0, index: 0, instances: 1 }
+      }
+    },
+    identities: [
+      { id: "terminal", pictured: true },
+      { id: "browser", pictured: false },
+      { id: "editor", pictured: true }
+    ]
+  };
+}
+
+test("a live plan photographs one window per PICTURED live window, and names no file", () => {
+  const desk = liveDesk();
+  const plan = panel.liveCapturePlan(desk.instances, desk.identities);
+
+  // Ordered by identity, then occurrence: an object's key order is an accident
+  // of insertion, and a round that walked two identical desks in two different
+  // orders would be a round nothing could pin.
+  assert.deepStrictEqual(plan.captures,
+    [{ address: "0xdd", identityId: "editor", occurrence: 0 },
+     { address: "0xaa", identityId: "terminal", occurrence: 0 },
+     { address: "0xbb", identityId: "terminal", occurrence: 1 }]);
+
+  // NO FILE NAME AND NO PREFIX ANYWHERE IN THE PLAN. This is the whole of
+  // "memory only" said in the one place a future author would reach for when
+  // adding a cache back: a plan with no name for a picture cannot file one.
+  for (const entry of plan.captures) {
+    assert.strictEqual(entry.file, undefined,
+      "a live capture names a file — the picture is on its way to a disk");
+  }
+  assert.strictEqual(plan.prefix, undefined);
+  assert.strictEqual(plan.topologyKey, undefined);
+
+  // A camera that is off is the normal answer, not an error, and it is REPORTED
+  // so the log can say what the round did not do rather than only what it did.
+  assert.deepStrictEqual(plan.skipped,
+    [{ address: "0xcc", identityId: "browser", occurrence: 0, reason: "not-pictured" }]);
+});
+
+test("consent is the same flag Record obeys, and nothing looser", () => {
+  const desk = liveDesk();
+  // The read of a CONSENT is `=== true`, which is the rule the state file is
+  // normalized by. A truthy value that is not `true` is a junk file, not a grant.
+  const loose = [{ id: "terminal", pictured: "yes" }, { id: "editor", pictured: 1 }];
+  assert.deepStrictEqual(panel.liveCapturePlan(desk.instances, loose).captures, []);
+
+  // An app nobody watches has consented to nothing, and it is not in the index
+  // to be asked: the index is built from resolved identities only.
+  assert.strictEqual(
+    panel.liveCapturePlan(desk.instances, desk.identities).captures
+      .filter((c) => c.address === "0xee").length, 0);
+
+  // Nothing at all is not a failure — it is a desk with every camera off.
+  assert.deepStrictEqual(panel.liveCapturePlan(null, null), { captures: [], skipped: [] });
+  assert.deepStrictEqual(panel.liveCapturePlan({ byAddress: {} }, desk.identities).captures, []);
+});
+
+test("the live round's log line says the pictures were never written", () => {
+  const desk = liveDesk();
+  const plan = panel.liveCapturePlan(desk.instances, desk.identities);
+
+  const all = plan.captures.map((c) => ({ ok: true, reason: "" }));
+  const line = panel.liveCaptureLogLine(plan, all);
+  // The one word that matters. A line saying "stored" about these is the first
+  // place the memory-only promise starts to blur.
+  assert.ok(line.indexOf("held in memory, never written to disk") !== -1, line);
+  assert.ok(line.indexOf("3 live picture(s)") === 0, line);
+  assert.ok(line.indexOf("1 not pictured") !== -1, line);
+
+  // A FAILURE SAYS WHY — the reasons are the whole diagnostic value of the line.
+  const mixed = panel.liveCaptureLogLine(plan,
+    [{ ok: true, reason: "" }, { ok: false, reason: "no-frame" },
+     { ok: false, reason: "withdrawn" }]);
+  assert.ok(mixed.indexOf("2 could not be taken (no-frame, withdrawn)") !== -1, mixed);
+
+  // A round that was abandoned reports the windows it never reached, rather than
+  // leaving them out of the arithmetic entirely.
+  const short = panel.liveCaptureLogLine(plan, [{ ok: true, reason: "" }]);
+  assert.ok(short.indexOf("2 not reached") !== -1, short);
+});
+
+test("the pictured id list is a SET, sorted, so a reorder is not a withdrawal", () => {
+  // The panel binds this and drops the live pictures of anything that leaves it.
+  // Identity order in the state file is PRIORITY order and moves without a
+  // camera moving, so an unsorted list would look changed and throw the pictures
+  // away for nothing.
+  assert.deepStrictEqual(
+    panel.picturedIdentityIds([{ id: "z", pictured: true }, { id: "a", pictured: true },
+      { id: "m", pictured: false }]), ["a", "z"]);
+  assert.deepStrictEqual(
+    panel.picturedIdentityIds([{ id: "a", pictured: true }, { id: "z", pictured: true }]),
+    ["a", "z"]);
+  // `=== true`, the same read as everywhere else a consent is looked at.
+  assert.deepStrictEqual(panel.picturedIdentityIds([{ id: "a", pictured: "true" }]), []);
+  assert.deepStrictEqual(panel.picturedIdentityIds(null), []);
+});
+
+test("NOTHING ON THE LIVE PATH CAN WRITE A FILE", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
+
+  // THE CONSTRAINT THE WHOLE TICK HANGS ON, and the human chose it over an
+  // on-disk cache after being shown both (epic tsp). A picture that never
+  // persists has no withdrawal surface, and that absence IS the design — so it
+  // is guarded here rather than left to a reviewer noticing a new `saveToFile`.
+  const code = store.split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+
+  assert.strictEqual(code.indexOf("saveToFile"), -1,
+    "the live store saves a grab to a file — live pictures are memory only");
+  assert.strictEqual(code.indexOf("cacheDir"), -1,
+    "the live store has a cache directory, which is the first half of a store to evict");
+  assert.strictEqual(code.indexOf("Process"), -1,
+    "the live store spawns a process — there is nothing on this path for one to do");
+  assert.strictEqual(code.indexOf("FileView"), -1, "the live store reads or writes a file");
+
+  // And the URL it publishes is the grab result's own, held alive by a reference
+  // — which is the mechanism that makes drawing without writing possible at all.
+  assert.ok(code.indexOf("result.url") !== -1, code);
+  assert.ok(code.indexOf("result: result") !== -1,
+    "nothing holds the grab result, so its url is dangling the moment the callback returns");
+});
+
+test("RECORD STAYS AVAILABLE: the dependency between the two rounds runs one way", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
+
+  // `captureStore.busy` dims Record (tick ilg) so two rounds cannot interleave.
+  // A live round on every panel open sharing that flag would make Record refuse
+  // for a moment EVERY time the panel appeared — a new defect, and worse than
+  // the one ilg fixed. So `canRecord` must never learn about the live store.
+  const at = source.indexOf("readonly property bool canRecord:");
+  const canRecord = source.slice(at, source.indexOf("\n\n", at));
+  assert.ok(canRecord.indexOf("!captureStore.busy") !== -1, canRecord);
+  assert.strictEqual(canRecord.indexOf("liveCaptures"), -1,
+    "Record now waits for a live round, which dims it every time the panel opens:\n" + canRecord);
+
+  // The other direction is the whole answer: the live round parks while a
+  // recorded one is in flight, so the compositor never holds two capture
+  // sessions either.
+  assert.ok(source.indexOf("yielding: captureStore.busy") !== -1,
+    "the live round does not stand aside for Record");
+
+  // Parking BURNS THE TOKEN. The view being destroyed may already have a
+  // grabToImage on the render thread, and its callback must answer for nothing
+  // when it lands (tick 070's currency, tick ilg's hazard).
+  const park = store.slice(store.indexOf("function _park()"),
+    store.indexOf("function _resume()"));
+  assert.ok(park.indexOf("liveStore._step = liveStore._step + 1") !== -1, park);
+  assert.ok(park.indexOf("destroy()") !== -1, park);
+  assert.strictEqual(park.indexOf("_next()"), -1,
+    "parking walks the queue on, so a Record and a live grab overlap anyway:\n" + park);
+
+  // And the queue is NOT thrown away, so the window that was standing aside is
+  // photographed when the round walks on.
+  assert.strictEqual(park.indexOf("_queue = []"), -1, park);
+});
+
+test("a chip is never blank: the icon is the fallback, and there is only one of it", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // The picture — either kind — draws only when the Image says Ready, and the
+  // icon steps aside only for a picture that actually arrived. Every moment in
+  // between (a grab still in flight, a window on a monitor that is not
+  // rendering, a camera switched off) is a moment this is false, and the chip
+  // draws its icon exactly as it did before this tick.
+  const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
+    map.indexOf("// THE VEIL"));
+  assert.ok(image.indexOf("visible: chipCapture.status === Image.Ready") !== -1, image);
+
+  const icon = map.slice(map.indexOf("id: chipIcon"), map.indexOf("id: chipLabel"));
+  assert.ok(icon.indexOf("visible: chipTab.iconSource !== \"\" && !chipTab.captureDrawn") !== -1,
+    "the icon no longer steps aside for a picture, or no longer comes back without one:\n" + icon);
+  // ONE mechanism for both kinds of picture. `captureDrawn` is the chip's own
+  // "the image is Ready" and knows nothing about which source it drew.
+  const drawn = map.slice(map.indexOf("readonly property bool captureDrawn:"));
+  assert.ok(drawn.slice(0, 120).indexOf("chipCapture.status === Image.Ready") !== -1,
+    drawn.slice(0, 120));
+});
+
+test("the live source is a fact about the LIVE map, keyed by the window address", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const fn = source.slice(source.indexOf("function liveSourceOf(identityId, address)"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+
+  // The mirror of captureSourceOf's rule: a picture out of the CACHE is a fact
+  // about a recorded layout, and a picture of the window as it is now is a fact
+  // about the live one.
+  assert.ok(body.indexOf("if (root.showRecorded) return \"\"") !== -1, body);
+  // THE CAMERA GATE, in the one funnel both readers go through — the chip's
+  // Image and the payload — so a withdrawn picture stops being drawn in the same
+  // frame the flag is written, with no panel reopen and nothing to wait for.
+  assert.ok(body.indexOf("if (!root.picturedOf(identityId)) return \"\"") !== -1, body);
+  // The map is PASSED IN, so the binding's dependency is visible at the call
+  // site and cannot be tidied away (tick md1).
+  assert.ok(body.indexOf("liveCaptures.urlIn(liveCaptures.pictures, address)") !== -1, body);
+
+  // A withdrawal is noticed by a HANDLER ON THE LIST, not by a call at each of
+  // the three sites that can withdraw a camera — the row's button, "Not for
+  // these apps", and unticking the app, which takes the identity and its flag
+  // away together.
+  assert.ok(source.indexOf("onPicturedIdentityIdsChanged: liveCaptures.retain(") !== -1,
+    "nothing drops a withdrawn app's live pictures out of memory");
+
+  // And the payload's two halves: a boolean the panel always states, and the URL
+  // the chip reports only once it has drawn it.
+  const state = source.slice(source.indexOf("function panelState()"));
+  assert.ok(state.indexOf("liveCapture: liveCapture") !== -1, "the payload lost its live claim");
+  assert.ok(state.indexOf("if (drawnLive) chips[chips.length - 1].liveSource = drawnLive") !== -1,
+    "the live source is reported as \"\" rather than left absent");
+});
+
+test("ONE ROUND PER PANEL SESSION, started by the first client list and discarded on close", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  const fn = source.slice(source.indexOf("function startLiveRound()"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+  // The latch, and both of its conditions: a panel that is not open has nothing
+  // to draw, and a client list arrives a whole process spawn after the panel
+  // does — so `opened` alone is too early to plan from.
+  assert.ok(body.indexOf("if (!root.opened || !root.haveLiveData) return") !== -1, body);
+  assert.ok(body.indexOf("if (root.liveRoundStarted) return") !== -1, body);
+  assert.ok(body.indexOf("PanelModel.liveCapturePlan(root.instanceIndex, root.identities)") !== -1,
+    "the plan is derived a second time instead of coming from the index the map is built from:\n"
+    + body);
+
+  // Both triggers, and QML allows one handler per signal per object — so they
+  // are inside the handlers that already exist rather than beside them.
+  const opened = source.slice(source.indexOf("onOpenedChanged: {"));
+  assert.ok(opened.slice(0, 400).indexOf("root.startLiveRound()") !== -1, opened.slice(0, 400));
+  assert.ok(opened.slice(0, 400).indexOf("liveCaptures.clear()") !== -1,
+    "the pictures are not discarded when the panel closes");
+  assert.ok(opened.slice(0, 400).indexOf("root.liveRoundStarted = false") !== -1,
+    "the latch survives a close, so a re-opened panel would draw the previous session's pictures");
+  const clients = source.slice(source.indexOf("onLiveClientsChanged: {"));
+  assert.ok(clients.slice(0, 900).indexOf("root.startLiveRound()") !== -1, clients.slice(0, 900));
+});
+
+test("the chip's report carries an onXChanged for EVERY property it captures (tick sm1)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // THE RULE, MECHANISED. A report site that captures a property with no handler
+  // for it reports whatever that property was when some OTHER handler last
+  // fired, for ever — the sm1 family of defects, which this increment has paid
+  // for twice (`iconResolved` for a whole session; `captureDrawn`, which lands
+  // after the source it belongs to). Arguing the exception per property is how
+  // the rule stops being checkable, so it is checked.
+  // The CHIP's report site, anchored on the call rather than on the function
+  // name: `reportRender` is the name of the workspace's site too, and the first
+  // match in the file is that one.
+  const at = map.indexOf("panel.reportChipRender(");
+  const body = map.slice(at, map.indexOf("\n                })", at));
+
+  const captured = new Set();
+  for (const m of body.matchAll(/\b(chipTab|chipSlot)\.(\w+)/g)) {
+    captured.add(m[1] + "." + m[2]);
+  }
+  // Not nothing, and not one: a regex that stopped matching would pass silently.
+  assert.ok(captured.size > 15, "the report captures " + captured.size + " properties");
+
+  // chipTab's own handlers are `onXChanged:` in the delegate; the slot's reach
+  // the chip through the Connections block, as `function onXChanged()`.
+  const delegateHandlers = new Set(
+    [...map.matchAll(/^\s*on([A-Z]\w*)Changed:/gm)].map((m) => m[1]));
+  const connectionsHandlers = new Set(
+    [...map.matchAll(/function on([A-Z]\w*)Changed\(\)/g)].map((m) => m[1]));
+
+  const missing = [];
+  for (const key of captured) {
+    const [owner, property] = key.split(".");
+    const handler = property.charAt(0).toUpperCase() + property.slice(1);
+    const have = owner === "chipSlot"
+      ? connectionsHandlers.has(handler)
+      : delegateHandlers.has(handler);
+    if (!have) missing.push(key + " (no on" + handler + "Changed)");
+  }
+  assert.deepStrictEqual(missing.sort(), [],
+    "these reported properties have no change handler, so the payload will carry a stale value "
+    + "for the whole session:\n  " + missing.join("\n  "));
+});
+
+// ---------------------------------------------------------------------------
 // THE FIRST-RECORD DIALOGUE (tick y28)
 // ---------------------------------------------------------------------------
 //
 // The human's decision, in full: at the first Record with picturable apps the
 // panel shows THE CAPTURES JUST TAKEN and offers exactly three answers — Keep
-// pictures / Not for these apps / No pictures — and the answer survives a shell
+// these / Delete these / Delete all — and the answer survives a shell
 // restart. Asked ONCE.
 //
 // The parts with a right answer are pure and live here; the modal's five moving
@@ -7078,7 +7406,7 @@ test("the prompt offers exactly three answers, in the order it draws them", () =
   const choices = panel.consentChoices();
   assert.deepStrictEqual(choices.map((c) => c.id), ["keep", "not-these", "none"]);
   assert.deepStrictEqual(choices.map((c) => c.label),
-    ["Keep pictures", "Not for these apps", "No pictures"]);
+    ["Keep these", "Delete these", "Delete all"]);
 
   // No answer is dimmed. A prompt with a disabled option is a question whose
   // answer the asker has already decided.
@@ -7258,7 +7586,7 @@ test("answering is ONE write, and it deletes only after the write went through",
     "answering the prompt writes the file more than once");
   assert.ok(body.indexOf("StateModel.clearPictured(next, ids)") !== -1, body);
   assert.ok(body.indexOf("StateModel.clearPictured(next, null)") !== -1,
-    "\"No pictures\" has to reach every identity, not just the ones on screen");
+    "\"Delete all\" has to reach every identity, not just the ones on screen");
   assert.ok(body.indexOf("StateModel.setPictureConsent(next, answer)") !== -1, body);
 
   // THE PICTURES GO AFTER THE WRITE, like every other eviction in this file: a
@@ -7266,7 +7594,7 @@ test("answering is ONE write, and it deletes only after the write went through",
   assert.ok(body.indexOf("root.writeState(next)") < body.indexOf("captureStore.evict"),
     "a refused write still deletes the user's pictures");
   assert.ok(body.indexOf("captureStore.evictAll(") !== -1,
-    "\"No pictures\" leaves the other desks' pictures on disk");
+    "\"Delete all\" leaves the other desks' pictures on disk");
 });
 
 test("the prompt is offered by the capture round, after it finishes", () => {

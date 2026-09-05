@@ -1185,8 +1185,8 @@ function isPictured(state, identityId) {
 // them. One write, however many identities it touches.
 //
 // It exists because two of the three answers to the first-Record dialogue are
-// withdrawals — "Not for these apps" names the apps that were just photographed,
-// "No pictures" names none and means every one — and both have to land in the
+// withdrawals — "Delete these" names the apps that were just photographed,
+// "Delete all" names none and means every one — and both have to land in the
 // file as a SINGLE atomic write alongside the answer itself. A loop of
 // setPictured calls would be N writes, each one a whole-file round trip, with
 // the state after the third one describing a decision the user never expressed.
@@ -1238,7 +1238,7 @@ function clearPictured(state, identityIds) {
 // COMPOSABLE ON PURPOSE. Two of the three answers also withdraw a consent, and
 // the panel spells that as `setPictureConsent(clearPictured(fresh, ids), answer)`
 // — one state, one write, one thing that happened. Neither function knows about
-// the other, which is what lets the third answer ("Keep pictures") use this one
+// the other, which is what lets the third answer ("Keep these") use this one
 // alone.
 function setPictureConsent(state, answer) {
   return stateWith(state, { pictureConsent: normalizePictureConsent(answer) });

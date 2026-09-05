@@ -256,7 +256,8 @@ that photographed everything it watches.
 | both render paths | the layout's geometry is stripped so the recorded map drops to the stacked fallback, and the **same file** must still be drawn there — at a tier that carries the app's name |
 | the first-Record dialogue | the **first** Record with picturable apps puts the panel in the consent state: `consentOpen`, `pictureConsent: "unasked"`, exactly three answers (`keep` / `not-these` / `none` — ids from the model, labels from the buttons that drew them), and a thumbnail whose Image reports **Ready** at the same URL the recorded map binds. A strip of empty boxes would satisfy a count, so `ready` is asserted and not only `source` |
 | asked once | the answer is read back off the state file, the **shell is restarted**, and the restarted panel still reports it. Then a Record — the same event that opened the prompt the first time — must not reopen it |
-| "Not for these apps" | driven end to end: the cameras go off **and** the pictures already taken are deleted. Either half alone is the wrong behaviour — a camera left on photographs them again at the next Record, and a picture left on disk is exactly what the user just said they did not want kept. Reaching the second ask means setting `pictureConsent` back to `"unasked"` in the file, which is what a user who wanted asking again would do |
+| "Delete these" | driven end to end: the cameras go off **and** the pictures already taken are deleted. Either half alone is the wrong behaviour — a camera left on photographs them again at the next Record, and a picture left on disk is exactly what the user just said they did not want kept. Reaching the second ask means setting `pictureConsent` back to `"unasked"` in the file, which is what a user who wanted asking again would do |
+| the live map | the Live map draws what the windows look like **now**, from memory: every app whose camera is on reports `liveCapture: true` with a non-empty `liveSource`, the withheld app reports neither, every chip still reports an `iconSource`, and **the cache directory is not even created**. Asserted between the wiped-cache step and the unwritable-cache step, both of which need that directory gone, so the filesystem carries the claim rather than a count. Then the camera is switched off with the panel still open and the live pictures stop — no reopen |
 | one capture deleted | the file goes and the panel is re-summoned. It must be offered no picture at all: no `captureSource`, no `capturePath`, icon and name intact. Asserted on a fresh panel because that is the honest shape — within one session a chip that already decoded its picture goes on drawing it, and the shell destroys the panel on hide anyway |
 
 **How a Record is reached.** Through the panel's own `record`, `undoRecord` and
@@ -342,6 +343,7 @@ would be a second writer with none of that discipline.
   "chips": [
     { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
       "monitorName": "eDP-1", "watched": true, "pictured": false,
+      "liveCapture": false,
       "renderPath": "positioned", "placed": true, "width": 214, "height": 120,
       "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
       "iconResolved": true, "treatment": "pill",
@@ -557,7 +559,7 @@ from a previous offer cannot enter the payload.
 one place that re-reads the file, composes the answer and any withdrawal into a
 **single** write, evicts the pictures *after* that write goes through, and logs.
 An IPC path that set `pictureConsent` directly would record an answer without
-performing it: a "No pictures" that deleted nothing.
+performing it: a "Delete all" that deleted nothing.
 
 ### The app list
 
@@ -673,6 +675,67 @@ just restored. The test asserts the same picture on both paths, on a chip that
 still reports its name and its icon, and it reaches the fallback by stripping
 the layout's geometry rather than by re-recording: the cache key carries no
 geometry, so it is literally the same file on the other render path.
+
+### The live picture
+
+`liveCapture` and `liveSource` are the Live map's answer to `capturePath` and
+`captureSource`, and the pair is shaped the same way on purpose: one claim from
+the **panel**, one from the **chip**.
+
+`liveCapture` is on **every** chip and is **always** a boolean — never absent,
+never `null`. It is the panel's claim: *a photograph of this window, taken when
+the panel opened, is in memory right now*. It is `false` on the Recorded map, on
+a chip whose app has no camera, and in the moments before the grab lands.
+
+It is a boolean and not a path **because there is no path**. Live pictures are
+held in memory only — photographed when the panel opens, drawn from memory,
+never written to disk, discarded when the panel closes — which is the human's
+ratified choice for this feature, made after being shown an on-disk cache as the
+alternative. The whole consent architecture around `capturePath` is about
+pictures that *persist*: where they are, how they are evicted, what a withdrawal
+deletes. A live picture has none of that surface, and the absence of a path in
+this payload is that design saying so. **A test that finds a file on this path
+has found a defect**, not a detail: the captures suite asserts the cache
+directory is untouched while the Live map is drawing.
+
+`liveSource` is the chip's half: the in-process image URL its `Image` was bound
+to, reported only once that `Image` says `Ready` — so it never claims a picture
+the map could not make good on. It is **absent** when there is none, never `""`,
+exactly as `captureSource` is. It is not a `file://` URL and must not be checked
+as one; what a consumer can assert is that it is non-empty on a chip whose
+`liveCapture` is `true`, and that the chip's `iconSource` is still there.
+
+`liveSource` and `captureSource` are **mutually exclusive**. Each is gated on
+`showRecorded` in the panel function behind it, on opposite sides, so no chip may
+ever report both — the Recorded map draws out of the cache and the Live map draws
+out of memory, and a chip reporting both would mean one of the two gates had gone.
+
+**A chip is never blank.** A live grab takes a moment to arrive and can fail
+outright — a window on a monitor that is not rendering never delivers a frame —
+and for every one of those moments the chip draws its **icon**, through exactly
+the mechanism the Recorded map already used (`Image.Ready` gates the picture, and
+the icon steps aside only for a picture that arrived). So `liveCapture: false`
+with a non-empty `iconSource` is the correct, complete state of a chip whose
+picture has not landed, and no consumer should read it as a fault.
+
+**Record stays available while a live round runs.** `captureStore.busy` dims
+Record so two capture rounds cannot interleave; a live round on every panel open
+sharing that flag would dim Record for a moment every time the panel appeared.
+The dependency therefore runs one way only: the live round stands aside for
+Record — parking mid-queue and walking on afterwards — and Record never waits for
+it. `canRecord` does not mention the live store, and a source-scan test pins that.
+
+**Consent is shared and unchanged.** An app is photographed live only while its
+camera is on, read through the same `pictured` flag Record obeys. Switching a
+camera off stops the drawing in the same frame the flag is written and takes the
+pixels out of memory, with **no panel reopen** — and `liveCapture` goes `false`
+for that app's chips accordingly.
+
+Granting one does *not* work in reverse within a session: the round is taken when
+the panel **opens**, so a camera switched on under an open panel produces a live
+picture at the next open. That is the same shape as the recorded half — granting
+a camera does not create a stored picture either; it grants what the next
+picture-taking act may do.
 
 ### The row-to-chip link
 

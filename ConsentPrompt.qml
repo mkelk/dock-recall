@@ -264,9 +264,9 @@ Item {
             onClicked: prompt.panel.answerConsent(answerButton.modelData.id)
 
             // What this button DREW: its id and the words on it. Which is what
-            // makes "it offers exactly Keep pictures / Not for these apps / No
-            // pictures" a claim about buttons that exist rather than about a
-            // model that could have produced them.
+            // makes "it offers exactly Keep these / Delete these / Delete all"
+            // a claim about buttons that exist rather than about a model that
+            // could have produced them.
             Component.onCompleted: prompt.panel.reportConsentChoice(
               String(answerButton.modelData.id), { label: answerButton.text })
           }

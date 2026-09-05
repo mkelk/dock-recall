@@ -1786,7 +1786,7 @@ test("clearPictured withdraws from the identities it names, and only those", () 
 test("clearPictured with no list means EVERY identity, and an empty list means none", () => {
   const granted = state.setPictured(state.setPictured(watchedPair(), "vault", true), "editor", true);
 
-  // "No pictures" — the third answer. Not a defaulting accident: the alternative
+  // "Delete all" — the third answer. Not a defaulting accident: the alternative
   // spelling, where an empty array means "all", would turn a caller's empty list
   // into a wholesale withdrawal.
   assert.deepStrictEqual(state.clearPictured(granted, null).identities.map((i) => i.pictured),
@@ -1815,7 +1815,7 @@ test("clearPictured only ever withdraws — there is no bulk grant", () => {
 });
 
 test("the answer and the withdrawal compose into one write", () => {
-  // How the panel spells "Not for these apps": one state, one write, one thing
+  // How the panel spells "Delete these": one state, one write, one thing
   // that happened. Neither function knows about the other.
   const granted = state.setPictured(state.setPictured(watchedPair(), "vault", true), "editor", true);
   const answered = state.setPictureConsent(state.clearPictured(granted, ["vault"]), "not-these");

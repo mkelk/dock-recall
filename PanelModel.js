@@ -6739,7 +6739,7 @@ function captureIdentityPattern(identityId) {
 }
 
 // The same for a list, de-duplicated and with the empty ids dropped. One act —
-// "Not for these apps" over a strip of five — is one list, so the store can do
+// "Delete these" over a strip of five — is one list, so the store can do
 // it in one process rather than five.
 function captureIdentityPatterns(identityIds) {
   var ids = isArray(identityIds) ? identityIds : [];
@@ -6871,6 +6871,138 @@ function captureLogLine(plan, results) {
   return parts.join(", ");
 }
 
+// ---------------------------------------------------------------------------
+// LIVE PICTURES (tick 2zi) — the Live map draws the windows as they are NOW
+// ---------------------------------------------------------------------------
+//
+// WHICH WINDOWS THE PANEL SHOULD PHOTOGRAPH WHEN IT OPENS, and which it
+// deliberately will not.
+//
+// THE PLAN CARRIES NO FILE NAME AND NO PREFIX, and that is the whole difference
+// from `capturePlan` above rather than an omission. A live picture is held in
+// memory and never written (the human's ratified choice, epic tsp), so it has no
+// name to be filed under, no topology to be keyed by and no eviction to be
+// named in. It is keyed by the WINDOW ADDRESS, which is what a live chip already
+// is (`chipFor` sets `key` to the address), so the lookup needs no hash.
+//
+// THE INPUT IS THE INSTANCE INDEX, not a second matching pass. `instanceIndex`
+// is what the live map itself is built from, so a plan derived from it cannot
+// name a window the map does not draw or number an occurrence differently from
+// the chip that will show the picture — the same discipline `capturePlan` gets
+// by taking `chosen` from the engine rather than re-matching.
+//
+// CONSENT IS THE SAME FLAG RECORD OBEYS. `pictured === true` and nothing looser:
+// this is the read of a CONSENT, and it is the rule StateModel.normalizeIdentity
+// applies to the file. An unwatched window has no identity at all, so it is not
+// in the index and cannot be planned — an app nobody watches has consented to
+// nothing.
+//
+// `skipped` is not an error list: "not-pictured" is the normal, intended answer
+// for every app whose camera is off, and on a healthy desk it is most of them.
+function liveCapturePlan(instances, identities) {
+  var byAddress = (instances && instances.byAddress) ? instances.byAddress : {};
+  var list = isArray(identities) ? identities : [];
+  var pictured = {};
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && typeof list[i].id === "string" && list[i].pictured === true) {
+      pictured[list[i].id] = true;
+    }
+  }
+
+  var captures = [];
+  var skipped = [];
+  for (var address in byAddress) {
+    if (!own(byAddress, address)) continue;
+    var place = byAddress[address];
+    var identityId = (place && typeof place.identityId === "string") ? trim(place.identityId) : "";
+    if (!identityId || !trim(address)) continue;
+    var entry = {
+      address: trim(address),
+      identityId: identityId,
+      occurrence: occurrenceOf(place.occurrence)
+    };
+    if (!own(pictured, identityId)) {
+      entry.reason = "not-pictured";
+      skipped.push(entry);
+      continue;
+    }
+    captures.push(entry);
+  }
+
+  // ORDERED, because an object's key order is an accident of insertion and a
+  // round that walks its windows in a different order on two identical desks is
+  // a round nothing can pin. Identity first, then occurrence, then the address —
+  // the same order the map reads in.
+  captures.sort(compareLiveCaptures);
+  skipped.sort(compareLiveCaptures);
+  return { captures: captures, skipped: skipped };
+}
+
+// Every identity whose camera is on, as a sorted list of ids.
+//
+// Sorted because the panel BINDS to this and drops the live pictures of anything
+// no longer in it: identity order in the state file is priority order and can
+// change without a camera changing, and a list that reorders is a list that
+// looks like it changed. Sorting makes "the same set" the same value.
+//
+// `pictured === true` and nothing looser — the rule the file itself is
+// normalized by, applied at every read of a consent.
+function picturedIdentityIds(identities) {
+  var list = isArray(identities) ? identities : [];
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && typeof list[i].id === "string" && list[i].pictured === true) {
+      out.push(list[i].id);
+    }
+  }
+  out.sort();
+  return out;
+}
+
+function compareLiveCaptures(x, y) {
+  if (x.identityId !== y.identityId) return x.identityId < y.identityId ? -1 : 1;
+  if (x.occurrence !== y.occurrence) return x.occurrence - y.occurrence;
+  if (x.address === y.address) return 0;
+  return x.address < y.address ? -1 : 1;
+}
+
+// What a finished live round says in the log. Its own sentence rather than
+// `captureLogLine`'s, and the difference is the one word that matters: these
+// pictures are HELD IN MEMORY, and a log line saying "stored" about them would
+// be the first place the memory-only promise started to blur.
+//
+// A FAILURE SAYS WHY, exactly as the recorded line does: "no-frame" is a window
+// on a monitor that is not rendering, "no-handle" is one that closed between the
+// plan and the grab, "withdrawn" is a camera switched off mid-round.
+function liveCaptureLogLine(plan, results) {
+  var list = isArray(results) ? results : [];
+  var taken = 0;
+  var failed = 0;
+  var reasons = [];
+  var seenReason = {};
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].ok === true) {
+      taken++;
+      continue;
+    }
+    failed++;
+    var reason = (list[i] && list[i].reason) ? String(list[i].reason) : "unknown";
+    if (!own(seenReason, reason)) {
+      seenReason[reason] = true;
+      reasons.push(reason);
+    }
+  }
+  var planned = (plan && isArray(plan.captures)) ? plan.captures.length : 0;
+  var withheld = (plan && isArray(plan.skipped)) ? plan.skipped.length : 0;
+  var unreached = Math.max(0, planned - taken - failed);
+
+  var parts = [taken + " live picture(s) held in memory, never written to disk"];
+  if (failed) parts.push(failed + " could not be taken (" + reasons.join(", ") + ")");
+  if (unreached) parts.push(unreached + " not reached");
+  if (withheld) parts.push(withheld + " not pictured");
+  return parts.join(", ");
+}
+
 // The basenames a directory listing came back with, as a set. `find -printf
 // '%f\n'` is what produces it, and a missing cache directory produces nothing
 // at all — which is the correct answer and not an error: a wiped cache means
@@ -6925,24 +7057,24 @@ function consentChoices() {
   return [
     {
       id: "keep",
-      label: "Keep pictures",
-      tooltip: "Keep these pictures and go on taking one for each app whose camera"
-        + " is on. You can switch any app's camera off later.",
+      label: "Keep these",
+      tooltip: "Keep the pictures above and go on taking one for each app whose"
+        + " camera is on. You can switch any app's camera off later.",
       enabled: true
     },
     {
       id: "not-these",
-      label: "Not for these apps",
-      tooltip: "Delete the pictures just taken and switch the camera off for these"
+      label: "Delete these",
+      tooltip: "Delete the pictures above and switch the camera off for these"
         + " apps. Other apps are unaffected, and this is not asked again.",
       enabled: true
     },
     {
       id: "none",
-      label: "No pictures",
-      tooltip: "Delete every picture this plugin has stored and switch off every"
-        + " app's camera. Nothing is photographed again unless you switch a"
-        + " camera back on.",
+      label: "Delete all",
+      tooltip: "Delete every picture this plugin has stored — not only the ones"
+        + " above — and switch off every app's camera. Nothing is photographed"
+        + " again unless you switch a camera back on.",
       enabled: true
     }
   ];
@@ -6960,7 +7092,7 @@ function isConsentChoice(answer) {
 }
 
 // The captures a finished round actually STORED, in the order they were taken —
-// the thumbnails the prompt shows, and the apps "Not for these apps" is about.
+// the thumbnails the prompt shows, and the apps "Delete these" is about.
 //
 // The successes and nothing else. A round's results carry every planned capture
 // including the ones that failed, and a strip with a hole in it where a window
@@ -7046,10 +7178,32 @@ function consentTitle(count) {
   return "Dock Recall took pictures of these " + n + " windows";
 }
 
+// WHY THIS SPELLS OUT WHAT EACH ANSWER DESTROYS.
+//
+// It did not, and the cost was measured on a real desk: the human turned three
+// cameras on, pressed Record, saw "3 picture(s) stored" in the log — and then
+// answered "Delete these", which deleted all three. They came back asking
+// why the pictures had not been saved. Nothing was broken; the prompt had
+// talked them out of it.
+//
+// The old labels were "Keep pictures / Not for these apps / No pictures". Two of
+// those three DELETE what the user is looking at, and both read as scoping
+// preferences — "not for these apps" sounds like "stop asking me about these",
+// not "destroy these now". The consequence lived only in a tooltip, which is a
+// place you have to already suspect something to visit.
+//
+// So the labels are three parallel verbs — Keep these / Delete these / Delete
+// all — and the body says which is which. A dialogue that shows somebody three
+// photographs and then offers three buttons owes them a plain sentence about
+// which buttons take the photographs away.
 function consentBody() {
-  return "They are stored on this machine, under ~/.cache, and drawn on the"
-    + " Recorded map so you can see which window was where. They are replaced"
-    + " when you record again and deleted when you forget the layout.";
+  return "They are on this machine only, under ~/.cache, and they appear on the"
+    + " Recorded map so you can see which window was where. Recording again"
+    + " replaces them; forgetting the layout deletes them."
+    + "\n\n"
+    + "Only Keep these keeps the pictures above. Delete these removes them and"
+    + " switches the camera off for these apps. Delete all removes every picture"
+    + " the plugin has stored and switches off every camera.";
 }
 
 // The log line each answer leaves. One sentence per answer, naming what it DID
@@ -7089,6 +7243,9 @@ if (typeof module !== "undefined") {
     captureIdentityPatterns: captureIdentityPatterns,
     capturePlan: capturePlan,
     captureLogLine: captureLogLine,
+    liveCapturePlan: liveCapturePlan,
+    liveCaptureLogLine: liveCaptureLogLine,
+    picturedIdentityIds: picturedIdentityIds,
 
     morphChipEntries: morphChipEntries,
     mapMorphPairs: mapMorphPairs,

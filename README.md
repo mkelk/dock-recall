@@ -133,10 +133,10 @@ thinks is happening:
   it.
 - **Asked once, with the pictures in front of you** — the first time a Record
   actually stores a picture, the panel shows you the pictures it just took and
-  offers three answers: **Keep pictures**, **Not for these apps**, or **No
-  pictures**. Not for these apps switches those apps' cameras off and deletes
+  offers three answers: **Keep these**, **Delete these**, or **Delete
+  all**. Delete these switches those apps' cameras off and deletes
   every picture of them, on every desk — the camera it withdraws is not a
-  per-desk grant, so neither is the delete; No pictures switches every camera off
+  per-desk grant, so neither is the delete; Delete all switches every camera off
   and deletes every stored picture, on every desk. The answer lives in the state
   file, so it
   survives a shell restart and you are not asked again. Escape, or a click

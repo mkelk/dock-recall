@@ -744,9 +744,11 @@ BorderSurface {
               // THE STORED PICTURE, as a URL the Image below binds (tick vbh).
               // "" when this chip has none — an unpictured app, a recording
               // taken before the consent was granted, a cache a cleaner has
-              // wiped — and "" on the LIVE map always, because a photograph of
-              // a window laid over the window itself is a staler picture of the
-              // same thing.
+              // wiped — and "" on the LIVE map always, because a picture out of
+              // the CACHE is a fact about a recorded layout. What the live map
+              // draws instead is `liveSource` below: the same window, as it
+              // looks right now, which is a different picture and not a staler
+              // copy of this one.
               //
               // Held as a property rather than written straight into the Image
               // for the reason the icon pair is: the payload has to carry what
@@ -766,6 +768,34 @@ BorderSurface {
               // readers go through.
               readonly property string captureSource: panel.captureSourceOf(
                 chipTab.modelData.identityId, chipTab.modelData.occurrence)
+
+              // THE LIVE PICTURE (tick 2zi) — what this window looks like RIGHT
+              // NOW, taken when the panel opened and held in MEMORY. "" on the
+              // recorded map always, "" for an app whose camera is off, and ""
+              // until the grab lands.
+              //
+              // Keyed by the window ADDRESS and not by (identity, occurrence),
+              // because there is no file: a live chip IS a window address, so
+              // the panel's map needs no topology, no occurrence and no hash to
+              // look one up.
+              //
+              // THE CAMERA GATE IS THE PANEL'S, NOT A SECOND ONE HERE, for the
+              // reason spelled out over `captureSource`: `panel.liveSourceOf`
+              // already answers "" for an identity whose camera is off, and a
+              // second derivation here would let the property the payload
+              // reports as BOUND name a picture the chip is not drawing.
+              readonly property string liveSource: panel.liveSourceOf(
+                chipTab.modelData.identityId, chipTab.modelData.address)
+
+              // THE ONE THING THE IMAGE IS POINTED AT, and the reason it is a
+              // named property rather than a condition inside the Image: the two
+              // above are MUTUALLY EXCLUSIVE by construction — each is gated on
+              // `showRecorded` in the panel function behind it, one on each side
+              // — so this is a union and not a precedence, and writing the union
+              // out once here keeps the drawn source and the two reported ones
+              // from being three derivations of the same fact.
+              readonly property string pictureSource: chipTab.captureSource !== ""
+                ? chipTab.captureSource : chipTab.liveSource
 
               // Is that picture actually ON THE CHIP? The source is what the
               // Image was pointed at; this is whether it arrived. They differ
@@ -841,6 +871,16 @@ BorderSurface {
                   // information: the cache index says there is a picture, the
                   // chip could not draw it.
                   captureSource: chipTab.captureDrawn ? chipTab.captureSource : "",
+                  // THE LIVE MAP'S HALF OF THE SAME PAIR (tick 2zi), gated on
+                  // the same status and for the same reason: the panel's claim
+                  // is that a picture of this window is in memory, and this is
+                  // the chip's claim that it DREW it. "" here becomes an ABSENT
+                  // key, never an empty string.
+                  //
+                  // The two source keys can never both be set — each is gated on
+                  // `showRecorded` on opposite sides — which is what makes "no
+                  // chip reports both" an assertion worth making.
+                  liveSource: chipTab.captureDrawn ? chipTab.liveSource : "",
                   // The tier the drawing below branches on, from the same
                   // property those bindings read — so a consumer can
                   // reproduce it with chipTreatment(width, height) on the two
@@ -957,6 +997,11 @@ BorderSurface {
               onIconResolvedChanged: chipTab.reportRender()
               onPicturedChanged: chipTab.reportRender()
               onCaptureSourceChanged: chipTab.reportRender()
+              // The live half, per the same rule — and this one genuinely moves
+              // under a live delegate: the grab lands a second or two after the
+              // panel opens, and a camera switched off takes it away again
+              // without the panel closing.
+              onLiveSourceChanged: chipTab.reportRender()
               // Both, per the report-site rule: a site must carry an onXChanged
               // for EVERY property it captures (.tick/learnings.md, tick sm1).
               // The image load is asynchronous, so `captureDrawn` lands after
@@ -1056,11 +1101,21 @@ BorderSurface {
               // picture does. A re-record writes a new file at the same name,
               // and Qt's image cache would happily serve the old pixels for the
               // rest of the panel session.
+              //
+              // AND SINCE TICK 2zi IT DRAWS EITHER KIND. The recorded map's
+              // source is a `file://` URL out of the cache; the live map's is an
+              // in-process image URL held in memory and never written. The two
+              // arrive by different machinery and mean different things, and
+              // everything below this line — the ground position, the veil, the
+              // Ready gate, the icon stepping aside, the aspect crop — is the
+              // same for both, which is why they share one Image rather than
+              // getting one each. `pictureSource` is the union; the payload
+              // still says which kind it is.
               Image {
                 id: chipCapture
                 anchors.fill: parent
                 visible: chipCapture.status === Image.Ready
-                source: chipTab.captureSource
+                source: chipTab.pictureSource
                 asynchronous: true
                 cache: false
                 clip: true
@@ -1182,6 +1237,14 @@ BorderSurface {
                       // "the image is Ready", not the panel's belief that a file
                       // exists, so the icon comes back the instant a capture
                       // fails to draw rather than leaving an unlabelled chip.
+                      //
+                      // AND THAT IS ALSO THE LIVE MAP'S FALLBACK, unchanged
+                      // (tick 2zi). A live picture takes a moment to arrive and
+                      // can fail outright — a window on a monitor that is not
+                      // rendering never delivers a frame — and for every one of
+                      // those moments this binding is false, so the chip draws
+                      // its icon. A chip is never blank, and no second mechanism
+                      // was needed to make that true of live pictures.
                       visible: chipTab.iconSource !== "" && !chipTab.captureDrawn
                       width: chipIcon.side
                       height: chipIcon.side

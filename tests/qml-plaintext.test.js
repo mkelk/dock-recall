@@ -56,8 +56,9 @@ const PANEL_QML = path.join(REPO_ROOT, "Panel.qml");
 
 // THE SET, from a glob and not from a list. See SCOPE above for why that is the
 // whole point of this file rather than a convenience.
-const QML_FILE_COUNT = 8;   // BarWidget, CaptureStore, ConsentPrompt, MapWorkspace,
-                            // Motion, Panel, Service, ToplevelBridge.
+const QML_FILE_COUNT = 9;   // BarWidget, CaptureStore, ConsentPrompt,
+                            // LiveCaptureStore, MapWorkspace, Motion, Panel,
+                            // Service, ToplevelBridge.
                             //
                             // Spelled ONCE. It was spelled three times with two
                             // different numbers, two of them stale, in the file

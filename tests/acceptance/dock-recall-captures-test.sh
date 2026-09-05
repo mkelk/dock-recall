@@ -94,6 +94,16 @@
 #                     apps" answered after the desk changed while the prompt was
 #                     up — which is the case where the panel is looking at one
 #                     desk's pictures and `topologyKey` names another.
+#   THE LIVE MAP     — and this is the one assertion in the file that is about a
+#                     picture NOT being on disk. The Live map draws what the
+#                     windows look like right now, from memory: every app whose
+#                     camera is on gets one, the withheld app does not, every
+#                     chip still reports an icon, and the cache DIRECTORY is
+#                     never even created. It is asserted between the wiped-cache
+#                     step and the unwritable-cache step, both of which need that
+#                     directory gone, so the filesystem itself carries the claim.
+#                     Then the camera is switched off with the panel still open:
+#                     the live pictures stop without a reopen.
 #   ONE CAPTURE GONE — the file is deleted and the panel re-summoned. It must be
 #                     offered no picture at all. Asserted on a FRESH panel
 #                     because that is the honest shape: within one session a
@@ -780,7 +790,7 @@ consent_offered() {
     # the right ids under the wrong words fails here.
     and ([.consentChoices[]|.id] == ["keep", "not-these", "none"])
     and ([.consentChoices[]|.label]
-         == ["Keep pictures", "Not for these apps", "No pictures"])
+         == ["Keep these", "Delete these", "Delete all"])
     # THE CAPTURES JUST TAKEN, and they are the ones on disk: the same URL the
     # recorded map binds, decoded (ready) rather than merely pointed at.
     and ((.consentCaptures|length) == 1)
@@ -795,7 +805,7 @@ if ! poll "$ROUND_S" consent_offered; then
     "no payload with consentOpen, pictureConsent 'unasked', the three answers, and one ready thumbnail"
 fi
 screenshot "success-dock-recall-captures-02-consent"
-pass "the first Record asks: three answers — Keep pictures / Not for these apps / No pictures — over the picture it just took"
+pass "the first Record asks: three answers — Keep these / Delete these / Delete all — over the picture it just took"
 
 # ANSWERED THROUGH THE PANEL'S OWN VERB, which routes to root.answerConsent and
 # nothing else — the one place that re-reads the file, writes once, evicts and
@@ -822,13 +832,13 @@ stored_answer=$(jq -r '.pictureConsent//"absent"' "$STATE" 2>/dev/null)
 [[ $stored_answer == "keep" ]] ||
   fail "the answer is written to the state file (captures)" \
     "the state file says pictureConsent '$stored_answer'"
-# And "Keep pictures" kept them: nothing was deleted and nobody's camera moved.
+# And "Keep these" kept them: nothing was deleted and nobody's camera moved.
 cache_is 1 ||
-  fail "\"Keep pictures\" keeps the pictures (captures)" "$CACHE_DIR holds $(cache_count)"
+  fail "\"Keep these\" keeps the pictures (captures)" "$CACHE_DIR holds $(cache_count)"
 still_pictured=$(jq -r --arg id "$PICTURED_IDENTITY" \
   'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
 [[ $still_pictured == "true" ]] ||
-  fail "\"Keep pictures\" leaves the camera on (captures)" \
+  fail "\"Keep these\" leaves the camera on (captures)" \
     "$PICTURED_IDENTITY reports pictured '$still_pictured'"
 pass "answered: the prompt closed, the answer is in the state file, the picture and the camera are untouched"
 
@@ -1080,6 +1090,104 @@ if ! poll 30 icons_only; then
 fi
 pass "the whole cache deleted: every chip reports an icon source, none reports a capture path, nothing errored"
 
+# ------------- 8b. THE LIVE MAP DRAWS THE WINDOWS AS THEY ARE NOW (tick 2zi)
+#
+# AND WRITES NOTHING. This step is placed exactly here on purpose: the cache
+# directory has just been deleted, and step 9 below refuses to run unless it is
+# still gone. So the strongest assertion this feature has — that a live picture
+# never reaches a disk — is made against the state of the filesystem between two
+# steps that both depend on it, rather than by a count, which a directory that
+# had been created and then emptied would satisfy.
+#
+# The Live map draws a photograph of every window whose camera is on, taken when
+# the panel opened and held in memory. The withheld app is the control: it is
+# WATCHED and RUNNING and gets no live picture, which is the same privacy claim
+# the recorded half of this file makes about the file on disk.
+live_view=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
+[[ $live_view == "live" ]] ||
+  fail "the live map opens for the live pictures (captures)" "setView live answered '$live_view'"
+
+# TWO CLAIMS, as on the recorded map: `liveCapture` is what the PANEL says (a
+# picture of this window is in memory) and `liveSource` is what the CHIP says
+# (the url its Image bound and DREW). And the two source keys are mutually
+# exclusive — the recorded map draws out of the cache, the live map out of
+# memory, and a chip reporting both would mean a gate had gone.
+live_pictures_drawn() {
+  panel_state_json | jq -e '
+    (.showRecorded == false)
+    and ([.chips[]|select(.pictured == true and .liveCapture == true
+       and (.liveSource|type) == "string" and (.liveSource|length) > 0)]|length) >= 1
+    and ([.chips[]|select(.pictured != true and .liveCapture == true)]|length) == 0
+    and ([.chips[]|select(has("liveSource") and has("captureSource"))]|length) == 0
+    and ([.chips[]|select(has("capturePath"))]|length) == 0
+    and ([.chips[]|select((.iconSource|type) == "string"
+       and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
+}
+if ! poll "$ROUND_S" live_pictures_drawn; then
+  diagnostics
+  fail "the Live map draws a live picture for every app whose camera is on" \
+    "$(panel_state_json | jq -c '[.chips[]|{name, pictured, liveCapture, liveSource, iconSource}]' 2>&1)"
+fi
+
+# NOTHING WAS WRITTEN. Not "the cache holds no new file" — the directory itself
+# must not have been created, which is the state the plugin ships in and the
+# state step 9 needs to find.
+[[ ! -e $CACHE_DIR ]] ||
+  fail "a live picture reached the disk" \
+    "$CACHE_DIR exists after the Live map drew its pictures — live pictures are memory only"
+screenshot "success-dock-recall-captures-04-live-pictures"
+pass "the Live map drew its windows from memory: nothing was written, and the withheld app got no picture"
+
+# A CHIP IS NEVER BLANK — every chip reports an icon source in the same payload
+# that reports the pictures, above. The icon is what a chip draws while a grab is
+# in flight and what it goes back to when one fails, through exactly the
+# mechanism the recorded map already used.
+#
+# THE WITHDRAWAL, WITHOUT A PANEL REOPEN. Switching the camera off has to stop
+# the live pictures for that app in the panel that is on screen: the consent is
+# read at draw time, so there is nothing asynchronous to wait for and no file to
+# delete first.
+LIVE_ROW_KEY=""
+find_live_row() { LIVE_ROW_KEY=$(pictured_row_key); [[ -n $LIVE_ROW_KEY ]]; }
+if ! poll 30 find_live_row; then
+  diagnostics
+  fail "the pictured app has a row for the live withdrawal (captures)" \
+    "no row links to the window titled $PICTURED_TITLE"
+fi
+live_off=$(omarchy-shell "$IPC_TARGET" setPictured "$LIVE_ROW_KEY" off 2>&1)
+[[ $live_off == "off" ]] ||
+  fail "the camera can be switched off on the live map (captures)" \
+    "setPictured '$LIVE_ROW_KEY' off answered '$live_off'"
+
+live_pictures_gone() {
+  panel_state_json | jq -e '
+    ([.chips[]|select(.liveCapture == true)]|length) == 0
+    and ([.chips[]|select(has("liveSource"))]|length) == 0
+    and ([.chips[]|select((.iconSource|type) == "string"
+       and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
+}
+if ! poll 30 live_pictures_gone; then
+  diagnostics
+  fail "switching a camera off stops the live pictures without a panel reopen" \
+    "$(panel_state_json | jq -c '[.chips[]|select(.liveCapture == true)|{name, liveSource}]' 2>&1)"
+fi
+pass "one camera switched off: the live pictures stopped in the open panel, and the chips fell back to their icons"
+
+# Back on for the steps below, which need this app pictured. Note what does NOT
+# happen: the live picture does not come back until the panel is reopened,
+# because the round is taken when the panel OPENS. That is the same shape as the
+# recorded half — granting a camera does not create a picture either; it grants
+# what the next picture-taking act may do.
+live_back_on=$(omarchy-shell "$IPC_TARGET" setPictured "$LIVE_ROW_KEY" on 2>&1)
+[[ $live_back_on == "on" ]] ||
+  fail "the camera goes back on after the live round (captures)" "setPictured answered '$live_back_on'"
+back_to_recorded=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
+[[ $back_to_recorded == "recorded" ]] ||
+  fail "the recorded map comes back after the live round (captures)" \
+    "setView recorded answered '$back_to_recorded'"
+[[ ! -e $CACHE_DIR ]] ||
+  fail "the live round left something on disk after all" "$CACHE_DIR exists"
+
 # --------------------------- 9. a failed capture cannot fail a record
 
 # Make the cache uncreatable. The store's own mkdir is what fails, which is a
@@ -1211,7 +1319,7 @@ panel_state_json | jq -e '.consentOpen == false and .pictureConsent == "keep"' >
     "a Record after the answer put the panel back in the consent state"
 pass "asked ONCE: the answer survived a shell restart and the next Record did not ask again"
 
-# ---------- 10c. “Not for these apps” unpictures them and deletes theirs
+# ---------- 10c. “Delete these” unpictures them and deletes theirs
 #
 # The one answer with a destructive half, driven end to end. The question has to
 # be asked again to answer it differently, and the only honest way to reach that
@@ -1256,13 +1364,13 @@ decline_answer=$(omarchy-shell "$IPC_TARGET" answerConsent not-these 2>&1)
 # said they did not want kept.
 if ! poll 30 cache_is 0; then
   diagnostics
-  fail "\"Not for these apps\" removes the captures already taken" \
+  fail "\"Delete these\" removes the captures already taken" \
     "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ')"
 fi
 declined_pictured=$(jq -r --arg id "$PICTURED_IDENTITY" \
   'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
 [[ $declined_pictured == "false" ]] ||
-  fail "\"Not for these apps\" leaves those apps unpictured" \
+  fail "\"Delete these\" leaves those apps unpictured" \
     "$PICTURED_IDENTITY still reports pictured '$declined_pictured'"
 declined_answer_on_disk=$(jq -r '.pictureConsent//"absent"' "$STATE" 2>/dev/null)
 [[ $declined_answer_on_disk == "not-these" ]] ||
@@ -1280,9 +1388,9 @@ declined_reported() {
 if ! poll 30 declined_reported; then
   diagnostics
   fail "the panel reports the withdrawn consent (captures)" \
-    "a row or a chip still reports pictured after \"Not for these apps\""
+    "a row or a chip still reports pictured after \"Delete these\""
 fi
-pass "\"Not for these apps\": the cameras are off, the pictures just taken are deleted, and the answer is on disk"
+pass "\"Delete these\": the cameras are off, the pictures just taken are deleted, and the answer is on disk"
 
 # ------- 10d. A CAMERA IS A FACT ABOUT AN APP, NOT ABOUT A DESK (tick sp7)
 #
@@ -1394,7 +1502,7 @@ if ! poll 30 capture_gone; then
 fi
 pass "one camera switched off: BOTH desks' pictures deleted, and the map stopped drawing them"
 
-# ---------- 10e. \"Not for these apps\" deletes what it is LOOKING AT (sp7)
+# ---------- 10e. \"Delete these\" deletes what it is LOOKING AT (sp7)
 #
 # The two ways the old code got this wrong, in one drive:
 #
@@ -1524,10 +1632,10 @@ declined_two=$(omarchy-shell "$IPC_TARGET" answerConsent not-these 2>&1)
 
 if ! poll 30 cache_is 0; then
   diagnostics
-  fail "\"Not for these apps\" deletes what it is looking at, on every desk" \
+  fail "\"Delete these\" deletes what it is looking at, on every desk" \
     "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the answer evicted the desk that happened to be plugged in rather than the app's pictures"
 fi
-pass "\"Not for these apps\" answered after the desk changed under the prompt: BOTH desks' pictures gone"
+pass "\"Delete these\" answered after the desk changed under the prompt: BOTH desks' pictures gone"
 
 # ------------- 10f. UNTICKING AN APP TAKES ITS PICTURES WITH IT (tick sp7)
 #

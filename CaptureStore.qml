@@ -252,7 +252,7 @@ Item {
   }
 
   // EVERY picture, on every desk. The third answer to the first-Record dialogue
-  // ("No pictures", tick y28) is the only caller, and it is deliberately a
+  // ("Delete all", tick y28) is the only caller, and it is deliberately a
   // separate function rather than `evict("")`: the prefix form refuses an empty
   // prefix precisely so a caller with an unresolved topology key cannot delete
   // the whole cache by accident, and a wholesale delete has to be something a
@@ -273,7 +273,7 @@ Item {
   //
   // A job carries its own SENTENCE as well as its own names, because the three
   // evictions delete different things and a line reading "this layout" after
-  // "No pictures" describes an act narrower than the one that ran.
+  // "Delete all" describes an act narrower than the one that ran.
   property var _evictQueue: []
   property var _evictJob: null
   property var _evictMatch: []
@@ -353,7 +353,7 @@ Item {
       // so the sequence in the log reads as the user's own sequence.
       //
       // The sentence is the JOB's, because the three evictions delete different
-      // things and a line reading "this layout" after "No pictures" would
+      // things and a line reading "this layout" after "Delete all" would
       // describe an act narrower than the one that ran.
       if (job && job.reason) store.log(job.sentence + " (" + job.reason + ")")
       store.refresh()
@@ -625,7 +625,7 @@ Item {
   // was not merely a duplicate: it pushed an extra result AND shifted the queue
   // again, so one queue entry was dropped unphotographed and unreported. That
   // window is missing from `consentCaptureEntries`, so the prompt never shows it
-  // and "Not for these apps" never turns its camera off.
+  // and "Delete these" never turns its camera off.
   //
   // The subject is the STEP NUMBER and the entry is read from the queue (tick
   // 070): a caller holding a view's copy of the entry could never be recognised
@@ -687,7 +687,7 @@ Item {
       // THE SAVE ITSELF IS GATED, not just the result (tick ilg). The render
       // thread answers on its own schedule and the whole-queue deadline can end
       // this step while it works; a file written after that is a picture no
-      // consent prompt ever showed, that "Not for these apps" cannot reach, and
+      // consent prompt ever showed, that "Delete these" cannot reach, and
       // that can land after `evictAll("declined")` has run. So a callback whose
       // step is over writes nothing and says nothing.
       if (!store._isCurrentStep(step)) return

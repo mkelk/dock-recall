@@ -1746,6 +1746,97 @@ Item {
     stillOwed: function (identityId) { return root.picturedOf(identityId) }
   }
 
+  // ------------------------------------------------------- the live pictures
+  //
+  // WHAT THE WINDOWS LOOK LIKE RIGHT NOW, held in memory and nowhere else (epic
+  // tsp, tick 2zi). The whole rationale — why it is a separate component, why it
+  // may never write a file, and why it stands aside for Record — is at the top
+  // of LiveCaptureStore.qml. This is the instance and the two questions the
+  // panel asks it.
+  //
+  // NOTE WHAT IS NOT HERE: no `cacheDir`. There is nothing on this path for a
+  // directory to hold, which is exactly the property the human chose it for.
+  LiveCaptureStore {
+    id: liveCaptures
+    logPrefix: root.logPrefix
+    hostScreen: root.focusedScreen
+    hostMapped: root.opened
+    // RECORD COMES FIRST, AND THIS ONE BINDING IS THE WHOLE ANSWER TO IT.
+    //
+    // `captureStore.busy` dims Record (tick ilg) so a second round cannot
+    // interleave with the first. If a live round shared that flag, Record would
+    // go dim for a moment EVERY time the panel opened — a new defect, and a
+    // worse one than the one ilg fixed. So the dependency runs one way only:
+    // `canRecord` does not mention `liveCaptures.busy` (a test pins that), and
+    // the live round parks the instant a Record starts. `busy` is true from
+    // `capture()`'s first assignment — a whole mkdir before the recorded round
+    // builds its first view — so the compositor never holds two capture
+    // sessions at once either.
+    yielding: captureStore.busy
+    // THE CONSENT, RE-ASKED AT THE INSTANT THE PICTURE WOULD BE KEPT — the same
+    // predicate the recorded store gets, for the same reason (tick zxg): the
+    // round's plan is older than the question.
+    stillOwed: function (identityId) { return root.picturedOf(identityId) }
+  }
+
+  // ONE ROUND PER PANEL SESSION. "Live shows real live" means the pictures are
+  // taken when the panel opens and discarded when it closes, so the round is
+  // started by the first successful desktop read of this session and not again:
+  // a live client list arrives a process spawn after the panel does, so `opened`
+  // alone is too early to plan from.
+  property bool liveRoundStarted: false
+
+  function startLiveRound() {
+    if (!root.opened || !root.haveLiveData) return
+    if (root.liveRoundStarted) return
+    root.liveRoundStarted = true
+    // FROM THE INSTANCE INDEX, which is what the live map itself is built from —
+    // so the plan cannot name a window the map does not draw. PanelModel owns
+    // the decision; this hands it the two values and passes the answer on.
+    liveCaptures.start(PanelModel.liveCapturePlan(root.instanceIndex, root.identities))
+  }
+
+  // The live picture this chip is drawing, as a URL its Image can bind, or "".
+  //
+  // ONLY ON THE LIVE MAP, which is the mirror image of `captureSourceOf`'s rule
+  // and the same argument: the Recorded map is where the windows BELONG, and a
+  // photograph of a window as it is now, laid over the place it is recorded to
+  // go, would answer a question nobody asked.
+  //
+  // THE CAMERA GATE IS HERE AND NOWHERE ELSE, exactly as `captureFileFor` holds
+  // the recorded one (tick sp7): switching a camera off stops the drawing in the
+  // same frame the flag is written, without a panel reopen and without waiting
+  // for anything asynchronous — because there is nothing asynchronous to wait
+  // for. `liveCaptures.forget` then takes the pixels out of memory as well, so a
+  // camera switched off and on again cannot show a frame from before the
+  // withdrawal.
+  //
+  // THE MAP IS PASSED IN, for the reason `captureFileFor` passes the listing in
+  // (tick md1): a QML binding re-evaluates when a property it READ changes, and
+  // `liveCaptures.pictures` read inside the store's own function is a dependency
+  // nobody can see at this call site. Handing it to `urlIn` cannot be tidied
+  // away, because without it there is no map to look in.
+  function liveSourceOf(identityId, address) {
+    if (root.showRecorded) return ""
+    if (!identityId || !address) return ""
+    if (!root.picturedOf(identityId)) return ""
+    return liveCaptures.urlIn(liveCaptures.pictures, address)
+  }
+
+  // EVERY APP WHOSE CAMERA IS ON, and the one place a withdrawal is noticed.
+  //
+  // The panel withdraws a camera in three places — the row's camera button, "Not
+  // for these apps" on the first-Record prompt, and unticking an app, which takes
+  // the identity and its flag away together. A `liveCaptures.forget(id)` call at
+  // each of them is a duty the fourth path would forget, and the pictures are
+  // the one thing a forgotten withdrawal leaves on screen. So the list is
+  // derived, the handler watches the LIST, and every path that changes a camera
+  // goes through it whether its author knew about this or not.
+  readonly property var picturedIdentityIds:
+    PanelModel.picturedIdentityIds(root.identities)
+
+  onPicturedIdentityIdsChanged: liveCaptures.retain(root.picturedIdentityIds)
+
   // The picture this (identity, occurrence) would have for the CURRENT
   // topology, or "" when the cache does not hold one.
   //
@@ -1766,7 +1857,7 @@ Item {
   // there is no listing to look in.
   //
   // AND GATED ON THE CAMERA (tick sp7). Withdrawing a camera — the row's button,
-  // "Not for these apps", or unticking the app — deletes that identity's
+  // "Delete these", or unticking the app — deletes that identity's
   // pictures on every desk, but a `find` is a process and a listing is another,
   // and until both have come back `captureStore.has()` still answers yes. Two
   // frames of the photograph a user has just withdrawn is exactly the moment
@@ -1810,7 +1901,21 @@ Item {
   // chip" from "there was one". The other re-read is on a topology change, and
   // it lives in the existing onTopologyKeyChanged below rather than in a second
   // handler — QML allows only one per signal per object.
-  onOpenedChanged: if (root.opened) captureStore.refresh()
+  //
+  // AND THE LIVE ROUND, which is the same moment said in the other currency: the
+  // recorded map re-reads a directory, the live map takes fresh photographs.
+  // Closing DISCARDS them — the shell destroys this panel's Loader on hide, so
+  // this is belt to that brace and the sentence the epic uses ("discarded when
+  // it closes") said in code rather than relied on.
+  onOpenedChanged: {
+    if (root.opened) {
+      captureStore.refresh()
+      root.startLiveRound()
+    } else {
+      root.liveRoundStarted = false
+      liveCaptures.clear()
+    }
+  }
 
   // FileView.setText does not mkdir, and with the service disabled nobody else
   // will have.
@@ -1882,6 +1987,13 @@ Item {
         + "\") is gone — clearing the refusal")
       root.refusedTick = null
     }
+    // AND THE LIVE ROUND STARTS HERE, not in onOpenedChanged, because a client
+    // list arrives a whole process spawn after the panel does: at the instant
+    // `opened` goes true there is nothing to plan from. `startLiveRound` latches
+    // itself, so this fires once per panel session however often the desk moves
+    // — and QML allows one handler per signal per object, which is why it is
+    // inside this one rather than beside it.
+    root.startLiveRound()
   }
 
   readonly property string tickRefusalHint: {
@@ -2253,6 +2365,9 @@ Item {
     // being asynchronous is not a window in which the user still sees what they
     // just withdrew.
     if (want !== true) captureStore.evictIdentities([identityId], "camera switched off")
+    // The LIVE pictures need no line here: `picturedIdentityIds` below is bound
+    // to this very flag, and dropping them is a reaction to the list changing
+    // rather than a duty at each of the three withdrawal sites (tick 2zi).
     root.log(want === true
       ? "picturing \"" + identityId + "\" — Record will store a picture of its windows"
       : "no longer picturing \"" + identityId + "\" — its stored pictures are deleted,"
@@ -2475,7 +2590,7 @@ Item {
   //
   // THE HUMAN'S DECISION, IN FULL: at the first Record with picturable apps the
   // panel shows THE CAPTURES JUST TAKEN and offers exactly three answers — Keep
-  // pictures / Not for these apps / No pictures — and the answer survives a
+  // these / Delete these / Delete all — and the answer survives a
   // shell restart. Asked ONCE.
   //
   // WHY IT SHOWS THE PICTURES. It is an onboarding moment that demonstrates the
@@ -2621,16 +2736,16 @@ Item {
   // loop of setPictured calls would be N whole-file round trips with the state
   // after the third describing a decision the user never expressed.
   //
-  //   Keep pictures      — records the answer. Nothing is deleted, nobody's
+  //   Keep these         — records the answer. Nothing is deleted, nobody's
   //                        camera moves.
-  //   Not for these apps — the apps in the strip lose their camera, and every
+  //   Delete these       — the apps in the strip lose their camera, and every
   //                        picture of them is deleted, on every desk (tick sp7).
   //                        THESE apps: the ones the user is looking at. Other
   //                        apps are untouched — but not other DESKS, because the
   //                        camera it withdraws is not a per-desk grant and a
   //                        photograph left on a desk whose camera is off is one
   //                        nothing would ever come back for.
-  //   No pictures        — every camera goes off and EVERY stored picture is
+  //   Delete all         — every camera goes off and EVERY stored picture is
   //                        deleted, on every desk. Not a standing gate on top of
   //                        the per-app consent, deliberately: `pictured` already
   //                        defaults to off and only an explicit camera press
@@ -2666,13 +2781,13 @@ Item {
     // THE PICTURES, AFTER THE WRITE, like every other eviction in this file: a
     // refused write must not take the pictures with it.
     //
-    // "Not for these apps" evicts BY IDENTITY, on every desk (tick sp7). It used
+    // "Delete these" evicts BY IDENTITY, on every desk (tick sp7). It used
     // to evict this desk's topology prefix, which was wrong twice over and both
     // ways were reachable by ordinary use:
     //
     //   · the answer withdraws the camera GLOBALLY (clearPictured takes no
     //     topology), so a user who pressed Escape on desk A's prompt and then
-    //     answered "Not for these apps" on desk B kept desk A's pictures of
+    //     answered "Delete these" on desk B kept desk A's pictures of
     //     exactly those apps — cameras off, and nothing left that would ever
     //     clean them: Record's eviction only runs for the desk you are on, and
     //     so does Forget;
@@ -2684,7 +2799,7 @@ Item {
     // includes the one the prompt's own pictures were taken on whatever the
     // panel has since docked into — which is the whole point.
     //
-    // "No pictures" still reaches further: every app, not only the ones in the
+    // "Delete all" still reaches further: every app, not only the ones in the
     // strip.
     if (answer === "not-these") {
       captureStore.evictIdentities(ids, "declined")
@@ -2973,7 +3088,7 @@ Item {
   //     "overflowLayouts": [ { "name": "Laptop", "current": false } ],
   //     "pictureConsent": "unasked" | "keep" | "not-these" | "none",
   //     "consentOpen": false,
-  //     "consentChoices": [ { "id": "keep", "label": "Keep pictures" } ],
+  //     "consentChoices": [ { "id": "keep", "label": "Keep these" } ],
   //     "consentCaptures": [ { "identityId": "obsidian", "occurrence": 0,
   //                            "name": "Obsidian", "source": "file:///…",
   //                            "ready": true } ],
@@ -3293,6 +3408,20 @@ Item {
             // from a path.
             var capturePath = root.showRecorded
               ? root.capturePathFor(chip.identityId, chip.occurrence) : ""
+
+            // THE LIVE PICTURE, as the PANEL's claim (tick 2zi) — "a photograph
+            // of this window, taken when the panel opened, is in memory right
+            // now". The mirror of `capturePath` on the other map, and a BOOLEAN
+            // rather than a location because there is no location: a live
+            // picture is never written, so there is no path to name, nothing for
+            // a withdrawal to have to find, and the absence of a path in this
+            // payload is the design saying so out loud.
+            //
+            // The chip's own claim is `liveSource` below, reported by the
+            // delegate once its Image says Ready. Two claims, exactly as the
+            // recorded map has two, and a disagreement between them is worth
+            // failing on.
+            var liveCapture = root.liveSourceOf(chip.identityId, chip.address) !== ""
             chips.push({
               key: chip.key,
               name: chip.name,
@@ -3314,6 +3443,13 @@ Item {
               // move independently, so a consumer has to be able to read them
               // independently.
               pictured: root.reported(report, "pictured"),
+              // IS A LIVE PICTURE IN MEMORY FOR THIS CHIP (tick 2zi)? Always
+              // present and always a boolean, like `pictured` beside it and
+              // unlike `capturePath`: "no" is a fact this key always has to
+              // state, and a key that vanished when the answer was no would make
+              // "the live map draws nothing" indistinguishable from "this tick
+              // is not deployed".
+              liveCapture: liveCapture,
               // The two colour channels, independently readable. A drifted chip
               // is fillState "watched" and edgeTone "drift" at once.
               fillState: root.reported(report, "fillState"),
@@ -3369,6 +3505,16 @@ Item {
             if (capturePath) chips[chips.length - 1].capturePath = capturePath
             var drawnCapture = root.reported(report, "captureSource")
             if (drawnCapture) chips[chips.length - 1].captureSource = drawnCapture
+            // AND THE LIVE MAP'S HALF OF THE SAME PAIR (tick 2zi): the in-process
+            // image URL the delegate bound and DREW. Added rather than assigned
+            // for the reason `captureSource` is — a chip with no live picture has
+            // nothing to say here, and "" would be a second spelling of that.
+            //
+            // The two source keys are mutually exclusive by construction, each
+            // gated on `showRecorded` in the panel function behind it, and that
+            // is assertable: no chip may ever report both.
+            var drawnLive = root.reported(report, "liveSource")
+            if (drawnLive) chips[chips.length - 1].liveSource = drawnLive
           }
         }
       }
@@ -3713,7 +3859,7 @@ Item {
     // it. Through root.answerConsent and nothing else: that function owns the
     // fresh read, the single composed write, the eviction and the log line, and
     // an IPC path that set `pictureConsent` directly would record an answer
-    // without performing it — a "No pictures" that deleted nothing.
+    // without performing it — a "Delete all" that deleted nothing.
     //
     // It exists because this prompt is otherwise reachable only by a finger on
     // one of three buttons, and the acceptance venue has no pointer. The verb is
