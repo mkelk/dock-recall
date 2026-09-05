@@ -208,6 +208,41 @@ BarWidget {
     onFileChanged: reload()
   }
 
+  // A SECOND IPC TARGET, AND WHY IT IS JUSTIFIED (tick fyi).
+  //
+  // The panel's `dock-recall` handler is the plugin's one reporting surface, and
+  // adding another is not free — epic f22's review flagged a single extra verb
+  // as "beyond the authorised list" and made it argue for itself. This one has
+  // an argument the panel cannot make: the bar widget is a SEPARATE top-level
+  // entry point, loaded by the bar and not by the panel loader, so nothing in
+  // Panel.qml can see into it. The epic's DoD requires the bar's `sweeping`
+  // animation to be reportable, and there is no route from here to the panel's
+  // payload — the widget deliberately owns no state of its own and writes
+  // nothing, which is the property that makes an enabled bar cost nothing.
+  //
+  // So: read-only, one verb, no mutation of anything. It reports what the two
+  // animation objects say about THEMSELVES, for the reason the chip report
+  // gives at length — a number restated from Motion.qml would pass on a widget
+  // whose animation had been deleted.
+  IpcHandler {
+    target: "dock-recall-bar"
+
+    function motion(): string {
+      return JSON.stringify({
+        // The glyph's opacity fade: a state change, so it carries the curve.
+        glyphFadeMs: glyphFade.duration,
+        glyphFadeEasing: glyphFade.easing.type,
+        // The restore sweep: running only while the service says it is working,
+        // which is a fact worth reporting beside the duration — an animation
+        // that is bound but never runs is not motion.
+        sweepMs: sweepRun.duration,
+        sweepRunning: sweepRun.running,
+        sweeping: root.sweeping,
+        glyph: root.glyph
+      })
+    }
+  }
+
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
@@ -263,7 +298,11 @@ BarWidget {
         clip: true
 
         Behavior on opacity {
-          NumberAnimation { duration: root.motion.duration; easing.type: root.motion.easingType }
+          NumberAnimation {
+            id: glyphFade
+            duration: root.motion.duration
+            easing.type: root.motion.easingType
+          }
         }
 
         // The restore sweep: a band of the bar's own background travelling
@@ -277,6 +316,7 @@ BarWidget {
           color: Qt.rgba(root.ringColor.r, root.ringColor.g, root.ringColor.b, 0.55)
 
           NumberAnimation on x {
+            id: sweepRun
             running: root.sweeping
             from: -sweepBand.width
             to: screen.width

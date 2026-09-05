@@ -308,6 +308,19 @@ BorderSurface {
           : (chipSlot.linkHovered ? "hover"
             : (chipSlot.anyWatched ? "watched" : "quiet"))
 
+        // THE TWO CHANNELS FADE RATHER THAN SNAP (tick fyi), and they fade
+        // SEPARATELY because they mean separate things: a chip can become
+        // drifted without becoming watched, and folding the two into one
+        // animation would make the edge wait for the fill.
+        //
+        // No easing curve, deliberately. Omarchy's own Ui/ToggleSwitch gives
+        // its ColorAnimation none — Qt's linear default is the shell's answer
+        // for a colour, and OutCubic is its answer for something that MOVES.
+        // Both durations come from Motion.qml; see the guard in
+        // tests/qml-plaintext.test.js.
+        Behavior on color { ColorAnimation { id: fillFade; duration: panel.motion.duration } }
+        Behavior on edgeColor { ColorAnimation { id: edgeFade; duration: panel.motion.duration } }
+
         // WHICH FILL, as a word — the state channel, and the reason it is a
         // channel at all.
         //
@@ -647,9 +660,41 @@ BorderSurface {
                   // `linkHovered` is per SLOT because a fused tab group
                   // lights up as one pill.
                   linkKey: String(chipTab.modelData.linkKey || ""),
-                  linked: chipSlot.linkHovered
+                  linked: chipSlot.linkHovered,
+                  // THAT THE TWO CHANNELS ARE ANIMATED AT ALL (tick fyi).
+                  //
+                  // Read off the ANIMATION OBJECTS, never off Motion.qml. The
+                  // acceptance VM cannot see a colour move, so the most it can
+                  // ask is "is this property bound to a running animation with a
+                  // real duration" — and it can only ask that honestly if the
+                  // number comes from the thing doing the animating. Reporting
+                  // `panel.motion.duration` here would restate the token and
+                  // pass on a chip whose Behavior somebody had deleted, which is
+                  // the self-consistent assertion this increment has already
+                  // been bitten by twice.
+                  fillMotionMs: chipTab.fillMotionMs,
+                  edgeMotionMs: chipTab.edgeMotionMs,
+                  motionEasing: chipTab.motionEasing
                 })
               }
+
+              // The bound animations, as numbers a payload can carry. They are
+              // constants once bound — Motion.qml's tokens are readonly ints —
+              // so there is nothing to re-report when they "change"; the
+              // handlers below exist anyway, because the report-site rule
+              // (.tick/learnings.md, tick sm1) is that a site carries an
+              // onXChanged for EVERY property it captures, and an exception
+              // argued per property is how that rule stops being checkable.
+              readonly property int fillMotionMs: fillFade.duration
+              readonly property int edgeMotionMs: edgeFade.duration
+              // Qt's easing enum, straight off the fill's animation. A colour
+              // fade declares no curve — the shell's own ColorAnimations do
+              // not — so this is Easing.Linear by design, and the assertion
+              // that matters is the DURATION being non-zero.
+              readonly property int motionEasing: fillFade.easing.type
+              onFillMotionMsChanged: chipTab.reportRender()
+              onEdgeMotionMsChanged: chipTab.reportRender()
+              onMotionEasingChanged: chipTab.reportRender()
               onRenderPathChanged: chipTab.reportRender()
               onPlacedChanged: chipTab.reportRender()
               onIconSourceChanged: chipTab.reportRender()

@@ -34,6 +34,11 @@ import "PanelModel.js" as PanelModel
 Item {
   id: root
 
+  // Every duration and curve this panel and its children animate with, from the
+  // plugin's one statement of them. MapWorkspace reads it through `panel.motion`
+  // — the same single-site rule the guard in tests/qml-plaintext.test.js keeps.
+  readonly property Motion motion: Motion {}
+
   // Injected by the shell's panel loader.
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property var shell: null
@@ -2693,9 +2698,21 @@ Item {
   //         "treatment": "pill" | "badge" | "strip" | "veiled" | "field" | null,
   //         "fillState": "watched" | "ghost" | "unwatched" | null,
   //         "edgeTone": "drift" | "hover" | "watched" | "quiet" | null,
-  //         "linkKey": "id:obsidian" | null, "linked": false | null }
+  //         "linkKey": "id:obsidian" | null, "linked": false | null,
+  //         "fillMotionMs": 120 | null, "edgeMotionMs": 120 | null,
+  //         "motionEasing": 0 | null }
   //     ]
   //   }
+  //
+  // The three motion fields are read off the chip's own ANIMATION OBJECTS, not
+  // off Motion.qml's tokens: the venue cannot watch a colour move, so the most
+  // it can honestly ask is whether the property is bound to an animation with a
+  // real duration — and only a number that came from the animating thing
+  // answers that. `motionEasing` is Qt's easing enum and is Linear (0) for the
+  // two colour fades by design; the shell's own ColorAnimations declare no
+  // curve. The bar widget's animations are NOT here — it is a separate entry
+  // point the panel cannot see into, and reports through its own read-only
+  // `dock-recall-bar` handler.
   //
   // ABSENT vs `null` is the payload's contract, and it is NORMATIVE in
   // tests/acceptance/README.md, "Absent vs `null` — the normative statement".
@@ -2938,7 +2955,15 @@ Item {
               // the width and height beside it — PanelModel.chipTreatment is
               // the one that decides — which is what makes a disagreement here
               // a real finding rather than two guesses.
-              treatment: root.reported(report, "treatment")
+              treatment: root.reported(report, "treatment"),
+              // THAT THE CHIP'S TWO COLOUR CHANNELS ARE ANIMATED (tick fyi),
+              // read off the animation objects themselves rather than off the
+              // token they were bound from — see the comment at the report site
+              // in MapWorkspace.qml for why that distinction is the whole
+              // assertion.
+              fillMotionMs: root.reported(report, "fillMotionMs"),
+              edgeMotionMs: root.reported(report, "edgeMotionMs"),
+              motionEasing: root.reported(report, "motionEasing")
             })
             // ADDED rather than assigned above, because the payload's rule is
             // that a key the panel has nothing to say about is ABSENT — and
