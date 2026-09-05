@@ -4868,11 +4868,20 @@ Item {
                     source: appRow.iconSource
                   }
 
+                  // Never drawn: it exists so the camera's inset can be the real
+                  // width of the switch it has to clear, on whatever theme is
+                  // loaded, instead of a number copied out of the kit.
+                  ToggleSwitch {
+                    id: rowSwitchMetrics
+                    visible: false
+                    interactive: false
+                  }
+
                   Toggle {
                     id: rowToggle
                     anchors.left: rowIcon.right
                     anchors.leftMargin: Style.space(8)
-                    anchors.right: rowCamera.left
+                    anchors.right: rowLaunch.left
                     anchors.rightMargin: Style.space(8)
                     anchors.verticalCenter: parent.verticalCenter
 
@@ -4941,8 +4950,28 @@ Item {
                     visible: rowCamera.picturable
                     width: Style.font.iconLarge
                     height: Style.font.iconLarge
-                    anchors.right: rowLaunch.left
-                    anchors.rightMargin: Style.space(8)
+                    // INSIDE THE ROW'S OWN BOX, beside the watch switch, so the
+                    // row carries BOTH consents in one place (human's call, on
+                    // the live panel: "and where is that camera?" — it was
+                    // outside the border, dim, next to the placement caption,
+                    // and read as part of that caption rather than as a
+                    // control).
+                    //
+                    // A SIBLING DRAWN OVER THE TOGGLE, not a child of it. The
+                    // shell's Toggle fills itself with a Row and a full-size
+                    // MouseArea; a child would depend on that component's
+                    // internal ordering to get its clicks. A later sibling is
+                    // on top for both painting and input by QML's own rules,
+                    // which is a language guarantee rather than a fact about
+                    // somebody else's file.
+                    //
+                    // The margin clears the switch by MEASURING one rather than
+                    // hardcoding a width — Toggle insets its content by
+                    // rowPaddingX and puts the switch last, so the camera sits
+                    // one padding step to the left of it and follows the theme.
+                    anchors.right: rowToggle.right
+                    anchors.rightMargin: Style.spacing.rowPaddingX * 2
+                      + rowSwitchMetrics.implicitWidth
                     anchors.verticalCenter: parent.verticalCenter
                     opacity: rowCamera.pictured ? 1.0 : 0.75
 
