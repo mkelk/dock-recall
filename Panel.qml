@@ -300,18 +300,300 @@ Item {
       root.driftReport, root.recordedLayout)
   }
 
-  readonly property var mapModel: {
+  // BOTH MAPS, ALWAYS, and only one of them on screen.
+  //
+  // They were one property that branched on `showRecorded`, which is the cheaper
+  // thing to compute and the wrong thing to have: the morph (below) is a fact
+  // about the two maps TOGETHER, so the tab that is not showing has to exist for
+  // the tab that is showing to be able to say what it morphed. Splitting the
+  // branch is what makes the pairing computable at all — and computable ONCE,
+  // rather than at the moment of the switch and then again for the report.
+  //
+  // The cost is one extra pure map build per refresh, on the tab that is not
+  // visible. Both are pure functions over values the panel already holds, and
+  // `appRows` — which is heavier than either — has always run on both tabs.
+  readonly property var liveMap: {
     // Referenced so the map rebuilds when the watched list changes — the
     // resolver below closes over it, and a closure is invisible to QML's
     // dependency tracking.
     var list = root.identities
-    if (root.showRecorded) {
-      return PanelModel.recordedMapModel(root.recordedLayout, root.liveMonitors,
-        root.runningIdentityIds, root.mapWidth, root.mapHeight, root.instanceIndex)
-    }
     return PanelModel.liveMapModel(root.liveClients, root.liveMonitors,
       function (client) { return Engine.matchClient(client, list) || "" },
       root.driftReport, root.mapWidth, root.mapHeight, root.verdicts, root.instanceIndex)
+  }
+
+  // A topology with nothing recorded builds an EMPTY recorded map rather than
+  // no map: recordedMapModel over a null layout answers with the monitors and
+  // no workspaces, which is the truthful picture ("there is nowhere for
+  // anything to go") and keeps the morph a total function. Every live chip then
+  // falls out as `live-only`, which is exactly right.
+  readonly property var recordedMap: PanelModel.recordedMapModel(
+    root.recordedLayout, root.liveMonitors, root.runningIdentityIds,
+    root.mapWidth, root.mapHeight, root.instanceIndex)
+
+  readonly property var mapModel: root.showRecorded ? root.recordedMap : root.liveMap
+
+  // ------------------------------------------------------------- the morph
+  //
+  // WHICH CHIPS ARE THE SAME THING ON BOTH MAPS, computed HERE and nowhere
+  // else. The animation reads it, the per-chip role index reads it, and
+  // panelState() reads it — three consumers, one value, which is the whole
+  // shape of the rule tick 3xi paid for: the same question asked twice, a turn
+  // apart, filed a screenshot under a correct key that was a photograph of a
+  // different window. `morphRoles` and `morphPayload` both take this OBJECT
+  // rather than the two maps, so neither of them can pair anything a second
+  // time even by accident.
+  readonly property var morph: PanelModel.mapMorphPairs(root.liveMap, root.recordedMap)
+
+  // The same answer indexed by chip key, because the map asks it once per chip
+  // and a loop over every pair per chip is quadratic in the size of the desk.
+  readonly property var morphRoles: PanelModel.morphChipRoles(root.morph)
+
+  // "paired" | "live-only" | "recorded-only", or "" for a chip the current
+  // morph has never heard of. Namespaced inside PanelModel — see morphRoleAt
+  // for why a bare `{}` keyed on a chip key is not safe.
+  function morphRoleOf(key) {
+    return PanelModel.morphRoleAt(root.morphRoles, key)
+  }
+
+  // WHAT ACTUALLY MOVES, and it is two things rather than one.
+  //
+  // A view flip REBUILDS the whole map: `mapModel` changes and every Repeater
+  // under it regenerates its delegates, so no chip object exists on both sides
+  // of the switch to translate. The morph is therefore NOT attempted inside the
+  // Repeaters. It is drawn ABOVE them, by `morphOverlay` down in the map area —
+  // an overlay owning its own lightweight rectangles, which depends on no
+  // delegate surviving anything.
+  //
+  //   A PAIR WITH `geometry === true` FLIES. The overlay resolves BOTH ends to
+  //   drawn rectangles and translates one rectangle between them, while the real
+  //   chip at each end stands aside so the user does not see two of it.
+  //
+  //   A PAIR WITH `geometry === false` CROSS-FADES, because at least one of its
+  //   ends is on a fallback workspace, which draws stacked and whose rects mean
+  //   nothing. There is nowhere honest to fly it from.
+  //
+  //   A ONE-SIDED CHIP is entering, and fades in from nothing.
+  //
+  // ONE ANIMATION FOR ALL THREE, not one per chip, and that is a defence rather
+  // than an economy. A per-chip animation would need a count of the ones still
+  // running to answer "is a morph in flight", and a delegate destroyed
+  // mid-flight (which is precisely what a switch back does) can leave that count
+  // standing for ever — a latched store, which is tick gox exactly. One
+  // panel-owned progress value that everything BINDS to cannot strand anything:
+  // wherever the animation stops, that is where every chip and every flying
+  // rectangle is, and the animation only ever stops at 1.0 or is restarted.
+  property real morphProgress: 1.0
+
+  // WHERE EACH WORKSPACE DREW ITS CANVAS, in mapCanvas coordinates, written by
+  // the MapWorkspace that owns it.
+  //
+  // THIS CANNOT BE COMPUTED, AND THAT IS THE WHOLE REASON THE REGISTRY EXISTS.
+  // The canvas SIZE is nearly pure — `workspaceGridLayout` decides the box width
+  // and the monitor's aspect decides the height — but the ORIGIN is not: it sits
+  // under a BorderSurface's insets and under a monitor-name Text whose height is
+  // font metrics, inside a Flow whose wrapping depends on both. So the delegate
+  // that laid it out is the only thing that knows, and it says so through
+  // `panel`, exactly as it already says its render path. Nothing here reads a
+  // parent's id, and nothing in MapWorkspace reaches upwards: it hands the panel
+  // its own canvas Item and the panel maps that into its own `mapCanvas`.
+  //
+  // KEYED BY VIEW as well as by monitor and workspace — the same key the render
+  // reports use, and for a stronger reason here: the two views' canvases are the
+  // two ENDS of a flight, so an un-namespaced key would have the destination
+  // overwrite the origin the instant the map rebuilt.
+  //
+  // NEVER PRUNED, like every other registry in this file, and here that is
+  // load-bearing rather than merely safe: the map the panel is flying FROM has
+  // just been destroyed, and its last reported geometry is the only record of
+  // where the user was actually looking a frame ago.
+  property var workspaceCanvasRects: ({})
+
+  // Mutating a `property var` in place emits nothing, so a counter carries the
+  // signal instead. A reassignment would do it too and is what this file
+  // deliberately does not do for the render registries — it re-runs the map's
+  // bindings from inside the map's own layout pass — and the flight geometry is
+  // read by an overlay that is a SIBLING of the map, so the bump reaches it
+  // without ever reaching back into the layout that produced it.
+  property int mapGeometryRevision: 0
+
+  function reportWorkspaceCanvas(key, item) {
+    if (!key || !item) return
+    var at = mapCanvas.mapFromItem(item, 0, 0)
+    var current = root.workspaceCanvasRects[String(key)]
+    // Idempotent: a report that says nothing new must not bump the revision, or
+    // every layout pass re-runs every flight binding for no reason.
+    if (current && current.x === at.x && current.y === at.y
+      && current.width === item.width && current.height === item.height) return
+    root.workspaceCanvasRects[String(key)] = {
+      x: at.x, y: at.y, width: item.width, height: item.height
+    }
+    root.mapGeometryRevision += 1
+  }
+
+  // THE CHIP FLOOR, STATED ONCE. `chipRectsForCanvas` is given these by the map
+  // when it draws and by the flight resolver when it works out where the map
+  // drew — two callers of one function, which have to be handed the same two
+  // numbers or the flight lands beside the chip instead of on it.
+  readonly property int chipFloorWidth: Style.space(16)
+  readonly property int chipFloorHeight: Style.space(10)
+
+  // ONE END OF A FLIGHT: where the map DREW this chip, in mapCanvas
+  // coordinates. `null` for anything that cannot be answered honestly — a
+  // workspace that has not reported its canvas yet, a fallback workspace, a slot
+  // with no rect.
+  //
+  // Reads `mapGeometryRevision` first and deliberately: the registry is mutated
+  // in place, so that read is the only thing that makes this re-evaluate when a
+  // delegate reports. Removing it would freeze every flight at whatever the
+  // geometry was the first time it was asked.
+  function morphDrawnRect(map, entry, recorded) {
+    var revision = root.mapGeometryRevision
+    if (!entry) return null
+    var box = root.workspaceCanvasRects[
+      root.workspaceRenderKey(recorded, entry.monitorName, entry.workspaceId)]
+    if (!box || box.width <= 0 || box.height <= 0) return null
+    var drawn = PanelModel.morphDrawnChipRect(map, entry, box.width, box.height,
+      root.chipFloorWidth, root.chipFloorHeight)
+    if (!drawn) return null
+    return { x: box.x + drawn.x, y: box.y + drawn.y, width: drawn.width, height: drawn.height }
+  }
+
+  // THE PAIRS THAT CAN ACTUALLY BE TRANSLATED, from the pairing computed once
+  // above and from nothing else.
+  //
+  // A pair reaches this list only if `geometry` is true AND both ends resolved
+  // to a real drawn rectangle. Everything else stays a cross-fade — and it is a
+  // list rather than a flag per pair because it is also what the overlay's
+  // Repeater is built from, so the thing that flies and the thing that reports
+  // having flown are one value.
+  //
+  // `from` and `to` are direction-aware, which is the caller's job and not
+  // `mapMorphPairs`'s: a pair carries both its ends and no direction, and
+  // `showRecorded` is the only thing that knows which way the user just went.
+  //
+  // THE DESTINATION CAN ARRIVE LATE, and that is designed for rather than
+  // guarded against. On the first switch into a view, that view's workspaces
+  // have never been laid out, so `to` is null for a frame or two and the pair is
+  // simply not in this list yet; when the delegates report, the revision bumps,
+  // this re-evaluates and the flight joins in progress. Because the overlay
+  // BINDS to `morphProgress` rather than being handed a start and an end, a
+  // flight that joins late is only a shorter flight — never a stranded one.
+  readonly property var morphFlights: {
+    var out = []
+    var pairs = root.morph.pairs
+    for (var i = 0; i < pairs.length; i++) {
+      var pair = pairs[i]
+      if (pair.geometry !== true) continue
+      var live = root.morphDrawnRect(root.liveMap, pair.live, false)
+      if (!live) continue
+      var recorded = root.morphDrawnRect(root.recordedMap, pair.recorded, true)
+      if (!recorded) continue
+      out.push({
+        linkKey: pair.linkKey,
+        liveKey: pair.live.key,
+        recordedKey: pair.recorded.key,
+        identityId: pair.live.identityId,
+        from: root.showRecorded ? live : recorded,
+        to: root.showRecorded ? recorded : live
+      })
+    }
+    return out
+  }
+
+  // Which chips the overlay is carrying, so a chip slot can ask whether to stand
+  // aside. Indexed rather than searched, and namespaced against the
+  // Object.prototype family the way every other chip-keyed index here is.
+  readonly property var morphFlightKeys: PanelModel.morphFlightKeys(root.morphFlights)
+
+  function morphFlyingKey(key) {
+    return PanelModel.morphFlightKeyAt(root.morphFlightKeys, key)
+  }
+
+  // THE TRANSITION FLAG, as the map's own components read it. It is the
+  // ANIMATION's `running` and nothing else — a chip standing aside for a flight
+  // is standing aside for exactly as long as this is true, so the moment the
+  // animation stops, for any reason at all including a mid-flight reversal or a
+  // stop nobody planned, every chip is visible again. That is the same "must go
+  // down again" rule the flag itself is held to, applied to the thing the flag
+  // controls.
+  readonly property bool morphRunning: morphFade.running
+
+  // HOW MANY MORPHS THIS PANEL HAS BEGUN, AND HOW MANY REACHED THE END, both
+  // written by the ANIMATION's own signals and by nothing else.
+  //
+  // They exist because the flag they sit beside is, in the acceptance venue,
+  // effectively unobservable: a morph lasts 120 ms and an `omarchy-shell …
+  // state` round trip does not reliably land inside it, so a test that asserted
+  // `morph.active` after a `setView` would be asserting a race. These two are
+  // the same fact stated in a form a poll can actually catch — `runs` went up,
+  // so a morph started; `settled` caught up with it, so it ENDED. "The flag went
+  // down again" is the hard half of this tick and it deserves evidence that does
+  // not depend on catching a 120 ms window.
+  //
+  // COUNTS, NOT A FLAG, and that is the point: a counter never claims something
+  // is true right now, so there is nothing here to latch (tick gox). They also
+  // say what a mid-flight reversal did, in the only way the payload can — a
+  // reversal leaves `runs` one ahead of `settled` for ever after, which is the
+  // truthful record that one morph was abandoned rather than finished.
+  property int morphRuns: 0
+  property int morphSettled: 0
+
+  // THE ONE ANIMATION, and the transition-active flag IS its `running` —
+  // panelState() reads it straight off this object rather than off a flag the
+  // panel raises and lowers, because a value restated from Motion.qml would
+  // pass on a panel whose animation somebody had deleted.
+  NumberAnimation {
+    id: morphFade
+    target: root
+    property: "morphProgress"
+    from: 0.0
+    to: 1.0
+    duration: root.motion.duration
+    easing.type: root.motion.easingType
+
+    // `started` and `finished` and not a hand-rolled pair around restart():
+    // these fire from the animation, so a deleted or never-running animation
+    // leaves both counters at zero rather than leaving the panel claiming
+    // morphs it did not run. `finished` is the natural end only — a restart
+    // emits `stopped`, not `finished`, which is exactly the distinction the
+    // reversal case needs.
+    //
+    // THAT BOTH SIGNALS EXIST IS NOT SOMETHING qmllint CHECKED. It exits 0 on a
+    // handler for a signal that does not exist — measured, by renaming this one
+    // to `onNotARealSignal` and watching the gate stay green — so its silence
+    // is weaker evidence than it looks anywhere a signal name is the load-
+    // bearing part. These two were verified against the type description
+    // instead: `Signal { name: "started" }` and `Signal { name: "finished";
+    // revision: 524 }` on QQuickAbstractAnimation, in
+    // /usr/lib/qt6/qml/QtQuick/plugins.qmltypes. Revision 524 is QtQuick 2.12,
+    // and this file imports QtQuick unversioned.
+    onStarted: root.morphRuns += 1
+    onFinished: root.morphSettled += 1
+  }
+
+  // SWITCHING BACK MID-MORPH RESTARTS THE FADE; it does not reverse it. That is
+  // a decision and not a shortcut: reversing would mean running the OUTGOING
+  // chips backwards, and by the time this handler is reached they no longer
+  // exist — `mapModel` has already swapped and their delegates are gone. So the
+  // honest behaviour is that a reversal is a new morph in the other direction.
+  // The chips now entering fade in from zero, `morphFade.running` stays true
+  // across the reversal (`restart()` stops and starts inside one call, so no
+  // reader can observe a gap), and it falls when the second morph settles.
+  // Nothing can be stranded half-faded: every chip BINDS to `morphProgress`, so
+  // wherever the value is, that is where all of them are, and the animation only
+  // ever ends at 1.0.
+  //
+  // THE PROGRESS IS ZEROED HERE AND NOT LEFT TO THE ANIMATION, because the map
+  // is rebuilt by the same property change that starts the fade: `mapModel`
+  // re-evaluates, every delegate under it is created afresh, and it reads
+  // `morphProgress` before the animation's first tick has had a chance to set
+  // it to `from`. Without this the entering chips are drawn at full opacity for
+  // one frame and then blink to nothing — the fade backwards. `restart()`
+  // immediately after is what guarantees the value climbs back out again.
+  onShowRecordedChanged: {
+    root.morphProgress = 0.0
+    morphFade.restart()
   }
 
   readonly property var appRows: {
@@ -2700,9 +2982,77 @@ Item {
   //         "edgeTone": "drift" | "hover" | "watched" | "quiet" | null,
   //         "linkKey": "id:obsidian" | null, "linked": false | null,
   //         "fillMotionMs": 120 | null, "edgeMotionMs": 120 | null,
-  //         "motionEasing": 0 | null }
-  //     ]
+  //         "motionEasing": 0 | null,
+  //         "morphRole": "paired" | "live-only" | "recorded-only" | "" | null,
+  //         "morphFlying": false | null }
+  //     ],
+  //     "morph": {
+  //       "active": false,
+  //       "durationMs": 120,
+  //       "easing": 4,
+  //       "runs": 2, "settled": 2,
+  //       "pairs": [
+  //         { "linkKey": "id:obsidian", "liveKey": "0x5581f0a1",
+  //           "recordedKey": "recorded-obsidian",
+  //           "liveMonitor": "eDP-1", "liveWorkspaceId": 1,
+  //           "recordedMonitor": "DP-2", "recordedWorkspaceId": 7,
+  //           "monitorChanged": true, "workspaceChanged": true,
+  //           "geometry": true }
+  //       ],
+  //       "liveOnly": [ { "key": "0x55a1", "linkKey": "class:foot",
+  //                       "monitorName": "eDP-1", "workspaceId": 1 } ],
+  //       "recordedOnly": [ … the same four keys … ],
+  //       "flights": [
+  //         { "linkKey": "id:obsidian", "liveKey": "0x5581f0a1",
+  //           "recordedKey": "recorded-obsidian",
+  //           "from": { "x": 12, "y": 40, "width": 96, "height": 54 },
+  //           "to":   { "x": 310, "y": 18, "width": 72, "height": 41 } }
+  //       ]
+  //     }
   //   }
+  //
+  // THE MORPH (tick gug), and it is the epic's only evidence that the right
+  // chips morphed — nothing in the acceptance venue can watch a chip move, so
+  // the pair set has to be readable instead. Four things about it:
+  //
+  //   `pairs` is PanelModel.mapMorphPairs's own answer, projected by
+  //   PanelModel.morphPayload and NOT recomputed here. The panel pairs the two
+  //   maps once, into `root.morph`, and the fade, the per-chip `morphRole` and
+  //   this key all read that one object (tick 3xi).
+  //
+  //   `active` is `morphFade.running` — the animation's own property, not a
+  //   flag the panel raises and lowers. It cannot latch: there is no store to
+  //   latch, and a switch back mid-morph restarts the same animation rather
+  //   than starting a second one. See the morph section near the map models
+  //   for what a reversal does and why.
+  //
+  //   `durationMs` and `easing` are read off that same animation object, for
+  //   the reason the chip's three motion fields are: a number restated from
+  //   Motion.qml would pass on a panel whose animation had been deleted.
+  //   `runs` and `settled` are written by that object's own `started` and
+  //   `finished` signals, and they are what makes a 120 ms flag observable at
+  //   all from outside — see their comment near the animation.
+  //
+  //   `flights` is the subset of `pairs` that is actually TRANSLATED, with the
+  //   two drawn rectangles each one travels between, in map-canvas pixels. It
+  //   is the very list the overlay's Repeater is built from — not a second
+  //   answer — so a flight here is a rectangle that was on screen. A pair is
+  //   absent from it when `geometry` is false (a fallback workspace draws
+  //   stacked and its rects mean nothing) or when the destination map has not
+  //   laid out yet, and both of those cross-fade instead.
+  //
+  //   `morphRole` on a chip is what the CHIP was told — the pair set reaching
+  //   the thing that draws, rather than the panel agreeing with itself.
+  //   `morphFlying` beside it is what the map is DOING about that: a paired
+  //   chip on a fallback workspace is "paired" and never flying. A flying chip
+  //   stands aside (opacity 0) for exactly as long as the animation runs, so
+  //   the overlay's rectangle is the only copy of it on screen. Both are
+  //   present on both tabs, because a pairing is a fact about the two maps and
+  //   not about which one is showing.
+  //
+  // The morph key is always present, `pairs` empty when the topology has
+  // nothing recorded — that is a fact the panel has, not a value it is waiting
+  // for, so it is not one of the draw-time nulls below.
   //
   // The three motion fields are read off the chip's own ANIMATION OBJECTS, not
   // off Motion.qml's tokens: the venue cannot watch a colour move, so the most
@@ -2963,7 +3313,20 @@ Item {
               // assertion.
               fillMotionMs: root.reported(report, "fillMotionMs"),
               edgeMotionMs: root.reported(report, "edgeMotionMs"),
-              motionEasing: root.reported(report, "motionEasing")
+              motionEasing: root.reported(report, "motionEasing"),
+              // WHICH SIDE OF THE MORPH THIS CHIP IS ON (tick gug), as the
+              // CHIP was told it — the slot's opacity binding reads the same
+              // property. Reported rather than looked up here for the reason
+              // every draw-time field is: `root.morphRoleOf(chip.key)` would
+              // be the panel agreeing with itself, and could agree while the
+              // map faded something else.
+              morphRole: root.reported(report, "morphRole"),
+              // And whether the overlay was carrying it when the payload was
+              // taken. Distinct from `morphRole` on purpose: "paired" is what
+              // the matcher decided, `morphFlying` is what the map is DOING
+              // about it, and a pair on a fallback workspace is the first and
+              // never the second.
+              morphFlying: root.reported(report, "morphFlying")
             })
             // ADDED rather than assigned above, because the payload's rule is
             // that a key the panel has nothing to say about is ABSENT — and
@@ -3010,6 +3373,30 @@ Item {
     // The header, from the three items that drew it: the hero (title and meta),
     // the pause switch (its own position) and the status badge (text and tone).
     var header = root.headerReports["header"] || null
+
+    // The morph, projected ONCE — the payload spells it out in three keys and
+    // three calls would be three answers to one question, which is the whole
+    // reason `root.morph` exists as a single property.
+    var morphReport = PanelModel.morphPayload(root.morph)
+
+    // The flights, read off the SAME list the overlay draws from. Copied rather
+    // than handed over: `morphFlights` is a binding's value and the panel is
+    // drawing from it, so a consumer must not be able to reach it — the same
+    // discipline morphChipEntries applies to a chip's rect.
+    var flights = []
+    var flightModel = root.morphFlights
+    for (var fi = 0; fi < flightModel.length; fi++) {
+      var flight = flightModel[fi]
+      flights.push({
+        linkKey: flight.linkKey,
+        liveKey: flight.liveKey,
+        recordedKey: flight.recordedKey,
+        from: { x: flight.from.x, y: flight.from.y,
+          width: flight.from.width, height: flight.from.height },
+        to: { x: flight.to.x, y: flight.to.y,
+          width: flight.to.width, height: flight.to.height }
+      })
+    }
 
     // The overflow menu's rows, and ONLY while it is open — the store itself
     // (tick be1) is never cleared, since its delegates outlive the popup being
@@ -3105,7 +3492,31 @@ Item {
       hoveredLinkKey: root.hoveredLinkKey,
       workspaces: workspaces,
       chips: chips,
-      rows: rows
+      rows: rows,
+      // THE MORPH. `root.morph` is the pairing, computed once above; this is a
+      // projection of that same object and never a second pairing. The three
+      // motion facts come off `morphFade` itself — its `running` is the
+      // transition-active flag, and reading the flag anywhere else would be
+      // restating a token (see the payload comment above).
+      morph: {
+        active: morphFade.running,
+        durationMs: morphFade.duration,
+        easing: morphFade.easing.type,
+        // The same fact as `active`, in the form a poll can catch: `runs` went
+        // up so a morph started, `settled` caught up so it ended. See the
+        // counters' own comment for why a 120 ms flag needs them.
+        runs: root.morphRuns,
+        settled: root.morphSettled,
+        pairs: morphReport.pairs,
+        liveOnly: morphReport.liveOnly,
+        recordedOnly: morphReport.recordedOnly,
+        // THE PAIRS THAT ARE ACTUALLY TRANSLATED, with the two rectangles they
+        // travel between. `root.morphFlights` is the very list the overlay's
+        // Repeater is built from — not a second answer to the same question —
+        // so a flight in this payload is a rectangle that was on screen, and
+        // the two rects are the two ends the venue cannot watch it cross.
+        flights: flights
+      }
     }
 
     // The recording this topology has, whichever map is on screen: "when was
@@ -4056,6 +4467,105 @@ Item {
                             }
                           }
                         }
+                      }
+                    }
+                  }
+                }
+
+                // ------------------------------------------- the morph in flight
+                //
+                // THE ONE PLACE A CHIP ACTUALLY TRAVELS. It is here, above the
+                // monitor Row and outside every Repeater under it, because a
+                // view flip destroys and rebuilds all of those: no chip object
+                // survives a switch, so nothing inside them can be translated
+                // across one. These rectangles belong to the panel and depend on
+                // no delegate surviving anything.
+                //
+                // ITS COORDINATE SYSTEM IS mapCanvas's, which is why it is a
+                // direct child of it, sized to it and positioned at its origin
+                // rather than anchored: `reportWorkspaceCanvas` maps every
+                // workspace canvas into mapCanvas, so a resolved flight rect can
+                // be used here as it is. Anchoring the height to mapCanvas would
+                // be the binding loop the comment on mapCanvas warns about — its
+                // height comes from `childrenRect` — so the height follows
+                // monitorRow, which is what childrenRect was already measuring.
+                //
+                // A FLIGHT CROSSES WHATEVER IT NEEDS TO. Unclipped on purpose: a
+                // chip recorded on the dock and running on the laptop screen
+                // travels between two monitor sections, which is the case this
+                // whole plugin exists for, and clipping it to a workspace box
+                // would be clipping it to the thing it is leaving.
+                Item {
+                  id: morphOverlay
+                  x: 0
+                  y: 0
+                  width: mapCanvas.width
+                  height: monitorRow.height
+                  // Only while the morph runs. Nothing here is interactive and
+                  // nothing under it is covered when it is hidden, so "the
+                  // animation stopped" is the whole of the condition — the same
+                  // property the chips standing aside for it read.
+                  visible: root.morphRunning
+
+                  Repeater {
+                    // EMPTY AT REST, and that is not only economy: the flight
+                    // list is recomputed on every desktop read, so a Repeater
+                    // bound to it directly would rebuild a dozen rectangles and
+                    // re-resolve a dozen icon sources every two seconds for
+                    // something nobody can see. Gated on the same `running` the
+                    // overlay's visibility is, so an idle panel owns none of
+                    // this and a stopped animation destroys all of it.
+                    model: root.morphRunning ? root.morphFlights : []
+
+                    delegate: Rectangle {
+                      id: flyingChip
+                      required property var modelData
+
+                      // WHERE IT IS RIGHT NOW, as a BINDING on the panel's one
+                      // progress value rather than four animations of its own.
+                      // That is what makes an interrupted flight harmless: there
+                      // is no per-rectangle animation to leave half-run, the
+                      // whole overlay is wherever `morphProgress` is, and the
+                      // progress only ever ends at 1.0. It is also what lets a
+                      // flight whose destination arrived late simply join in
+                      // progress instead of starting from a stale origin.
+                      readonly property var at: PanelModel.morphFlightRect(
+                        flyingChip.modelData.from, flyingChip.modelData.to, root.morphProgress)
+
+                      visible: flyingChip.at !== null
+                      x: flyingChip.at ? flyingChip.at.x : 0
+                      y: flyingChip.at ? flyingChip.at.y : 0
+                      width: flyingChip.at ? flyingChip.at.width : 0
+                      height: flyingChip.at ? flyingChip.at.height : 0
+
+                      // DELIBERATELY NOT A SECOND CHIP. It is the watched fill
+                      // and the accent edge with the app's icon in it, and no
+                      // more: a full copy of MapWorkspace's chip — five
+                      // treatments, captures, ghosts, drift, hover — would be a
+                      // second drawing of the same thing, free to drift from the
+                      // first, and it is on screen for 120 ms. What has to be
+                      // recognisable while it moves is which app it is.
+                      radius: Style.cornerRadius
+                      color: Style.selectedFillFor(root.foreground, Color.accent)
+                      border.width: 1
+                      border.color: Color.accent
+
+                      Image {
+                        anchors.centerIn: parent
+                        // The icon never outgrows the rectangle carrying it, and
+                        // a rectangle too small to hold one shows none — the
+                        // flight is still the fill moving, which is the part
+                        // that reads at speed.
+                        readonly property int side: Math.min(Style.space(16),
+                          Math.floor(Math.min(flyingChip.width, flyingChip.height) - Style.space(4)))
+                        visible: side > 0
+                        width: Math.max(1, side)
+                        height: Math.max(1, side)
+                        sourceSize.width: Math.max(1, side)
+                        sourceSize.height: Math.max(1, side)
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        source: root.iconSourceOf(flyingChip.modelData.identityId, "")
                       }
                     }
                   }

@@ -446,3 +446,402 @@ test("the rect handed out is a copy, not the one the panel is drawing from", () 
   entry.rect.rx = 999;
   assert.strictEqual(source.rx, 0, "and writing to it cannot corrupt what is on screen");
 });
+
+// -------------------------------------- what the panel and the payload read
+//
+// The morph is matched ONCE and three things read that one answer: the map's
+// fade, the per-chip role the chips report, and the payload the acceptance VM
+// polls. Both functions below take the MORPH and not the two maps, and these
+// tests exist as much to pin that signature as to pin the values — a function
+// here that could see a map could pair a second time, and a second pairing a
+// turn later is verbatim the defect tick 3xi cost this project.
+
+test("every chip on both maps gets exactly one role, and a paired chip gets it at both ends", () => {
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal", { key: "0xlive-term" }),
+    chip("class:foot", { key: "0xlive-foot" })
+  ] }] }]);
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal", { key: "recorded-term" }),
+    chip("id:obsidian", { key: "recorded-obsidian" })
+  ] }] }]);
+
+  const morph = panel.mapMorphPairs(live, recorded);
+  const roles = panel.morphChipRoles(morph);
+
+  // The pair carries its role on BOTH ends: the role is a fact about the chip,
+  // not about which way the view is travelling, and the map that is showing
+  // only ever holds one of the two.
+  assert.strictEqual(panel.morphRoleAt(roles, "0xlive-term"), "paired");
+  assert.strictEqual(panel.morphRoleAt(roles, "recorded-term"), "paired");
+  assert.strictEqual(panel.morphRoleAt(roles, "0xlive-foot"), "live-only");
+  assert.strictEqual(panel.morphRoleAt(roles, "recorded-obsidian"), "recorded-only");
+
+  // Exhaustive, the same way mapMorphPairs is: a chip with no role is a chip
+  // the map does not know whether to fade.
+  const keys = panel.morphChipEntries(live).concat(panel.morphChipEntries(recorded))
+    .map((e) => e.key);
+  assert.deepStrictEqual(keys.filter((k) => panel.morphRoleAt(roles, k) === ""), [],
+    "no chip on either map is left unclassified");
+});
+
+test("a chip the morph has never heard of answers \"\", not a role", () => {
+  // A window that opened between two map builds. "" is not a fourth role — the
+  // map treats it as already on screen — and it must not come back as
+  // undefined, which JSON.stringify would drop out of the payload entirely.
+  const roles = panel.morphChipRoles(panel.mapMorphPairs(
+    mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [chip("id:terminal")] }] }]),
+    mapOf([{ name: "eDP-1", workspaces: [] }])));
+  assert.strictEqual(panel.morphRoleAt(roles, "0xnobody"), "");
+  assert.strictEqual(panel.morphRoleAt(roles, ""), "");
+});
+
+test("a null morph is an empty index and an empty payload, not a throw", () => {
+  assert.deepStrictEqual(panel.morphChipRoles(null), {});
+  assert.strictEqual(panel.morphRoleAt(panel.morphChipRoles(undefined), "0xa"), "");
+  assert.deepStrictEqual(panel.morphPayload(null),
+    { pairs: [], liveOnly: [], recordedOnly: [] });
+});
+
+test("a __proto__ CHIP KEY neither loses its role nor answers for a chip that has none", () => {
+  // The same family tests/reserved-ids.test.js walks, on the one map in this
+  // file that is keyed by a chip key rather than a linkKey. A chip key is a
+  // window address or `recorded-<instanceKey>`, and an instance key carries an
+  // identity id out of a hand-editable state file — so `__proto__` is reachable
+  // without a hand edit here for the same reason it is there. `own()` cannot
+  // repair it (assigning invokes Object.prototype's setter and creates no own
+  // property), so the index is namespaced instead and the whole family goes
+  // unreachable at once.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal", { key: "__proto__" })
+  ] }] }]);
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [] }]);
+
+  const roles = panel.morphChipRoles(panel.mapMorphPairs(live, recorded));
+  assert.strictEqual(panel.morphRoleAt(roles, "__proto__"), "live-only");
+  assert.strictEqual(panel.morphRoleAt(roles, "constructor"), "",
+    "an untouched inherited name still answers with nothing");
+  assert.strictEqual(panel.morphRoleAt(roles, "toString"), "");
+});
+
+test("the payload names BOTH ends of a pair, by key, and says where each of them is", () => {
+  // `linkKey` alone cannot make the claim "these two chips are the same
+  // window" — two unwatched windows of one class share it. The keys can, and
+  // both are in the payload for that reason; the linkKey rides along because it
+  // is the string the matching was DONE with.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:browser", { key: "0xlive-browser" })
+  ] }] }]);
+  const recorded = mapOf([{ name: "DP-3", workspaces: [{ id: 7, chips: [
+    chip("id:browser", { key: "recorded-browser" })
+  ] }] }]);
+
+  const out = panel.morphPayload(panel.mapMorphPairs(live, recorded));
+  assert.deepStrictEqual(out.pairs, [{
+    linkKey: "id:browser",
+    liveKey: "0xlive-browser",
+    recordedKey: "recorded-browser",
+    liveMonitor: "eDP-1",
+    liveWorkspaceId: 1,
+    recordedMonitor: "DP-3",
+    recordedWorkspaceId: 7,
+    monitorChanged: true,
+    workspaceChanged: true,
+    geometry: true
+  }]);
+  assert.deepStrictEqual(out.liveOnly, []);
+  assert.deepStrictEqual(out.recordedOnly, []);
+});
+
+test("the payload carries the one-sided chips too, because a morph that forgot one would look identical", () => {
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("class:foot", { key: "0xlive-foot" })
+  ] }] }]);
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 2, chips: [
+    chip("id:obsidian", { key: "recorded-obsidian" })
+  ] }] }]);
+
+  const out = panel.morphPayload(panel.mapMorphPairs(live, recorded));
+  assert.deepStrictEqual(out.pairs, []);
+  assert.deepStrictEqual(out.liveOnly, [{
+    key: "0xlive-foot", linkKey: "class:foot", monitorName: "eDP-1", workspaceId: 1
+  }]);
+  assert.deepStrictEqual(out.recordedOnly, [{
+    key: "recorded-obsidian", linkKey: "id:obsidian", monitorName: "eDP-1", workspaceId: 2
+  }]);
+});
+
+test("the payload says a fallback pair cannot be translated, and carries no rect to argue with", () => {
+  // `geometry: false` is the pair the caller must cross-fade rather than move,
+  // and it is the ONLY thing the payload says about geometry. `rect` is the
+  // WINDOW's fraction and not the rectangle the chip is drawn at, so a payload
+  // carrying it would invite exactly the confusion morphChipEntries exists to
+  // stop.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal", { key: "0xlive-term" }),
+    chip("id:obsidian", { key: "0xlive-obsidian", rect: null })
+  ] }] }]);
+  const recorded = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal", { key: "recorded-term" })
+  ] }] }]);
+
+  const out = panel.morphPayload(panel.mapMorphPairs(live, recorded));
+  assert.strictEqual(out.pairs.length, 1);
+  assert.strictEqual(out.pairs[0].geometry, false,
+    "the whole workspace fell back, so even the chip that HAS a rect is not drawn at one");
+  assert.ok(!("rect" in out.pairs[0]), "the window's fraction is not the drawn chip");
+  assert.ok(!("live" in out.pairs[0]), "the payload is a projection, not the entry objects");
+});
+
+test("the payload and the role index are projections of ONE pairing, not two", () => {
+  // The signature is the guarantee: both take a morph. Handing them the same
+  // object and getting answers that agree is what a consumer relies on — the
+  // chip whose role says "paired" is the chip the payload names in a pair.
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
+  const recordedIds = layout.apps.map((a) => a.identityId);
+  const instances = panel.instanceIndex(
+    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, layout);
+  const live = panel.liveMapModel(
+    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, 480, 240, null, instances);
+  const recorded = panel.recordedMapModel(
+    layout, monitorsLaptop, recordedIds, 480, 240, instances);
+
+  const morph = panel.mapMorphPairs(live, recorded);
+  const roles = panel.morphChipRoles(morph);
+  const out = panel.morphPayload(morph);
+
+  assert.ok(out.pairs.length >= 2, "the fixture desk pairs more than one chip");
+  for (const pair of out.pairs) {
+    assert.strictEqual(panel.morphRoleAt(roles, pair.liveKey), "paired");
+    assert.strictEqual(panel.morphRoleAt(roles, pair.recordedKey), "paired");
+  }
+  for (const entry of out.liveOnly) {
+    assert.strictEqual(panel.morphRoleAt(roles, entry.key), "live-only");
+  }
+  for (const entry of out.recordedOnly) {
+    assert.strictEqual(panel.morphRoleAt(roles, entry.key), "recorded-only");
+  }
+  // And the payload is the whole map, both sides, once each — the same
+  // exhaustiveness the pairing itself is held to.
+  assert.strictEqual(
+    out.pairs.length + out.liveOnly.length, panel.morphChipEntries(live).length);
+  assert.strictEqual(
+    out.pairs.length + out.recordedOnly.length, panel.morphChipEntries(recorded).length);
+});
+
+test("a morph whose lists arrived as sequence wrappers is still read, not silently emptied", () => {
+  // The QML/JS boundary, pinned rather than trusted. A Qt-converted list indexes
+  // and reports .length like an array and answers something OTHER than
+  // "[object Array]" to Object.prototype.toString, so an `isArray` guard here
+  // would take its empty branch and hand back an index that fades nothing and a
+  // payload that reports no pairs — both indistinguishable from a desk with
+  // nothing in common. Stood in for by an array-like, which is exactly what the
+  // wrapper is from these functions' point of view.
+  function arrayLike(items) {
+    const out = { length: items.length };
+    items.forEach((item, i) => { out[i] = item; });
+    return out;
+  }
+
+  const real = panel.mapMorphPairs(
+    mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+      chip("id:terminal", { key: "0xlive-term" }),
+      chip("class:foot", { key: "0xlive-foot" })
+    ] }] }]),
+    mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+      chip("id:terminal", { key: "recorded-term" }),
+      chip("id:obsidian", { key: "recorded-obsidian" })
+    ] }] }]));
+  const wrapped = {
+    pairs: arrayLike(real.pairs),
+    liveOnly: arrayLike(real.liveOnly),
+    recordedOnly: arrayLike(real.recordedOnly)
+  };
+
+  const roles = panel.morphChipRoles(wrapped);
+  assert.strictEqual(panel.morphRoleAt(roles, "0xlive-term"), "paired");
+  assert.strictEqual(panel.morphRoleAt(roles, "0xlive-foot"), "live-only");
+  assert.strictEqual(panel.morphRoleAt(roles, "recorded-obsidian"), "recorded-only");
+
+  const out = panel.morphPayload(wrapped);
+  assert.strictEqual(out.pairs.length, 1);
+  assert.strictEqual(out.pairs[0].liveKey, "0xlive-term");
+  assert.strictEqual(out.liveOnly.length, 1);
+  assert.strictEqual(out.recordedOnly.length, 1);
+});
+
+// -------------------------------------------- the morph's geometry: the flight
+//
+// Where a chip is DRAWN, which is the question `entry.rect` does not answer.
+// The overlay that flies a chip between two maps resolves both ends through
+// morphDrawnChipRect, so everything the floor and the barriers do to a chip on
+// screen has to be done to the flight as well — and that is provable here, in
+// the only tier that can prove it, rather than reported from a panel that would
+// be agreeing with itself.
+
+test("a drawn rect is chipRectsForCanvas's answer for the WHOLE workspace, not the chip's own fraction", () => {
+  // The 6%-wide window: 0.06 * 400 = 24 px as a fraction, floored to 60 by a
+  // 60x40 floor. A resolver that scaled the chip's own rect would say 24 and fly
+  // it to a rectangle two and a half times too small — on exactly the chip the
+  // floor exists for.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:tiny", { key: "0xtiny", rect: { rx: 0, ry: 0, rw: 0.06, rh: 0.04 } })
+  ] }] }]);
+  const entry = panel.morphChipEntries(live)[0];
+
+  const drawn = panel.morphDrawnChipRect(live, entry, 400, 200, 60, 40);
+  assert.deepStrictEqual(drawn, { x: 0, y: 0, width: 60, height: 40 });
+  // And it IS the map's own answer, not a second one: the same call the map
+  // makes, index for index.
+  assert.deepStrictEqual(drawn,
+    Object.assign({}, panel.chipRectsForCanvas([entry.rect], 400, 200, 60, 40)[0]));
+});
+
+test("a fallback workspace resolves to null — the same answer pair.geometry gives", () => {
+  // A workspace is fallback if ANY ONE slot lacks a rect, and it then draws
+  // EVERY chip in it as a stacked row and ignores the rects the others still
+  // carry. Flying a chip in from one of those would be flying it in from a
+  // rectangle nothing was drawn at.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:terminal", { key: "0xterm" }),
+    chip("id:obsidian", { key: "0xobs", rect: null })
+  ] }] }]);
+  const entries = panel.morphChipEntries(live);
+  assert.ok(entries[0].fallback, "the whole workspace fell back");
+  for (const entry of entries) {
+    assert.strictEqual(panel.morphDrawnChipRect(live, entry, 400, 200, 16, 10), null,
+      "even the chip that HAS a rect is not drawn at one");
+  }
+});
+
+test("a tab group's members each get their SEGMENT, not the whole slot", () => {
+  // A tab group is one window's worth of screen and MapWorkspace divides that
+  // rectangle evenly between the tabs. Collapsing four tabs onto one rectangle
+  // was a foundation-review blocker; this is the assertion that keeps it fixed.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, slots: [
+    { group: true, chips: [
+      chip("id:a", { key: "0xa" }), chip("id:b", { key: "0xb" }),
+      chip("id:c", { key: "0xc" }), chip("id:d", { key: "0xd" })
+    ] }
+  ] }] }]);
+  const entries = panel.morphChipEntries(live);
+  assert.strictEqual(entries.length, 4);
+
+  const slot = panel.chipRectsForCanvas([entries[0].rect], 400, 200, 16, 10)[0];
+  const segment = slot.width / 4;
+  entries.forEach((entry, i) => {
+    const drawn = panel.morphDrawnChipRect(live, entry, 400, 200, 16, 10);
+    assert.strictEqual(drawn.width, segment, "each tab is a quarter of the slot");
+    assert.strictEqual(drawn.x, slot.x + i * segment, "and sits at its own tabIndex");
+    assert.strictEqual(drawn.y, slot.y);
+    assert.strictEqual(drawn.height, slot.height, "the segments divide width, not height");
+  });
+  // The four together are the slot, exactly — no gap, no overlap, nothing
+  // hanging off the end.
+  const last = panel.morphDrawnChipRect(live, entries[3], 400, 200, 16, 10);
+  assert.strictEqual(last.x + last.width, slot.x + slot.width);
+});
+
+test("the barriers reach the flight too — two tiles never resolve on top of each other", () => {
+  // The floor is what makes a tiny window clickable and the barrier is what
+  // stops the floor lying. A resolver that skipped chipRectsForCanvas would fly
+  // two neighbouring tiles into one rectangle, which is the defect that cost a
+  // live round on screen.
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [
+    chip("id:left", { key: "0xl", rect: { rx: 0, ry: 0, rw: 0.02, rh: 1 } }),
+    chip("id:right", { key: "0xr", rect: { rx: 0.5, ry: 0, rw: 0.02, rh: 1 } })
+  ] }] }]);
+  const entries = panel.morphChipEntries(live);
+  const a = panel.morphDrawnChipRect(live, entries[0], 400, 200, 120, 10);
+  const b = panel.morphDrawnChipRect(live, entries[1], 400, 200, 120, 10);
+  assert.ok(a.x + a.width <= b.x,
+    `the two tiles must not superimpose: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+});
+
+test("an entry pointing at a workspace that is not there resolves to null, not a throw", () => {
+  const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [chip("id:terminal")] }] }]);
+  const entry = panel.morphChipEntries(live)[0];
+  assert.strictEqual(panel.morphDrawnChipRect(live, { monitorIndex: 9, workspaceIndex: 0, slotIndex: 0 }, 400, 200, 16, 10), null);
+  assert.strictEqual(panel.morphDrawnChipRect(live, { monitorIndex: 0, workspaceIndex: 9, slotIndex: 0 }, 400, 200, 16, 10), null);
+  assert.strictEqual(panel.morphDrawnChipRect(live, { monitorIndex: 0, workspaceIndex: 0, slotIndex: 9 }, 400, 200, 16, 10), null);
+  assert.strictEqual(panel.morphDrawnChipRect(null, entry, 400, 200, 16, 10), null);
+  assert.strictEqual(panel.morphDrawnChipRect(live, null, 400, 200, 16, 10), null);
+});
+
+test("a flight starts at one end, finishes at the other, and cannot leave its own path", () => {
+  const from = { x: 0, y: 0, width: 100, height: 50 };
+  const to = { x: 200, y: 40, width: 60, height: 30 };
+
+  assert.deepStrictEqual(panel.morphFlightRect(from, to, 0), from);
+  assert.deepStrictEqual(panel.morphFlightRect(from, to, 1), to);
+  assert.deepStrictEqual(panel.morphFlightRect(from, to, 0.5),
+    { x: 100, y: 20, width: 80, height: 40 });
+  // Clamped at both ends: an out-of-range progress is a frame arriving out of
+  // order, not something to throw over, and an interrupted flight must be
+  // somewhere ON its path.
+  assert.deepStrictEqual(panel.morphFlightRect(from, to, -3), from);
+  assert.deepStrictEqual(panel.morphFlightRect(from, to, 9), to);
+  assert.deepStrictEqual(panel.morphFlightRect(from, to, NaN), to,
+    "a progress that is not a number lands the chip at its destination, never adrift");
+});
+
+test("a flight with only one end is null — a chip never flies in from a place it was not drawn", () => {
+  const rect = { x: 0, y: 0, width: 10, height: 10 };
+  assert.strictEqual(panel.morphFlightRect(rect, null, 0.5), null);
+  assert.strictEqual(panel.morphFlightRect(null, rect, 0.5), null);
+  assert.strictEqual(panel.morphFlightRect(null, null, 0.5), null);
+});
+
+test("the flight index answers for BOTH ends of a flight and for nothing else", () => {
+  const keys = panel.morphFlightKeys([
+    { liveKey: "0xlive", recordedKey: "recorded-a" },
+    { liveKey: "__proto__", recordedKey: "recorded-b" }
+  ]);
+  assert.strictEqual(panel.morphFlightKeyAt(keys, "0xlive"), true);
+  assert.strictEqual(panel.morphFlightKeyAt(keys, "recorded-a"), true);
+  // The map that is showing holds one end and the map that is not holds the
+  // other, so a consumer asks about whichever chip it is drawing without having
+  // to know which tab it is on.
+  assert.strictEqual(panel.morphFlightKeyAt(keys, "__proto__"), true,
+    "the namespaced index survives the one name own() cannot repair");
+  assert.strictEqual(panel.morphFlightKeyAt(keys, "recorded-b"), true);
+  assert.strictEqual(panel.morphFlightKeyAt(keys, "0xsomeone-else"), false);
+  assert.strictEqual(panel.morphFlightKeyAt(keys, "constructor"), false);
+  assert.strictEqual(panel.morphFlightKeyAt(panel.morphFlightKeys(null), "0xlive"), false);
+});
+
+test("on the real maps of one desk, every geometry pair resolves to two drawn rectangles", () => {
+  // The end-to-end claim the overlay depends on: a pair the matcher says can be
+  // translated really does resolve, through the real builders, to a rectangle at
+  // each end — and a pair it says cannot really does not.
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
+  const recordedIds = layout.apps.map((a) => a.identityId);
+  const instances = panel.instanceIndex(
+    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, layout);
+  const live = panel.liveMapModel(
+    clientsLaptop, monitorsLaptop, resolver(IDENTITIES), null, 480, 240, null, instances);
+  const recorded = panel.recordedMapModel(
+    layout, monitorsLaptop, recordedIds, 480, 240, instances);
+
+  const morph = panel.mapMorphPairs(live, recorded);
+  let flown = 0;
+  for (const pair of morph.pairs) {
+    const a = panel.morphDrawnChipRect(live, pair.live, 300, 170, 16, 10);
+    const b = panel.morphDrawnChipRect(recorded, pair.recorded, 300, 170, 16, 10);
+    if (pair.geometry) {
+      assert.ok(a, `a translatable pair must resolve its live end (${pair.linkKey})`);
+      assert.ok(b, `and its recorded end (${pair.linkKey})`);
+      assert.ok(a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0);
+      // And the flight between them is a real path, not a standstill dressed up
+      // as one: the recorded map of this fixture is the FALLBACK-free case only
+      // where the recording carried at/size, so this is also what pins that the
+      // two ends are genuinely different rectangles when the maps disagree.
+      assert.ok(panel.morphFlightRect(a, b, 0.5), "a midpoint exists");
+      flown += 1;
+    } else {
+      assert.ok(!a || !b, "a pair the matcher will not translate must not resolve both ends");
+    }
+  }
+  assert.ok(morph.pairs.length >= 2, "the fixture desk pairs more than one chip");
+  assert.ok(flown >= 1, "and at least one of them is genuinely translatable");
+});

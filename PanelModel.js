@@ -4880,6 +4880,272 @@ function mapMorphPairs(liveMap, recordedMap) {
   return { pairs: pairs, liveOnly: liveOnly, recordedOnly: recordedOnly };
 }
 
+// A LIST TO WALK, WITHOUT ASKING WHETHER IT IS AN ARRAY.
+//
+// The three functions below take the morph back out of a QML `property var`,
+// and `isArray` is the wrong question at that boundary: it asks
+// Object.prototype.toString for "[object Array]", and Qt hands a converted
+// sequence back as a wrapper that answers something else while indexing and
+// reporting `.length` perfectly. MapWorkspace.slotRects documents what that
+// costs — `chipRectsForCanvas` returned [] for EVERY workspace on the desk,
+// with no exception and no warning — and the failure here would be quieter
+// still: an empty role index fades nothing and an empty payload reports no
+// pairs, both of which look exactly like a desk with nothing in common.
+//
+// `morphChipEntries` above already walks its maps this way, for the same
+// reason. Length-and-index is the only thing these three need — and a STRING is
+// length-and-index as well, so it is ruled out rather than assumed away: walking
+// one would hand a caller its characters where it asked for chips.
+function listOf(value) {
+  if (typeof value === "string") return [];
+  return (value && typeof value.length === "number") ? value : [];
+}
+
+// THE SAME ANSWER, INDEXED BY CHIP, so a delegate can ask what it is without
+// walking three lists — and so the map's opacity binding is a lookup rather
+// than a loop over every pair for every chip on the desk.
+//
+// IT TAKES THE MORPH, NEVER THE TWO MAPS, and that is the whole point of the
+// signature. The panel pairs the maps ONCE and the animation, the payload and
+// this index all read that one result; a function that re-derived the pairing
+// from the maps would be the same question asked twice a frame apart, which is
+// verbatim the defect tick 3xi found in the capture path — a correct key over a
+// photograph of a different window.
+//
+// KEYED BY `key`, NEVER BY `linkKey`. `linkKey` is not unique: two unwatched
+// windows of one class genuinely share `class:<cls>` (morphChipEntries says so
+// at length), so an index on it would answer for the wrong chip on exactly the
+// desk mapMorphPairs's bucketing exists for.
+//
+// NAMESPACED, for the reason mapMorphPairs namespaces its buckets: a chip key is
+// a window address or `recorded-<instanceKey>`, an instance key carries an
+// identity id, and the state file those come from is hand-editable —
+// `__proto__` is the one member of the Object.prototype family `own()` cannot
+// repair. One prefix makes the whole family unreachable. Read it back through
+// morphRoleAt, which is where the prefix is spelled.
+//
+// THREE ROLES, exhaustive because mapMorphPairs is:
+//
+//   "paired"        the two maps agree this is the same window, and BOTH ends
+//                   carry the role — it is a fact about the chip, not about
+//                   which way the view is travelling. These are the chips that
+//                   must not blink across a switch.
+//   "live-only"     on the Live map alone: it enters on a switch to Live and
+//                   leaves on a switch to Recorded.
+//   "recorded-only" the mirror of it.
+function morphChipRoles(morph) {
+  var roles = {};
+  var pairs = listOf(morph && morph.pairs);
+  for (var p = 0; p < pairs.length; p++) {
+    var pair = pairs[p];
+    if (pair && pair.live && pair.live.key) roles["k:" + pair.live.key] = "paired";
+    if (pair && pair.recorded && pair.recorded.key) roles["k:" + pair.recorded.key] = "paired";
+  }
+  var live = listOf(morph && morph.liveOnly);
+  for (var l = 0; l < live.length; l++) {
+    if (live[l] && live[l].key) roles["k:" + live[l].key] = "live-only";
+  }
+  var recorded = listOf(morph && morph.recordedOnly);
+  for (var r = 0; r < recorded.length; r++) {
+    if (recorded[r] && recorded[r].key) roles["k:" + recorded[r].key] = "recorded-only";
+  }
+  return roles;
+}
+
+// What the index says about one chip, and "" for a chip it has never heard of.
+//
+// "" IS NOT A FOURTH ROLE. It is the frame between a window opening and the
+// morph being recomputed, and the consumer's answer to it is "treat this chip as
+// already on screen" — a chip nobody has classified yet must not be faded out
+// from under the user on the strength of not being in an index.
+function morphRoleAt(roles, key) {
+  var at = "k:" + trim(key);
+  return own(roles, at) ? String(roles[at]) : "";
+}
+
+// THE MORPH AS THE PAYLOAD SAYS IT, and this projection is not decoration: the
+// acceptance venue cannot watch a chip move, so the pair set read back over IPC
+// is the ONLY evidence that the right chips were the ones the switch morphed.
+//
+// A PROJECTION OF THE SAME ANSWER — it takes the morph, for the reason
+// morphChipRoles does. The panel hands this function the value it handed the
+// animation.
+//
+// BOTH ENDS OF A PAIR ARE NAMED, AND NAMED BY `key`. "These two chips are the
+// same window" is the claim being made, and `linkKey` alone cannot make it —
+// it is carried on the pair as well because it is what the matching was DONE
+// with, and a consumer checking the match wants to see the string it used.
+//
+// The entries are deliberately thin. `rect` is not here and must not be: it is
+// the WINDOW's fraction and not the rectangle the chip is drawn at (see
+// morphChipEntries), so a payload carrying it would invite exactly the
+// confusion that comment exists to stop. `geometry` — could this pair be
+// translated at all — is the honest thing to say about it, and it is here.
+function morphPayload(morph) {
+  function side(entry) {
+    return {
+      key: entry.key,
+      linkKey: entry.linkKey,
+      monitorName: entry.monitorName,
+      workspaceId: entry.workspaceId
+    };
+  }
+
+  var pairs = [];
+  var list = listOf(morph && morph.pairs);
+  for (var p = 0; p < list.length; p++) {
+    var pair = list[p];
+    if (!pair || !pair.live || !pair.recorded) continue;
+    pairs.push({
+      linkKey: pair.linkKey,
+      liveKey: pair.live.key,
+      recordedKey: pair.recorded.key,
+      liveMonitor: pair.live.monitorName,
+      liveWorkspaceId: pair.live.workspaceId,
+      recordedMonitor: pair.recorded.monitorName,
+      recordedWorkspaceId: pair.recorded.workspaceId,
+      monitorChanged: pair.monitorChanged === true,
+      workspaceChanged: pair.workspaceChanged === true,
+      geometry: pair.geometry === true
+    });
+  }
+
+  var liveOnly = [];
+  var lefts = listOf(morph && morph.liveOnly);
+  for (var l = 0; l < lefts.length; l++) {
+    if (lefts[l]) liveOnly.push(side(lefts[l]));
+  }
+
+  var recordedOnly = [];
+  var rights = listOf(morph && morph.recordedOnly);
+  for (var r = 0; r < rights.length; r++) {
+    if (rights[r]) recordedOnly.push(side(rights[r]));
+  }
+
+  return { pairs: pairs, liveOnly: liveOnly, recordedOnly: recordedOnly };
+}
+
+// ---------------------------------------------------------------------------
+// The morph's geometry: where one chip is DRAWN
+// ---------------------------------------------------------------------------
+
+// THE RECTANGLE ONE CHIP OCCUPIES INSIDE ITS OWN WORKSPACE'S CANVAS, in pixels.
+//
+// THIS IS THE FUNCTION THAT ANSWERS THE QUESTION `entry.rect` DOES NOT.
+// `morphChipEntries` says it at length and this is the other half of it: an
+// entry's `rect` is the WINDOW's fraction, and the drawn rectangle is what
+// `chipRectsForCanvas` makes of the WHOLE workspace's slot list — the 16x10
+// floor and the pairwise anti-superimposition barriers are decided between
+// neighbours, so a chip's drawn size is not a function of its own fraction. A
+// small window measures 6x4 as a fraction and is DRAWN at 16x10. That is why
+// entries carry `slotIndex`: it is the address of the answer, not the answer.
+//
+// IT CALLS chipRectsForCanvas RATHER THAN REPRODUCING IT. Re-deriving the floor
+// or the barriers here would be a second implementation of the rule the map
+// draws by, free to agree with itself while the screen did something else —
+// which is the whole family of defect this increment keeps paying for.
+//
+// A FALLBACK WORKSPACE ANSWERS null, and that is the same answer `pair.geometry`
+// gives: it draws its chips as stacked rows at x:0 across the full canvas and
+// ignores their rects, including the good rects the chips that are not the
+// reason for the fallback still carry. A caller that flew a chip in from one of
+// those would be flying it in from a rectangle nothing was ever drawn at.
+//
+// A TAB GROUP DIVIDES ONE SLOT, IT DOES NOT COLLAPSE ONTO IT. `slotsForClients`
+// says a tab group is one window's worth of screen however many tabs are in it,
+// and MapWorkspace draws the members as equal segments of that rectangle
+// (`width: chipRow.width / chips.length`). So the answer for a member is its
+// SEGMENT — collapsing four tabs onto one rectangle was a foundation-review
+// blocker and is the reason `group`, `tabIndex` and `groupSize` are on an entry
+// at all.
+//
+// THE SLOT LIST IS REBUILT AS A PLAIN ARRAY before it is handed on, and that is
+// the repair rather than ceremony: `chipRectsForCanvas` asks `isArray`, which
+// asks Object.prototype.toString for "[object Array]", and a Qt-converted
+// sequence answers something else while indexing perfectly. MapWorkspace.slotRects
+// carries the same rebuild for the same reason, and the cost of getting it wrong
+// there was every workspace on the desk returning no rects at all, silently.
+function morphDrawnChipRect(map, entry, canvasWidth, canvasHeight, floorWidth, floorHeight) {
+  if (!map || !entry) return null;
+  var monitors = map.monitors || [];
+  var box = monitors[entry.monitorIndex];
+  if (!box) return null;
+  var workspaces = box.workspaces || [];
+  var workspace = workspaces[entry.workspaceIndex];
+  if (!workspace || workspace.fallback === true) return null;
+
+  var slots = workspace.slots || [];
+  var fractions = [];
+  for (var s = 0; s < slots.length; s++) {
+    var r = slots[s] ? slots[s].rect : null;
+    fractions.push(r
+      ? { rx: Number(r.rx), ry: Number(r.ry), rw: Number(r.rw), rh: Number(r.rh) }
+      : null);
+  }
+
+  var drawn = chipRectsForCanvas(fractions, canvasWidth, canvasHeight, floorWidth, floorHeight);
+  var slot = drawn[entry.slotIndex];
+  if (!slot) return null;
+
+  var size = (entry.group === true && entry.groupSize > 1) ? entry.groupSize : 1;
+  var index = size > 1 ? Math.max(0, Math.min(size - 1, entry.tabIndex || 0)) : 0;
+  var width = slot.width / size;
+  return { x: slot.x + index * width, y: slot.y, width: width, height: slot.height };
+}
+
+// ONE FRAME OF A FLIGHT: where a chip travelling from `from` to `to` is at `t`.
+//
+// Linear in all four numbers, because the CURVE is the animation's job — Qt has
+// already applied `Motion.easingType` to the progress value by the time it
+// reaches here, and easing a second time would compose two curves into one
+// nobody chose.
+//
+// CLAMPED AT BOTH ENDS so an interrupted or re-targeted flight can only ever be
+// somewhere on its own path. `t` outside 0..1 is not an error worth throwing
+// over; it is a frame arriving out of order.
+//
+// A MISSING END IS null AND NOT A GUESS. A caller with only one of the two
+// rectangles has nothing to translate between, and inventing the other is how a
+// chip flies in from a place it was never drawn.
+function morphFlightRect(from, to, t) {
+  if (!from || !to) return null;
+  var at = Number(t);
+  if (!isFinite(at)) at = 1;
+  if (at < 0) at = 0;
+  if (at > 1) at = 1;
+  function between(a, b) { return a + (b - a) * at; }
+  return {
+    x: between(from.x, to.x),
+    y: between(from.y, to.y),
+    width: between(from.width, to.width),
+    height: between(from.height, to.height)
+  };
+}
+
+// The chips a flight list is carrying, indexed the way morphChipRoles indexes
+// roles — namespaced against the Object.prototype family, read back through
+// morphRoleAt's sibling below.
+//
+// BOTH ENDS ARE IN IT. The map that is showing holds one of them and the map
+// that is not holds the other, and a consumer only ever asks about a chip it is
+// actually drawing — but which end that is depends on the tab, and a caller
+// that had to know would be answering a question the index can answer for it.
+function morphFlightKeys(flights) {
+  var keys = {};
+  var list = listOf(flights);
+  for (var f = 0; f < list.length; f++) {
+    var flight = list[f];
+    if (!flight) continue;
+    if (flight.liveKey) keys["k:" + flight.liveKey] = true;
+    if (flight.recordedKey) keys["k:" + flight.recordedKey] = true;
+  }
+  return keys;
+}
+
+function morphFlightKeyAt(keys, key) {
+  return own(keys, "k:" + trim(key)) === true;
+}
+
 // ---------------------------------------------------------------------------
 // The flat list under the map
 // ---------------------------------------------------------------------------
@@ -6809,6 +7075,13 @@ if (typeof module !== "undefined") {
 
     morphChipEntries: morphChipEntries,
     mapMorphPairs: mapMorphPairs,
+    morphChipRoles: morphChipRoles,
+    morphRoleAt: morphRoleAt,
+    morphPayload: morphPayload,
+    morphDrawnChipRect: morphDrawnChipRect,
+    morphFlightRect: morphFlightRect,
+    morphFlightKeys: morphFlightKeys,
+    morphFlightKeyAt: morphFlightKeyAt,
 
     captureFileIndex: captureFileIndex,
     consentChoices: consentChoices,

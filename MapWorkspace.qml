@@ -164,10 +164,16 @@ BorderSurface {
   // width is known, and a rect resolved from a zero-width canvas must be a
   // frame, never a state: naming workspaceCanvas.width/height here is what
   // makes QML re-run this the moment the layout settles.
+  //
+  // THE FLOOR COMES FROM THE PANEL and is no longer spelled here (tick gug).
+  // The morph's flight resolver calls this same function to work out where the
+  // map drew a chip, and two callers handed different floors would put the
+  // flight beside the chip instead of on it. `panel.chipFloorWidth` /
+  // `chipFloorHeight` is the one site.
   readonly property var drawnRects: workspaceSlot.positioned
     ? PanelModel.chipRectsForCanvas(workspaceSlot.slotRects,
       workspaceCanvas.width, workspaceCanvas.height,
-      Style.space(16), Style.space(10))
+      panel.chipFloorWidth, panel.chipFloorHeight)
     : []
 
   // No silent degradation. `fallback: false` is the model's promise that
@@ -256,6 +262,49 @@ BorderSurface {
     y: workspaceSlot.contentTopInset + workspaceLabel.implicitHeight + Style.space(3)
     width: workspaceSlot.canvasWidth
     height: workspaceSlot.canvasHeight
+
+    // WHERE THIS CANVAS ENDED UP, told to the panel because the panel cannot
+    // work it out (tick gug). The morph's overlay flies a chip between two drawn
+    // rectangles, and a drawn rectangle is this canvas's origin plus what
+    // chipRectsForCanvas makes of the slot list inside it. The SIZE the panel
+    // could almost derive; the ORIGIN it could not — it is under a
+    // BorderSurface's insets and under a monitor-name Text whose height is font
+    // metrics, inside a Flow whose wrapping depends on both.
+    //
+    // THE ITEM IS HANDED OVER, NOT ITS COORDINATES. This component does not know
+    // what it is inside and must not: it reads no parent id, it maps nothing
+    // upwards, it passes `workspaceCanvas` through the one interface it has and
+    // the panel maps that into its own map canvas. `reportWorkspaceCanvas` is
+    // idempotent, so calling it more often than necessary costs nothing.
+    //
+    // FOUR HANDLERS FOR FOUR VALUES, plus the two above this item: the report
+    // captures an origin and a size, and the origin depends on where the WHOLE
+    // workspace box landed in the Flow as much as on where the canvas sits
+    // inside it. The report-site rule (.tick/learnings.md, tick sm1) is the
+    // reason they are enumerated rather than assumed to cover each other, and
+    // the Flow's first pass runs before its width is known — a report taken only
+    // at completion is the warm-up answer, for ever.
+    function reportCanvas() {
+      panel.reportWorkspaceCanvas(workspaceSlot.renderKey, workspaceCanvas)
+    }
+
+    // THE BOX'S OWN POSITION IS HALF THE ANSWER, and it is watched from INSIDE
+    // this item rather than from a handler on the box. The canvas's x and y do
+    // not move when the Flow re-wraps and puts the whole workspace somewhere
+    // else, so the box's position has to be an input too — but a handler up on
+    // the box would fire before this item exists during creation, and would
+    // then be calling a method on nothing. Mirrored into a property here, the
+    // handler belongs to the object it uses.
+    readonly property real boxX: workspaceSlot.x
+    readonly property real boxY: workspaceSlot.y
+
+    onBoxXChanged: workspaceCanvas.reportCanvas()
+    onBoxYChanged: workspaceCanvas.reportCanvas()
+    onXChanged: workspaceCanvas.reportCanvas()
+    onYChanged: workspaceCanvas.reportCanvas()
+    onWidthChanged: workspaceCanvas.reportCanvas()
+    onHeightChanged: workspaceCanvas.reportCanvas()
+    Component.onCompleted: workspaceCanvas.reportCanvas()
 
     Repeater {
       model: workspaceSlot.modelData.slots
@@ -361,6 +410,72 @@ BorderSurface {
         // the fold as the footer is.
         onHasCursorChanged: if (hasCursor) panel.ensureCursorVisible(chipSlot)
 
+        // THE MORPH, PER SLOT (tick gug). Does the pure matcher say one of the
+        // windows in this slot is on the OTHER map too?
+        //
+        // Per slot rather than per chip because opacity is: the slot is the
+        // rectangle, and a fused tab group is one rectangle however many tabs
+        // share it. A group with one paired member counts as paired — it holds
+        // a window that was already on screen, and fading the pill out from
+        // under it would be a lie about the other tabs as much as about that
+        // one.
+        //
+        // The panel answers from ONE pairing it computed once; this is a
+        // lookup, never a match (PanelModel.morphChipRoles says why at length).
+        //
+        // "" COUNTS AS CONTINUOUS, and that is deliberate rather than sloppy: it
+        // is a window that opened between two map builds and no pairing has
+        // classified yet. Fading it out from under the user on the strength of
+        // an index that has not caught up would be the worst of the three
+        // answers, and morphRoleAt says in as many words that "" is not a fourth
+        // role.
+        //
+        // Only two roles can appear on the map that is showing — the paired end
+        // and that map's own one-sided list — so this needs no second question
+        // about which tab it is on.
+        readonly property bool morphContinuous: {
+          for (var mp = 0; mp < modelData.chips.length; mp++) {
+            var role = panel.morphRoleOf(modelData.chips[mp].key)
+            if (role === "paired" || role === "") return true
+          }
+          return false
+        }
+
+        // IS THE OVERLAY CARRYING ONE OF THESE CHIPS RIGHT NOW? A pair the panel
+        // could resolve to two drawn rectangles is TRANSLATED, by a rectangle of
+        // the panel's own above this whole map — so the real chip has to stand
+        // aside for the length of the flight or the user sees two of it, one
+        // moving and one already arrived.
+        //
+        // GATED ON `panel.morphRunning`, WHICH IS THE ANIMATION'S OWN `running`.
+        // That is the whole safety argument: whatever stops the animation —
+        // finishing, a mid-flight reversal, a stop nobody planned — makes this
+        // false in the same instant, and the chip is back. There is no state
+        // here to get stuck in, which is the "it must go down again" rule
+        // applied to the thing the flag controls rather than to the flag.
+        //
+        // The panel is asked which chips are flying rather than being told:
+        // `morphFlights` is the list the overlay's own Repeater is built from,
+        // so the chip that stands aside and the rectangle that flies cannot
+        // disagree about which chips those are.
+        readonly property bool morphFlying: {
+          if (!panel.morphRunning) return false
+          for (var mf = 0; mf < modelData.chips.length; mf++) {
+            if (panel.morphFlyingKey(modelData.chips[mf].key)) return true
+          }
+          return false
+        }
+
+        // A CHIP THAT WAS ALREADY ON SCREEN MUST NOT BLINK; an entering one
+        // fades in; one the overlay is flying stands aside entirely.
+        // `panel.morphProgress` is 1.0 at rest and is driven by the panel's
+        // single morph animation, so this binding costs nothing when no switch
+        // is happening and cannot strand a chip when one is interrupted — see
+        // the morph section in Panel.qml.
+        readonly property real morphOpacity: chipSlot.morphFlying
+          ? 0.0
+          : (chipSlot.morphContinuous ? 1.0 : panel.morphProgress)
+
         // Is the thing the pointer is on — here or down in the list — this
         // app? Same question per slot, for the same reason.
         readonly property bool linkHovered: {
@@ -408,10 +523,10 @@ BorderSurface {
           ? (chipSlot.drawn ? chipSlot.drawn.y : 0)
           : chipSlot.index * (workspaceSlot.stackRowHeight + workspaceSlot.stackGap)
         width: workspaceSlot.positioned
-          ? (chipSlot.drawn ? chipSlot.drawn.width : Style.space(16))
+          ? (chipSlot.drawn ? chipSlot.drawn.width : panel.chipFloorWidth)
           : workspaceCanvas.width
         height: workspaceSlot.positioned
-          ? (chipSlot.drawn ? chipSlot.drawn.height : Style.space(10))
+          ? (chipSlot.drawn ? chipSlot.drawn.height : panel.chipFloorHeight)
           : workspaceSlot.stackRowHeight
         radius: Style.cornerRadius
         // THE STATE FILL. Three states, three fills, all from Style so a
@@ -442,7 +557,11 @@ BorderSurface {
           : Border.controlSpec(chipSlot.anyDrifted ? "selected"
               : (chipSlot.highlighted ? "hover-cursor" : "normal"),
             chipSlot.edgeColor, chipSlot.edgeColor)
-        opacity: chipSlot.anyGhost ? 0.6 : 1.0
+        // A ghost is drawn quieter than a running window, and a chip entering
+        // on a view switch is drawn quieter still while it arrives. The two are
+        // multiplied rather than one overriding the other: a recorded ghost
+        // fading in has to end up at a ghost's 0.6, not at full weight.
+        opacity: (chipSlot.anyGhost ? 0.6 : 1.0) * chipSlot.morphOpacity
 
         // HOVER, as a layer over the state fill rather than instead of it.
         // Declared first so it paints under the ghost outline and the chip
@@ -674,7 +793,24 @@ BorderSurface {
                   // been bitten by twice.
                   fillMotionMs: chipTab.fillMotionMs,
                   edgeMotionMs: chipTab.edgeMotionMs,
-                  motionEasing: chipTab.motionEasing
+                  motionEasing: chipTab.motionEasing,
+                  // WHICH SIDE OF THE MORPH THIS CHIP IS ON (tick gug), from
+                  // the same lookup its slot's opacity binding reads. The
+                  // panel could answer this about the chip without asking the
+                  // chip — it holds the pairing — and that is exactly why the
+                  // CHIP says it: an answer the panel gives itself would agree
+                  // with the panel while the map faded something else, which
+                  // is the self-consistent assertion this increment has
+                  // already been bitten by twice.
+                  morphRole: chipTab.morphRole,
+                  // AND WHETHER THE OVERLAY IS CARRYING IT AT THIS INSTANT —
+                  // "paired" says the matcher agreed about this window, which
+                  // is not the same claim as "it is being translated": a pair
+                  // whose ends are on a fallback workspace, or whose
+                  // destination has not laid out yet, is paired and stays
+                  // still. The chip on screen is the only thing that can say
+                  // which of the two it is doing.
+                  morphFlying: chipSlot.morphFlying
                 })
               }
 
@@ -692,9 +828,25 @@ BorderSurface {
               // not — so this is Easing.Linear by design, and the assertion
               // that matters is the DURATION being non-zero.
               readonly property int motionEasing: fillFade.easing.type
+
+              // This chip's place in the pure matcher's answer: "paired" on
+              // both maps, "live-only" or "recorded-only" on one, "" for a
+              // window no pairing has classified yet. Held as a property rather
+              // than looked up inside reportRender for the reason every other
+              // reported value here is — the report must carry what the drawing
+              // read, and the slot's opacity binding reads this same lookup.
+              readonly property string morphRole: panel.morphRoleOf(chipTab.modelData.key)
+
               onFillMotionMsChanged: chipTab.reportRender()
               onEdgeMotionMsChanged: chipTab.reportRender()
               onMotionEasingChanged: chipTab.reportRender()
+              // The pairing is rebuilt on every desktop read, so this one DOES
+              // move under a live delegate — a window opening on the other map
+              // can turn a "live-only" chip into a "paired" one without
+              // anything else about this chip changing. Per the report-site
+              // rule (.tick/learnings.md, tick sm1) it would carry a handler
+              // either way.
+              onMorphRoleChanged: chipTab.reportRender()
               onRenderPathChanged: chipTab.reportRender()
               onPlacedChanged: chipTab.reportRender()
               onIconSourceChanged: chipTab.reportRender()
@@ -715,6 +867,12 @@ BorderSurface {
                 function onFillStateChanged() { chipTab.reportRender() }
                 function onEdgeToneChanged() { chipTab.reportRender() }
                 function onLinkHoveredChanged() { chipTab.reportRender() }
+                // The flight flag lives on the slot for the same reason the two
+                // colour channels do — it is the rectangle that stands aside —
+                // and it moves twice per morph, up and down. Per the report-site
+                // rule it needs its own handler here; without one the payload
+                // would show every chip standing still through every flight.
+                function onMorphFlyingChanged() { chipTab.reportRender() }
               }
               // The Flow's first pass runs before its width is known and the
               // rects settle a frame or two later, so the size has to be

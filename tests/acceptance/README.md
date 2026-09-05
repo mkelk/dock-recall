@@ -695,6 +695,72 @@ delegate-reported, so the pair is two sites rather than one value read twice —
 and one name per app across both surfaces is what the hover already promises:
 the row and the chips that light up with it are one thing.
 
+### The Live → Recorded morph
+
+`morph` is one object and it is **always present** — `active`, `durationMs`,
+`easing`, `pairs`, `liveOnly`, `recordedOnly` — with `pairs` empty when the
+topology has nothing recorded. It is not a draw-time `null`: "these two maps
+share no chip" is a fact the panel has, not a value it is waiting for. Each chip
+also carries `morphRole` (`paired` / `live-only` / `recorded-only` / `""`),
+which *is* delegate-reported and therefore `null` until the chip has drawn.
+
+`pairs` is `PanelModel.mapMorphPairs`'s own answer, projected by
+`PanelModel.morphPayload`. The panel pairs the two maps **once**, into
+`root.morph`, and the fade, the per-chip `morphRole` and this key all read that
+one object — the epic's own DoD is that the pair set in the payload is the only
+evidence the right chips morphed, so a second pairing computed for the report
+would be evidence of nothing (tick 3xi). Both ends of a pair are named by `key`
+(`liveKey`, `recordedKey`) rather than by `linkKey` alone, because `linkKey` is
+not unique: two unwatched windows of one class share `class:<cls>`. `geometry`
+is the only thing said about rectangles — *could this pair be translated at
+all* — and no rect is in the payload, because a chip's `rect` is the **window's**
+fraction and not the rectangle the chip is drawn at.
+
+`active` is the morph animation's own `running`, and `durationMs`/`easing` are
+read off that same object, for the reason the chip's three motion fields are: a
+number restated from `Motion.qml` would pass on a panel whose animation had been
+deleted. It cannot latch — there is no store to latch, and switching back
+mid-morph restarts the one animation rather than starting a second one.
+
+**Do not assert on `active` after a `setView`.** A morph lasts 120 ms and an
+`omarchy-shell dock-recall state` round trip does not reliably land inside it,
+so that assertion is a race whichever way it comes out. `runs` and `settled` are
+the same fact in a form a poll can catch: both are written by the animation's own
+`started` and `finished` signals, so `runs` going up proves a morph began and
+`settled` catching up proves it **ended** — which is the half of this tick that
+matters, a flag that latches true proving nothing. A mid-flight reversal leaves
+`runs` one ahead of `settled` for ever after; that is the truthful record that
+one morph was abandoned rather than finished, not a defect.
+
+**What actually moves, in three cases.** A view flip rebuilds the map, so no
+chip object exists on both sides of the switch to translate — the morph is
+therefore drawn *above* the map, by an overlay owning its own rectangles, and
+`morphRole` alone does not say what happened to a chip:
+
+| the pair | what happens | how to see it |
+|---|---|---|
+| `geometry: true`, both ends resolved | **translated** — one rectangle flies between the two drawn rects while the real chip at each end stands aside | it is in `morph.flights`, and its chips report `morphFlying` |
+| `geometry: false` | cross-fades — a fallback workspace draws stacked and its rects mean nothing | `morphRole: "paired"`, absent from `flights` |
+| one-sided | fades in from nothing | `morphRole: "live-only"` / `"recorded-only"` |
+
+`flights` carries `from` and `to` in map-canvas pixels, resolved through
+`PanelModel.morphDrawnChipRect` — which calls `chipRectsForCanvas` over the
+workspace's **whole** slot list rather than scaling the chip's own fraction,
+because the floor and the anti-superimposition barriers are decided between
+neighbours. A tab group's members each get their own segment of the shared slot.
+Two rectangles per flight is the strongest thing this venue can be told: it
+cannot watch the chip cross, but it can check that both ends were real drawn
+rectangles and that the pair they belong to is one the matcher returned.
+
+One flight can be absent on the **first** switch into a view and present on every
+later one: the destination map has never been laid out, so neither end resolves
+until its delegates report their canvas geometry a frame or two later. The flight
+joins in progress rather than starting from a stale origin, so poll rather than
+assert on a single reading.
+
+The honest limit stands: nothing here proves a pixel moved, and whether the morph
+*reads* as a morph is the human's gate for this epic.
+
 ### The fields that are exact from the first tick
 
 `key`, `monitorName`, `renderPath`, `placed`, `width` and `height`, because every
