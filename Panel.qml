@@ -1326,11 +1326,35 @@ Item {
     return true
   }
 
+  // THE WRITE BLOCKS, AND THAT IS THE WHOLE POINT (tick m4s).
+  //
+  // `setText` schedules an asynchronous write job by default, so `writeState`
+  // returned true — and `recordLayout` returned true, and the IPC answered
+  // "recorded", and the Undo button armed — while the bytes on disk were still
+  // the previous file. The acceptance VM caught it: `record` answered
+  // "recorded" and a `jq` in the next process saw no layout at all.
+  //
+  // That is not merely an honesty problem. `freshState()` below re-reads this
+  // file SYNCHRONOUSLY (`blockAllReads`) and five functions rewrite the WHOLE
+  // file from what it returns — setPaused, setPicturedFor, undoRecord,
+  // answerConsent, forgetLayout. Two of those are, by design, the next thing
+  // the user does after a Record: Undo is armed by the record itself, and the
+  // consent prompt appears BECAUSE of it. With the write still in flight, the
+  // re-read hands back pre-record bytes and the rewrite files them back over
+  // the recording — or the in-flight write lands afterwards and erases the
+  // consent answer. Either way somebody's layout or somebody's answer is gone,
+  // and nothing logs it.
+  //
+  // So the write is made blocking rather than the readers made to wait. The
+  // file is a few KB and this is the panel's own click path; every comment in
+  // this file that already calls the record "a single atomic write" becomes
+  // true instead of nearly true.
   FileView {
     id: stateFile
     path: root.statePath
     watchChanges: true
     atomicWrites: true
+    blockWrites: true
     printErrors: false
     onLoaded: root.loadState(text(), true)
     onLoadFailed: root.loadState("", false)

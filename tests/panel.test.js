@@ -7426,3 +7426,31 @@ test("the five copies of plugin_state in the acceptance suite are one function (
   assert.match([...spellings][0], /\$1 == id \{ print \$2 \}/,
     "plugin_state no longer reads the state field with an exact id match");
 });
+
+test("the state file's writes block, so a record is on disk when it says it is", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The defect this pins (tick m4s) was invisible in every cheaper tier: the
+  // acceptance VM recorded a layout, the IPC answered "recorded", and a jq in
+  // the very next process found no layout in the file. `setText` schedules an
+  // asynchronous job unless the view is told otherwise, and five whole-file
+  // rewriters re-read this path SYNCHRONOUSLY through freshState() — two of
+  // them, Undo and the consent answer, are by design the next thing that
+  // happens after a Record. A write still in flight is a lost recording or a
+  // lost consent answer, silently.
+  const view = source.match(/FileView\s*\{[^}]*?id:\s*stateFile[^}]*?\}/s);
+  assert.ok(view, "Panel.qml no longer has a FileView with id: stateFile");
+  assert.match(view[0], /^\s*blockWrites:\s*true\s*$/m,
+    "the state file's FileView does not declare blockWrites: true, so writeState "
+    + "can return true before the bytes are on disk");
+
+  // The synchronous re-read is the other half of the pair, and the reason the
+  // asynchronous write was dangerous rather than merely untidy. If this ever
+  // stops being blocking the hazard changes shape, so it is pinned beside it.
+  const reader = source.match(/FileView\s*\{[^}]*?id:\s*stateReader[^}]*?\}/s);
+  assert.ok(reader, "Panel.qml no longer has a FileView with id: stateReader");
+  assert.match(reader[0], /^\s*blockAllReads:\s*true\s*$/m,
+    "freshState's view no longer reads the file synchronously");
+});

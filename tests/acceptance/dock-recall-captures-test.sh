@@ -612,12 +612,23 @@ if [[ $record_answer != "recorded" ]]; then
   fail "panel IPC records a layout (captures)" "record answered '$record_answer'"
 fi
 
-# The record is a state-file write and it is synchronous, so the layout is on
-# disk the moment the verb answers. The pictures are not: they are deliberately
-# taken afterwards, off the recording's stack.
+# THIS READ IS DELIBERATELY NOT A POLL (tick m4s). "recorded" is a promise that
+# the bytes are on disk, and the promise is what is under test here: the panel's
+# state FileView declares blockWrites, so writeState cannot answer true with a
+# write still in flight. Polling would turn a broken promise into a slow one and
+# hide the defect this assertion was written by — the panel answered "recorded",
+# armed its Undo button, and left the previous file on disk, where the panel's
+# own synchronous re-read (freshState) would have rewritten the recording away.
+# If this line fails, the contract is broken; do not add a sleep to it.
+#
+# The pictures are a different matter: they are deliberately taken afterwards,
+# off the recording's stack, and every wait on THEM below is a poll.
 TOPOLOGY_KEY=$(jq -r 'first(.layouts|keys[])//empty' "$STATE" 2>/dev/null)
-[[ -n $TOPOLOGY_KEY ]] ||
-  fail "the record wrote a layout (captures)" "no layout key in $STATE after record answered 'recorded'"
+if [[ -z $TOPOLOGY_KEY ]]; then
+  diagnostics
+  fail "the record wrote a layout (captures)" \
+    "no layout key in $STATE after record answered 'recorded' — the write did not block"
+fi
 
 recorded_apps=$(jq -r --arg k "$TOPOLOGY_KEY" '[.layouts[$k].apps[]|.identityId]|sort|join(",")' "$STATE")
 [[ $recorded_apps == "$PICTURED_IDENTITY,$WITHHELD_IDENTITY" ]] ||
