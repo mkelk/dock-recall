@@ -1174,7 +1174,15 @@ BorderSurface {
                       readonly property real side: Math.max(8,
                         Math.min(Style.font.iconLarge,
                           Math.min(chipTab.width, chipTab.height) * 0.5))
-                      visible: chipTab.iconSource !== ""
+                      // NOT ON TOP OF A PHOTOGRAPH (human's call, on the live
+                      // panel). A chip drawing its own window does not need an
+                      // icon to say which app it is — the picture already does,
+                      // better — and the icon over it was covering the thing it
+                      // was standing in for. `captureDrawn` is the chip's own
+                      // "the image is Ready", not the panel's belief that a file
+                      // exists, so the icon comes back the instant a capture
+                      // fails to draw rather than leaving an unlabelled chip.
+                      visible: chipTab.iconSource !== "" && !chipTab.captureDrawn
                       width: chipIcon.side
                       height: chipIcon.side
                       anchors.verticalCenter: parent.verticalCenter
