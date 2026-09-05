@@ -367,8 +367,19 @@ BorderSurface {
         // for a colour, and OutCubic is its answer for something that MOVES.
         // Both durations come from Motion.qml; see the guard in
         // tests/qml-plaintext.test.js.
+        // THE EDGE FADES ON A WRITABLE MIRROR, AND THAT IS NOT A STYLE CHOICE.
+        // A Behavior is an INTERCEPTOR ON WRITES, and Qt refuses to install one
+        // on a `readonly` property: `Behavior on edgeColor` made the whole
+        // component unavailable — "Invalid property assignment: edgeColor is a
+        // read-only property" — so Panel.qml could not build MapWorkspace and
+        // the panel never mapped a surface at all. qmllint exits 0 on it.
+        // `edgeColor` above stays readonly because it is the REPORTED channel
+        // and `edgeTone` derives from the same precedence; this mirror is what
+        // gets drawn, and it is the only thing the fade and the breathe touch.
+        property color edgeDrawColor: chipSlot.edgeColor
+
         Behavior on color { ColorAnimation { id: fillFade; duration: panel.motion.duration } }
-        Behavior on edgeColor { ColorAnimation { id: edgeFade; duration: panel.motion.duration } }
+        Behavior on edgeDrawColor { ColorAnimation { id: edgeFade; duration: panel.motion.duration } }
 
         // THE DRIFT BREATHE (tick 4qm) — the epic's fourth named motion, and the
         // only one that is a LOOP rather than a transition.
@@ -390,9 +401,10 @@ BorderSurface {
         // stops drifting finish the half-breath it is in rather than snapping.
         property real driftBreathe: 1.0
         readonly property color breathingEdge: chipSlot.anyDrifted
-          ? Qt.rgba(chipSlot.edgeColor.r, chipSlot.edgeColor.g, chipSlot.edgeColor.b,
-              chipSlot.edgeColor.a * chipSlot.driftBreathe)
-          : chipSlot.edgeColor
+          ? Qt.rgba(chipSlot.edgeDrawColor.r, chipSlot.edgeDrawColor.g,
+              chipSlot.edgeDrawColor.b,
+              chipSlot.edgeDrawColor.a * chipSlot.driftBreathe)
+          : chipSlot.edgeDrawColor
 
         SequentialAnimation {
           id: driftBreathing

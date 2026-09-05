@@ -441,3 +441,57 @@ test("Motion.qml states the tokens the rest of the plugin reads", () => {
   assert.match(source, /readonly property int breatheDuration:\s*\d+/,
     "Motion.qml no longer states the drift breathe's half-period");
 });
+
+// ---------------------------------------------------------------------------
+// A Behavior cannot animate a readonly property (tick 4qm)
+// ---------------------------------------------------------------------------
+//
+// WHAT THIS COST. `Behavior on edgeColor` was written against a property
+// declared `readonly property color edgeColor`. A Behavior is an INTERCEPTOR ON
+// WRITES, and Qt refuses to install one on a readonly property — so the whole
+// component became unavailable:
+//
+//   MapWorkspace.qml[371:9]: Invalid property assignment:
+//                            "edgeColor" is a read-only property
+//   Panel.qml[4470:39]: Type MapWorkspace unavailable
+//
+// The panel then never mapped a surface at all, which failed THREE acceptance
+// tests — and it shipped through three ticks because `qmllint` exits 0 on it,
+// the node suite cannot instantiate QML, and no gate ran in between. The
+// filtered service log looked perfectly healthy: the service and the bar widget
+// both said their piece, because the fault was in a file neither of them loads.
+//
+// So it is caught here, where a source scan can see it, in the file whose whole
+// job is claims that can only be made by reading the tree.
+
+test("no Behavior animates a property its own file declares readonly", () => {
+  const files = qmlFiles();
+  assert.ok(files.length >= 8, "the glob found the repository's QML files");
+
+  const offenders = [];
+  for (const { label, file } of files) {
+    const source = fs.readFileSync(file, "utf8");
+
+    // Every `readonly property <type> <name>` this file declares. Comment lines
+    // are skipped: the comment above the fix quotes the very line it removed.
+    const readonly = new Set();
+    for (const line of source.split("\n")) {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      const m = line.match(/^\s*readonly\s+property\s+\S+\s+(\w+)\s*:/);
+      if (m) readonly.add(m[1]);
+    }
+
+    source.split("\n").forEach((line, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
+      const m = line.match(/^\s*Behavior\s+on\s+(\w+)\b/);
+      if (m && readonly.has(m[1])) {
+        offenders.push(label + ":" + (i + 1) + "  Behavior on " + m[1]
+          + " — declared readonly in the same file");
+      }
+    });
+  }
+
+  assert.deepStrictEqual(offenders, [],
+    "a Behavior on a readonly property makes the whole component unavailable "
+    + "at load, and qmllint will not tell you:\n  " + offenders.join("\n  "));
+});
