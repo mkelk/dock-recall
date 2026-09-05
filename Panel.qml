@@ -1725,6 +1725,26 @@ Item {
     logPrefix: root.logPrefix
     hostScreen: root.focusedScreen
     hostMapped: root.opened
+    // THE CONSENT, RE-ASKED AT THE INSTANT OF THE WRITE (tick 8vc). The store
+    // calls this just before saving, so a camera switched off — or a whole app
+    // unticked — while its round is in flight cannot have a picture written
+    // back after the withdrawal has already deleted them. Read from the state
+    // model each time, never from a copy the round started with.
+    stillOwed: function (identityId) { return root.isPicturedIdentity(identityId) }
+  }
+
+  // Is this identity watched AND pictured, as the state file says RIGHT NOW?
+  // `=== true` and nothing looser: this is the read of a consent, the same rule
+  // StateModel.normalizeIdentity applies to the file itself.
+  function isPicturedIdentity(identityId) {
+    var id = String(identityId || "")
+    if (!id) return false
+    var list = root.identities || []
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] && list[i].id === id) return list[i].pictured === true
+    }
+    // Not in the list at all means unticked while the round was in flight.
+    return false
   }
 
   // The picture this (identity, occurrence) would have for the CURRENT

@@ -591,6 +591,22 @@ Item {
   //
   // `step > 0` rejects the default: a view created without one, or a `_current`
   // that is gone, must not accidentally match step zero.
+  // IS THIS APP STILL OWED A PICTURE, right now, at the instant we are about to
+  // write one? Supplied by the panel, which owns the identity list; a store with
+  // no predicate answers yes, so the store is still usable on its own (the
+  // sandbox probes instantiate a bare one).
+  //
+  // Deliberately a QUESTION ASKED LATE rather than a flag copied into the plan.
+  // The plan is built when the round starts, and everything this gate exists for
+  // happens after that.
+  property var stillOwed: null
+
+  function _stillOwed(entry) {
+    if (typeof store.stillOwed !== "function") return true
+    if (!entry || !entry.identityId) return true
+    return store.stillOwed(entry.identityId) === true
+  }
+
   function _isCurrentStep(step) {
     return step > 0 && step === store._step && store._queue.length > 0
   }
@@ -675,6 +691,29 @@ Item {
       // that can land after `evictAll("declined")` has run. So a callback whose
       // step is over writes nothing and says nothing.
       if (!store._isCurrentStep(step)) return
+      // AND THE CONSENT IS RE-ASKED AT THE MOMENT OF THE WRITE (tick 8vc).
+      //
+      // `_isCurrentStep` only says the step is still the one in flight. It says
+      // nothing about whether this app is still owed a picture AT ALL, and the
+      // two are not the same question: a round can be perfectly healthy while
+      // the user unticks the very app it is photographing. The gate log caught
+      // the exact interleave —
+      //
+      //   recorded 2 apps for topology "… | dr-cap-dock"
+      //   unwatched "dr-pictured" — its stored pictures are deleted, on every desk
+      //   dropped every stored picture of 1 app(s), on every desk (unwatched)
+      //   1 picture(s) stored, 1 not pictured        <- the round's save, AFTER
+      //
+      // — consent withdrawn, the pictures deleted, and then an in-flight round
+      // wrote one back. Making the WITHDRAWAL wait for the round would mean
+      // tearing down a live ScreencopyView whose grabToImage can still fire,
+      // which is the orphan class tick ilg exists to prevent. So the withdrawal
+      // does not wait: the SAVE asks again, at the last instant before the
+      // bytes hit the disk, and a picture nobody is owed is never written.
+      if (!store._stillOwed(entry)) {
+        store._settle(step, false, "withdrawn")
+        return
+      }
       if (!result) {
         store._settle(step, false, "grab-null")
         return

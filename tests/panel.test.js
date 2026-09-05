@@ -7454,3 +7454,40 @@ test("the state file's writes block, so a record is on disk when it says it is",
   assert.match(reader[0], /^\s*blockAllReads:\s*true\s*$/m,
     "freshState's view no longer reads the file synchronously");
 });
+
+test("a capture is not written for an app whose consent went away mid-round", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // The defect this pins (tick 8vc), from the acceptance log verbatim:
+  //
+  //   recorded 2 apps for topology "… | dr-cap-dock"
+  //   unwatched "dr-pictured" — its stored pictures are deleted, on every desk
+  //   dropped every stored picture of 1 app(s), on every desk (unwatched)
+  //   1 picture(s) stored, 1 not pictured        <- the round's save, AFTER
+  //
+  // Consent withdrawn, the pictures deleted, and then an in-flight round wrote
+  // one back. `_isCurrentStep` did not catch it and could not: the step WAS
+  // still current: the round was healthy, and it was the consent underneath it
+  // that had gone. So the save asks again, and it must ask BEFORE it writes.
+  const grab = source.match(/grabToImage\(function \(result\) \{[\s\S]*?\n    \}/);
+  assert.ok(grab, "CaptureStore.qml no longer has the grab callback");
+
+  const gate = grab[0].indexOf("_stillOwed");
+  const write = grab[0].indexOf("saveToFile");
+  assert.ok(gate > -1,
+    "the grab callback no longer re-asks whether the app is still owed a picture");
+  assert.ok(write > -1, "the grab callback no longer saves");
+  assert.ok(gate < write,
+    "the consent is re-asked AFTER the file is written, which is too late — "
+    + "the whole point is that no picture nobody is owed reaches the disk");
+
+  // And the panel must actually supply the predicate, or the store's own
+  // default ("no predicate means yes") silently reopens the hole.
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  assert.match(panel, /stillOwed:\s*function\s*\(/,
+    "Panel.qml no longer hands the store a consent predicate");
+  assert.match(panel, /function isPicturedIdentity\(/,
+    "Panel.qml no longer has the predicate the store is handed");
+});
