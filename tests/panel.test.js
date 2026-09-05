@@ -7876,8 +7876,21 @@ test("a capture is not written for an app whose consent went away mid-round", ()
   // And the panel must actually supply the predicate, or the store's own
   // default ("no predicate means yes") silently reopens the hole.
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,200}?picturedOf\(/,
+  assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,400}?picturedOf\(/,
     "Panel.qml no longer hands the store a consent predicate built on picturedOf");
+
+  // AND THE SECOND QUESTION, learned from the gate: a Forget leaves the camera
+  // ON, so consent alone answers yes for a layout that no longer exists. The
+  // predicate must also ask whether the recording this picture belongs to is
+  // still there, and the store must pass it the round's topology key to ask
+  // with.
+  assert.match(panel, /stillOwed:\s*function\s*\(\s*identityId\s*,\s*topologyKey\s*\)/,
+    "Panel.qml's consent predicate no longer takes the round's topology key");
+  assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,600}?layoutFor\(/,
+    "Panel.qml's predicate no longer checks the layout still exists");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  assert.match(store, /stillOwed\(entry\.identityId,\s*key\)/,
+    "CaptureStore no longer passes the round's topology key to the predicate");
 
   // AND THE PREDICATE ITSELF ANSWERS, which a grep for a name cannot show. It
   // routes to StateModel.isPictured, which is pure and testable here — the

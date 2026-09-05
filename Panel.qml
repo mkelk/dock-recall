@@ -1743,7 +1743,14 @@ Item {
     // one that matters here is the one the file itself is normalized by.
     // `picturedOf` reads the CURRENT state model on every call, which is the
     // whole point — the round's plan is older than the question.
-    stillOwed: function (identityId) { return root.picturedOf(identityId) }
+    stillOwed: function (identityId, topologyKey) {
+      // Consent, AND the recording this picture is for. A Forget leaves the
+      // camera on, so consent alone says yes for a layout that no longer
+      // exists — see the comment on _stillOwed for the log that proved it.
+      if (!root.picturedOf(identityId)) return false
+      if (!topologyKey) return true
+      return !!StateModel.layoutFor(root.stateModel, topologyKey)
+    }
   }
 
   // ------------------------------------------------------- the live pictures

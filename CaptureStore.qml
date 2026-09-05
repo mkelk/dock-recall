@@ -601,10 +601,26 @@ Item {
   // happens after that.
   property var stillOwed: null
 
+  // TWO QUESTIONS, NOT ONE, and the second was learned from the gate: is this
+  // app still owed a picture, AND is the recording this picture belongs to still
+  // there? A Forget in flight is not a withdrawal of consent — the camera is
+  // still on — so asking only about consent let a round write a picture for a
+  // layout the user had just forgotten. The gate log caught it exactly:
+  //
+  //   dropped the pictures for this layout (re-recorded)   <- the round's own evict
+  //   forgot the layout for topology "…" (2 apps)          <- the Forget
+  //   1 picture(s) stored, 1 not pictured                  <- the round's save, AFTER
+  //   dropped the pictures for this layout (forgotten)     <- the Forget's evict, too late
+  //
+  // The Forget's `find` had already scanned past a file that did not exist yet.
+  // Racing the eviction is unwinnable from that side; the answer is the same one
+  // tick zxg used for consent — ask again at the instant of the write, when both
+  // facts are current.
   function _stillOwed(entry) {
     if (typeof store.stillOwed !== "function") return true
     if (!entry || !entry.identityId) return true
-    return store.stillOwed(entry.identityId) === true
+    var key = store._plan ? String(store._plan.topologyKey || "") : ""
+    return store.stillOwed(entry.identityId, key) === true
   }
 
   function _isCurrentStep(step) {
