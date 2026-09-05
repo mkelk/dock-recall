@@ -381,7 +381,7 @@ BorderSurface {
         Behavior on color { ColorAnimation { id: fillFade; duration: panel.motion.duration } }
         Behavior on edgeDrawColor { ColorAnimation { id: edgeFade; duration: panel.motion.duration } }
 
-        // THE DRIFT BREATHE (tick 4qm) — the epic's fourth named motion, and the
+        // THE DRIFT BREATHE (tick 5pu) — the epic's fourth named motion, and the
         // only one that is a LOOP rather than a transition.
         //
         // A drifted chip is the one thing on this map the user is meant to act
@@ -855,7 +855,7 @@ BorderSurface {
                   fillMotionMs: chipTab.fillMotionMs,
                   edgeMotionMs: chipTab.edgeMotionMs,
                   motionEasing: chipTab.motionEasing,
-                  // THE DRIFT BREATHE (tick 4qm). Half a breath's duration, off
+                  // THE DRIFT BREATHE (tick 5pu). Half a breath's duration, off
                   // the animation object, and whether it is RUNNING — which is
                   // the assertion that matters, because a loop bound to a chip
                   // that is not drifted would pulse the whole map, and a loop

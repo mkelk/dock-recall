@@ -459,7 +459,7 @@ test("Motion.qml states the tokens the rest of the plugin reads", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A Behavior cannot animate a readonly property (tick 4qm)
+// A Behavior cannot animate a readonly property (tick w7x)
 // ---------------------------------------------------------------------------
 //
 // WHAT THIS COST. `Behavior on edgeColor` was written against a property

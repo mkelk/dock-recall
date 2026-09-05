@@ -7460,7 +7460,7 @@ test("a capture is not written for an app whose consent went away mid-round", ()
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
 
-  // The defect this pins (tick 8vc), from the acceptance log verbatim:
+  // The defect this pins (tick zxg), from the acceptance log verbatim:
   //
   //   recorded 2 apps for topology "… | dr-cap-dock"
   //   unwatched "dr-pictured" — its stored pictures are deleted, on every desk
@@ -7486,8 +7486,27 @@ test("a capture is not written for an app whose consent went away mid-round", ()
   // And the panel must actually supply the predicate, or the store's own
   // default ("no predicate means yes") silently reopens the hole.
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  assert.match(panel, /stillOwed:\s*function\s*\(/,
-    "Panel.qml no longer hands the store a consent predicate");
-  assert.match(panel, /function isPicturedIdentity\(/,
-    "Panel.qml no longer has the predicate the store is handed");
+  assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,200}?picturedOf\(/,
+    "Panel.qml no longer hands the store a consent predicate built on picturedOf");
+
+  // AND THE PREDICATE ITSELF ANSWERS, which a grep for a name cannot show. It
+  // routes to StateModel.isPictured, which is pure and testable here — the
+  // reason the hand-rolled QML copy this replaced was worth deleting.
+  const st = require("../StateModel.js");
+  const withConsent = st.parseState(JSON.stringify({
+    version: 6,
+    identities: [
+      { id: "seen", patterns: ["^foot$"], pictured: true },
+      { id: "watched-only", patterns: ["^foot$"], pictured: false }
+    ],
+    layouts: {}
+  })).state;
+
+  assert.strictEqual(st.isPictured(withConsent, "seen"), true,
+    "an app with its camera on is owed its picture");
+  assert.strictEqual(st.isPictured(withConsent, "watched-only"), false,
+    "a watched app with no camera is not");
+  assert.strictEqual(st.isPictured(withConsent, "unticked-mid-round"), false,
+    "and an app that is no longer in the file at all — unticked while its round "
+    + "was in flight — is not, which is the case this whole gate exists for");
 });

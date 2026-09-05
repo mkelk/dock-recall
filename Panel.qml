@@ -369,9 +369,13 @@ Item {
   //   drawn rectangles and translates one rectangle between them, while the real
   //   chip at each end stands aside so the user does not see two of it.
   //
-  //   A PAIR WITH `geometry === false` CROSS-FADES, because at least one of its
-  //   ends is on a fallback workspace, which draws stacked and whose rects mean
-  //   nothing. There is nowhere honest to fly it from.
+  //   A PAIR WITH `geometry === false` DOES NOT MOVE AT ALL. At least one of
+  //   its ends is on a fallback workspace, which draws stacked and whose rects
+  //   mean nothing, so there is nowhere honest to fly it from — and because the
+  //   chip is PAIRED it is held at full opacity on both maps (`morphContinuous`
+  //   in MapWorkspace.qml), so it cuts rather than fading. That is deliberate:
+  //   a chip that was already on screen must not blink. It is not a cross-fade,
+  //   and calling it one was wrong in five places until the kw9 review.
   //
   //   A ONE-SIDED CHIP is entering, and fades in from nothing.
   //
@@ -463,7 +467,8 @@ Item {
   // above and from nothing else.
   //
   // A pair reaches this list only if `geometry` is true AND both ends resolved
-  // to a real drawn rectangle. Everything else stays a cross-fade — and it is a
+  // to a real drawn rectangle. Everything else simply cuts: a paired chip is
+  // held at full opacity on both maps and does not move — and it is a
   // list rather than a flag per pair because it is also what the overlay's
   // Repeater is built from, so the thing that flies and the thing that reports
   // having flown are one value.
@@ -1725,26 +1730,20 @@ Item {
     logPrefix: root.logPrefix
     hostScreen: root.focusedScreen
     hostMapped: root.opened
-    // THE CONSENT, RE-ASKED AT THE INSTANT OF THE WRITE (tick 8vc). The store
+    // THE CONSENT, RE-ASKED AT THE INSTANT OF THE WRITE (tick zxg). The store
     // calls this just before saving, so a camera switched off — or a whole app
     // unticked — while its round is in flight cannot have a picture written
     // back after the withdrawal has already deleted them. Read from the state
     // model each time, never from a copy the round started with.
-    stillOwed: function (identityId) { return root.isPicturedIdentity(identityId) }
-  }
-
-  // Is this identity watched AND pictured, as the state file says RIGHT NOW?
-  // `=== true` and nothing looser: this is the read of a consent, the same rule
-  // StateModel.normalizeIdentity applies to the file itself.
-  function isPicturedIdentity(identityId) {
-    var id = String(identityId || "")
-    if (!id) return false
-    var list = root.identities || []
-    for (var i = 0; i < list.length; i++) {
-      if (list[i] && list[i].id === id) return list[i].pictured === true
-    }
-    // Not in the list at all means unticked while the round was in flight.
-    return false
+    // THROUGH THE PURE PREDICATE THAT ALREADY EXISTS. This was a hand-rolled
+    // third spelling of `StateModel.isPictured` — a loop over root.identities,
+    // in QML, where node cannot test it, on the privacy gate. It answered the
+    // same thing, which is exactly why it was worth deleting: an identical
+    // second implementation is a place for the two to diverge later, and the
+    // one that matters here is the one the file itself is normalized by.
+    // `picturedOf` reads the CURRENT state model on every call, which is the
+    // whole point — the round's plan is older than the question.
+    stillOwed: function (identityId) { return root.picturedOf(identityId) }
   }
 
   // The picture this (identity, occurrence) would have for the CURRENT
@@ -3059,7 +3058,8 @@ Item {
   //   answer — so a flight here is a rectangle that was on screen. A pair is
   //   absent from it when `geometry` is false (a fallback workspace draws
   //   stacked and its rects mean nothing) or when the destination map has not
-  //   laid out yet, and both of those cross-fade instead.
+  //   laid out yet. Neither of those fades: a paired chip is held at full
+  //   opacity on both maps, so it cuts into place.
   //
   //   `morphRole` on a chip is what the CHIP was told — the pair set reaching
   //   the thing that draws, rather than the panel agreeing with itself.
@@ -3334,7 +3334,7 @@ Item {
               fillMotionMs: root.reported(report, "fillMotionMs"),
               edgeMotionMs: root.reported(report, "edgeMotionMs"),
               motionEasing: root.reported(report, "motionEasing"),
-              // THE DRIFT BREATHE (tick 4qm), reported with the fact it must
+              // THE DRIFT BREATHE (tick 5pu), reported with the fact it must
               // agree with. `breathing` alone could be a loop pulsing the whole
               // map; `drifted` alone says nothing about motion. The pair is the
               // assertion, and neither half carries it.

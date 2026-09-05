@@ -1157,7 +1157,7 @@ if [[ $fallback_view != "recorded" ]]; then
 fi
 if ! poll 30 morph_ran_and_ended "$runs_before_fallback"; then
   diagnostics
-  fail "a cross-fade morph runs and ends on the fallback path too" \
+  fail "a morph with nothing to fly still runs and ends on the fallback path" \
     "after setView recorded on a geometry-less layout the payload never reported runs above $runs_before_fallback with settled caught up: $(panel_state_json | jq -c '.morph|{active, runs, settled}' 2>&1)"
 fi
 
@@ -1173,7 +1173,7 @@ screenshot "success-dock-recall-motion-03-fallback"
 fallback_motion=$(printf '%s' "$RECORDED_JSON" | jq -r \
   '[.chips[]|"\(.key) \(.renderPath) \(.width|floor)x\(.height|floor) role=\(.morphRole) flying=\(.morphFlying) fill=\(.fillMotionMs)ms edge=\(.edgeMotionMs)ms"]|join(", ")')
 pass "FALLBACK chips report the same two bound fades the positioned ones do: $fallback_motion"
-pass "and the pair cross-fades instead of flying: geometry=false, morph.flights empty, no chip standing aside for an overlay carrying nothing"
+pass "and the pair cuts instead of flying: geometry=false, morph.flights empty, no chip standing aside for an overlay carrying nothing"
 
 # ------------------------------------------ 10. THE BAR, over its own target
 

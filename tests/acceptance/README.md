@@ -789,7 +789,7 @@ therefore drawn *above* the map, by an overlay owning its own rectangles, and
 | the pair | what happens | how to see it |
 |---|---|---|
 | `geometry: true`, both ends resolved | **translated** — one rectangle flies between the two drawn rects while the real chip at each end stands aside | it is in `morph.flights`, and its chips report `morphFlying` |
-| `geometry: false` | cross-fades — a fallback workspace draws stacked and its rects mean nothing | `morphRole: "paired"`, absent from `flights` |
+| `geometry: false` | does not move — a fallback workspace draws stacked and its rects mean nothing, and a PAIRED chip is held at full opacity on both maps, so it cuts rather than fading | `morphRole: "paired"`, absent from `flights` |
 | one-sided | fades in from nothing | `morphRole: "live-only"` / `"recorded-only"` |
 
 `flights` carries `from` and `to` in map-canvas pixels, resolved through

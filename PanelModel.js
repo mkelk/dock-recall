@@ -4858,7 +4858,7 @@ function mapMorphPairs(liveMap, recordedMap) {
       // chips as stacked rows and ignores their rects, including the good rects
       // the chips that are not the reason for the fallback still carry. Without
       // this clause the morph flies half a workspace in from rectangles nothing
-      // was ever drawn at, while the other half cross-fades correctly.
+      // was ever drawn at, while the other half sits still.
       //
       // `true` does not mean "here are your two rectangles": `rect` is the
       // window's fraction, not the drawn chip. See morphChipEntries.

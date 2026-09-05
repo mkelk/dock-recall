@@ -691,7 +691,7 @@ Item {
       // that can land after `evictAll("declined")` has run. So a callback whose
       // step is over writes nothing and says nothing.
       if (!store._isCurrentStep(step)) return
-      // AND THE CONSENT IS RE-ASKED AT THE MOMENT OF THE WRITE (tick 8vc).
+      // AND THE CONSENT IS RE-ASKED AT THE MOMENT OF THE WRITE (tick zxg).
       //
       // `_isCurrentStep` only says the step is still the one in flight. It says
       // nothing about whether this app is still owed a picture AT ALL, and the
