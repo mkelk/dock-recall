@@ -2989,7 +2989,7 @@ Item {
   //     "morph": {
   //       "active": false,
   //       "durationMs": 120,
-  //       "easing": 4,
+  //       "easing": 6,                     // Easing.OutCubic, per QEasingCurve::Type
   //       "runs": 2, "settled": 2,
   //       "pairs": [
   //         { "linkKey": "id:obsidian", "liveKey": "0x5581f0a1",

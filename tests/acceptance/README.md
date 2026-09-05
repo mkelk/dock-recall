@@ -18,6 +18,7 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
 | `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
 | `dock-recall-captures-test.sh` | record-time pictures, observed on the guest filesystem |
+| `dock-recall-motion-test.sh` | that the motion is *wired* — bound durations, and a morph that ran |
 | `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
 | `undock-locked.sh` | the locked scenario's host half — QMP keyboard and screendumps |
@@ -695,10 +696,58 @@ delegate-reported, so the pair is two sites rather than one value read twice —
 and one name per app across both surfaces is what the hover already promises:
 the row and the chips that light up with it are one thing.
 
+### The chip's three motion fields, and the bar's own handler
+
+`fillMotionMs`, `edgeMotionMs` and `motionEasing` are on chips, and they are
+draw-time: `null` until the delegate has reported, like every other value the
+chip itself says. They are read off the chip's own **animation objects** —
+`fillFade.duration`, `edgeFade.duration`, `fillFade.easing.type` in
+`MapWorkspace.qml` — and never off `Motion.qml`'s tokens. That distinction is
+the whole assertion. This venue cannot watch a colour move, so the most it can
+honestly ask is whether the property is bound to an animation with a real
+duration, and only a number that came from the animating thing answers it: a
+number restated from `Motion.qml` would pass on a panel whose `Behavior`
+somebody had deleted.
+
+Two channels, two durations, for the reason `fillState` and `edgeTone` are two:
+a chip can become drifted without becoming watched, and one animation would make
+the edge wait for the fill.
+
+`motionEasing` is Qt's easing enum and is **Linear (0)** for both colour fades by
+design — Omarchy's own `Ui/ToggleSwitch` gives its `ColorAnimation` no curve and
+its knob `OutCubic`, two shapes and one duration, and this plugin copies that
+rather than inventing one. Said with its limit: a deleted `Behavior` also reports
+0, so the Linear clause states the convention and the **durations** are what
+catch a deletion.
+
+**The bar widget is a second IPC target**, `dock-recall-bar`, read-only, one verb:
+
+```
+omarchy-shell dock-recall-bar motion
+  → { glyphFadeMs, glyphFadeEasing, sweepMs, sweepRunning, sweeping, glyph }
+```
+
+It is a separate target rather than a second verb on `dock-recall` because the
+bar widget is a separate top-level entry point — loaded by the bar and not by the
+panel loader — so nothing in `Panel.qml` can see into it, and the panel's payload
+has no route to `glyphFade` or `sweepRun` at all. The widget owns no state and
+writes nothing, which is what keeps an enabled bar free; this handler reports
+what its two animation objects say about *themselves*, for the reason the chip's
+three fields do.
+
+`sweepRunning` is reported beside `sweeping` because an animation that is bound
+but never runs is not motion — and a `NumberAnimation on x` runs by default, so a
+`running:` binding somebody removed leaves the band travelling for ever under a
+glyph that is not restoring. The two must agree. `sweepMs` is `Motion.sweepDuration`
+and is deliberately **not** the state-change duration: a long looping hint that
+something is happening is a different kind of thing from a transition between two
+states, and a sweep sharing the toggles' number would strobe.
+
 ### The Live → Recorded morph
 
 `morph` is one object and it is **always present** — `active`, `durationMs`,
-`easing`, `pairs`, `liveOnly`, `recordedOnly` — with `pairs` empty when the
+`easing`, `runs`, `settled`, `pairs`, `liveOnly`, `recordedOnly`, `flights` —
+with `pairs` empty when the
 topology has nothing recorded. It is not a draw-time `null`: "these two maps
 share no chip" is a fact the panel has, not a value it is waiting for. Each chip
 also carries `morphRole` (`paired` / `live-only` / `recorded-only` / `""`),
@@ -849,6 +898,81 @@ on the way out however the test ends, because its layer holds keyboard focus
 exclusively and the tests after it want the desk back; and the state file the
 test seeded is removed with it, so a watched identity for a window that no longer
 exists and a layout with no geometry do not leak into the next test in the boot.
+
+## What the motion test asserts
+
+`dock-recall-motion-test.sh` is epic kw9's gate, and its DoD is deliberately
+narrow: **that the motion is wired, not that it looks right.** Whether the morph
+*reads* as a morph is the human's own `--awaiting` gate, not something any
+assertion here stands in for.
+
+Every claim in the file has one of three shapes.
+
+**A duration that came off an animation object.** Every chip reports a non-zero
+`fillMotionMs` and `edgeMotionMs`, the morph reports a non-zero `durationMs`, and
+the bar reports a non-zero `glyphFadeMs` and `sweepMs`. None of those numbers is
+compared to a literal from `Motion.qml` — they are compared **to each other**:
+four animation objects across two QML entry points, read over two IPC targets,
+have to report one duration. The equality is the assertion, and the non-zero
+clause beside it is what a deleted `Behavior` fails (its report falls to 0, and
+so would a comparison of 0 against 0).
+
+**A counter the animation itself wrote.** `morph.runs` and `morph.settled` are
+incremented by `morphFade`'s own `started` and `finished` handlers. Every view
+switch in the test requires `runs` to go up **and** `settled` to catch up **and**
+`active` to be false again — a morph began, it ended, and nothing latched.
+`morph.active` is never asserted true: it is a 120 ms flag against an
+`omarchy-shell` round trip, so that would be a race whichever way it came out.
+The test fires a burst of reads straight after a switch and *prints* how many
+caught it, as a `#` note, so the claim is a measurement in the log rather than an
+assurance. Nothing has yet found a way to observe it up reliably.
+
+**A set the pure function returned.** `morph.pairs`, `liveOnly` and
+`recordedOnly` are `PanelModel.mapMorphPairs`'s own answer, and they are asserted
+**by name at both ends** — the running window's own `hyprctl` address on the live
+side, the recorded chip key on the other. A count over pairs cannot tell one chip
+from another. Beside the named clauses sits a partition: the keys the map
+actually **drew** sort-equal that side's pair ends plus its one-sided list, so a
+matcher that quietly dropped a chip fails even when every named clause passes.
+
+`morph.flights` is held to the pairs. Each flight has to name a pair the matcher
+returned *and* one it marked `geometry: true`, and both of its rectangles have to
+clear the same 16 × 10 chip floor a drawn chip does — a flight resolved against a
+canvas that has not laid out yet is 1 × 1 and non-null, so nothing else complains.
+The **direction** is checked from two payloads: `from` and `to` swap when the tab
+flips back, and the two ends are required to be different rectangles, which is why
+the seed records the app on a workspace it is not on.
+
+**Both render paths**, and reached the way a user reaches them. The layout is
+**recorded for real** through `dock-recall record`, so it carries the at/size the
+plugin itself wrote and both maps draw positioned — the pair reports
+`geometry: true` and it flies. The same layout is then rewritten **without**
+at/size, which is the shape of a v1 recording, every recorded workspace drops to
+the stacked path, the pair reports `geometry: false`, `flights` empties, and the
+chips have to go on reporting their two fade durations there. That last is what
+the section exists for: a rule calibrated on positioned chips can be wrong on the
+fallback's fixed-height rows, and the fallback has hidden a broken model here
+before.
+
+Two ends of the matcher's answer cannot come out of a `record` — an app that is
+not running, and a chip recorded somewhere it is not — so those are written onto
+the recording afterwards through `StateModel`. Every *geometry* in the file is
+still the plugin's own.
+
+**The bar's sweep is driven, not merely read.** The widget renders the published
+status file and nothing else, so the test writes a `restoring` status through the
+plugin's own `StateModel` and requires `sweeping` **and** `sweepRunning` to go
+true, then puts the file back and requires both to go false. What that proves is
+the DoD's claim — the animation is bound to the state and runs when the state says
+so. What it deliberately does not prove is that the *service* publishes
+`restoring` at the right moment; that is a fact about a restore cycle and it is
+earned in `dock-recall-roundtrip-test.sh`.
+
+The payloads are copied into the artifacts directory as
+`dock-recall-motion-state-live.json`, `-recorded.json`, `-live-back.json`,
+`-fallback.json` and `dock-recall-motion-bar.json`. The panel is dismissed, both
+windows are killed and the status file is restored on the way out however the
+test ends.
 
 ## What the undock-while-locked scenario asserts
 

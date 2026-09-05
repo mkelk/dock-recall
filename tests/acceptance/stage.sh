@@ -51,6 +51,7 @@ chmod +x "$STAGE/test/acceptance"
 #
 #   dock-recall-appid-migration-test.sh          the v3 --app-id upgrade
 #   dock-recall-captures-test.sh                 record-time pictures, on disk
+#   dock-recall-motion-test.sh                   bound durations, and a morph that ran
 #   dock-recall-panel-test.sh                    the panel's IPC, both render paths
 #   dock-recall-roundtrip-test.sh                record / undock / scatter / redock
 #   dock-recall-undock-locked-prepare-test.sh    the locked scenario's setup
