@@ -976,6 +976,18 @@ live_rows=$(printf '%s' "$LIVE_JSON" | jq -r \
   '[.rows[]|"\(.name) watched=\(.watched) ghost=\(.ghost) icon=\(if .iconResolved then "own" else "generic" end)"]|join(", ")')
 pass "app list rows, all three states on Ui/Toggle: $live_rows"
 
+# A picture of the live map with its pictures drawn (tick i93). The captures
+# test PROVES the live round; this only waits for it, so the screenshot shows
+# the panel as a user sees it after a moment rather than the instant it opened.
+# A timeout here is not a failure — the picture is for eyes, not for the gate,
+# which is why the poll's result is dropped.
+live_pictures_drawn() {
+  panel_state_json | jq -e '[.chips[]|select(.watched == true)]
+    | length > 0 and all(has("liveSource"))' >/dev/null
+}
+poll 20 live_pictures_drawn || true
+screenshot "success-dock-recall-panel-01b-live-pictures"
+
 # The Recorded tab's date, which the dated-header tick asserts on, is the
 # recording's own — not the tab's, and not the clock's. And it is PRESENT: an
 # absent recordedAt is the payload's way of saying this topology has no

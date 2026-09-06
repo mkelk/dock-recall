@@ -112,5 +112,26 @@ ssh "${ssh_opts[@]}" "$HOST" \
   "cd ~/$REMOTE_DIR && OMARCHY_ISO_DIR=~/$ISO_DIR PATH=/usr/bin:\$PATH tests/acceptance/run.sh ~/$OMARCHY_SRC"
 status=$?
 
+# ---------------------------------------------------------------- pictures
+# The harness tars the guest's screenshot dir into its run dir on $HOST
+# ("Collecting artifacts into $RUN_DIR" in omarchy-iso-test), so every
+# `screenshot "…"` an in-guest test took is already sitting there. Bring the PNGs
+# here (tick i93): a visual change can be looked at without a dev-install on
+# this machine. Non-fatal by design — the verdict below is the gate; this is
+# the view. Runs are serialized on $HOST, so the newest run dir is this run's.
+artifacts_root="${DR_ARTIFACTS_DIR:-/tmp/dr-acceptance-artifacts}"
+latest_run=$(ssh "${ssh_opts[@]}" "$HOST" "ls -td ~/$ISO_DIR/test-runs/omarchy-4.0.1/runs/*/ 2>/dev/null | head -1")
+if [[ -n $latest_run ]]; then
+  stamp=$(basename "$latest_run")
+  mkdir -p "$artifacts_root/$stamp"
+  if rsync -a -e "ssh ${ssh_opts[*]}" --include='*.png' --exclude='*' \
+       "$HOST:${latest_run}omarchy-acceptance/" "$artifacts_root/$stamp/" 2>/dev/null; then
+    echo "=== pictures from this run ($stamp) ==="
+    ls -1 "$artifacts_root/$stamp"/*.png 2>/dev/null | sed 's/^/  /' || echo "  (none taken)"
+  else
+    echo "note: no pictures copied back from $HOST:${latest_run}omarchy-acceptance/"
+  fi
+fi
+
 echo "=== remote gate exit: $status (log and artifacts stay on $HOST: /tmp/dr-acceptance-*.log, ~/$ISO_DIR/test-runs/omarchy-4.0.1/runs/) ==="
 exit "$status"
