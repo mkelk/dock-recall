@@ -650,13 +650,21 @@ he had asked for. Pictures are what the panel is for. They are on, and turning
 them off is one entry in the overflow menu, whose tooltip says what off costs
 before the press.
 
-### The app list
+### The app strip
 
-Every row is the shell's `Ui/Toggle` — the *labeled* one, which wraps a
-`ToggleSwitch` with `interactive: false` so the row owns the click. The icon and
-the right-hand launch hint and placement text sit outside it, because `Toggle`
-gives its label whatever width is left after the switch and there is no way to
-reach in past that.
+The apps under the map are a **strip** now (`AppStrip.qml`): a cell is an icon,
+a name and a small switch, several cells to a line. What it replaced was ten
+bordered 54-px rows, each one the shell's *labeled* `Ui/Toggle` with a placement
+caption stranded down its right-hand side — a form, sitting under a map that
+already says where every window is.
+
+The 54 is why the strip does not use `Ui/Toggle` at all. `Ui/Toggle.qml:45` reads
+`implicitHeight: Math.max(54, content.implicitHeight + Style.spacing.huge)` — a
+literal with no property in front of it — so every row of a list built out of it
+is 54 px tall whatever it holds. `AppStrip` uses `Ui/ToggleSwitch` directly, the
+switch factored out of that row for exactly this, with `trackHeight` settable;
+the cell owns the click and the switch is `interactive: false`, which is the same
+division `Toggle` makes internally.
 
 `PanelModel.appRows` builds **three** row states and the test requires all three:
 an unwatched live window, a watched identity, and a recorded-but-unwatched
@@ -664,13 +672,39 @@ an unwatched live window, a watched identity, and a recorded-but-unwatched
 why the seed carries a second one — a run exercising only watched rows misses
 two thirds of this.
 
-`toggleRow` calls exactly what `Toggle`'s `clicked()` calls. It ticks the
+**What a cell no longer draws is asserted as hard as what it does.** No `rows[]`
+entry may carry a `where`, a `placement` or a `caption`, checked with `has()` on
+every row beside the two retired per-app grants (`pictured`, `picturable`). An
+absence needs a test more than a presence does: nothing else fails when a caption
+comes back, and a caption coming back is the redesign quietly undone.
+
+Where those captions went is `hoverText` — the class, the placement, the drift,
+the diagnosis and the launch hint, in the cell's tooltip. This venue has no
+pointer rig (`hyprctl dispatch movecursor` warps without motion events on 0.56),
+so `hoverLink <key>` lights the cell and the cell reports the text a real pointer
+would have made it show. Three assertions, in order:
+
+| | |
+|---|---|
+| before any hover | `hoveredLinkKey` is `""` and **no** row carries a `hoverText` key at all — absent, not `""`, not `null`, per "Absent vs `null`" above |
+| `hoverLink <the seeded chip's linkKey>` | exactly **one** row carries it, and it is the lit one; its text contains that row's **own** `name` and the `monitorName` its **own chip** reports, both read out of the same payload rather than compared with a literal |
+| `hoverLink none` | the key is gone again from every row — the report registry merges and is never pruned, so this is the assertion that the read-time gate is still in front of it |
+
+The strip's three numbers and the two heights they are judged against are the
+section above, "The strip's shape, and the two heights it is judged against";
+`strip`, `mapHeight` and `panelHeight` are required on **both** views, because
+the strip sits in the card's own column below the map and is the same component
+whichever tab is showing. The three comparisons — two cells to a line, a cell no
+taller than a popup row, `strip.height <= mapHeight` — are made once, on the live
+payload, where the run has all three row states on screen.
+
+`toggleRow` calls exactly what the cell's own `MouseArea` calls. It ticks the
 **no-entry** window rather than the seeded one: unticking the seeded app would
 delete the identity its recorded layout names, and ticking it back would mint a
 new id rather than restore it. The assertion is that the row's `watched` and the
 chip's `fillState` move **in one query** — they are written by two different
 delegates reporting independently, so a payload in which only one changed is a
-real split between the list and the map.
+real split between the strip and the map.
 
 ### Window titles are never markup
 
@@ -786,6 +820,14 @@ the mechanism the Recorded map already used (`Image.Ready` gates the picture, an
 the icon steps aside only for a picture that arrived). So `liveCapture: false`
 with a non-empty `iconSource` is the correct, complete state of a chip whose
 picture has not landed, and no consumer should read it as a fault.
+
+The panel test asserts that as a **disjunction**, on every chip on both render
+paths: `(.capturePath // .liveSource // .iconSource // "") != ""` — a stored
+picture, a live one, or the icon that stands in for both, and never none of the
+three. It is stated that way rather than left to the non-empty `iconSource`
+clause beside it, which is the stronger of the two today and stops being so the
+moment a chip drawing a picture is allowed an empty icon. The disjunction is the
+one that survives that change.
 
 **Record stays available while a live round runs.** `captureStore.busy` dims
 Record so two capture rounds cannot interleave; a live round on every panel open
