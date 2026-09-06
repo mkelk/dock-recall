@@ -268,50 +268,60 @@ test("the chip's picture is masked to the slot's rounded rectangle", () => {
   assert.match(layer, /maskSource:\s*chipPictureMask/,
     "the picture's mask no longer points at the shape that rounds it:\n" + layer);
 
-  const enabled = bindingAfterId("MapWorkspace.qml", MAP, "chipCapture", "layer.enabled");
-  assert.match(enabled, /layer\.enabled:\s*true/,
-    "the picture is not rendered into a layer, so nothing can mask it:\n" + enabled);
+  // ONLY WHERE IT CHANGES THE PICTURE. Style.cornerRadius mirrors Hyprland's
+  // decoration:rounding and defaults to 0, so on a square theme this mask is a
+  // rectangle masking a rectangle — an offscreen texture and a shader pass per
+  // chip for no pixel's difference. Both halves of the idiom carry the same
+  // condition, or one of them allocates for a mask nobody samples.
+  for (const id of ["chipCapture", "chipPictureMask"]) {
+    const enabled = bindingAfterId("MapWorkspace.qml", MAP, id, "layer.enabled");
+    assert.match(enabled, /chipSlot\.radius > 0/,
+      `${id} renders into a layer unconditionally, so a square theme — which is`
+      + " Style.cornerRadius's own default — pays for a mask that cannot change"
+      + " one pixel:\n" + enabled);
+  }
 
-  // And the mask itself is a texture provider that is never drawn.
+  // And the mask itself is never drawn, only sampled.
   const maskAt = MAP.indexOf("id: chipPictureMask\n");
   assert.ok(maskAt !== -1, "the mask shape is gone");
   const mask = MAP.slice(maskAt, MAP.indexOf("// THE VEIL"));
   assert.match(mask, /visible:\s*false/,
     "the mask shape is drawn as well as sampled:\n" + mask);
-  assert.match(mask, /layer\.enabled:\s*true/,
-    "the mask shape is not a texture provider, so MultiEffect has nothing to"
-    + " sample and the picture is masked to nothing:\n" + mask);
+  // Its bounds are the PICTURE's, because a MultiEffect maps its mask onto the
+  // LAYERED item — and the picture is inset from the tab by the edge's width.
+  assert.match(mask, /anchors\.fill:\s*chipCapture/,
+    "the mask no longer covers exactly what it masks, so the rounding lands"
+    + " somewhere other than the picture's own corners:\n" + mask);
 
-  // THE EDGE READS ON TOP OF THE PICTURE. QML paints an item's children over
-  // the Rectangle that draws them, border included — so the shape is held back
-  // by exactly the edge's width on all four sides, and the chip's 1-px line
-  // survives its own thumbnail.
-  //
-  // Asked of each of the four geometry bindings rather than of the block,
-  // because the block also spells `edgeWidth` in its RADIUS: a mutation that
-  // squared the shape back up to the chip's full rectangle left that one
-  // mention standing and a whole-block match passed over it.
-  for (const side of ["x", "y", "width", "height"]) {
-    const geometry = bindingAfterId("MapWorkspace.qml", MAP, "chipPictureShape", side);
-    assert.match(geometry, /chipSlot\.edgeWidth/,
-      `the mask's ${side} no longer holds the picture back by the edge's width,`
-      + " so a chip with a thumbnail paints over the one line the map has"
-      + " left:\n" + geometry);
-  }
+  // THE EDGE READS ON TOP OF THE PICTURE, and this is the half that applies on
+  // EVERY theme, masked or not. QML paints an item's children over the Rectangle
+  // that draws them, border included — the first VM look showed a watched
+  // chip's picture covering the slot's border completely, so an in-sync chip
+  // drew no edge at all. Holding the picture back by the edge's width is what
+  // puts it back, and it costs the payload nothing: the tab's own width and
+  // height, which the treatment ladder and the report both read, do not move.
+  const margins = bindingAfterId("MapWorkspace.qml", MAP, "chipCapture", "anchors.margins");
+  assert.match(margins, /chipSlot\.edgeWidth/,
+    "the picture is not held back by the edge's width any more, so a chip with a"
+    + " thumbnail paints over the one line the map has left:\n" + margins);
 
-  // It is the SLOT's rectangle, not the tab's: a fused tab group is one pill,
-  // and rounding each tab would round the joins in the middle of it.
+  // The mask's rectangle is the SLOT's, not the tab's: a fused tab group is one
+  // pill, and rounding each tab would round the joins in the middle of it.
   const x = bindingAfterId("MapWorkspace.qml", MAP, "chipPictureShape", "x");
   assert.match(x, /-\s*chipTab\.x/,
     "the mask is the tab's own rectangle, so a fused tab group is rounded at"
     + " every internal join:\n" + x);
-  const width = bindingAfterId("MapWorkspace.qml", MAP, "chipPictureShape", "width");
-  assert.match(width, /chipRow\.width/,
-    "the mask is the tab's own rectangle rather than the whole pill's:\n" + width);
+  for (const side of ["width", "height"]) {
+    const geometry = bindingAfterId("MapWorkspace.qml", MAP, "chipPictureShape", side);
+    assert.match(geometry, /chipRow\.\w+ - chipSlot\.edgeWidth \* 2/,
+      `the mask's ${side} is no longer the pill's rectangle minus the ring the`
+      + " picture is held back by, so the rounding is a different size from the"
+      + " thing it rounds:\n" + geometry);
+  }
 
   const radius = bindingAfterId("MapWorkspace.qml", MAP, "chipPictureShape", "radius");
-  assert.match(radius, /chipSlot\.radius/,
-    "the mask no longer follows the chip's own corner radius:\n" + radius);
+  assert.match(radius, /chipSlot\.radius - chipSlot\.edgeWidth/,
+    "the mask no longer follows the INSIDE of the chip's corner:\n" + radius);
 });
 
 // ---------------------------------------------------------------------------
@@ -391,16 +401,41 @@ test("the number badge overlays the tile's corner rather than owning a row above
     "the focused badge is no longer accent-filled:\n" + color);
 });
 
-test("the canvas fills the tile — the badge is no longer a term in the box's height", () => {
+test("the canvas fills the tile on the positioned path, and steps below the badge on the fallback", () => {
+  // BOTH RENDER PATHS, and here they genuinely want different answers
+  // (.tick/learnings.md). On the positioned path a chip is a window's picture
+  // and a number lying on one is the whole Exposé idea, so the canvas has the
+  // tile and `badgeInset` is 0. On the fallback a "chip" is a canvas-wide 17 px
+  // row carrying the app's NAME, and a 14 px badge lying on it covered the left
+  // end of every tile's first row — which the first VM look found in both
+  // tiles of the Recorded map.
+  const inset = bindingAfterId("MapWorkspace.qml", MAP, "workspaceSlot", "badgeInset");
+  assert.match(inset, /workspaceSlot\.positioned/,
+    "the badge's room is no longer asked per render path, so one of the two"
+    + " paths is wrong — the overlay on a row of names, or a gap above the"
+    + " pictures:\n" + inset);
+  assert.match(inset, /\?\s*0/,
+    "the positioned path reserves a row for the badge again, so a picture no"
+    + " longer runs to the top of its tile:\n" + inset);
+  assert.match(inset, /workspaceLabel\.implicitHeight/,
+    "the fallback's room for the badge is not the badge's own height, so it is a"
+    + " number that can drift from the thing it is making room for:\n" + inset);
+
+  // And both users of it: the box's height and the canvas's origin. Either one
+  // alone is a tile whose contents do not fit it.
   const height = bindingAfterId("MapWorkspace.qml", MAP, "workspaceSlot", "height");
   assert.match(height, /workspaceSlot\.canvasHeight/, height);
+  assert.match(height, /workspaceSlot\.badgeInset/,
+    "the tile's height does not include the badge's room, so the fallback's last"
+    + " stacked row is pushed out of the bottom of its own tile:\n" + height);
   assert.doesNotMatch(height, /workspaceLabel/,
-    "the workspace box still reserves a row for the badge above its canvas, so"
-    + " every tile is a caption stacked on a picture:\n" + height);
+    "the workspace box reserves the badge's height directly again, which is the"
+    + " caption-stacked-on-a-picture this tick removed from the positioned"
+    + " path:\n" + height);
 
   const y = bindingAfterId("MapWorkspace.qml", MAP, "workspaceCanvas", "y");
-  assert.match(y, /^\s*y:\s*workspaceSlot\.contentTopInset\s*$/,
-    "the canvas does not start at the top of the tile:\n" + y);
+  assert.match(y, /^\s*y:\s*workspaceSlot\.contentTopInset \+ workspaceSlot\.badgeInset\s*$/,
+    "the canvas does not start at the top of the tile plus the badge's room:\n" + y);
 });
 
 // ---------------------------------------------------------------------------

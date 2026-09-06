@@ -116,6 +116,27 @@ BorderSurface {
   // outlived the wording) and the canvas has the tile.
   readonly property real canvasWidth: Math.max(1, workspaceSlot.boxWidth
     - workspaceSlot.contentLeftInset - workspaceSlot.contentRightInset)
+
+  // WHAT THE OVERLAY COSTS ON THE PATH THAT CANNOT ABSORB IT — the badge's own
+  // room, and only on the FALLBACK.
+  //
+  // A badge lying on a window's PICTURE is the Exposé look this redesign is
+  // after: the picture is a photograph, the number is a mark on it, and the
+  // pill's translucent ground is exactly what keeps the mark readable over one.
+  // A badge lying on the fallback's first STACKED ROW is not that at all. Those
+  // rows are canvas-wide and 17 px tall, they carry the app's NAME, and the
+  // badge is about 14 px — so on the Recorded map it covered the left end of
+  // every tile's first row, which is a defect wearing the same clothes as the
+  // feature. The first VM look found it in both tiles.
+  //
+  // THIS IS THE "BOTH RENDER PATHS" RULE, AGAIN (.tick/learnings.md). A rule
+  // ratified against window-shaped chips has to be checked against the fixed
+  // 17 px row as well, and the two answers here genuinely differ: the
+  // positioned path wants the overlay, the fallback path wants the room. Not a
+  // second badge and not a second layout — one badge, and one number that is 0
+  // on the path where the overlay is the point.
+  readonly property real badgeInset: workspaceSlot.positioned
+    ? 0 : workspaceLabel.implicitHeight + Style.space(2)
   // A workspace fills its monitor, so its box is the MONITOR's shape —
   // anything else and every window drawn inside it is at the wrong
   // proportions, which is the whole point of drawing them to scale.
@@ -205,11 +226,13 @@ BorderSurface {
   // INSIDE this height, so measuring the children to find it is a binding
   // loop even when the numbers happen to settle.
   //
-  // The badge is no longer a term in it (tick ep6). It used to sit in a label
-  // row of its own above the canvas, so every workspace box was a caption
-  // stacked on a picture; it is an overlay in the tile's corner now and the
-  // canvas is the whole tile.
-  height: workspaceSlot.canvasHeight
+  // The badge is no longer a term in it on the POSITIONED path (tick ep6). It
+  // used to sit in a label row of its own above the canvas, so every workspace
+  // box was a caption stacked on a picture; it is an overlay in the tile's
+  // corner now and the canvas is the whole tile. `badgeInset` is 0 there and
+  // the badge's height only comes back on the fallback, where the thing under
+  // the badge would be a row of names — see badgeInset above.
+  height: workspaceSlot.canvasHeight + workspaceSlot.badgeInset
     + workspaceSlot.contentTopInset + workspaceSlot.contentBottomInset
   // A TILE, NOT A BOX (tick ep6). The outline is gone and the faint ground the
   // map surface gave up is here instead: five nested rectangles in the same
@@ -224,7 +247,11 @@ BorderSurface {
   Item {
     id: workspaceCanvas
     x: workspaceSlot.contentLeftInset
-    y: workspaceSlot.contentTopInset
+    // Under the badge on the fallback, level with it on the positioned path.
+    // Whichever it is, the panel is TOLD where this item ended up rather than
+    // being left to work it out — `onYChanged` below re-reports the canvas, so
+    // the morph's flight origins follow this inset without knowing it exists.
+    y: workspaceSlot.contentTopInset + workspaceSlot.badgeInset
     width: workspaceSlot.canvasWidth
     height: workspaceSlot.canvasHeight
 
@@ -1085,17 +1112,26 @@ BorderSurface {
               // getting one each. `pictureSource` is the union; the payload
               // still says which kind it is.
               //
-              // NO DOUBLE FRAME (tick ep6). The picture used to fill this tab
-              // with SQUARE corners under a rectangular clip, inside a slot with
-              // rounded ones — so a thumbnail carried the window's own outline
-              // and then the chip's, which is the "double framing on every
-              // thumbnail" the redesign is answering. It is masked to the slot's
-              // rounded rectangle now, and the mask is held back by the edge's
-              // width so the 1-px chip edge is not painted over by the very
-              // thing it is supposed to be edging. See chipPictureMask.
+              // NO DOUBLE FRAME (tick ep6), in two halves that are deliberately
+              // not the same mechanism.
+              //
+              // THE INSET IS THE HALF THAT ALWAYS APPLIES, and the first VM look
+              // showed why it is not optional: a watched chip's picture filled
+              // the tab and painted straight over the slot's own border, so an
+              // in-sync chip drew NO edge at all — the "double framing on every
+              // thumbnail" complaint, arrived at from the other end. QML paints
+              // an item's children over the Rectangle that draws them, border
+              // included, so holding the picture back by exactly the edge's
+              // width is what lets the one line the map has left survive its own
+              // thumbnail.
+              //
+              // THE ROUNDING IS THE HALF THAT DEPENDS ON THE THEME. See
+              // chipPictureMask below — and see `layer.enabled`, which is where
+              // "depends on the theme" stops being a comment.
               Image {
                 id: chipCapture
                 anchors.fill: parent
+                anchors.margins: chipSlot.edgeWidth
                 visible: chipCapture.status === Image.Ready
                 source: chipTab.pictureSource
                 asynchronous: true
@@ -1116,7 +1152,22 @@ BorderSurface {
                 // for its reveal). Qt has no rounded clip — `clip: true` is a
                 // rectangle and nothing else — so a layer plus a mask is how
                 // the shell rounds a photograph, and this is that.
-                layer.enabled: true
+                //
+                // ONLY WHEN THERE IS A CORNER TO ROUND, and that is a measured
+                // condition rather than a tidy one. `Style.cornerRadius` mirrors
+                // Hyprland's `decoration:rounding` and its default is 0 — the
+                // acceptance VM's stock theme is square, which is visible in
+                // that run's own screenshots: the number badge, which is a pill
+                // exactly when the radius is non-zero, comes out a rectangle. On
+                // such a theme this mask is a RECTANGLE MASKING A RECTANGLE:
+                // every chip pays for an offscreen texture and a shader pass,
+                // and not one pixel differs from drawing the Image straight. The
+                // inset above is what makes the edge read, and it needs none of
+                // this. So the layer engages where it changes the picture and
+                // nowhere else — cheaper on the common theme, and it keeps the
+                // draw path on a square theme byte-for-byte the one that shipped
+                // before this tick.
+                layer.enabled: chipSlot.radius > 0
                 layer.smooth: true
                 layer.effect: MultiEffect {
                   maskEnabled: true
@@ -1129,7 +1180,9 @@ BorderSurface {
               // THE SHAPE THE PICTURE IS CUT TO. Drawn, never shown: an Item
               // with `layer.enabled` is a texture provider, and its ALPHA is
               // what the MultiEffect above keeps. White inside the shape,
-              // nothing outside it.
+              // nothing outside it — and a texture provider only on the themes
+              // that sample it, for the reason spelled out on `layer.enabled`
+              // above.
               //
               // IT IS THE SLOT'S RECTANGLE, NOT THIS TAB'S, and that is the
               // whole reason it is spelled with `chipRow` and `-chipTab.x`
@@ -1141,30 +1194,29 @@ BorderSurface {
               // the pill actually looks like. A solo chip is a strip of one, so
               // it gets the whole rectangle and nothing special happens.
               //
-              // HELD BACK BY THE EDGE'S WIDTH so the 1-px border reads ON TOP of
-              // the picture: QML paints an Item's children over the Rectangle
-              // that draws them, border included, so a picture filling the tab
-              // covers the very edge that is meant to frame it. Cutting the
-              // outer ring out of the picture is what puts the edge back —
-              // without moving the chip's own width or height, which the
-              // treatment ladder and the payload both read.
+              // ITS COORDINATES ARE THE PICTURE'S, so it fills chipCapture and
+              // not this delegate: a MultiEffect maps its mask onto the LAYERED
+              // item's bounds, and the picture is inset from the tab by the
+              // edge's width. That inset is why the rectangle below starts at
+              // `-chipTab.x` with no edge term of its own — in the picture's
+              // frame the held-back ring has already been taken off the top and
+              // the left, and what is left to say is only how much narrower and
+              // shorter the group's rectangle is.
               Item {
                 id: chipPictureMask
-                anchors.fill: parent
+                anchors.fill: chipCapture
                 visible: false
-                layer.enabled: true
+                layer.enabled: chipSlot.radius > 0
 
                 Rectangle {
                   id: chipPictureShape
-                  x: -chipTab.x + chipSlot.edgeWidth
-                  y: chipSlot.edgeWidth
+                  x: -chipTab.x
+                  y: 0
                   width: Math.max(0, chipRow.width - chipSlot.edgeWidth * 2)
                   height: Math.max(0, chipRow.height - chipSlot.edgeWidth * 2)
-                  // The slot's own corner, minus the ring held back above, so
-                  // the picture follows the inside of the edge rather than
-                  // crossing it. Square when the theme is square: Style's
-                  // cornerRadius mirrors Hyprland's `decoration:rounding` and 0
-                  // is a legitimate answer.
+                  // The slot's own corner, minus the ring the picture is already
+                  // held back by, so the picture follows the INSIDE of the edge
+                  // rather than crossing it.
                   radius: Math.max(0, chipSlot.radius - chipSlot.edgeWidth)
                   color: "white"
                 }
@@ -1299,6 +1351,20 @@ BorderSurface {
                       // those moments this binding is false, so the chip draws
                       // its icon. A chip is never blank, and no second mechanism
                       // was needed to make that true of live pictures.
+                      //
+                      // IT ALSO COMES BACK WHILE A PICTURE IS MERELY BEING
+                      // REPLACED, and that is tick nlg rather than this one.
+                      // `grabToImage` mints a NEW `image://itemgrabber/#N` for
+                      // every grab, so a second live round changes this Image's
+                      // source, the source leaves Image.Ready, and the chip
+                      // blinks to its icon for the length of the decode. Not
+                      // fixable here: this exact binding and `captureDrawn`'s
+                      // first line are both pinned by tests/panel.test.js, and
+                      // `captureDrawn` gates what the payload reports — so
+                      // holding the last picture across a re-grab is a decision
+                      // about the payload's meaning and not a tweak to an
+                      // icon's visibility. ep6's first VM look is where it was
+                      // caught.
                       visible: chipTab.iconSource !== "" && !chipTab.captureDrawn
                       width: chipIcon.side
                       height: chipIcon.side
