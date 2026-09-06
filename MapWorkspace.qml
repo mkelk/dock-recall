@@ -813,6 +813,53 @@ BorderSurface {
               readonly property bool captureDrawn:
                 chipCapture.status === Image.Ready
 
+              // AND THE ICON'S QUESTION, WHICH IS NOT THE PAYLOAD'S (tick nlg).
+              //
+              // `captureDrawn` is an instant: is the Image Ready THIS moment.
+              // That is exactly right for the payload — `captureSource` and
+              // `liveSource` mean "this chip is drawing it", and a claim about
+              // the past would be a different sentence (tests/acceptance/
+              // README.md is normative on that). It is the wrong question for
+              // the ICON, which is a FALLBACK: the icon exists so a chip is
+              // never blank, and a chip swapping one photograph for another is
+              // not blank — it is between two pictures of the same window.
+              //
+              // So the icon asks a latch instead: has this chip drawn the
+              // picture it is pointed at, and has it not since LOST one. Up on
+              // the first Ready, and down on exactly the two ways a picture is
+              // genuinely lost —
+              //
+              //   `pictureSource` becomes ""   the pictures switched off, the
+              //                                app unticked, a grab that never
+              //                                landed, a cache eviction;
+              //   the Image reports Error      the file named is not there.
+              //
+              // — so every case the icon was the answer to is still a case the
+              // icon answers, and the one case it now sits out is a RELOAD.
+              // Both edges are written here rather than folded into a binding
+              // because a latch is state: a `readonly property bool` cannot
+              // remember that it was ever true.
+              //
+              // WHAT A RELOAD IS, measured rather than assumed (offscreen probe,
+              // Qt 6.11.2): an `image://itemgrabber/#N` url — the live map's —
+              // reloads SYNCHRONOUSLY, status Ready in the same turn as the
+              // write, with `asynchronous: true` and `cache: false`, because Qt
+              // forces that scheme through the pixmap cache (it is how
+              // QQuickItemGrabResult hands the picture to the Image). A
+              // `file://` url — the recorded map's — reloads asynchronously and
+              // reports Loading in that turn. So on the recorded map every
+              // reload is a window in which nothing is drawn, and a reload is
+              // not rare: `sourceSize` below is the chip's DRAWN size, and any
+              // re-layout of the map changes it and reloads the picture.
+              //
+              // WHICH ALSO SAYS WHAT THIS DOES NOT FIX. nlg was filed from a VM
+              // screenshot of the LIVE map drawing icons over pictures the same
+              // payload said were drawn, and the measurement above says a live
+              // re-grab cannot be the cause of that one. It is tick omw now, and
+              // the morph is the first place omw says to look — a flying chip
+              // draws an icon and never a picture.
+              property bool pictureHeld: false
+
               // WHICH OF FIVE DRAWINGS THIS CHIP EARNS, from the size it
               // actually got. The ladder:
               //
@@ -1004,9 +1051,29 @@ BorderSurface {
               onLiveSourceChanged: chipTab.reportRender()
               // Both, per the report-site rule: a site must carry an onXChanged
               // for EVERY property it captures (.tick/learnings.md, tick sm1).
-              // The image load is asynchronous, so `captureDrawn` lands after
-              // `captureSource` and nothing else would report it.
-              onCaptureDrawnChanged: chipTab.reportRender()
+              // The image load is asynchronous on the recorded map, so
+              // `captureDrawn` lands after `captureSource` and nothing else
+              // would report it.
+              //
+              // AND THE LATCH'S RISING EDGE (tick nlg), here rather than in a
+              // handler of its own because QML allows ONE handler per signal
+              // per object and the report already owns this one. The report is
+              // still made on every change, latch or no latch — that is the
+              // rule above, and `pictureHeld` is deliberately not a reported
+              // value.
+              onCaptureDrawnChanged: {
+                if (chipTab.captureDrawn) chipTab.pictureHeld = true
+                chipTab.reportRender()
+              }
+              // THE LATCH'S FALLING EDGE, half of it: there is no picture to
+              // draw at all. `pictureSource` is "" for every way a chip loses
+              // one — the switch, an untick, a grab that never landed, a cache
+              // eviction — so the icon comes back for all of them, exactly as
+              // it did before this latch existed. The other half is Error, on
+              // the Image itself.
+              onPictureSourceChanged: {
+                if (chipTab.pictureSource === "") chipTab.pictureHeld = false
+              }
               onTreatmentChanged: chipTab.reportRender()
               // The slot owns both colour channels, so the chip has to be
               // told when they move — a tick that changes watched changes the
@@ -1144,6 +1211,18 @@ BorderSurface {
                 // width does not ask for a 0x0 decode.
                 sourceSize.width: Math.max(1, Math.round(chipTab.width * Screen.devicePixelRatio))
                 sourceSize.height: Math.max(1, Math.round(chipTab.height * Screen.devicePixelRatio))
+                // THE LATCH'S OTHER FALLING EDGE (tick nlg): the source names a
+                // picture that will never arrive. `pictureSource` is not "" —
+                // the panel still believes there is one — so the handler on
+                // `chipTab` cannot see this case, and without this one an
+                // externally deleted capture would leave a chip with no picture
+                // AND no icon. This is the "a grab that fails still falls back
+                // to its icon" half of the tick's acceptance, and it is why the
+                // latch reads the STATUS here rather than `captureDrawn`, which
+                // cannot tell Error from Loading.
+                onStatusChanged: {
+                  if (chipCapture.status === Image.Error) chipTab.pictureHeld = false
+                }
                 // THE SHELL'S OWN MASK IDIOM, copied rather than invented:
                 // `plugins/image-picker/ImagePicker.qml` renders its carousel
                 // slide into a layer and hands the layer a MultiEffect whose
@@ -1339,33 +1418,37 @@ BorderSurface {
                       // panel). A chip drawing its own window does not need an
                       // icon to say which app it is — the picture already does,
                       // better — and the icon over it was covering the thing it
-                      // was standing in for. `captureDrawn` is the chip's own
-                      // "the image is Ready", not the panel's belief that a file
-                      // exists, so the icon comes back the instant a capture
-                      // fails to draw rather than leaving an unlabelled chip.
+                      // was standing in for.
                       //
                       // AND THAT IS ALSO THE LIVE MAP'S FALLBACK, unchanged
                       // (tick 2zi). A live picture takes a moment to arrive and
                       // can fail outright — a window on a monitor that is not
                       // rendering never delivers a frame — and for every one of
-                      // those moments this binding is false, so the chip draws
-                      // its icon. A chip is never blank, and no second mechanism
-                      // was needed to make that true of live pictures.
+                      // those moments there is no picture, so the chip draws its
+                      // icon. A chip is never blank, and no second mechanism was
+                      // needed to make that true of live pictures.
                       //
-                      // IT ALSO COMES BACK WHILE A PICTURE IS MERELY BEING
-                      // REPLACED, and that is tick nlg rather than this one.
-                      // `grabToImage` mints a NEW `image://itemgrabber/#N` for
-                      // every grab, so a second live round changes this Image's
-                      // source, the source leaves Image.Ready, and the chip
-                      // blinks to its icon for the length of the decode. Not
-                      // fixable here: this exact binding and `captureDrawn`'s
-                      // first line are both pinned by tests/panel.test.js, and
-                      // `captureDrawn` gates what the payload reports — so
-                      // holding the last picture across a re-grab is a decision
-                      // about the payload's meaning and not a tweak to an
-                      // icon's visibility. ep6's first VM look is where it was
-                      // caught.
-                      visible: chipTab.iconSource !== "" && !chipTab.captureDrawn
+                      // `pictureHeld` AND NOT `captureDrawn` (tick nlg), and the
+                      // difference is exactly one case: a picture being
+                      // REPLACED. `captureDrawn` is "the Image is Ready right
+                      // now", so it goes false for the length of any reload —
+                      // and on the recorded map a reload is asynchronous and
+                      // happens on every re-layout, because `sourceSize` is the
+                      // chip's drawn size. The icon coming back for that is a
+                      // blink on every chip at once, which is what the whole map
+                      // moving at the same moment looks like. `pictureHeld` is
+                      // the same fallback with the reload excluded: it is up
+                      // from the first Ready and comes down when the picture is
+                      // genuinely lost (see its declaration on chipTab — no
+                      // source, or Image.Error). Every case listed above still
+                      // draws the icon.
+                      //
+                      // THE PAYLOAD DID NOT MOVE WITH IT. `captureSource` and
+                      // `liveSource` are still gated on `captureDrawn`, so they
+                      // still mean "this chip is drawing it" and not "it drew
+                      // one once" — the icon's question and the payload's are
+                      // different questions and now have different properties.
+                      visible: chipTab.iconSource !== "" && !chipTab.pictureHeld
                       width: chipIcon.side
                       height: chipIcon.side
                       anchors.verticalCenter: parent.verticalCenter

@@ -7544,23 +7544,54 @@ test("a chip is never blank: the icon is the fallback, and there is only one of 
   const path = require("node:path");
   const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
 
-  // The picture — either kind — draws only when the Image says Ready, and the
-  // icon steps aside only for a picture that actually arrived. Every moment in
-  // between (a grab still in flight, a window on a monitor that is not
-  // rendering, the pictures switched off) is a moment this is false, and the
-  // chip draws its icon exactly as it did before this tick.
+  // The picture — either kind — draws only when the Image says Ready.
   const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
     map.indexOf("// THE VEIL"));
   assert.ok(image.indexOf("visible: chipCapture.status === Image.Ready") !== -1, image);
 
+  // AND THE ICON STEPS ASIDE FOR A PICTURE THIS CHIP IS HOLDING, which since
+  // tick nlg is `pictureHeld` and not `captureDrawn`. The two differ in exactly
+  // one case — a picture being RELOADED — and that case is the blink this is
+  // now pinned against: on the recorded map a reload is asynchronous and
+  // happens on every re-layout (sourceSize is the chip's drawn size), so
+  // `!captureDrawn` brought the icon back on every chip at once for no reason
+  // the user could see.
   const icon = map.slice(map.indexOf("id: chipIcon"), map.indexOf("id: chipLabel"));
-  assert.ok(icon.indexOf("visible: chipTab.iconSource !== \"\" && !chipTab.captureDrawn") !== -1,
+  assert.ok(icon.indexOf("visible: chipTab.iconSource !== \"\" && !chipTab.pictureHeld") !== -1,
     "the icon no longer steps aside for a picture, or no longer comes back without one:\n" + icon);
-  // ONE mechanism for both kinds of picture. `captureDrawn` is the chip's own
-  // "the image is Ready" and knows nothing about which source it drew.
+
+  // THE LATCH IS A LATCH, and all three of its edges are here — the whole of
+  // "a chip is never blank" now rests on the falling ones. A latch that only
+  // ever rises is a chip with no picture and no icon, which is the one state
+  // this test's name forbids.
+  const tab = map.slice(map.indexOf("readonly property bool captureDrawn:"),
+    map.indexOf("Image {\n                id: chipCapture"));
+  assert.ok(/property bool pictureHeld:\s*false/.test(tab),
+    "the icon's latch is gone, or is no longer a writable property that starts down:\n" + tab);
+  assert.ok(/if \(chipTab\.captureDrawn\) chipTab\.pictureHeld = true/.test(tab),
+    "nothing raises the latch, so a chip that has drawn a picture still draws its icon over it");
+  assert.ok(/if \(chipTab\.pictureSource === ""\) chipTab\.pictureHeld = false/.test(tab),
+    "the latch does not come down when the chip has no picture to draw — the"
+    + " pictures switched off, an untick, a grab that never landed:\n" + tab);
+  assert.ok(image.indexOf("if (chipCapture.status === Image.Error) chipTab.pictureHeld = false") !== -1,
+    "the latch does not come down on Image.Error, so a capture deleted under a"
+    + " live panel leaves a chip with no picture AND no icon:\n" + image);
+
+  // AND THE PAYLOAD DID NOT MOVE WITH THE ICON. `captureDrawn` is still the
+  // Image's own instant, and it is still what gates the two source keys — so
+  // `captureSource`/`liveSource` still mean "this chip is DRAWING it"
+  // (tests/acceptance/README.md is normative). ONE mechanism for both kinds of
+  // picture: it knows nothing about which source it drew.
   const drawn = map.slice(map.indexOf("readonly property bool captureDrawn:"));
   assert.ok(drawn.slice(0, 120).indexOf("chipCapture.status === Image.Ready") !== -1,
     drawn.slice(0, 120));
+  assert.ok(map.indexOf("captureSource: chipTab.captureDrawn ? chipTab.captureSource : \"\"") !== -1,
+    "the payload's capture source is no longer gated on the chip's own Ready");
+  assert.ok(map.indexOf("liveSource: chipTab.captureDrawn ? chipTab.liveSource : \"\"") !== -1,
+    "the payload's live source is no longer gated on the chip's own Ready");
+  assert.strictEqual(map.indexOf("pictureHeld ? chipTab."), -1,
+    "the icon's latch has reached the payload: a reported source would then mean"
+    + " \"this chip drew one once\", which is a different sentence");
 });
 
 test("the live source is a fact about the LIVE map, keyed by the window address", () => {
