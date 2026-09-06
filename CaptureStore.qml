@@ -175,8 +175,8 @@ Item {
   }
 
   // A MISSING CACHE DIRECTORY IS NOT AN ERROR. It is the state the plugin ships
-  // in, the state a cleaner leaves behind, and the state a user who has never
-  // granted the second consent stays in for ever. `find` exits non-zero for it
+  // in, the state a cleaner leaves behind, and the state a user who has switched
+  // the pictures off stays in for ever. `find` exits non-zero for it
   // and says so on stderr; both are swallowed here on purpose, and the answer
   // is an empty set, which is what makes the map fall back to icons.
   Process {
@@ -227,20 +227,21 @@ Item {
       reason, then)
   }
 
-  // EVERY PICTURE OF THESE APPS, ON EVERY DESK (tick sp7). The eviction a
-  // WITHDRAWN CAMERA needs, and the one this store had no shape for.
+  // EVERY PICTURE OF THESE APPS, ON EVERY DESK (tick sp7). The eviction
+  // UNWATCHING needs, and the one this store had no shape for.
   //
-  // A camera is a fact about an app, not about a desk. Withdrawing one and
+  // Being watched is a fact about an app, not about a desk. Unwatching one and
   // deleting a single topology's copies left every other desk's holding
   // photographs with nobody who would ever clean them: Record's eviction runs
-  // only for the desk you are on, and so does Forget. So "switch this camera
-  // off" has to reach the pictures wherever they were taken, and that is what
+  // only for the desk you are on, and so does Forget. So "stop watching this
+  // app" has to reach the pictures wherever they were taken, and that is what
   // PanelModel.captureIdentityPatterns names — the file name with the topology
   // segment wildcarded.
   //
-  // ONE process for the whole list: withdrawing five cameras at once ("Not for
-  // these apps") is one act, and five sequential `find` spawns would be five
-  // moments at which it is half done.
+  // ONE process for the whole list, so that dropping several apps at once is one
+  // act rather than N sequential `find` spawns and N moments at which it is half
+  // done. `evictAll` below is the other shape: the pictures switch takes every
+  // file there is, and takes it without naming anybody.
   function evictIdentities(identityIds, reason) {
     if (!store.cacheDir) return
     var names = PanelModel.captureIdentityPatterns(identityIds)
@@ -333,8 +334,8 @@ Item {
       // ignored and its stderr went to a collector nothing read, so a picture
       // that could not be removed — a permission, a read-only cache, a full
       // inode table — left a log line claiming the pictures were dropped. The
-      // whole promise of this feature is that withdrawing consent removes the
-      // files; failing to remove one is precisely the thing a user has to be
+      // whole promise of this feature is that switching the pictures off removes
+      // the files; failing to remove one is precisely the thing a user has to be
       // able to find out about.
       //
       // Read against `_cacheDirPresent`, because the OTHER way `find` exits
@@ -409,8 +410,8 @@ Item {
   // nothing. Measured in the nested sandbox, 2026-09-04:
   //
   //   entry={"address":"0x557bcc230660","file":"432df7d1-…-0.jpg",
-  //          "identityId":"dr-pictured","occurrence":0}
-  //   head ={"identityId":"dr-pictured","occurrence":0,
+  //          "identityId":"dr-wide","occurrence":0}
+  //   head ={"identityId":"dr-wide","occurrence":0,
   //          "address":"0x557bcc230660","file":"432df7d1-…-0.jpg"}
   //   entry===head false   head===head2 true   entry.address===head.address true
   //
@@ -439,7 +440,7 @@ Item {
   // owns. Calling it from a REFUSAL, after `_plan`/`_done`/`_results` had
   // already been overwritten, meant a second Record during a live round tore the
   // FIRST round down instead of the second: the first round's `_done` was lost
-  // (so its consent prompt never appeared), `_current` was left alive with a
+  // (so its log line never appeared), `_current` was left alive with a
   // pending `grabToImage`, and `busy` went false — so the round after that
   // passed the guard and ran `mkdir` -> `evict` -> walk while an orphan of round
   // one was still in flight. The orphan then saved a picture over round three's
@@ -451,8 +452,8 @@ Item {
   // because nothing here writes round state before the guard has passed.
   //
   // A refused Record still owes its caller an answer, so `done([])` is called
-  // directly: the caller logs "0 picture(s) stored" and offers no consent
-  // prompt, exactly as it did when `_finish()` handed it the same empty list.
+  // directly: the caller logs "0 picture(s) stored", exactly as it did when
+  // `_finish()` handed it the same empty list.
   function capture(plan, done) {
     var callback = (typeof done === "function") ? done : null
 
@@ -601,11 +602,11 @@ Item {
   // happens after that.
   property var stillOwed: null
 
-  // TWO QUESTIONS, NOT ONE, and the second was learned from the gate: is this
-  // app still owed a picture, AND is the recording this picture belongs to still
-  // there? A Forget in flight is not a withdrawal of consent — the camera is
-  // still on — so asking only about consent let a round write a picture for a
-  // layout the user had just forgotten. The gate log caught it exactly:
+  // TWO QUESTIONS, NOT ONE, and the second was learned from the gate: are
+  // pictures still switched on, AND is the recording this picture belongs to
+  // still there? A Forget in flight does not switch the pictures off, so asking
+  // only about the switch let a round write a picture for a layout the user had
+  // just forgotten. The gate log caught it exactly:
   //
   //   dropped the pictures for this layout (re-recorded)   <- the round's own evict
   //   forgot the layout for topology "…" (2 apps)          <- the Forget
@@ -614,8 +615,8 @@ Item {
   //
   // The Forget's `find` had already scanned past a file that did not exist yet.
   // Racing the eviction is unwinnable from that side; the answer is the same one
-  // tick zxg used for consent — ask again at the instant of the write, when both
-  // facts are current.
+  // tick zxg used for the picture gate — ask again at the instant of the write,
+  // when both facts are current.
   function _stillOwed(entry) {
     if (typeof store.stillOwed !== "function") return true
     if (!entry || !entry.identityId) return true
@@ -640,8 +641,8 @@ Item {
   // the per-window guard and the grab callback it outlived — and a second answer
   // was not merely a duplicate: it pushed an extra result AND shifted the queue
   // again, so one queue entry was dropped unphotographed and unreported. That
-  // window is missing from `consentCaptureEntries`, so the prompt never shows it
-  // and "Delete these" never turns its camera off.
+  // window is then missing from the round's results entirely, so the log line
+  // cannot mention it and nobody can be told it was never taken.
   //
   // The subject is the STEP NUMBER and the entry is read from the queue (tick
   // 070): a caller holding a view's copy of the entry could never be recognised
@@ -702,30 +703,29 @@ Item {
     var started = view.grabToImage(function (result) {
       // THE SAVE ITSELF IS GATED, not just the result (tick ilg). The render
       // thread answers on its own schedule and the whole-queue deadline can end
-      // this step while it works; a file written after that is a picture no
-      // consent prompt ever showed, that "Delete these" cannot reach, and
-      // that can land after `evictAll("declined")` has run. So a callback whose
-      // step is over writes nothing and says nothing.
+      // this step while it works; a file written after that is a picture that no
+      // listing knows about and that can land after `evictAll` has run. So a
+      // callback whose step is over writes nothing and says nothing.
       if (!store._isCurrentStep(step)) return
-      // AND THE CONSENT IS RE-ASKED AT THE MOMENT OF THE WRITE (tick zxg).
+      // AND THE GATE IS RE-ASKED AT THE MOMENT OF THE WRITE (tick zxg).
       //
       // `_isCurrentStep` only says the step is still the one in flight. It says
-      // nothing about whether this app is still owed a picture AT ALL, and the
-      // two are not the same question: a round can be perfectly healthy while
-      // the user unticks the very app it is photographing. The gate log caught
-      // the exact interleave —
+      // nothing about whether this picture is still owed AT ALL, and the two are
+      // not the same question: a round can be perfectly healthy while the user
+      // unticks the very app it is photographing, or switches the pictures off
+      // under it. The gate log caught the exact interleave —
       //
       //   recorded 2 apps for topology "… | dr-cap-dock"
-      //   unwatched "dr-pictured" — its stored pictures are deleted, on every desk
+      //   unwatched "dr-two" — its stored pictures are deleted, on every desk
       //   dropped every stored picture of 1 app(s), on every desk (unwatched)
       //   1 picture(s) stored, 1 not pictured        <- the round's save, AFTER
       //
-      // — consent withdrawn, the pictures deleted, and then an in-flight round
-      // wrote one back. Making the WITHDRAWAL wait for the round would mean
-      // tearing down a live ScreencopyView whose grabToImage can still fire,
-      // which is the orphan class tick ilg exists to prevent. So the withdrawal
-      // does not wait: the SAVE asks again, at the last instant before the
-      // bytes hit the disk, and a picture nobody is owed is never written.
+      // — the pictures deleted, and then an in-flight round wrote one back.
+      // Making the DELETE wait for the round would mean tearing down a live
+      // ScreencopyView whose grabToImage can still fire, which is the orphan
+      // class tick ilg exists to prevent. So the delete does not wait: the SAVE
+      // asks again, at the last instant before the bytes hit the disk, and a
+      // picture nobody is owed is never written.
       if (!store._stillOwed(entry)) {
         store._settle(step, false, "withdrawn")
         return
@@ -778,9 +778,9 @@ Item {
   // guard's impossible state, so "a round that cannot proceed fails loudly"
   // has one implementation rather than one per caller.
   //
-  // Every window still in the queue gets a result with `reason`, because the
-  // consent prompt and the log line are built from the results and a window that
-  // is simply absent from them is a window nobody can be told about.
+  // Every window still in the queue gets a result with `reason`, because the log
+  // line is built from the results and a window that is simply absent from them
+  // is a window nobody can be told about.
   function _abandonRound(sentence, reason) {
     store.warn(sentence)
     guard.stop()

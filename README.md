@@ -116,32 +116,20 @@ thinks is happening:
 - **App list** — every window Hyprland is showing, ordered monitor → workspace →
   position, with a tick per app. Unticked apps are ignored by every restore.
   Apps with several windows get one row per window.
-- **Camera per app** — a second consent, separate from the tick, drawn as a small
-  camera on every watched row. The tick lets Dock Recall **move** an app's
-  windows; the camera lets it **photograph** them when you press Record, so the
-  Recorded map can show the window even when the app is closed. It is off until
-  you switch it on, it is per app, and switching it off again leaves the app
-  watched. **Switching a camera off deletes that app's stored pictures, on every
-  desk**, and the map stops drawing them at once. Unticking an app takes its
-  camera consent — and its pictures — with it.
-- **Recorded captures** — a chip on the Recorded tab draws the picture taken
-  when you recorded, underneath its icon and its name, so a closed app is
-  recognisable rather than a grey label. The pictures live in
-  `~/.cache/omarchy/dock-recall/`, not in your recordings: delete that directory
-  and the map goes back to icons with nothing lost. Forgetting a layout deletes
-  its pictures, re-recording replaces them, and undoing a record takes them with
-  it.
-- **Asked once, with the pictures in front of you** — the first time a Record
-  actually stores a picture, the panel shows you the pictures it just took and
-  offers three answers: **Keep these**, **Delete these**, or **Delete
-  all**. Delete these switches those apps' cameras off and deletes
-  every picture of them, on every desk — the camera it withdraws is not a
-  per-desk grant, so neither is the delete; Delete all switches every camera off
-  and deletes every stored picture, on every desk. The answer lives in the state
-  file, so it
-  survives a shell restart and you are not asked again. Escape, or a click
-  outside it, dismisses it *without* answering — the question is still owed, and
-  it comes back at the next Record.
+- **Pictures** — every watched window is photographed, so the map shows you your
+  windows rather than a row of icons. At **Record** the picture is stored under
+  `~/.cache/omarchy/dock-recall/` and drawn on the Recorded tab underneath the
+  app's icon and name, so a closed app is still recognisable; re-recording
+  replaces it, forgetting a layout or undoing a record deletes it, and unticking
+  an app takes its pictures with it on every desk. The pictures are a cache and
+  not part of your recordings: delete that directory and the map goes back to
+  icons with nothing lost. On every **panel open** each watched window is
+  photographed again for the Live tab — those live pictures are held in memory,
+  are never written to disk, and go when the panel closes.
+- **One switch** — the overflow menu's **Pictures** entry. Turn them off and
+  every stored picture is deleted, on every desk, and nothing is photographed
+  again; turn them on and it resumes at the next panel open and the next Record.
+  That is the whole of it: no per-app setting, and nothing asks you anything.
 - **Record layout / Restore now** — record the current arrangement for the current
   topology, or replay the recording immediately without waiting for a cable.
 - **Undo record** — immediately after recording, put the previous recording back.
@@ -149,8 +137,8 @@ thinks is happening:
   Forgetting a topology is undoable the same way.
 - **Failed list** — when a restore could not place something, the app is listed
   with a Retry button, reachable by pointer and by keyboard.
-- **Overflow menu (`⋯`)** — every recorded topology, its glyph state, re-record
-  and forget.
+- **Overflow menu (`⋯`)** — every recorded topology, its glyph state, re-record,
+  forget, and the **Pictures** switch.
 - **Pause / Activate** — stop reacting to monitor events without losing anything.
 - Full keyboard navigation; Escape closes the panel.
 
@@ -161,8 +149,7 @@ can ask what it is showing and switch which map it shows:
 omarchy-shell shell summon mkelk.dock-recall '{}'
 omarchy-shell dock-recall state              # JSON: the topology, and every chip and workspace
 omarchy-shell dock-recall setView recorded   # or live
-omarchy-shell dock-recall setPictured <row key> on   # the camera consent, or off
-omarchy-shell dock-recall answerConsent keep         # or not-these, or none
+omarchy-shell dock-recall setPictures off    # or on
 ```
 
 That target exists only while the panel is up — the shell loads the panel on
@@ -341,7 +328,7 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 987 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 980 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" *.qml   # every QML file, from a glob — never a list
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see

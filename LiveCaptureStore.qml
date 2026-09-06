@@ -2,7 +2,7 @@
 // and nowhere else.
 //
 // WHAT THIS OWNS. One round of grabs taken when the panel opens, one picture per
-// live window whose camera is on, kept as a URL an `Image` can be pointed at for
+// live watched window, kept as a URL an `Image` can be pointed at for
 // as long as this component lives. It has no directory, no listing, no eviction
 // and no file name, and that absence is not an omission — it IS the design.
 //
@@ -11,8 +11,8 @@
 // callback a QQuickItemGrabResult whose `url` an `Image` can use as its source
 // directly, valid for as long as a JS reference to the result is held — so a
 // live picture can be drawn without ever reaching a disk. NOTHING HERE MAY EVER
-// CALL saveToFile. The whole consent architecture of tick f22 is about pictures
-// that PERSIST: where they are, how they are evicted, what a withdrawal deletes.
+// CALL saveToFile. Everything around the recorded store is about pictures that
+// PERSIST: where they are, how they are evicted, what the switch deletes.
 // A picture that never persists has none of that surface, and the next author
 // who gives this component a cacheDir so it can "share the eviction" has taken
 // the thing the human chose and given it back.
@@ -137,8 +137,8 @@ Item {
   // WHAT KEEPS THE PIXELS ALIVE. A QQuickItemGrabResult is destroyed when the
   // grab callback returns unless a JS reference survives it, and `url` is only
   // valid while the result is. So the results are held here, by address, beside
-  // the identity that consented to each one — the identity is what `forget()`
-  // needs and what nothing else in a live picture carries.
+  // the identity each one belongs to — the identity is what `retain()` needs
+  // and what nothing else in a live picture carries.
   //
   // Mutated in place rather than reassigned: no binding reads it, and its only
   // job is to be a GC root.
@@ -197,7 +197,8 @@ Item {
   // So a round is a BRACKET: one line when it opens saying what it is about to
   // do, one when it closes saying what happened, both unconditional once
   // `start()` has been called. An unclosed bracket is a stall and names itself;
-  // a bracket around zero is a desk with no cameras on and says that too. Tick
+  // a bracket around zero is a desk with nothing to photograph and says that
+  // too — including the desk whose pictures are switched off. Tick
   // 070's lesson — a stalled recorded round was invisible for 45 seconds —
   // applied before it costs a second VM cycle rather than after.
   function start(plan) {
@@ -233,24 +234,25 @@ Item {
     liveStore._held = ({})
   }
 
-  // KEEP ONLY WHAT IS STILL CONSENTED TO — the withdrawal, in the only currency
+  // KEEP ONLY WHAT IS STILL WATCHED — unwatching an app, in the only currency
   // this component has.
   //
   // It is NOT an eviction and there is nothing here for one to get right: no
   // process, no directory, no ordering against a write, no failure mode. It is a
   // delete from a map.
   //
-  // A SET TO KEEP RATHER THAN AN ID TO DROP, and that shape is the point. The
-  // panel withdraws a camera in THREE places — the row's camera button, "Not for
-  // these apps" on the first-Record prompt, and unticking the app, which takes
-  // the identity and its flag away together — and a `forget(id)` call at each of
-  // them is a duty a fourth path would forget. The panel binds the pictured id
-  // list instead, so this runs whenever that list changes, whatever changed it.
+  // A SET TO KEEP RATHER THAN AN ID TO DROP, and that shape is the point: a
+  // caller handing over "the ids that are left" cannot half-apply it, while a
+  // `forget(id)` at each site that drops one app is a duty the next such site
+  // would forget. `clear()` above is the other half — the pictures switch takes
+  // them ALL, and takes them in one call rather than by handing this an empty
+  // set, because "keep nothing" and "there is nothing to keep" are different
+  // sentences.
   //
   // The draw-time gate is still what makes the SCREEN correct in the same frame
-  // (Panel.liveSourceOf is gated on `picturedOf`, which reads the state model).
-  // This is about the pixels: a camera switched off and on again inside one panel
-  // session must not bring back a photograph taken before the withdrawal.
+  // (Panel.liveSourceOf is gated on `picturesOn`, which reads the state model).
+  // This is about the pixels: pictures switched off and on again inside one
+  // panel session must not bring back a photograph taken before the switch.
   function retain(identityIds) {
     var keep = ({})
     var ids = identityIds || []
@@ -267,8 +269,8 @@ Item {
       var entry = liveStore._held[address]
       var owner = entry ? String(entry.identityId) : ""
       // `own`, not a bare lookup: an identity id that collides with an
-      // Object.prototype key would otherwise keep a picture nobody consented to
-      // (.tick/learnings.md, tick 8hp).
+      // Object.prototype key would otherwise keep a picture of an app nobody
+      // watches (.tick/learnings.md, tick 8hp).
       if (!owner || !Object.prototype.hasOwnProperty.call(keep, owner)) {
         dropped += 1
         continue
@@ -282,7 +284,7 @@ Item {
     liveStore._held = held
     liveStore.pictures = pictures
     liveStore.log("dropped " + dropped
-      + " live picture(s) from memory — their camera was switched off;"
+      + " live picture(s) from memory — their app is no longer watched;"
       + " they were never on disk")
   }
 

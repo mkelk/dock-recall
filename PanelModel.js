@@ -6990,7 +6990,9 @@ function compareLiveCaptures(x, y) {
 //
 // A FAILURE SAYS WHY, exactly as the recorded line does: "no-frame" is a window
 // on a monitor that is not rendering, "no-handle" is one that closed between the
-// plan and the grab, "withdrawn" is a camera switched off mid-round.
+// plan and the grab, "withdrawn" is a picture that stopped being owed mid-round
+// (the pictures switched off, or the app unticked, while the grab was in
+// flight).
 function liveCaptureLogLine(plan, results) {
   var list = isArray(results) ? results : [];
   var taken = 0;
