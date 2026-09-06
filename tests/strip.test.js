@@ -2,7 +2,7 @@
 // its cells report (tick 0kv).
 //
 // TWO KINDS OF ASSERTION, and the split is the same one the rest of this suite
-// makes. `stripLayout` and `rowHoverText` are pure functions with right answers,
+// makes. `stripLayout` and `rowTooltipText` are pure functions with right answers,
 // so they are called. Everything about the CELL — that it is a `ToggleSwitch`
 // and not the 54-px `Ui/Toggle` it replaced, that the switch is at the right
 // edge, that the report carries `hoverText` only while the cell is lit — can
@@ -190,7 +190,7 @@ test("stripLayout survives the widths a warming-up panel really hands it", () =>
 });
 
 // ---------------------------------------------------------------------------
-// rowHoverText — the details the cell no longer has room for
+// rowTooltipText — the details the cell no longer has room for
 // ---------------------------------------------------------------------------
 
 const DRIFTED_ROW = {
@@ -199,8 +199,8 @@ const DRIFTED_ROW = {
   drifted: true, driftTo: "DP-2 · ws 7", mismatch: "", launchHint: "learn launch"
 };
 
-test("a cell's hover text is the row tooltip plus what Restore can do for the app", () => {
-  const lines = panel.rowHoverText(DRIFTED_ROW).split("\n");
+test("a cell's hover text is the row tooltip, and its last line is what Restore can do", () => {
+  const lines = panel.rowTooltipText(DRIFTED_ROW).split("\n");
   assert.deepStrictEqual(lines, [
     "Obsidian",
     "md.obsidian.Obsidian",
@@ -208,37 +208,46 @@ test("a cell's hover text is the row tooltip plus what Restore can do for the ap
     "→ recorded on DP-2 · ws 7",
     "learn launch"
   ]);
+  // LAST, and after the diagnosis: the drift arrow says what is wrong with
+  // where the app is, and the hint says what can be done about starting it.
+  assert.strictEqual(lines[lines.length - 1], "learn launch");
 
-  // IFF present. A row with no hint says exactly what the row tooltip says —
-  // and it is the same string, not a longer one that happens to render the
-  // same, because a trailing blank line is a popup with a hole in it.
+  // IFF present. A row with no hint says exactly what it said before tick pct
+  // folded the two functions together — not a longer string that happens to
+  // render the same, because a trailing blank line is a popup with a hole in it.
   const noHint = Object.assign({}, DRIFTED_ROW, { launchHint: "" });
-  assert.strictEqual(panel.rowHoverText(noHint), panel.rowTooltipText(noHint));
-  assert.strictEqual(panel.rowHoverText(noHint).indexOf("learn launch"), -1);
-  assert.strictEqual(panel.rowHoverText(noHint).slice(-1) === "\n", false);
+  assert.strictEqual(panel.rowTooltipText(noHint),
+    "Obsidian\nmd.obsidian.Obsidian\neDP-1 · ws 3\n→ recorded on DP-2 · ws 7");
+  assert.strictEqual(panel.rowTooltipText(noHint).indexOf("learn launch"), -1);
+  assert.strictEqual(panel.rowTooltipText(noHint).slice(-1) === "\n", false);
+  // A row that never had the key at all — an unwatched class row builds one
+  // without a launchHint — behaves like the empty one, not like "undefined".
+  const noKey = Object.assign({}, DRIFTED_ROW);
+  delete noKey.launchHint;
+  assert.strictEqual(panel.rowTooltipText(noKey), panel.rowTooltipText(noHint));
 
   // Nothing to say is the empty string, so the caller hides the tooltip rather
   // than popping an empty box — the same contract chipTooltipText has.
-  assert.strictEqual(panel.rowHoverText(null), "");
-  assert.strictEqual(panel.rowHoverText(undefined), "");
+  assert.strictEqual(panel.rowTooltipText(null), "");
+  assert.strictEqual(panel.rowTooltipText(undefined), "");
   // A hint and nothing else still has no hole at either end.
-  const bare = panel.rowHoverText({ name: "", position: "", launchHint: "no launch cmd" });
+  const bare = panel.rowTooltipText({ name: "", position: "", launchHint: "no launch cmd" });
   assert.strictEqual(bare, "no launch cmd");
 });
 
-test("rowTooltipText itself is unchanged: the launch hint is the strip's question", () => {
-  // The two are separate functions on purpose, and the reason is a test this
-  // tick may not edit — tests/panel.test.js pins rowTooltipText's exact lines
-  // for a watched terminal row, and every row appRows builds carries a
-  // launchHint. Folding them back together is tick pct's call; until then this
-  // is what says the split is deliberate rather than forgotten.
-  assert.strictEqual(panel.rowTooltipText(DRIFTED_ROW).indexOf("learn launch"), -1,
-    "the launch hint has leaked into rowTooltipText — see tick pct before"
-    + " changing this, tests/panel.test.js pins that function's lines");
-  assert.strictEqual(
-    panel.rowHoverText(DRIFTED_ROW).indexOf(panel.rowTooltipText(DRIFTED_ROW)), 0,
-    "the hover text no longer STARTS with the row tooltip, so the two have"
-    + " drifted into two different answers rather than one plus a line");
+test("there is ONE row tooltip function, and the strip calls it", () => {
+  // Tick 0kv shipped `rowHoverText` — rowTooltipText plus the hint — because
+  // the strip wave was forbidden tests/panel.test.js, which pins this
+  // function's exact lines for a watched terminal row. Tick pct owns both
+  // files, so the fold happened and the wrapper is gone. Two functions where
+  // one caller needs one answer is how the two drift apart, so this asserts the
+  // wrapper stays gone rather than merely that the fold happened once.
+  assert.strictEqual(typeof panel.rowTooltipText, "function");
+  assert.strictEqual(panel.rowHoverText, undefined,
+    "PanelModel exports rowHoverText again — the strip needs ONE row tooltip,"
+    + " and tests/panel.test.js pins that one's lines (tick pct)");
+  assert.ok(codeOf(APP_STRIP).indexOf("rowHoverText") === -1,
+    "AppStrip.qml still calls rowHoverText");
 });
 
 // ---------------------------------------------------------------------------
@@ -380,14 +389,14 @@ test("the captions are gone: the placement lives in the tooltip and nowhere else
   // The old row drew `position`, the drift arrow and the verdict beside the
   // switch, in a fixed 45 % column. All of it is hover text now — the map above
   // already says where every window is, which is the whole argument of the
-  // redesign. rowHoverText is the one place that composes it.
+  // redesign. rowTooltipText is the one place that composes it.
   for (const field of ["position", "driftTo", "mismatch", "launchHint"]) {
     assert.ok(code.indexOf("modelData." + field) === -1,
       "AppStrip.qml still draws modelData." + field + " on the cell — those facts"
-      + " belong to PanelModel.rowHoverText and the tooltip now");
+      + " belong to PanelModel.rowTooltipText and the tooltip now");
   }
-  assert.match(code, /PanelModel\.wrapTooltip\(\s*PanelModel\.rowHoverText\(/,
-    "the tooltip is not the wrapped hover text");
+  assert.match(code, /PanelModel\.wrapTooltip\(\s*PanelModel\.rowTooltipText\(/,
+    "the tooltip is not the wrapped row tooltip text");
 
   // The two Text elements left are the name and the learn mark. A third is a
   // caption growing back.
