@@ -50,7 +50,7 @@ chmod +x "$STAGE/test/acceptance"
 # the file names carry the ordering:
 #
 #   dock-recall-appid-migration-test.sh          the v3 --app-id upgrade
-#   dock-recall-captures-test.sh                 record-time pictures, on disk
+#   dock-recall-captures-test.sh                 pictures on disk, and the switch
 #   dock-recall-motion-test.sh                   bound durations, and a morph that ran
 #   dock-recall-panel-test.sh                    the panel's IPC, both render paths
 #   dock-recall-roundtrip-test.sh                record / undock / scatter / redock

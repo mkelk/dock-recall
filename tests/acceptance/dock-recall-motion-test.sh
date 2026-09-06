@@ -684,16 +684,17 @@ SCHEMA_VERSION=$(node -e 'process.stdout.write(String(require(process.argv[1] + 
 [[ $SCHEMA_VERSION =~ ^[0-9]+$ ]] ||
   fail "schema version read from StateModel (motion)" "StateModel.STATE_VERSION came back as '$SCHEMA_VERSION'"
 
-# `pictureConsent` is seeded ANSWERED, and to "none". This file is about motion;
-# a Record with picturable apps and an unanswered consent puts the panel into the
-# first-Record dialogue, which is epic f22 business and is covered end to end in
-# dock-recall-captures-test.sh. Answering it here keeps the prompt out of the way
-# and keeps this test from writing a single picture to disk. It is a user-editable
-# field like every other one in the file.
+# THE PICTURES ARE SEEDED OFF. This file is about MOTION, and pictures are on by
+# default since schema v7 — so a Record here would photograph both windows and a
+# panel open would photograph them again, writing JPEGs to ~/.cache for a test
+# that never looks at one. Off is one boolean, it is a user-editable field like
+# every other one in the file, and it keeps this test from writing a single
+# picture to disk. What the switch DOES is covered end to end in
+# dock-recall-captures-test.sh.
 cat > "$STATE.seed" <<JSON
 {
   "version": $SCHEMA_VERSION,
-  "pictureConsent": "none",
+  "pictures": false,
   "identities": [
     {
       "id": "$IDENTITY",

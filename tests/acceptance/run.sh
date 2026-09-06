@@ -18,7 +18,7 @@
 #   ok - acceptance suite passed in <n>s (artifacts in …)   ← the suite's own
 #   ok - dock-recall round trip: record, undock, scatter, redock, restored
 #   ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
-#   ok - dock-recall captures: stored per consent, keyed, overwritten, evicted, …
+#   ok - dock-recall captures: stored by default, keyed, overwritten, evicted, …
 #   ok - dock-recall motion: bound durations on both render paths, and a morph …
 #   ok - dock-recall panel IPC: chips keyed and reported on both render paths, …
 #   ok - dock-recall undock-while-locked: guest prepared (…)
@@ -69,7 +69,7 @@ REQUIRED_OK=(
   "ok - acceptance suite passed"
   "ok - dock-recall round trip: record, undock, scatter, redock, restored"
   "ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable"
-  "ok - dock-recall captures: stored per consent, keyed, overwritten, evicted, and never able to fail a record"
+  "ok - dock-recall captures: stored by default, keyed, overwritten, evicted, switched off in one place, and never able to fail a record"
   "ok - dock-recall motion: bound durations on both render paths, and a morph that ran and ended"
   "ok - dock-recall panel IPC: chips keyed and reported on both render paths, positioned and fallback"
   "ok - dock-recall undock-while-locked: guest prepared"

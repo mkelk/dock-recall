@@ -13,17 +13,19 @@
 #
 # WHAT IT PINS
 #
-#   THE WRITE       — Record stores exactly one picture per PICTURED app, keyed
-#                     on (identityId, occurrence, topologyKey). The expected
-#                     name is computed by asking the plugin's own
+#   THE WRITE       — Record stores one picture per WATCHED app, keyed on
+#                     (identityId, occurrence, topologyKey). The expected names
+#                     are computed by asking the plugin's own
 #                     PanelModel.captureFileName with the topology key read out
 #                     of the state file the record just wrote — so the test
 #                     agrees with the code about the key by construction, and
-#                     disagrees loudly about everything else.
-#   THE CONSENT     — a watched app that has NOT granted the second consent gets
-#                     no picture. This is the whole privacy claim, and it is the
-#                     one assertion that would still pass if the count were
-#                     merely right.
+#                     disagrees loudly about everything else. BOTH apps, by
+#                     name: pictures are on by default now (schema v7), and a
+#                     count of two cannot tell "one each" from "two of one".
+#   THE SWITCH      — one entry in the overflow menu governs every picture there
+#                     is. Off deletes every stored one and stops photographing;
+#                     on resumes at the next open and the next Record. That is
+#                     the whole privacy claim, and it survives a shell restart.
 #   THE FORMAT      — the bytes are a JPEG with a real frame header, and it is
 #                     at most 512 px wide. Read with a 30-line SOF parser in
 #                     node rather than with `file`: a magic number says only
@@ -34,12 +36,14 @@
 #   THE SUBJECT     — and this is the one the format assertions cannot make. The
 #                     name proves the KEY; nothing proved the PIXELS, and every
 #                     assertion above passes on a store that photographed the
-#                     withheld window, the panel's own 1x1 host surface scaled
-#                     up, or the whole output — both test windows are the same
+#                     other window, the panel's own 1x1 host surface scaled up,
+#                     or the whole output — both test windows are the same
 #                     binary, so their content cannot tell them apart. Their
 #                     SHAPES can: they are floated at aspect ratios five times
-#                     apart, and the stored JPEG's own proportions have to be the
-#                     pictured window's and not the withheld one's.
+#                     apart, and EACH stored JPEG's proportions have to be its
+#                     OWN window's and not the other one's. Two pictures, two
+#                     shapes, checked both ways round — which is strictly more
+#                     than the old single-picture version could ask.
 #   RE-RECORD       — records again and requires the file to have CHANGED, not
 #                     merely to still be there. A capture path that quietly
 #                     stopped writing would leave the first record's picture in
@@ -73,37 +77,30 @@
 #                     Recorded map is entirely the fallback in the field, and
 #                     the project's learnings record it engaging silently and
 #                     hiding a broken model for two live rounds.
-#   THE DIALOGUE    — the FIRST Record with picturable apps puts the panel in
-#                     the consent state, showing the captures just taken and
-#                     offering exactly three answers. Asserted on what it is
-#                     SHOWING (a thumbnail whose Image reports Ready, at the same
-#                     URL the recorded map binds) as much as on what it offers,
-#                     because a strip of empty boxes would satisfy a count. The
-#                     answer is then read back off the state file, survives a
-#                     SHELL RESTART, and the next Record does not ask again —
-#                     which is the whole of "asked once". Finally "Not for these
-#                     apps" is driven end to end: the cameras go off AND the
-#                     pictures already taken are deleted, because either half
-#                     alone is the wrong behaviour.
+#   NO PROMPT, EVER — the assertion that replaced a whole dialogue. After the
+#                     first Record that stored pictures, the payload carries
+#                     NONE of consentOpen, consentChoices, consentCaptures,
+#                     pictureConsent — asserted ABSENT with has(), because
+#                     present-and-null is a different payload and the README is
+#                     normative about the difference — and `pictures` is there
+#                     and true.
 #   EVERY DESK      — and this one needs TWO topologies, because an eviction
 #                     keyed on the desk you happen to be plugged into passes
 #                     every other assertion in this file. A second headless
 #                     output is docked, a picture is stored on each side of it,
-#                     and then the camera is switched off ONCE: both have to go.
-#                     The same for unticking the app, and for "Not for these
-#                     apps" answered after the desk changed while the prompt was
-#                     up — which is the case where the panel is looking at one
-#                     desk's pictures and `topologyKey` names another.
+#                     and then the switch is thrown ONCE: both have to go. The
+#                     same for unticking the app, which is still a per-app act.
 #   THE LIVE MAP     — and this is the one assertion in the file that is about a
 #                     picture NOT being on disk. The Live map draws what the
-#                     windows look like right now, from memory: every app whose
-#                     camera is on gets one, the withheld app does not, every
-#                     chip still reports an icon, and the cache DIRECTORY is
-#                     never even created. It is asserted between the wiped-cache
-#                     step and the unwritable-cache step, both of which need that
-#                     directory gone, so the filesystem itself carries the claim.
-#                     Then the camera is switched off with the panel still open:
-#                     the live pictures stop without a reopen.
+#                     windows look like right now, from memory: BOTH watched
+#                     apps get one, every chip still reports an icon, and the
+#                     cache DIRECTORY is never even created. It is asserted
+#                     between the wiped-cache step and the unwritable-cache
+#                     step, both of which need that directory gone, so the
+#                     filesystem itself carries the claim. Then the pictures are
+#                     switched off with the panel still open: the live ones stop
+#                     and the stored ones are deleted, without a reopen — and
+#                     switched back on, they come back without one either.
 #   ONE CAPTURE GONE — the file is deleted and the panel re-summoned. It must be
 #                     offered no picture at all. Asserted on a FRESH panel
 #                     because that is the honest shape: within one session a
@@ -140,13 +137,16 @@ STATE="$STATE_DIR/dock-recall.json"
 CACHE_PARENT="$HOME/.cache/omarchy"
 CACHE_DIR="$CACHE_PARENT/dock-recall"
 
-# TWO APPS, and the pair is the point: one has granted the second consent and
-# one has not. A run with only the first would pass identically if the plugin
-# photographed everything it watched.
-PICTURED_TITLE="dock-recall-pictured"
-PICTURED_IDENTITY="dr-pictured"
-WITHHELD_TITLE="dock-recall-withheld"
-WITHHELD_IDENTITY="dr-withheld"
+# TWO APPS, and the pair is still the point — but it is a different point since
+# schema v7. There is no per-app consent to withhold any more: BOTH are watched
+# and both are photographed, and what the pair proves is that each picture is of
+# its OWN window. They are shaped five times apart on purpose (step 2b) and
+# named for their shapes, because that is the only thing about them that differs
+# — same binary, same class, same everything else.
+WIDE_TITLE="dock-recall-wide"
+WIDE_IDENTITY="dr-wide"
+TALL_TITLE="dock-recall-tall"
+TALL_IDENTITY="dr-tall"
 APP_CLASS="foot"
 
 PANEL_NAMESPACE="mkelk-dock-recall"
@@ -185,7 +185,7 @@ CAPTURE_TOTAL_MS=$(sed -n 's/^[[:space:]]*property int totalMs:[[:space:]]*\([0-
 ROUND_S=$(( CAPTURE_TOTAL_MS / 1000 + 15 ))
 
 TOPOLOGY_KEY=""
-EXPECTED_FILE=""
+WIDE_FILE=""
 
 # ---------------------------------------------------------------- primitives
 
@@ -222,17 +222,16 @@ monitor_id() {
 monitor_present() { [[ -n $(monitor_id "$1") ]]; }
 monitor_absent() { ! monitor_present "$1"; }
 
-# The app list's key for the app that has the camera, found the way a finger
-# finds it: from the WINDOW, through the chip that draws it, to the row it is
-# linked to. Not from `.pictured`, because half the assertions below start with
-# the camera already off — and not from the row's name, because both windows are
-# class `foot` and only their titles differ.
+# The app list's key for the WIDE app, found the way a finger finds it: from the
+# window, through the chip that draws it, to the row it is linked to. Not from
+# the row's name, because both windows are class `foot` and only their titles
+# differ, and not from any per-app picture field — there is none since v7.
 #
 # The link key is a live-map fact, so the caller puts the panel on the live map
 # first.
-pictured_row_key() {
+wide_row_key() {
   local address link
-  address=$(window_address "$PICTURED_TITLE")
+  address=$(window_address "$WIDE_TITLE")
   [[ -n $address ]] || return 1
   link=$(panel_state_json | jq -r --arg a "$address" \
     'first(.chips[]|select(.key == $a)|.linkKey)//empty')
@@ -241,9 +240,9 @@ pictured_row_key() {
 }
 
 # Every topology the state file has a layout for, and the picture each one would
-# hold for the pictured app — asked of the plugin's own naming function, exactly
-# as EXPECTED_FILE is, so the test agrees with the code about the key by
-# construction and disagrees loudly about everything else.
+# hold for the named app — asked of the plugin's own naming function, exactly as
+# WIDE_FILE is, so the test agrees with the code about the key by construction
+# and disagrees loudly about everything else.
 expected_files_for_all_layouts() {
   node -e '
     var fs = require("fs");
@@ -380,8 +379,8 @@ cleanup() {
   # a different desk for every test after this one.
   monitor_present "$DOCK_OUTPUT" && hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
   omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
-  pkill -f "foot --title=$PICTURED_TITLE" 2>/dev/null
-  pkill -f "foot --title=$WITHHELD_TITLE" 2>/dev/null
+  pkill -f "foot --title=$WIDE_TITLE" 2>/dev/null
+  pkill -f "foot --title=$TALL_TITLE" 2>/dev/null
   # This test's seed and this test's pictures. The tests after it in the same
   # boot start from no recordings at all, and a watched identity for a window
   # that no longer exists would leak into them.
@@ -435,27 +434,33 @@ pass "plugin installed, enabled, and its service is live (captures)"
 
 # ------------------------------------------------------------ 2. run the apps
 
-pkill -f "foot --title=$PICTURED_TITLE" 2>/dev/null
-pkill -f "foot --title=$WITHHELD_TITLE" 2>/dev/null
-launch_app "foot --title=$PICTURED_TITLE"
-launch_app "foot --title=$WITHHELD_TITLE"
-wait_until "the pictured app's window appeared (captures)" 30 window_here "$PICTURED_TITLE"
-wait_until "the withheld app's window appeared (captures)" 30 window_here "$WITHHELD_TITLE"
-pass "two windows on the desk: one app that will grant the picture consent, one that will not"
+pkill -f "foot --title=$WIDE_TITLE" 2>/dev/null
+pkill -f "foot --title=$TALL_TITLE" 2>/dev/null
+launch_app "foot --title=$WIDE_TITLE"
+launch_app "foot --title=$TALL_TITLE"
+wait_until "the wide app's window appeared (captures)" 30 window_here "$WIDE_TITLE"
+wait_until "the tall app's window appeared (captures)" 30 window_here "$TALL_TITLE"
+pass "two windows on the desk, both to be watched and both to be photographed"
 
 # --------------------------------- 2b. TWO DELIBERATELY DIFFERENT SHAPES (3xi)
 #
 # Both windows are class `foot` from the same binary, so their PIXELS cannot tell
 # them apart — and a test that only checks the file name, the JPEG header and a
-# width cap passes just as happily on a store that photographed the WITHHELD
-# window, the panel's own 1x1 host surface scaled up, or the whole output.
+# width cap passes just as happily on a store that photographed the other window,
+# the panel's own 1x1 host surface scaled up, or the whole output.
 #
 # Their SHAPES can tell them apart. Floated at wildly different aspect ratios —
-# one wide, one tall — the stored JPEG's own proportions become evidence about
+# one wide, one tall — each stored JPEG's own proportions become evidence about
 # which window was in front of the camera. `captureWidth` scales the picture
 # down but scales it PROPORTIONALLY (targetHeight is height * targetWidth /
 # width), so the ratio survives the resize; only the absolute pixels do not,
 # which is why nothing below compares those.
+#
+# THE PROOF IS DOUBLED SINCE v7 (epic wau). Both apps are photographed now, so
+# there are two files and the question can be asked BOTH WAYS ROUND: the wide
+# app's picture has to be wide and not tall, and the tall app's has to be tall
+# and not wide. A store that photographed one window twice, or that swapped the
+# two, passes every name and format assertion in this file and fails here.
 #
 # The exact numbers do not matter and are not asserted. What is asserted, below,
 # is that the two ended up different enough for the question to be answerable —
@@ -532,8 +537,8 @@ window_size() {
   clients | jq -r --arg t "$1" 'first(.[]|select(.initialTitle==$t)|"\(.size[0])x\(.size[1])")//empty'
 }
 
-shape_window "the pictured window" "$(window_address "$PICTURED_TITLE")" 900 340 20 20
-shape_window "the withheld window" "$(window_address "$WITHHELD_TITLE")" 340 700 20 400
+shape_window "the wide window" "$(window_address "$WIDE_TITLE")" 900 340 20 20
+shape_window "the tall window" "$(window_address "$TALL_TITLE")" 340 700 20 400
 
 # Poll for two agreeing reads rather than `sleep 2` — the house rule everywhere
 # else in this suite, and `sleep 0.3` inside a deadline loop is the poll, not a
@@ -549,22 +554,22 @@ shape_window "the withheld window" "$(window_address "$WITHHELD_TITLE")" 340 700
 # consecutive agreeing reads at the TILED size is a settled answer and still a
 # failure, which is exactly the outcome the VM run produced.
 shape_settle_deadline=$((SECONDS + 10))
-prev_pictured_size="" prev_withheld_size=""
+prev_wide_size="" prev_tall_size=""
 while (( SECONDS < shape_settle_deadline )); do
-  cur_pictured_size=$(window_size "$PICTURED_TITLE")
-  cur_withheld_size=$(window_size "$WITHHELD_TITLE")
-  [[ -n $cur_pictured_size && -n $cur_withheld_size \
-     && $cur_pictured_size == "$prev_pictured_size" \
-     && $cur_withheld_size == "$prev_withheld_size" ]] && break
-  prev_pictured_size="$cur_pictured_size" prev_withheld_size="$cur_withheld_size"
+  cur_wide_size=$(window_size "$WIDE_TITLE")
+  cur_tall_size=$(window_size "$TALL_TITLE")
+  [[ -n $cur_wide_size && -n $cur_tall_size \
+     && $cur_wide_size == "$prev_wide_size" \
+     && $cur_tall_size == "$prev_tall_size" ]] && break
+  prev_wide_size="$cur_wide_size" prev_tall_size="$cur_tall_size"
   sleep 0.3
 done
 
-PICTURED_SIZE=$(window_size "$PICTURED_TITLE")
-WITHHELD_SIZE=$(window_size "$WITHHELD_TITLE")
-[[ -n $PICTURED_SIZE && -n $WITHHELD_SIZE ]] ||
+WIDE_SIZE=$(window_size "$WIDE_TITLE")
+TALL_SIZE=$(window_size "$TALL_TITLE")
+[[ -n $WIDE_SIZE && -n $TALL_SIZE ]] ||
   fail "both test windows report a size (captures)" \
-    "pictured '$PICTURED_SIZE', withheld '$WITHHELD_SIZE'"
+    "wide '$WIDE_SIZE', tall '$TALL_SIZE'"
 
 # The two shapes have to be far enough apart that a picture of the wrong one
 # could not be mistaken for a picture of the right one. 40% is a floor, not a
@@ -575,22 +580,28 @@ shapes_differ=$(node -e '
   if (!isFinite(mine) || !isFinite(theirs) || mine <= 0 || theirs <= 0) process.exit(2);
   process.stdout.write(mine.toFixed(3) + " vs " + theirs.toFixed(3));
   process.exit(Math.abs(mine - theirs) / Math.max(mine, theirs) >= 0.4 ? 0 : 1);
-' "$PICTURED_SIZE" "$WITHHELD_SIZE") ||
+' "$WIDE_SIZE" "$TALL_SIZE") ||
   fail "the two test windows have distinguishable shapes (captures)" \
-    "pictured $PICTURED_SIZE, withheld $WITHHELD_SIZE (aspect $shapes_differ) — the resize did not take, so no assertion below could tell a picture of one from a picture of the other"
-pass "the two windows are shaped differently on purpose: pictured $PICTURED_SIZE, withheld $WITHHELD_SIZE (aspect $shapes_differ)"
+    "wide $WIDE_SIZE, tall $TALL_SIZE (aspect $shapes_differ) — the resize did not take, so no assertion below could tell a picture of one from a picture of the other"
+pass "the two windows are shaped differently on purpose: wide $WIDE_SIZE, tall $TALL_SIZE (aspect $shapes_differ)"
 
 # ------------------------------------------------------- 3. seed the identities
 #
-# Both watched; only one PICTURED. The version is read out of StateModel rather
-# than typed, for the reason every seed in this directory reads it: a seed
-# declaring an older version is read as a MIGRATION, and v4's migration is not
-# purely additive, so a stale number would quietly change what this test
-# believes it seeded.
+# BOTH WATCHED, and nothing else said about either of them. There is no
+# `pictured` field to grant (v7 removed it) and no `pictureConsent` to preset (v7
+# removed that too) — a watched app IS pictured, and the seed says so by carrying
+# neither key. That absence is load-bearing: a seed that still named them would
+# be silently dropped by normalizeIdentity and this test would be asserting
+# against a file it did not write.
+#
+# The version is read out of StateModel rather than typed, for the reason every
+# seed in this directory reads it: a seed declaring an older version is read as a
+# MIGRATION, and neither v4's nor v7's migration is purely additive, so a stale
+# number would quietly change what this test believes it seeded.
 #
 # `titlePatterns` is what separates the two: both windows are class `foot`, and
-# the engine ANDs the two axes, so the title is the only thing that tells the
-# consenting window from the withholding one.
+# the engine ANDs the two axes, so the title is the only thing that tells one
+# window from the other.
 
 SCHEMA_VERSION=$(node -e 'process.stdout.write(String(require(process.argv[1] + "/StateModel.js").STATE_VERSION))' "$PLUGIN_DIR" 2>/dev/null)
 [[ $SCHEMA_VERSION =~ ^[0-9]+$ ]] ||
@@ -602,18 +613,16 @@ cat > "$STATE.seed" <<JSON
   "paused": false,
   "identities": [
     {
-      "id": "$PICTURED_IDENTITY",
+      "id": "$WIDE_IDENTITY",
       "patterns": ["^$APP_CLASS\$"],
-      "titlePatterns": ["^$PICTURED_TITLE\$"],
-      "launch": "foot --title=$PICTURED_TITLE",
-      "pictured": true
+      "titlePatterns": ["^$WIDE_TITLE\$"],
+      "launch": "foot --title=$WIDE_TITLE"
     },
     {
-      "id": "$WITHHELD_IDENTITY",
+      "id": "$TALL_IDENTITY",
       "patterns": ["^$APP_CLASS\$"],
-      "titlePatterns": ["^$WITHHELD_TITLE\$"],
-      "launch": "foot --title=$WITHHELD_TITLE",
-      "pictured": false
+      "titlePatterns": ["^$TALL_TITLE\$"],
+      "launch": "foot --title=$TALL_TITLE"
     }
   ],
   "layouts": {}
@@ -627,7 +636,19 @@ if ! poll 30 state_loaded 2 0; then
   fail "the service read back the seeded identities (captures)" \
     "no 'state loaded: 2 identities, 0 layouts' after the seed"
 fi
-pass "seeded: $PICTURED_IDENTITY pictured, $WITHHELD_IDENTITY watched and NOT pictured"
+# The seed named neither retired key; the file the reader hands back must not
+# have grown one, because every "no prompt, ever" assertion below is about what
+# the state file does NOT say.
+# has(), NOT `// empty`: jq's `//` treats a literal `false` as absent, so a
+# `"pictured": false` — the exact value the retired field defaulted to — would
+# count as nothing and this guard would pass on a file that still carried it.
+# The same trap `shape_window` documents above, in the other direction.
+seeded_keys=$(jq -r '([select(has("pictureConsent"))]|length)
+  + ([.identities[]|select(has("pictured"))]|length)' "$STATE")
+[[ $seeded_keys == "0" ]] ||
+  fail "the seed carries no retired consent key (captures)" \
+    "the state file still names pictureConsent or a per-identity pictured"
+pass "seeded: $WIDE_IDENTITY and $TALL_IDENTITY watched, both to be photographed, no consent key anywhere"
 
 # ------------------------------------------------------- 4. summon the panel
 #
@@ -643,17 +664,20 @@ fi
 
 # The panel refuses to record until it has both the state file and a live read
 # of the desk, so wait for a payload that has chips in it rather than sleeping.
+# THE SWITCH IS A TOP-LEVEL FACT, not a per-chip one: there is no `.pictured` on
+# a chip any more, so "the panel has read the desk" is chips plus the one boolean
+# it always states.
 panel_ready() {
   panel_state_json | jq -e '(.chips|type) == "array" and (.chips|length) > 0
-    and ([.chips[]|select(.pictured == true)]|length) >= 1' >/dev/null
+    and (.pictures == true)' >/dev/null
 }
 if ! poll 60 panel_ready; then
   diagnostics
-  fail "the panel has read the desk and the consent (captures)" \
-    "no payload with chips, one of them pictured"
+  fail "the panel has read the desk and reports the switch (captures)" \
+    "no payload with chips and pictures == true"
 fi
 screenshot "success-dock-recall-captures-01-open"
-pass "panel summoned, reading the desk, and reporting the granted consent"
+pass "panel summoned, reading the desk, and reporting pictures on"
 
 # ------------------------------------------------------------ 5. RECORD
 
@@ -682,165 +706,162 @@ if [[ -z $TOPOLOGY_KEY ]]; then
 fi
 
 recorded_apps=$(jq -r --arg k "$TOPOLOGY_KEY" '[.layouts[$k].apps[]|.identityId]|sort|join(",")' "$STATE")
-[[ $recorded_apps == "$PICTURED_IDENTITY,$WITHHELD_IDENTITY" ]] ||
+[[ $recorded_apps == "$WIDE_IDENTITY,$TALL_IDENTITY" ]] ||
   fail "both watched apps are in the recording (captures)" \
-    "the layout names '$recorded_apps', expected '$PICTURED_IDENTITY,$WITHHELD_IDENTITY'"
+    "the layout names '$recorded_apps', expected '$WIDE_IDENTITY,$TALL_IDENTITY'"
 
 # THE EXPECTED NAME, asked of the plugin's own naming function with the topology
 # key the record actually wrote. The test does not re-implement the key — that
 # would be two spellings of one rule — but it does insist the file on disk is
 # the one that key names, which is the assertion that would catch a picture
 # filed under the wrong window or the wrong desk.
-EXPECTED_FILE=$(node -e '
+WIDE_FILE=$(node -e '
   var panel = require(process.argv[1] + "/PanelModel.js");
   process.stdout.write(panel.captureFileName(process.argv[2], 0, process.argv[3]));
-' "$PLUGIN_DIR" "$PICTURED_IDENTITY" "$TOPOLOGY_KEY")
-[[ -n $EXPECTED_FILE ]] || fail "the plugin can name a capture file (captures)"
+' "$PLUGIN_DIR" "$WIDE_IDENTITY" "$TOPOLOGY_KEY")
+[[ -n $WIDE_FILE ]] || fail "the plugin can name a capture file (captures)"
 
-WITHHELD_FILE=$(node -e '
+TALL_FILE=$(node -e '
   var panel = require(process.argv[1] + "/PanelModel.js");
   process.stdout.write(panel.captureFileName(process.argv[2], 0, process.argv[3]));
-' "$PLUGIN_DIR" "$WITHHELD_IDENTITY" "$TOPOLOGY_KEY")
+' "$PLUGIN_DIR" "$TALL_IDENTITY" "$TOPOLOGY_KEY")
 
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
-  fail "Record stored one picture (captures)" \
+  fail "Record stored a picture for both watched apps (captures)" \
     "after ${ROUND_S}s $CACHE_DIR holds $(cache_count) picture(s): $(cache_files | tr '\n' ' ')"
 fi
 
+# BY NAME AND NOT BY COUNT, both of them. A count of two is satisfied by two
+# pictures of one window, and the two windows are the same binary — this is the
+# assertion .tick/learnings.md's "a COUNT cannot distinguish" was written about.
+want_both=$(printf '%s\n%s\n' "$WIDE_FILE" "$TALL_FILE" | sort)
 stored=$(cache_files)
-[[ $stored == "$EXPECTED_FILE" ]] ||
-  fail "the picture is keyed on identity, occurrence and topology (captures)" \
-    "the cache holds '$stored', expected '$EXPECTED_FILE'"
-[[ -s "$CACHE_DIR/$EXPECTED_FILE" ]] ||
-  fail "the picture is not empty (captures)" "$CACHE_DIR/$EXPECTED_FILE is zero bytes"
+[[ $stored == "$want_both" ]] ||
+  fail "each picture is keyed on its own identity, occurrence and topology (captures)" \
+    "the cache holds '$(printf '%s' "$stored" | tr '\n' ' ')', expected '$(printf '%s' "$want_both" | tr '\n' ' ')'"
 
-dimensions=$(jpeg_size "$CACHE_DIR/$EXPECTED_FILE") ||
-  fail "the picture decodes as a JPEG (captures)" \
-    "no start-of-frame marker in $CACHE_DIR/$EXPECTED_FILE ($(wc -c < "$CACHE_DIR/$EXPECTED_FILE") bytes)"
-width=${dimensions%x*}
-((width > 0 && width <= 512)) ||
-  fail "the picture is stored at chip size (captures)" \
-    "it is ${dimensions}, and the store caps the width at 512"
-bytes=$(wc -c < "$CACHE_DIR/$EXPECTED_FILE")
-pass "Record stored one picture, $EXPECTED_FILE — $dimensions, $bytes bytes, a decodable JPEG"
+for f in "$WIDE_FILE" "$TALL_FILE"; do
+  [[ -s "$CACHE_DIR/$f" ]] || fail "the picture is not empty (captures)" "$CACHE_DIR/$f is zero bytes"
+done
 
-# AND IT IS A PICTURE OF THE RIGHT WINDOW (tick 3xi).
+WIDE_DIMENSIONS=$(jpeg_size "$CACHE_DIR/$WIDE_FILE") ||
+  fail "the wide app's picture decodes as a JPEG (captures)" \
+    "no start-of-frame marker in $CACHE_DIR/$WIDE_FILE ($(wc -c < "$CACHE_DIR/$WIDE_FILE") bytes)"
+TALL_DIMENSIONS=$(jpeg_size "$CACHE_DIR/$TALL_FILE") ||
+  fail "the tall app's picture decodes as a JPEG (captures)" \
+    "no start-of-frame marker in $CACHE_DIR/$TALL_FILE ($(wc -c < "$CACHE_DIR/$TALL_FILE") bytes)"
+for d in "$WIDE_DIMENSIONS" "$TALL_DIMENSIONS"; do
+  w=${d%x*}
+  ((w > 0 && w <= 512)) ||
+    fail "the picture is stored at chip size (captures)" \
+      "it is ${d}, and the store caps the width at 512"
+done
+pass "Record stored two pictures, $WIDE_FILE ($WIDE_DIMENSIONS) and $TALL_FILE ($TALL_DIMENSIONS) — both decodable JPEGs"
+
+# AND EACH IS A PICTURE OF ITS OWN WINDOW (tick 3xi, doubled by epic wau).
 #
-# Everything above this line — the file name, the SOF walk, the width cap, the
-# non-emptiness — passes unchanged on a store that photographed the WITHHELD
-# window, the panel's own 1x1 host surface scaled up, or the whole output. The
-# name proves the KEY; nothing proved the PIXELS, and the two test windows are
-# the same binary so their content cannot tell them apart.
+# Everything above this line — the names, the SOF walks, the width caps, the
+# non-emptiness — passes unchanged on a store that photographed one window twice
+# under two names, or that swapped the two. The two test windows are the same
+# binary so their content cannot tell them apart.
 #
-# Their proportions can. `jpeg_size` already read both dimensions and this used
-# to throw the height away; the stored picture's aspect ratio has to be the
-# PICTURED window's and not the WITHHELD one's — one wide, one tall, five times
-# apart. Compared with a tolerance rather than an equality on purpose: the
-# compositor's captured size and the geometry hyprctl reports disagree about
-# borders and scale (spike o2x, and it is why CaptureStore sizes from
-# sourceSize), so the honest claim is "these proportions, not those".
-aspect_verdict=$(node -e '
-  function ratio(s) { var p = String(s).split("x"); return Number(p[0]) / Number(p[1]); }
-  var stored = ratio(process.argv[1]);
-  var mine = ratio(process.argv[2]);
-  var theirs = ratio(process.argv[3]);
-  if (!isFinite(stored) || !isFinite(mine) || !isFinite(theirs)) process.exit(2);
-  var dMine = Math.abs(stored - mine) / mine;
-  var dTheirs = Math.abs(stored - theirs) / theirs;
-  process.stdout.write("stored " + stored.toFixed(3)
-    + ", pictured " + mine.toFixed(3) + " (off by " + (dMine * 100).toFixed(1) + "%)"
-    + ", withheld " + theirs.toFixed(3) + " (off by " + (dTheirs * 100).toFixed(1) + "%)");
-  process.exit((dMine <= 0.15 && dTheirs > 0.15) ? 0 : 1);
-' "$dimensions" "$PICTURED_SIZE" "$WITHHELD_SIZE") || {
-  diagnostics
-  fail "the stored picture is OF the pictured window, and not of the other one" \
-    "$aspect_verdict — a picture whose proportions are not the pictured window's is a picture of something else"
+# Their proportions can, and now there are two pictures to ask about, so the
+# question is asked BOTH WAYS ROUND: each stored JPEG's aspect has to be its own
+# window's and NOT the other's. Compared with a tolerance rather than an equality
+# on purpose: the compositor's captured size and the geometry hyprctl reports
+# disagree about borders and scale (spike o2x, and it is why CaptureStore sizes
+# from sourceSize), so the honest claim is "these proportions, not those".
+aspect_of() {
+  node -e '
+    function ratio(s) { var p = String(s).split("x"); return Number(p[0]) / Number(p[1]); }
+    var stored = ratio(process.argv[1]);
+    var mine = ratio(process.argv[2]);
+    var theirs = ratio(process.argv[3]);
+    if (!isFinite(stored) || !isFinite(mine) || !isFinite(theirs)) process.exit(2);
+    var dMine = Math.abs(stored - mine) / mine;
+    var dTheirs = Math.abs(stored - theirs) / theirs;
+    process.stdout.write("stored " + stored.toFixed(3)
+      + ", own " + mine.toFixed(3) + " (off by " + (dMine * 100).toFixed(1) + "%)"
+      + ", other " + theirs.toFixed(3) + " (off by " + (dTheirs * 100).toFixed(1) + "%)");
+    process.exit((dMine <= 0.15 && dTheirs > 0.15) ? 0 : 1);
+  ' "$1" "$2" "$3"
 }
-pass "the picture's proportions are the pictured window's, not the withheld one's: $aspect_verdict"
 
-# THE CONSENT. The withheld app is watched, it is running, and it is in the
-# recording — and it has no picture. Asserted by NAME as well as by count: a
-# count of one would also be satisfied by photographing the wrong app.
-[[ ! -e "$CACHE_DIR/$WITHHELD_FILE" ]] ||
-  fail "an app that withheld the consent is not photographed (captures)" \
-    "$CACHE_DIR/$WITHHELD_FILE exists for $WITHHELD_IDENTITY, which is watched and NOT pictured"
-pass "and none for $WITHHELD_IDENTITY — watched, recorded, and never photographed"
-
-# ------------------------------- 5a. THE FIRST-RECORD DIALOGUE (tick y28)
-#
-# The first Record with picturable apps puts the panel in the CONSENT STATE: it
-# shows the captures just taken and offers exactly three answers. This is the
-# moment the feature demonstrates itself, so the assertion is on what the prompt
-# is SHOWING as much as on what it is offering — a strip that reported three
-# sources and no ready picture would be a prompt showing the user empty boxes.
-#
-# The seed above left `pictureConsent` out of the state file entirely, which the
-# reader materializes as "unasked" — so this is genuinely the first ask, reached
-# the way a user reaches it and not by setting a flag.
-
-CAPTURE_URL="file://$CACHE_DIR/$EXPECTED_FILE"
-
-consent_offered() {
-  panel_state_json | jq -e --arg id "$PICTURED_IDENTITY" --arg url "$CAPTURE_URL" '
-    .consentOpen == true
-    and .pictureConsent == "unasked"
-    # EXACTLY THREE, in order, under exactly these words. The ids come from the
-    # model and the labels from the buttons that drew them, so a prompt offering
-    # the right ids under the wrong words fails here.
-    and ([.consentChoices[]|.id] == ["keep", "not-these", "none"])
-    and ([.consentChoices[]|.label]
-         == ["Keep these", "Delete these", "Delete all"])
-    # THE CAPTURES JUST TAKEN, and they are the ones on disk: the same URL the
-    # recorded map binds, decoded (ready) rather than merely pointed at.
-    and ((.consentCaptures|length) == 1)
-    and (.consentCaptures[0].identityId == $id)
-    and (.consentCaptures[0].source == $url)
-    and (.consentCaptures[0].ready == true)
-    and ((.consentCaptures[0].name|length) > 0)' >/dev/null
-}
-if ! poll "$ROUND_S" consent_offered; then
+wide_verdict=$(aspect_of "$WIDE_DIMENSIONS" "$WIDE_SIZE" "$TALL_SIZE") || {
   diagnostics
-  fail "the first Record with picturable apps puts the panel in the consent state" \
-    "no payload with consentOpen, pictureConsent 'unasked', the three answers, and one ready thumbnail"
-fi
-screenshot "success-dock-recall-captures-02-consent"
-pass "the first Record asks: three answers — Keep these / Delete these / Delete all — over the picture it just took"
+  fail "the wide app's picture is OF the wide window, and not of the tall one" \
+    "$wide_verdict — a picture whose proportions are not its own window's is a picture of something else"
+}
+tall_verdict=$(aspect_of "$TALL_DIMENSIONS" "$TALL_SIZE" "$WIDE_SIZE") || {
+  diagnostics
+  fail "the tall app's picture is OF the tall window, and not of the wide one" \
+    "$tall_verdict — a picture whose proportions are not its own window's is a picture of something else"
+}
+pass "each picture's proportions are its own window's: wide [$wide_verdict], tall [$tall_verdict]"
 
-# ANSWERED THROUGH THE PANEL'S OWN VERB, which routes to root.answerConsent and
-# nothing else — the one place that re-reads the file, writes once, evicts and
-# logs. There is no pointer in this venue, and this is the door that replaces
-# one.
-keep_answer=$(omarchy-shell "$IPC_TARGET" answerConsent keep 2>&1)
-[[ $keep_answer == "keep" ]] ||
-  fail "the panel records the answer (captures)" "answerConsent keep answered '$keep_answer'"
+# ------------------------------------------ 5a. NO PROMPT, EVER (epic wau)
+#
+# This step used to be the first-Record dialogue: a modal that showed the
+# pictures it had just taken and offered three answers, one of which deleted
+# them. It is gone, and the assertion that replaced it is the ABSENCE.
+#
+# WHY THE ABSENCE NEEDS A TEST. Nothing else fails when a prompt comes back. The
+# increment that built it was ratified by this very file; what un-ratified it was
+# the human using it once and being talked out of his own pictures. So the shape
+# of the claim is: after the Record that stored the pictures — the exact event
+# that opened the prompt — the payload has none of its keys, and the switch is on.
+#
+# ABSENT, NOT NULL, asserted with has(). tests/acceptance/README.md is normative
+# about the difference: a key present and null means "the panel has nothing to
+# say yet", a key that is not there means "this build has no such fact". A
+# consent key coming back as null would be a half-reverted prompt, and
+# `.consentOpen == false` would pass on it.
 
-consent_kept() {
+CAPTURE_URL="file://$CACHE_DIR/$WIDE_FILE"
+TALL_CAPTURE_URL="file://$CACHE_DIR/$TALL_FILE"
+
+no_prompt() {
   panel_state_json | jq -e '
-    .consentOpen == false
-    and .pictureConsent == "keep"
-    and ((.consentChoices|length) == 0)
-    and ((.consentCaptures|length) == 0)' >/dev/null
+    (has("consentOpen")|not)
+    and (has("consentChoices")|not)
+    and (has("consentCaptures")|not)
+    and (has("pictureConsent")|not)
+    # And the one key that IS there, always, and is a boolean rather than a
+    # string: the switch this generation replaced all four of them with.
+    and has("pictures")
+    and (.pictures|type) == "boolean"
+    and .pictures == true' >/dev/null
 }
-if ! poll 20 consent_kept; then
+if ! poll 20 no_prompt; then
   diagnostics
-  fail "answering closes the prompt and records the answer (captures)" \
-    "the payload still shows the prompt, or does not report the answer"
+  fail "the Record that stored pictures asks nothing" \
+    "the payload still carries a consent key, or does not state the pictures switch: $(panel_state_json | jq -c '{consentOpen, consentChoices, consentCaptures, pictureConsent, pictures}' 2>&1)"
 fi
-# ON DISK, which is what makes it survive anything at all.
-stored_answer=$(jq -r '.pictureConsent//"absent"' "$STATE" 2>/dev/null)
-[[ $stored_answer == "keep" ]] ||
-  fail "the answer is written to the state file (captures)" \
-    "the state file says pictureConsent '$stored_answer'"
-# And "Keep these" kept them: nothing was deleted and nobody's camera moved.
-cache_is 1 ||
-  fail "\"Keep these\" keeps the pictures (captures)" "$CACHE_DIR holds $(cache_count)"
-still_pictured=$(jq -r --arg id "$PICTURED_IDENTITY" \
-  'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
-[[ $still_pictured == "true" ]] ||
-  fail "\"Keep these\" leaves the camera on (captures)" \
-    "$PICTURED_IDENTITY reports pictured '$still_pictured'"
-pass "answered: the prompt closed, the answer is in the state file, the picture and the camera are untouched"
+
+# Give the panel a moment a prompt could still open in, and require that none
+# did. THE ONE DELIBERATE SLEEP IN THIS FILE, and it is a negative wait: there is
+# no observable for "a prompt did not appear", and the old prompt arrived from
+# the capture round's completion callback a few hundred ms behind the file
+# landing on disk — so an assertion made the instant the picture appears would
+# have passed on the build that still had one.
+sleep 3
+no_prompt ||
+  fail "no prompt appears after the pictures are stored" \
+    "a consent key turned up in the payload $(panel_state_json | jq -c '{consentOpen, pictureConsent}' 2>&1)"
+
+# AND THE STATE FILE SAYS THE SAME. The payload is what the panel reports; this
+# is what it wrote, and it is the half that survives a restart (asserted at 10b).
+file_keys=$(jq -r '([select(has("pictureConsent"))]|length)
+  + ([.identities[]|select(has("pictured"))]|length)' "$STATE")
+[[ $file_keys == "0" ]] ||
+  fail "no consent key is written to the state file" \
+    "the state file grew a pictureConsent or a per-identity pictured after the record"
+file_switch=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
+[[ $file_switch == "true" ]] ||
+  fail "the switch is on in the state file (captures)" "the state file says pictures '$file_switch'"
+screenshot "success-dock-recall-captures-02-no-prompt"
+pass "no prompt, ever: no consent key in the payload or the file, and pictures == true in both"
 
 # The panel says so too: the recorded map reports a capture path for the chip
 # that has one, and no such key for the chip that does not.
@@ -855,34 +876,48 @@ view_answer=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 # good on. They agree by construction here, which is what makes a disagreement
 # worth failing on.
 #
-# Both are ABSENT, never present-and-empty, for the chip that has no picture:
-# the payload convention is that a key the panel has nothing to say about is not
-# there at all, and "" would be a second spelling of the same silence.
+# Both are ABSENT, never present-and-empty, for a chip that has no picture: the
+# payload convention is that a key the panel has nothing to say about is not
+# there at all, and "" would be a second spelling of the same silence. Here BOTH
+# chips have one, so the absence half is asserted by requiring no EMPTY value —
+# a chip carrying `capturePath: ""` would fail.
 #
-# CAPTURE_URL is set at step 5a, where the consent prompt asserts on the same URL.
-[[ $CACHE_DIR/$EXPECTED_FILE =~ ^[A-Za-z0-9/._~-]+$ ]] ||
-  fail "the capture path needs no percent-encoding (captures)" \
-    "$CACHE_DIR/$EXPECTED_FILE contains a character Util.fileUrl would escape"
+# The URLs are set at step 5a.
+for path in "$CACHE_DIR/$WIDE_FILE" "$CACHE_DIR/$TALL_FILE"; do
+  [[ $path =~ ^[A-Za-z0-9/._~-]+$ ]] ||
+    fail "the capture path needs no percent-encoding (captures)" \
+      "$path contains a character Util.fileUrl would escape"
+done
 
 capture_reported() {
-  panel_state_json | jq -e --arg path "$CACHE_DIR/$EXPECTED_FILE" --arg url "$CAPTURE_URL" --arg want "$1" '
-    ([.chips[]|select(has("capturePath") and .capturePath == $path
-       and has("captureSource") and .captureSource == $url
-       and .pictured == true and .renderPath == $want)]|length) == 1
-    and ([.chips[]|select(has("capturePath"))]|length) == 1
-    and ([.chips[]|select(has("captureSource"))]|length) == 1
+  panel_state_json | jq -e \
+    --arg wp "$CACHE_DIR/$WIDE_FILE" --arg wu "$CAPTURE_URL" \
+    --arg tp "$CACHE_DIR/$TALL_FILE" --arg tu "$TALL_CAPTURE_URL" --arg want "$1" '
+    # ONE CHIP EACH, NAMED. Two chips reporting a path is a count; two chips
+    # reporting THESE two paths is the claim — a map that put each picture on
+    # the other chip satisfies the count and fails this.
+    ([.chips[]|select(has("capturePath") and .capturePath == $wp
+       and has("captureSource") and .captureSource == $wu
+       and .renderPath == $want)]|length) == 1
+    and ([.chips[]|select(has("capturePath") and .capturePath == $tp
+       and has("captureSource") and .captureSource == $tu
+       and .renderPath == $want)]|length) == 1
+    and ([.chips[]|select(has("capturePath"))]|length) == 2
+    and ([.chips[]|select(has("captureSource"))]|length) == 2
     and ([.chips[]|select(has("capturePath") and (.capturePath|length) == 0)]|length) == 0
     and ([.chips[]|select(has("captureSource") and (.captureSource|length) == 0)]|length) == 0
+    # No chip carries a per-app grant any more — the switch is top-level.
+    and ([.chips[]|select(has("pictured"))]|length) == 0
     # Every chip still has its icon. A capture fills in UNDERNEATH the icon and
     # the name, and does not replace either.
     and ([.chips[]|select((.iconSource|type) == "string" and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
 }
 if ! poll 30 capture_reported positioned; then
   diagnostics
-  fail "the panel reports the stored picture, and only for the chip that has one" \
-    "no POSITIONED chip reports capturePath '$CACHE_DIR/$EXPECTED_FILE' and captureSource '$CAPTURE_URL', or more than one does, or a chip reports one empty"
+  fail "the panel reports both stored pictures, each on its own chip" \
+    "no POSITIONED pair of chips reports capturePath '$CACHE_DIR/$WIDE_FILE' and '$CACHE_DIR/$TALL_FILE' with the matching sources"
 fi
-pass "POSITIONED: the Recorded map draws the capture — path and source agree, and both keys are ABSENT for the chip with none"
+pass "POSITIONED: the Recorded map draws both captures — path and source agree on each, and no chip carries a per-app grant"
 
 # ------------------------------ 5b. THE FALLBACK PATH, with the same picture
 #
@@ -919,31 +954,31 @@ node -e '
   fail "the layout can be rewritten without geometry (captures)"
 
 fallback_capture() {
-  panel_state_json | jq -e --arg url "$CAPTURE_URL" '
+  panel_state_json | jq -e --arg wu "$CAPTURE_URL" --arg tu "$TALL_CAPTURE_URL" '
     (.chips|length) > 0
     and ([.chips[]|select(.renderPath == "fallback")]|length) == (.chips|length)
-    and ([.chips[]|select(has("captureSource") and .captureSource == $url
-          and .pictured == true)]|length) == 1
+    and ([.chips[]|select(has("captureSource") and .captureSource == $wu)]|length) == 1
+    and ([.chips[]|select(has("captureSource") and .captureSource == $tu)]|length) == 1
     # AND THE NAME SURVIVES IT. The stacked rows are 17 px tall and this is
     # where names came back after a size ladder silently took every one of them
     # away; a capture that cost them their label would undo that just as
     # quietly. The tiers that draw a name are pill and strip, and this asks for
     # the OUTCOME rather than for a tier by name.
     and ([.chips[]|select(has("captureSource")
-          and (.treatment == "pill" or .treatment == "strip"))]|length) == 1
+          and (.treatment == "pill" or .treatment == "strip"))]|length) == 2
     and ([.chips[]|select((.name|type) == "string" and (.name|length) > 0)]|length) == (.chips|length)
     and ([.chips[]|select((.iconSource|type) == "string" and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
 }
 if ! poll 40 fallback_capture; then
   diagnostics
-  fail "the FALLBACK path draws the same capture, and still draws the name" \
-    "after stripping the layout's geometry, no fallback chip reports captureSource '$CAPTURE_URL' at a tier that carries a name"
+  fail "the FALLBACK path draws the same captures, and still draws the names" \
+    "after stripping the layout's geometry, no pair of fallback chips reports captureSource '$CAPTURE_URL' and '$TALL_CAPTURE_URL' at a tier that carries a name"
 fi
-pass "FALLBACK: the same picture on the stacked path, on a chip that still reports its name and its icon"
+pass "FALLBACK: the same two pictures on the stacked path, on chips that still report their names and icons"
 
-# ------------------- 5c. a capture deleted under the panel falls back
+# ------------------ 5c. captures deleted under the panel fall back
 #
-# ONE file, not the whole directory (that is step 8), and the assertion is made
+# The FILES, not the whole directory (that is step 8), and the assertion is made
 # after the panel is summoned AGAIN — which is deliberate and is the honest
 # shape of this behaviour rather than a convenience.
 #
@@ -958,7 +993,7 @@ pass "FALLBACK: the same picture on the stacked path, on a chip that still repor
 #
 # That is also the real user's case. The shell destroys the panel's Loader on
 # hide, so "a cleaner ran while I was not looking" is always a fresh panel.
-rm -f "$CACHE_DIR/$EXPECTED_FILE"
+rm -f "$CACHE_DIR/$WIDE_FILE" "$CACHE_DIR/$TALL_FILE"
 omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
 poll 20 panel_layer_absent
 omarchy-shell shell summon "$PLUGIN_ID" '{}' >/dev/null 2>&1
@@ -989,9 +1024,9 @@ pass "a capture deleted from the cache: the chip is back to its icon and its nam
 restore_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $restore_record == "recorded" ]] ||
   fail "panel IPC records after the fallback round (captures)" "record answered '$restore_record'"
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
-  fail "the picture is back after the fallback round (captures)" "$CACHE_DIR holds $(cache_count)"
+  fail "the pictures are back after the fallback round (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
 
 # ------------------------------------------------- 6. RE-RECORD overwrites
@@ -1002,30 +1037,30 @@ fi
 # Asserting on content would make a correct pipeline fail on an idle window.
 # Nanosecond mtime cannot: the store deletes the topology's pictures and writes
 # new ones, so a re-record that happened is a new file every time.
-before_mtime=$(stat -c %y "$CACHE_DIR/$EXPECTED_FILE")
+before_mtime=$(stat -c %y "$CACHE_DIR/$WIDE_FILE")
 
 rerecord_answer=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $rerecord_answer == "recorded" ]] ||
   fail "panel IPC re-records (captures)" "record answered '$rerecord_answer'"
 
-# Still exactly one file, still under the same key — a re-record REPLACES a
+# Still exactly two files, still under the same keys — a re-record REPLACES a
 # topology's pictures rather than accumulating them.
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
   fail "a re-record replaces the pictures rather than adding to them (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
 fi
-[[ $(cache_files) == "$EXPECTED_FILE" ]] ||
-  fail "the re-recorded picture keeps its key (captures)" "the cache holds '$(cache_files)'"
+[[ $(cache_files) == "$want_both" ]] ||
+  fail "the re-recorded pictures keep their keys (captures)" "the cache holds '$(cache_files | tr '\n' ' ')'"
 
 # And it is a NEW picture. Polled, because the write is asynchronous; the point
 # is that the file is rewritten at all, which is what a pipeline that had
 # quietly stopped writing would fail.
-changed() { [[ $(stat -c %y "$CACHE_DIR/$EXPECTED_FILE" 2>/dev/null) != "$before_mtime" ]]; }
+changed() { [[ $(stat -c %y "$CACHE_DIR/$WIDE_FILE" 2>/dev/null) != "$before_mtime" ]]; }
 if ! poll "$ROUND_S" changed; then
   diagnostics
   fail "a re-record rewrites the picture (captures)" \
-    "$EXPECTED_FILE was not written again by the second Record (mtime still $before_mtime)"
+    "$WIDE_FILE was not written again by the second Record (mtime still $before_mtime)"
 fi
 pass "a re-record replaces the picture in place: one file, same key, written again"
 
@@ -1056,9 +1091,9 @@ pass "undo restores the previous layout and drops its pictures — the map falls
 
 record_again=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $record_again == "recorded" ]] || fail "panel IPC records again (captures)" "record answered '$record_again'"
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
-  fail "recording again stores the picture again (captures)" "$CACHE_DIR holds $(cache_count)"
+  fail "recording again stores the pictures again (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
 
 # Delete the whole thing under a live panel — a cleaner is allowed to, and the
@@ -1099,10 +1134,10 @@ pass "the whole cache deleted: every chip reports an icon source, none reports a
 # steps that both depend on it, rather than by a count, which a directory that
 # had been created and then emptied would satisfy.
 #
-# The Live map draws a photograph of every window whose camera is on, taken when
-# the panel opened and held in memory. The withheld app is the control: it is
-# WATCHED and RUNNING and gets no live picture, which is the same privacy claim
-# the recorded half of this file makes about the file on disk.
+# The Live map draws a photograph of every watched window, taken when the panel
+# opened and held in memory. BOTH apps get one now (schema v7): there is no
+# per-app grant left to withhold, and the control that stops this is the one
+# switch, driven in the second half of this step.
 live_view=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
 [[ $live_view == "live" ]] ||
   fail "the live map opens for the live pictures (captures)" "setView live answered '$live_view'"
@@ -1113,11 +1148,15 @@ live_view=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
 # exclusive — the recorded map draws out of the cache, the live map out of
 # memory, and a chip reporting both would mean a gate had gone.
 live_pictures_drawn() {
-  panel_state_json | jq -e '
+  panel_state_json | jq -e --arg w "$WIDE_TITLE" --arg t "$TALL_TITLE" '
     (.showRecorded == false)
-    and ([.chips[]|select(.pictured == true and .liveCapture == true
-       and (.liveSource|type) == "string" and (.liveSource|length) > 0)]|length) >= 1
-    and ([.chips[]|select(.pictured != true and .liveCapture == true)]|length) == 0
+    and (.pictures == true)
+    # BY NAME, both of them. `[.chips[]|select(.liveCapture)]|length == 2` is a
+    # count and cannot tell two pictures of one window from one of each; the
+    # chips are keyed by window address, so the titles are looked up through the
+    # windows the harness launched.
+    and ([.chips[]|select(.liveCapture == true
+       and (.liveSource|type) == "string" and (.liveSource|length) > 0)]|length) == 2
     and ([.chips[]|select(has("liveSource") and has("captureSource"))]|length) == 0
     and ([.chips[]|select(has("capturePath"))]|length) == 0
     and ([.chips[]|select((.iconSource|type) == "string"
@@ -1125,8 +1164,30 @@ live_pictures_drawn() {
 }
 if ! poll "$ROUND_S" live_pictures_drawn; then
   diagnostics
-  fail "the Live map draws a live picture for every app whose camera is on" \
-    "$(panel_state_json | jq -c '[.chips[]|{name, pictured, liveCapture, liveSource, iconSource}]' 2>&1)"
+  fail "the Live map draws a live picture for every watched window" \
+    "$(panel_state_json | jq -c '[.chips[]|{name, liveCapture, liveSource, iconSource}]' 2>&1)"
+fi
+
+# EACH ON ITS OWN CHIP, named through the window each app owns — the same
+# discipline the recorded half uses, because a count of two is satisfied by two
+# pictures of one window.
+live_one_each() {
+  local wide tall
+  wide=$(window_address "$WIDE_TITLE")
+  tall=$(window_address "$TALL_TITLE")
+  [[ -n $wide && -n $tall ]] || return 1
+  panel_state_json | jq -e --arg w "$wide" --arg t "$tall" '
+    ([.chips[]|select(.key == $w and .liveCapture == true
+       and (.liveSource|length) > 0)]|length) == 1
+    and ([.chips[]|select(.key == $t and .liveCapture == true
+       and (.liveSource|length) > 0)]|length) == 1
+    and ((first(.chips[]|select(.key == $w)|.liveSource))
+         != (first(.chips[]|select(.key == $t)|.liveSource)))' >/dev/null
+}
+if ! poll 30 live_one_each; then
+  diagnostics
+  fail "each window has its OWN live picture" \
+    "$(panel_state_json | jq -c '[.chips[]|{key, liveCapture, liveSource}]' 2>&1)"
 fi
 
 # NOTHING WAS WRITTEN. Not "the cache holds no new file" — the directory itself
@@ -1136,57 +1197,105 @@ fi
   fail "a live picture reached the disk" \
     "$CACHE_DIR exists after the Live map drew its pictures — live pictures are memory only"
 screenshot "success-dock-recall-captures-04-live-pictures"
-pass "the Live map drew its windows from memory: nothing was written, and the withheld app got no picture"
+pass "the Live map drew both windows from memory, one picture each: nothing was written"
 
 # A CHIP IS NEVER BLANK — every chip reports an icon source in the same payload
 # that reports the pictures, above. The icon is what a chip draws while a grab is
 # in flight and what it goes back to when one fails, through exactly the
 # mechanism the recorded map already used.
 #
-# THE WITHDRAWAL, WITHOUT A PANEL REOPEN. Switching the camera off has to stop
-# the live pictures for that app in the panel that is on screen: the consent is
-# read at draw time, so there is nothing asynchronous to wait for and no file to
-# delete first.
-LIVE_ROW_KEY=""
-find_live_row() { LIVE_ROW_KEY=$(pictured_row_key); [[ -n $LIVE_ROW_KEY ]]; }
-if ! poll 30 find_live_row; then
+# ---------------- THE SWITCH, WITHOUT A PANEL REOPEN (epic wau)
+#
+# The whole affordance, driven end to end in the panel that is on screen. OFF
+# has to do three things at once and every one of them is asserted: the live
+# pictures stop (the gate is read at draw time, so there is nothing asynchronous
+# to wait for), every STORED picture is deleted on disk, and the switch itself
+# is reported and written. There are stored pictures to delete because a Record
+# is done first — this step is otherwise sitting on a deleted cache.
+switch_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $switch_record == "recorded" ]] ||
+  fail "panel IPC records before the switch is thrown (captures)" "record answered '$switch_record'"
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
-  fail "the pictured app has a row for the live withdrawal (captures)" \
-    "no row links to the window titled $PICTURED_TITLE"
+  fail "there are stored pictures for the switch to delete (captures)" \
+    "$CACHE_DIR holds $(cache_count)"
 fi
-live_off=$(omarchy-shell "$IPC_TARGET" setPictured "$LIVE_ROW_KEY" off 2>&1)
-[[ $live_off == "off" ]] ||
-  fail "the camera can be switched off on the live map (captures)" \
-    "setPictured '$LIVE_ROW_KEY' off answered '$live_off'"
+
+pictures_off=$(omarchy-shell "$IPC_TARGET" setPictures off 2>&1)
+[[ $pictures_off == "off" ]] ||
+  fail "the pictures can be switched off (captures)" "setPictures off answered '$pictures_off'"
 
 live_pictures_gone() {
   panel_state_json | jq -e '
-    ([.chips[]|select(.liveCapture == true)]|length) == 0
+    .pictures == false
+    and ([.chips[]|select(.liveCapture == true)]|length) == 0
     and ([.chips[]|select(has("liveSource"))]|length) == 0
+    and ([.chips[]|select(has("captureSource"))]|length) == 0
+    and ([.chips[]|select(has("capturePath"))]|length) == 0
     and ([.chips[]|select((.iconSource|type) == "string"
        and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
 }
 if ! poll 30 live_pictures_gone; then
   diagnostics
-  fail "switching a camera off stops the live pictures without a panel reopen" \
-    "$(panel_state_json | jq -c '[.chips[]|select(.liveCapture == true)|{name, liveSource}]' 2>&1)"
+  fail "switching the pictures off stops them without a panel reopen" \
+    "$(panel_state_json | jq -c '{pictures, chips: [.chips[]|select(.liveCapture == true)|{key, liveSource}]}' 2>&1)"
 fi
-pass "one camera switched off: the live pictures stopped in the open panel, and the chips fell back to their icons"
 
-# Back on for the steps below, which need this app pictured. Note what does NOT
-# happen: the live picture does not come back until the panel is reopened,
-# because the round is taken when the panel OPENS. That is the same shape as the
-# recorded half — granting a camera does not create a picture either; it grants
-# what the next picture-taking act may do.
-live_back_on=$(omarchy-shell "$IPC_TARGET" setPictured "$LIVE_ROW_KEY" on 2>&1)
-[[ $live_back_on == "on" ]] ||
-  fail "the camera goes back on after the live round (captures)" "setPictured answered '$live_back_on'"
+# ON DISK, asserted on the filesystem and not on a payload: the stored pictures
+# are deleted, every one of them, and this is the claim the menu entry's tooltip
+# makes before the press.
+if ! poll 30 cache_is 0; then
+  diagnostics
+  fail "switching the pictures off deletes every stored one" \
+    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ')"
+fi
+off_on_disk=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
+[[ $off_on_disk == "false" ]] ||
+  fail "the switch is written to the state file (captures)" "the state file says pictures '$off_on_disk'"
+pass "pictures off: the live ones stopped in the open panel, every stored one deleted, and the file says so"
+
+# AND BACK ON, in the same panel. The recorded half needs nothing but the next
+# Record; the LIVE half needs the round re-run, because a live round is once per
+# panel session — so this is the assertion that the switch drops that latch
+# rather than leaving the user to close and reopen the panel.
+pictures_on=$(omarchy-shell "$IPC_TARGET" setPictures on 2>&1)
+[[ $pictures_on == "on" ]] ||
+  fail "the pictures can be switched back on (captures)" "setPictures on answered '$pictures_on'"
+on_on_disk=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
+[[ $on_on_disk == "true" ]] ||
+  fail "the switch going back on is written to the state file (captures)" \
+    "the state file says pictures '$on_on_disk'"
+
+# NO REOPEN — this poll is the whole point of the assertion, so nothing here
+# hides or summons the panel.
+if ! poll "$ROUND_S" live_pictures_drawn; then
+  diagnostics
+  fail "switching the pictures back on runs a live round without a panel reopen" \
+    "$(panel_state_json | jq -c '{pictures, chips: [.chips[]|{key, liveCapture, liveSource}]}' 2>&1)"
+fi
+pass "pictures on again: a live round ran in the panel that was already open"
+
+# AND THE NEXT RECORD STORES AGAIN. The recorded half of "on resumes", and the
+# one the tooltip promises.
+resumed_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $resumed_record == "recorded" ]] ||
+  fail "panel IPC records after the pictures came back (captures)" "record answered '$resumed_record'"
+if ! poll "$ROUND_S" cache_is 2; then
+  diagnostics
+  fail "the Record after the switch went back on stores again" \
+    "$CACHE_DIR holds $(cache_count)"
+fi
+[[ $(cache_files) == "$want_both" ]] ||
+  fail "the resumed Record stores the same two keys (captures)" \
+    "the cache holds '$(cache_files | tr '\n' ' ')'"
+pass "the next Record stored both pictures again — the switch resumes what it stopped"
+
+# Step 9 needs the cache directory GONE, and this step has just filled it.
 back_to_recorded=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 [[ $back_to_recorded == "recorded" ]] ||
   fail "the recorded map comes back after the live round (captures)" \
     "setView recorded answered '$back_to_recorded'"
-[[ ! -e $CACHE_DIR ]] ||
-  fail "the live round left something on disk after all" "$CACHE_DIR exists"
+rm -rf "$CACHE_DIR"
 
 # --------------------------- 9. a failed capture cannot fail a record
 
@@ -1212,7 +1321,7 @@ fi
 # doing its whole job while the capture path was failing.
 blocked_apps=$(jq -r --arg k "$TOPOLOGY_KEY" '[.layouts[$k].apps[]|.identityId]|sort|join(",")' "$STATE" 2>/dev/null)
 blocked_stamp=$(jq -r --arg k "$TOPOLOGY_KEY" '.layouts[$k].recordedAt//empty' "$STATE" 2>/dev/null)
-if [[ $blocked_apps != "$PICTURED_IDENTITY,$WITHHELD_IDENTITY" || -z $blocked_stamp ]]; then
+if [[ $blocked_apps != "$WIDE_IDENTITY,$TALL_IDENTITY" || -z $blocked_stamp ]]; then
   chmod 700 "$CACHE_PARENT"
   diagnostics
   fail "the record is complete though no picture could be stored" \
@@ -1237,12 +1346,12 @@ pass "a record whose pictures cannot be stored is still a complete record — la
 recovered_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $recovered_record == "recorded" ]] ||
   fail "panel IPC records again once the cache is writable (captures)" "record answered '$recovered_record'"
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
   fail "a failed capture round must not disable every Record after it" \
     "$CACHE_DIR holds $(cache_count) after a Record with a writable cache — the earlier failed round left the store latched"
 fi
-pass "a Record after the failed one stores a picture: the failed round did not latch the store"
+pass "a Record after the failed one stores its pictures: the failed round did not latch the store"
 
 # ----------------------------------------------------- 10. FORGET deletes
 
@@ -1250,9 +1359,9 @@ pass "a Record after the failed one stores a picture: the failed round did not l
 # over an empty cache would pass this on a plugin that never deletes anything.
 final_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $final_record == "recorded" ]] || fail "panel IPC records before the forget (captures)" "record answered '$final_record'"
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
-  fail "there is a picture to forget (captures)" "$CACHE_DIR holds $(cache_count)"
+  fail "there are pictures to forget (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
 
 forget_answer=$(omarchy-shell "$IPC_TARGET" forgetLayout 2>&1)
@@ -1267,17 +1376,23 @@ forgotten=$(jq -r --arg k "$TOPOLOGY_KEY" '(.layouts|has($k))|tostring' "$STATE"
 [[ $forgotten == "false" ]] ||
   fail "forgetting a layout removes it from the file (captures)" \
     "the state file still has a layout for '$TOPOLOGY_KEY'"
-pass "forgetting the layout deleted both the recording and its picture"
+pass "forgetting the layout deleted both the recording and its pictures"
 
-# --------------------- 10b. ASKED ONCE, across a shell restart (tick y28)
+# ------------------ 10b. THE SWITCH SURVIVES A SHELL RESTART (epic wau)
 #
-# The answer is in the state file rather than in the panel, so a restart is what
-# proves it: the shell process that held "keep" in memory is gone, and the panel
-# below is a fresh object reading the file from disk.
+# The switch is in the state file rather than in the panel, so a restart is what
+# proves it: the shell process that held it in memory is gone, and the panel
+# below is a fresh object reading the file from disk. That is the whole reason
+# it lives beside `paused` instead of being a panel property.
 #
 # The SECOND restart in this test, and it is the honest cost of the claim. The
 # apps are Hyprland clients rather than shell children, so they survive it; only
 # the panel has to be summoned again.
+switch_off_before_restart=$(omarchy-shell "$IPC_TARGET" setPictures off 2>&1)
+[[ $switch_off_before_restart == "off" ]] ||
+  fail "the pictures are switched off before the restart (captures)" \
+    "setPictures off answered '$switch_off_before_restart'"
+
 omarchy-shell shell hide "$PLUGIN_ID" >/dev/null 2>&1
 poll 20 panel_layer_absent
 omarchy-restart-shell >/dev/null 2>&1
@@ -1288,122 +1403,88 @@ if ! poll 30 panel_layer_present; then
   diagnostics
   fail "the panel comes back after the second restart (captures)" "no panel layer"
 fi
+
+# A FRESH PANEL, READING THE FILE. `panel_ready` requires `pictures == true`, so
+# it deliberately is not used here — this is the one moment in the file where the
+# switch is off and a ready panel has to say so.
+restarted_ready() {
+  panel_state_json | jq -e '(.chips|type) == "array" and (.chips|length) > 0
+    and has("pictures") and .pictures == false' >/dev/null
+}
+if ! poll 60 restarted_ready; then
+  diagnostics
+  fail "the switch survives a shell restart (captures)" \
+    "the restarted panel reports pictures '$(panel_state_json | jq -r '.pictures|tostring')'"
+fi
+
+# AND IT TAKES NO LIVE PICTURE. The round runs when the panel opens, and this
+# panel has just opened with the switch off.
+#
+# AN ABSENCE CANNOT BE POLLED FOR, so this waits on the round's OWN evidence
+# instead of on a clock: LiveCaptureStore brackets every round with a line, and
+# a round that planned nothing says so ("0 window(s) to photograph"). That line
+# is the round having happened AND having taken nothing — which a sleep followed
+# by an empty payload cannot distinguish from a round that had not started yet.
+live_round_took_nothing() {
+  dr_log | grep -qF "live picture round: 0 window(s) to photograph"
+}
+if ! poll "$ROUND_S" live_round_took_nothing; then
+  diagnostics
+  fail "the live round on a panel opened with the pictures off plans nothing" \
+    "no 'live picture round: 0 window(s) to photograph' line after the restart"
+fi
+no_live_after_restart() {
+  panel_state_json | jq -e '
+    ([.chips[]|select(.liveCapture == true)]|length) == 0
+    and ([.chips[]|select(has("liveSource"))]|length) == 0
+    and ([.chips[]|select((.iconSource|type) == "string"
+       and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
+}
+no_live_after_restart ||
+  fail "a panel opened with the pictures off takes none" \
+    "$(panel_state_json | jq -c '[.chips[]|select(.liveCapture == true)|{key, liveSource}]' 2>&1)"
+
+# AND A RECORD STORES NOTHING, which is the recorded half of the same fact —
+# waited on the same way, through the round's own line rather than a clock. With
+# the switch off every app in the layout is `pictures-off` in the plan, so the
+# panel logs the no-pictures sentence rather than going quiet.
+off_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+[[ $off_record == "recorded" ]] ||
+  fail "panel IPC records with the pictures off (captures)" "record answered '$off_record'"
+record_took_nothing() { dr_log | grep -qF "no pictures for this recording"; }
+if ! poll "$ROUND_S" record_took_nothing; then
+  diagnostics
+  fail "a Record with the pictures off says it took none" \
+    "no 'no pictures for this recording' line after a Record with the switch off"
+fi
+cache_is 0 ||
+  fail "a Record with the pictures off stores nothing" \
+    "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
+pass "the switch survived a shell restart: a fresh panel reports it off, its live round planned nothing and its Record stored nothing"
+
+# Back on for the rest of the file.
+switch_back_on=$(omarchy-shell "$IPC_TARGET" setPictures on 2>&1)
+[[ $switch_back_on == "on" ]] ||
+  fail "the pictures go back on after the restart (captures)" \
+    "setPictures on answered '$switch_back_on'"
 if ! poll 60 panel_ready; then
   diagnostics
-  fail "the restarted panel has read the desk and the consent (captures)" \
-    "no payload with chips, one of them pictured"
+  fail "the restarted panel reports the switch back on (captures)" \
+    "no payload with chips and pictures == true"
 fi
 
-survived() { panel_state_json | jq -e '.pictureConsent == "keep" and .consentOpen == false' >/dev/null; }
-if ! poll 30 survived; then
-  diagnostics
-  fail "the answer survives a shell restart (captures)" \
-    "the restarted panel reports pictureConsent '$(panel_state_json | jq -r '.pictureConsent//"absent"')'"
-fi
-
-# AND IT DOES NOT ASK AGAIN. A Record that stores a picture is exactly the event
-# that opened the prompt the first time, so this is the same trigger under an
-# answered file — the whole of "asked once".
-asked_again_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
-[[ $asked_again_record == "recorded" ]] ||
-  fail "panel IPC records after the restart (captures)" "record answered '$asked_again_record'"
-if ! poll "$ROUND_S" cache_is 1; then
-  diagnostics
-  fail "the record after the restart stores a picture (captures)" "$CACHE_DIR holds $(cache_count)"
-fi
-# The picture is on disk, so the prompt's trigger has fired; give the panel a
-# moment it could open in and require that it did not.
-sleep 3
-panel_state_json | jq -e '.consentOpen == false and .pictureConsent == "keep"' >/dev/null ||
-  fail "the prompt does not appear again (captures)" \
-    "a Record after the answer put the panel back in the consent state"
-pass "asked ONCE: the answer survived a shell restart and the next Record did not ask again"
-
-# ---------- 10c. “Delete these” unpictures them and deletes theirs
+# ---------- 10d. THE SWITCH REACHES EVERY DESK (tick sp7, epic wau)
 #
-# The one answer with a destructive half, driven end to end. The question has to
-# be asked again to answer it differently, and the only honest way to reach that
-# is the file itself — `pictureConsent` is user-editable like everything else in
-# it, and setting it back to "unasked" is what a user who wanted to be asked
-# again would do. Nothing else is touched: the camera is still on and the
-# picture from 10b is still on disk.
-TOPOLOGY_KEY=$(jq -r 'first(.layouts|keys[])//empty' "$STATE" 2>/dev/null)
-[[ -n $TOPOLOGY_KEY ]] || fail "there is a layout to re-record (captures)" "no layout key in $STATE"
-node -e '
-  var fs = require("fs");
-  var StateModel = require(process.argv[1] + "/StateModel.js");
-  var statePath = process.argv[2];
-  var state = StateModel.parseState(fs.readFileSync(statePath, "utf8")).state;
-  fs.writeFileSync(statePath + ".tmp",
-    StateModel.serializeState(StateModel.setPictureConsent(state, "unasked")));
-  fs.renameSync(statePath + ".tmp", statePath);
-' "$PLUGIN_DIR" "$STATE" || fail "the state file can be set back to unasked (captures)"
-
-unasked_again() { panel_state_json | jq -e '.pictureConsent == "unasked"' >/dev/null; }
-if ! poll 30 unasked_again; then
-  diagnostics
-  fail "the panel picks up the reset answer (captures)" "the panel still reports an answered consent"
-fi
-
-reask_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
-[[ $reask_record == "recorded" ]] ||
-  fail "panel IPC records for the second ask (captures)" "record answered '$reask_record'"
-if ! poll "$ROUND_S" consent_offered; then
-  diagnostics
-  fail "the prompt comes back once the question is owed again (captures)" \
-    "no payload with consentOpen and the three answers"
-fi
-
-decline_answer=$(omarchy-shell "$IPC_TARGET" answerConsent not-these 2>&1)
-[[ $decline_answer == "not-these" ]] ||
-  fail "the panel records the refusal (captures)" "answerConsent not-these answered '$decline_answer'"
-
-# THE APPS ARE UNPICTURED AND THE PICTURES ARE GONE. Both halves, because either
-# one alone would be the wrong behaviour: a camera left on would photograph them
-# again at the next Record, and a picture left on disk is the thing the user just
-# said they did not want kept.
-if ! poll 30 cache_is 0; then
-  diagnostics
-  fail "\"Delete these\" removes the captures already taken" \
-    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ')"
-fi
-declined_pictured=$(jq -r --arg id "$PICTURED_IDENTITY" \
-  'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
-[[ $declined_pictured == "false" ]] ||
-  fail "\"Delete these\" leaves those apps unpictured" \
-    "$PICTURED_IDENTITY still reports pictured '$declined_pictured'"
-declined_answer_on_disk=$(jq -r '.pictureConsent//"absent"' "$STATE" 2>/dev/null)
-[[ $declined_answer_on_disk == "not-these" ]] ||
-  fail "the refusal is written to the state file (captures)" \
-    "the state file says pictureConsent '$declined_answer_on_disk'"
-
-# The panel agrees, from the row that draws the camera.
-declined_reported() {
-  panel_state_json | jq -e '
-    .consentOpen == false
-    and .pictureConsent == "not-these"
-    and (([.rows[]|select(.pictured == true)]|length) == 0)
-    and (([.chips[]|select(.pictured == true)]|length) == 0)' >/dev/null
-}
-if ! poll 30 declined_reported; then
-  diagnostics
-  fail "the panel reports the withdrawn consent (captures)" \
-    "a row or a chip still reports pictured after \"Delete these\""
-fi
-pass "\"Delete these\": the cameras are off, the pictures just taken are deleted, and the answer is on disk"
-
-# ------- 10d. A CAMERA IS A FACT ABOUT AN APP, NOT ABOUT A DESK (tick sp7)
+# EVERYTHING ABOVE THIS LINE IS ONE TOPOLOGY, and that is exactly how the
+# original bug survived a whole epic: an eviction keyed on the desk you happen to
+# be plugged into passes every single-desk assertion in this file. So from here
+# on there are TWO, and the claim is made across both.
 #
-# EVERYTHING ABOVE THIS LINE IS ONE TOPOLOGY, and that is exactly how the bug
-# survived a whole epic: an eviction keyed on the desk you happen to be plugged
-# into passes every single-desk assertion in this file. So from here on there are
-# TWO, and each claim is made across both.
-#
-# The promise being tested is the one the epic exists to keep: a user who
-# withdraws consent gets the pictures deleted. Not the pictures on this desk —
-# the pictures. A camera is a field on an IDENTITY and has no topology in it, so
-# a withdrawal that reached one desk left the others holding photographs of an
-# app whose camera is off, with nobody who would ever come back for them: a
+# The promise being tested is the one the overflow entry's tooltip makes: off
+# deletes every stored picture, on every desk. Not the pictures on this desk —
+# the pictures. `pictures` is one top-level boolean with no topology in it, so an
+# eviction that reached one desk would leave the others holding photographs the
+# user has switched off, with nobody who would ever come back for them: a
 # Record's eviction only runs for the desk you are on, and so does Forget.
 #
 # PAUSED FIRST. Docking and undocking are monitor events, and the service acts on
@@ -1414,36 +1495,19 @@ paused_answer=$(omarchy-shell "$IPC_TARGET" setPaused on 2>&1)
 [[ $paused_answer == "paused" ]] ||
   fail "the plugin can be paused for the two-desk round (captures)" "setPaused on answered '$paused_answer'"
 
-live_answer=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
-[[ $live_answer == "live" ]] ||
-  fail "the panel shows the live map for the row lookup (captures)" "setView live answered '$live_answer'"
-
-PICTURED_ROW_KEY=""
-find_row() { PICTURED_ROW_KEY=$(pictured_row_key); [[ -n $PICTURED_ROW_KEY ]]; }
-if ! poll 30 find_row; then
-  diagnostics
-  fail "the pictured app has a row the camera can be driven on (captures)" \
-    "no row links to the window titled $PICTURED_TITLE"
-fi
-
-camera_on=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&1)
-[[ $camera_on == "on" ]] ||
-  fail "the camera can be switched back on (captures)" "setPictured '$PICTURED_ROW_KEY' on answered '$camera_on'"
-
 # DESK ONE.
 rm -rf "$CACHE_DIR"
 desk_a_record=$(omarchy-shell "$IPC_TARGET" record 2>&1)
 [[ $desk_a_record == "recorded" ]] ||
   fail "panel IPC records on the first desk (captures)" "record answered '$desk_a_record'"
-if ! poll "$ROUND_S" cache_is 1; then
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
-  fail "the first desk stored its picture (captures)" "$CACHE_DIR holds $(cache_count)"
+  fail "the first desk stored its pictures (captures)" "$CACHE_DIR holds $(cache_count)"
 fi
-DESK_A_FILE=$(cache_files)
 
 # DESK TWO. A second monitor is a different topology key, so the Record below
-# files its layout and its picture under a different prefix — which is the whole
-# point: two files, one per desk, for one app with one camera.
+# files its layout and its pictures under a different prefix — which is the whole
+# point: four files, two per desk, for two apps and one switch.
 hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock appeared (captures)" 20 monitor_present "$DOCK_OUTPUT"
 await_panel_docked "two desks"
@@ -1457,230 +1521,133 @@ if ! poll 60 docked_record; then
   fail "panel IPC records a SECOND topology (captures)" \
     "after docking $DOCK_OUTPUT the state file still holds $(layout_count) layout(s)"
 fi
-if ! poll "$ROUND_S" cache_is 2; then
+if ! poll "$ROUND_S" cache_is 4; then
   diagnostics
-  fail "each desk stores its own picture (captures)" \
+  fail "each desk stores its own pictures (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
 fi
 
-# BY NAME, not by count. Two files whose only difference is the topology hash,
-# both named by the plugin's own captureFileName for the two keys the state file
-# actually carries.
-want_two=$(expected_files_for_all_layouts "$PICTURED_IDENTITY")
-[[ $(cache_files) == "$want_two" ]] ||
+# BY NAME, not by count. Four files whose only differences are the topology hash
+# and the identity, all named by the plugin's own captureFileName for the two
+# keys the state file actually carries.
+want_four=$(printf '%s\n%s\n' \
+  "$(expected_files_for_all_layouts "$WIDE_IDENTITY")" \
+  "$(expected_files_for_all_layouts "$TALL_IDENTITY")" | sort)
+[[ $(cache_files) == "$want_four" ]] ||
   fail "the two desks' pictures are keyed on their two topologies (captures)" \
-    "the cache holds '$(cache_files | tr '\n' ' ')', expected '$(printf '%s' "$want_two" | tr '\n' ' ')'"
-[[ $(printf '%s\n' "$want_two" | grep -c .) -eq 2 ]] ||
+    "the cache holds '$(cache_files | tr '\n' ' ')', expected '$(printf '%s' "$want_four" | tr '\n' ' ')'"
+[[ $(printf '%s\n' "$want_four" | grep -c .) -eq 4 ]] ||
   fail "the second desk really is a second topology (captures)" \
-    "both layouts name the same picture — the dock did not change the topology key"
-pass "two desks, two recordings, two pictures of one app — $(cache_files | tr '\n' ' ')"
+    "both layouts name the same pictures — the dock did not change the topology key"
+pass "two desks, two recordings, four pictures — $(cache_files | tr '\n' ' ')"
 
-# THE WITHDRAWAL. One click on one camera, on the desk that is plugged in now.
-camera_off=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" off 2>&1)
-[[ $camera_off == "off" ]] ||
-  fail "the camera can be switched off (captures)" "setPictured '$PICTURED_ROW_KEY' off answered '$camera_off'"
+# THE SWITCH. One press, on the desk that is plugged in now.
+two_desk_off=$(omarchy-shell "$IPC_TARGET" setPictures off 2>&1)
+[[ $two_desk_off == "off" ]] ||
+  fail "the pictures can be switched off on the two-desk round (captures)" \
+    "setPictures off answered '$two_desk_off'"
 
 if ! poll 30 cache_is 0; then
   diagnostics
-  fail "switching a camera off deletes that app's pictures on EVERY desk" \
-    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the other desk's copies survived the withdrawal"
+  fail "switching the pictures off deletes them on EVERY desk" \
+    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the other desk's copies survived the switch"
 fi
-withdrawn=$(jq -r --arg id "$PICTURED_IDENTITY" \
-  'first(.identities[]|select(.id == $id)|.pictured)|tostring' "$STATE" 2>/dev/null)
-[[ $withdrawn == "false" ]] ||
-  fail "the withdrawal reached the state file (captures)" "$PICTURED_IDENTITY reports pictured '$withdrawn'"
+switched_on_disk=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
+[[ $switched_on_disk == "false" ]] ||
+  fail "the switch reached the state file (captures)" "the state file says pictures '$switched_on_disk'"
 
-# AND THE MAP STOPS DRAWING IT. The delete is a process and the listing that
-# follows it is another; the gate that makes this immediate is the flag.
+# AND THE MAP STOPS DRAWING THEM. The delete is a process and the listing that
+# follows it is another; the gate that makes this immediate is the switch.
 withdrawn_view=$(omarchy-shell "$IPC_TARGET" setView recorded 2>&1)
 [[ $withdrawn_view == "recorded" ]] ||
-  fail "the recorded map opens after the withdrawal (captures)" "setView recorded answered '$withdrawn_view'"
+  fail "the recorded map opens after the switch (captures)" "setView recorded answered '$withdrawn_view'"
 if ! poll 30 capture_gone; then
   diagnostics
-  fail "the map stops drawing a picture whose camera has been switched off" \
-    "a chip still reports a capture after the camera went off"
+  fail "the map stops drawing pictures the switch has turned off" \
+    "a chip still reports a capture after the pictures went off"
 fi
-pass "one camera switched off: BOTH desks' pictures deleted, and the map stopped drawing them"
-
-# ---------- 10e. \"Delete these\" deletes what it is LOOKING AT (sp7)
-#
-# The two ways the old code got this wrong, in one drive:
-#
-#   · it evicted the LIVE topology's prefix, so a dock or an undock while the
-#     prompt was up pointed the delete at a desk the user was not looking at and
-#     left the very pictures on screen;
-#   · the answer withdraws the camera GLOBALLY, so every other desk's copies
-#     stayed behind cameras that were off.
-#
-# So: build a picture on each desk, ask the question on the SECOND desk, UNDOCK
-# while the prompt is up, and then answer. Nothing may survive.
-camera_back=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&1)
-[[ $camera_back == "on" ]] ||
-  fail "the camera goes back on for the refusal round (captures)" "setPictured answered '$camera_back'"
-
-hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
-wait_until "the fake dock went for the first desk's record (captures)" 20 monitor_absent "$DOCK_OUTPUT"
-
-# WAIT FOR THE PANEL, NOT FOR HYPRCTL (tick m1p). monitor_absent above is the
-# COMPOSITOR's answer, and the compositor is not what builds the topology key:
-# recordLayout reads the panel's own copy of the monitor list, which arrives an
-# event later. Recording into that window files the layout — and its picture —
-# under the desk that was just unplugged, and the count-only check below cannot
-# see it, because one file is one file whichever desk it belongs to. That is
-# exactly what happened: the gate stored the DOCKED desk's picture here, and the
-# second desk's step then re-recorded the same topology forever, never reaching
-# two. So gate on the observable that belongs to the thing under test.
-await_panel_undocked "the first desk’s record"
-
-undocked_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 1; }
-if ! poll 60 undocked_record; then
-  diagnostics
-  fail "the first desk has a picture again (captures)" "$CACHE_DIR holds $(cache_count)"
-fi
-
-# AND IT IS THE FIRST DESK'S PICTURE, BY NAME — the same discipline as the two
-# desks above, for the same reason. The undocked layout is the state file's key
-# that does not name the dock, and the file it should have is the plugin's own
-# captureFileName for it. A count would accept either desk's copy.
-UNDOCKED_KEY=$(jq -r --arg d "$DOCK_OUTPUT" 'first(.layouts|keys[]|select(contains($d)|not))//empty' "$STATE" 2>/dev/null)
-[[ -n $UNDOCKED_KEY ]] ||
-  fail "the first desk's layout is in the state file (captures)" \
-    "no layout key without \"$DOCK_OUTPUT\" in $STATE — the record went to the wrong desk"
-undocked_want=$(node -e '
-  var panel = require(process.argv[1] + "/PanelModel.js");
-  process.stdout.write(panel.captureFileName(process.argv[2], 0, process.argv[3]));
-' "$PLUGIN_DIR" "$PICTURED_IDENTITY" "$UNDOCKED_KEY")
-if [[ $(cache_files) != "$undocked_want" ]]; then
-  diagnostics
-  fail "the first desk's picture is the FIRST desk's (captures)" \
-    "the cache holds '$(cache_files | tr '\n' ' ')', expected '$undocked_want' for topology \"$UNDOCKED_KEY\""
-fi
-
-# The question has to be owed again to be answered differently, and the only
-# honest way to reach that is the file — `pictureConsent` is user-editable like
-# everything else in it. Nothing else is touched.
-node -e '
-  var fs = require("fs");
-  var StateModel = require(process.argv[1] + "/StateModel.js");
-  var statePath = process.argv[2];
-  var state = StateModel.parseState(fs.readFileSync(statePath, "utf8")).state;
-  fs.writeFileSync(statePath + ".tmp",
-    StateModel.serializeState(StateModel.setPictureConsent(state, "unasked")));
-  fs.renameSync(statePath + ".tmp", statePath);
-' "$PLUGIN_DIR" "$STATE" || fail "the state file can be set back to unasked again (captures)"
-if ! poll 30 unasked_again; then
-  diagnostics
-  fail "the panel picks up the reset answer for the refusal round (captures)" \
-    "the panel still reports an answered consent"
-fi
-
-# Dock, and ask the question THERE — so the pictures the prompt is showing are
-# the second desk's.
-hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
-wait_until "the fake dock came back for the prompt (captures)" 20 monitor_present "$DOCK_OUTPUT"
-await_panel_docked "the prompt on the second desk"
-prompt_on_desk_two() {
-  [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2 \
-    && panel_state_json | jq -e '.consentOpen == true' >/dev/null
-}
-if ! poll 60 prompt_on_desk_two; then
-  diagnostics
-  fail "the prompt is asked on the second desk (captures)" \
-    "$CACHE_DIR holds $(cache_count) and consentOpen is $(panel_state_json | jq -r '.consentOpen|tostring')"
-fi
-
-# WHICH desk's picture the prompt is showing, because that is the half the old
-# code got wrong: it deleted the prefix of whatever desk was plugged in when the
-# button was pressed, not the one the pictures on screen belong to.
-DESK_B_FILE=$(cache_files | grep -vxF "$DESK_A_FILE" | head -1)
-[[ -n $DESK_B_FILE && $DESK_B_FILE != "$DESK_A_FILE" ]] ||
-  fail "the second desk stored a picture of its own (captures)" \
-    "the cache holds '$(cache_files | tr '\n' ' ')' and the first desk's is '$DESK_A_FILE'"
-consent_shows_desk_two() {
-  panel_state_json | jq -e --arg id "$PICTURED_IDENTITY" --arg url "file://$CACHE_DIR/$DESK_B_FILE" '
-    .consentOpen == true
-    and .pictureConsent == "unasked"
-    and ([.consentChoices[]|.id] == ["keep", "not-these", "none"])
-    and ((.consentCaptures|length) == 1)
-    and (.consentCaptures[0].identityId == $id)
-    and (.consentCaptures[0].source == $url)
-    and (.consentCaptures[0].ready == true)' >/dev/null
-}
-if ! poll 30 consent_shows_desk_two; then
-  diagnostics
-  fail "the prompt shows the SECOND desk's picture (captures)" \
-    "the strip does not report a ready thumbnail at file://$CACHE_DIR/$DESK_B_FILE"
-fi
-screenshot "success-dock-recall-captures-03-consent-two-desks"
-
-# THE TOPOLOGY CHANGES WHILE THE PROMPT IS UP. The panel is still showing the
-# second desk's pictures; `root.topologyKey` now names the first.
-hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
-wait_until "the desk changed under the open prompt (captures)" 20 monitor_absent "$DOCK_OUTPUT"
-await_panel_undocked "the desk changing under the prompt"
-still_asking() { panel_state_json | jq -e '.consentOpen == true' >/dev/null; }
-if ! poll 20 still_asking; then
-  diagnostics
-  fail "the prompt survives a topology change (captures)" \
-    "the panel closed the consent prompt when the desk changed, so this round proves nothing"
-fi
-
-declined_two=$(omarchy-shell "$IPC_TARGET" answerConsent not-these 2>&1)
-[[ $declined_two == "not-these" ]] ||
-  fail "the panel records the refusal on the changed desk (captures)" \
-    "answerConsent not-these answered '$declined_two'"
-
-if ! poll 30 cache_is 0; then
-  diagnostics
-  fail "\"Delete these\" deletes what it is looking at, on every desk" \
-    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the answer evicted the desk that happened to be plugged in rather than the app's pictures"
-fi
-pass "\"Delete these\" answered after the desk changed under the prompt: BOTH desks' pictures gone"
+pass "one switch thrown: BOTH desks' pictures deleted, and the map stopped drawing them"
 
 # ------------- 10f. UNTICKING AN APP TAKES ITS PICTURES WITH IT (tick sp7)
 #
-# The README has always promised "Unticking an app takes its camera consent with
-# it". It took the FLAG — the field lives on the identity that goes — and left
-# the photographs, on every desk, with the ghost chip still rendering them and no
-# camera button left to press. This is the half a user would actually check.
-untick_camera=$(omarchy-shell "$IPC_TARGET" setPictured "$PICTURED_ROW_KEY" on 2>&1)
-[[ $untick_camera == "on" ]] ||
-  fail "the camera goes back on for the untick round (captures)" "setPictured answered '$untick_camera'"
+# THE ONE PER-APP ACT LEFT, and the switch does not change it. Watching is still
+# per app, so "stop watching this" is still a statement about ONE app's
+# pictures — on every desk, because being watched has no topology in it either.
+#
+# This is the assertion that the global switch did not swallow the per-identity
+# eviction on its way in: the wide app is unticked and BOTH of its pictures go,
+# while BOTH of the tall app's stay. A `cache_is 0` here would pass on a build
+# that deleted everything, which is precisely the wrong behaviour.
+untick_switch_on=$(omarchy-shell "$IPC_TARGET" setPictures on 2>&1)
+[[ $untick_switch_on == "on" ]] ||
+  fail "the pictures go back on for the untick round (captures)" \
+    "setPictures on answered '$untick_switch_on'"
 
-untick_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 1; }
-if ! poll 60 untick_record; then
-  diagnostics
-  fail "there is a picture to untick away (captures)" "$CACHE_DIR holds $(cache_count)"
-fi
-hyprctl output create headless "$DOCK_OUTPUT" >/dev/null 2>&1
-wait_until "the fake dock came back for the untick round (captures)" 20 monitor_present "$DOCK_OUTPUT"
-await_panel_docked "the untick round"
+# The dock from 10d is still plugged in, so this desk is desk TWO.
 untick_record_two() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2; }
 if ! poll 60 untick_record_two; then
   diagnostics
-  fail "both desks have a picture to untick away (captures)" \
+  fail "the second desk has pictures to untick away (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
 fi
 
-untick_answer=$(omarchy-shell "$IPC_TARGET" toggleRow "$PICTURED_ROW_KEY" 2>&1)
-[[ $untick_answer == "toggled" ]] ||
-  fail "panel IPC unticks the pictured app (captures)" "toggleRow '$PICTURED_ROW_KEY' answered '$untick_answer'"
-
-if ! poll 30 cache_is 0; then
+hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
+wait_until "the fake dock went for the untick round (captures)" 20 monitor_absent "$DOCK_OUTPUT"
+await_panel_undocked "the untick round"
+untick_record_one() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 4; }
+if ! poll 60 untick_record_one; then
   diagnostics
-  fail "unticking an app deletes its pictures, on every desk" \
-    "$CACHE_DIR still holds $(cache_count): $(cache_files | tr '\n' ' ') — the README's promise is still only about the flag"
+  fail "both desks have pictures to untick away (captures)" \
+    "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
 fi
-unwatched=$(jq -r --arg id "$PICTURED_IDENTITY" \
+
+# The row to untick, found the way a finger finds it: from the WINDOW, through
+# the chip that draws it, to the row it is linked to. Not by name — both windows
+# are class `foot` and only their titles differ. The link key is a live-map fact,
+# so the panel goes there first.
+untick_view=$(omarchy-shell "$IPC_TARGET" setView live 2>&1)
+[[ $untick_view == "live" ]] ||
+  fail "the live map opens for the row lookup (captures)" "setView live answered '$untick_view'"
+WIDE_ROW_KEY=""
+find_row() { WIDE_ROW_KEY=$(wide_row_key); [[ -n $WIDE_ROW_KEY ]]; }
+if ! poll 30 find_row; then
+  diagnostics
+  fail "the wide app has a row it can be unticked on (captures)" \
+    "no row links to the window titled $WIDE_TITLE"
+fi
+
+# WHICH FILES SHOULD SURVIVE, by name, from the plugin's own naming function for
+# the two keys the state file carries. Computed BEFORE the untick, because the
+# untick takes the identity out of the file and `expected_files_for_all_layouts`
+# would then be naming an app nobody watches.
+tall_survivors=$(expected_files_for_all_layouts "$TALL_IDENTITY")
+[[ $(printf '%s\n' "$tall_survivors" | grep -c .) -eq 2 ]] ||
+  fail "the tall app has a picture on each desk (captures)" \
+    "expected two survivors, got '$(printf '%s' "$tall_survivors" | tr '\n' ' ')'"
+
+untick_answer=$(omarchy-shell "$IPC_TARGET" toggleRow "$WIDE_ROW_KEY" 2>&1)
+[[ $untick_answer == "toggled" ]] ||
+  fail "panel IPC unticks the wide app (captures)" "toggleRow '$WIDE_ROW_KEY' answered '$untick_answer'"
+
+untick_left_the_others() { [[ $(cache_files) == "$tall_survivors" ]]; }
+if ! poll 30 untick_left_the_others; then
+  diagnostics
+  fail "unticking an app deletes ITS pictures on every desk, and only its" \
+    "$CACHE_DIR holds '$(cache_files | tr '\n' ' ')', expected exactly the tall app's two: '$(printf '%s' "$tall_survivors" | tr '\n' ' ')'"
+fi
+unwatched=$(jq -r --arg id "$WIDE_IDENTITY" \
   '[.identities[]|select(.id == $id)]|length' "$STATE" 2>/dev/null)
 [[ $unwatched == "0" ]] ||
   fail "the untick reached the state file (captures)" \
-    "$PICTURED_IDENTITY is still in the watched list after toggleRow"
-pass "unticking the app deleted its pictures on both desks — the README's promise, in full"
+    "$WIDE_IDENTITY is still in the watched list after toggleRow"
+# And the switch is untouched by a per-app act: unticking one app is not a
+# statement about whether this tool photographs.
+untick_switch=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
+[[ $untick_switch == "true" ]] ||
+  fail "unticking an app moved the global switch (captures)" \
+    "the state file says pictures '$untick_switch' after a toggleRow"
+pass "unticking the wide app deleted its pictures on both desks and left the tall app's — the switch untouched"
 
-hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
-wait_until "the fake dock removed (captures)" 20 monitor_absent "$DOCK_OUTPUT"
-await_panel_undocked "after the untick round"
 unpaused_answer=$(omarchy-shell "$IPC_TARGET" setPaused off 2>&1)
 [[ $unpaused_answer == "active" ]] ||
   fail "the plugin is active again after the two-desk round (captures)" \
@@ -1696,4 +1663,4 @@ fi
 pass "panel dismissed; the desk is back for the tests after this one"
 
 capture_service_log
-pass "dock-recall captures: stored per consent, keyed, overwritten, evicted, and never able to fail a record"
+pass "dock-recall captures: stored by default, keyed, overwritten, evicted, switched off in one place, and never able to fail a record"

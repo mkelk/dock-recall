@@ -17,7 +17,7 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `run.sh` | **the entrypoint** — stage, boot, run, and answer in an exit code |
 | `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
 | `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
-| `dock-recall-captures-test.sh` | record-time pictures, observed on the guest filesystem |
+| `dock-recall-captures-test.sh` | pictures on the guest filesystem, and the one switch that governs them |
 | `dock-recall-motion-test.sh` | that the motion is *wired* — bound durations, and a morph that ran |
 | `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
@@ -90,7 +90,7 @@ its output, so `run.sh` requires **all** of these lines and nothing less:
 ok - acceptance suite passed in 122s (artifacts in /tmp/omarchy-acceptance)
 ok - dock-recall round trip: record, undock, scatter, redock, restored
 ok - dock-recall v3 --app-id upgrade: migrated, converged, repairable
-ok - dock-recall captures: stored per consent, keyed, overwritten, evicted, and never able to fail a record
+ok - dock-recall captures: stored by default, keyed, overwritten, evicted, switched off in one place, and never able to fail a record
 ok - dock-recall panel IPC: chips keyed and reported on both render paths, positioned and fallback
 ok - dock-recall undock-while-locked: guest prepared (dr-locked on ws 8 @ dr-lock-dock, session UNLOCKED)
 ok - dock-recall undock while locked: locked, undocked, focus verdict, unlocked, redocked, restored
@@ -238,15 +238,18 @@ can be counted, named, opened and shown to be a JPEG, which is strictly stronger
 than any payload field, so the claim is made against the guest filesystem rather
 than through the IPC.
 
-Two apps, both watched, both class `foot`, told apart by `titlePatterns`: one has
-granted the **second consent** (`pictured: true`) and one has not. The pair is
-the point. A run with only the consenting app would pass identically on a plugin
-that photographed everything it watches.
+Two apps, both watched, both class `foot`, told apart by `titlePatterns` — and
+both photographed, because pictures are on by default (schema v7) and a watched
+app is a pictured one. The pair is still the point, for a different reason: they
+are floated at aspect ratios five times apart and named for their shapes, so
+each stored JPEG's proportions have to be **its own** window's and not the
+other's. Two pictures make that question answerable both ways round, which is
+strictly more than the single-picture version could ask.
 
 | | |
 |---|---|
-| the write | Record stores exactly **one** picture, and it is the file `PanelModel.captureFileName(identity, occurrence, topologyKey)` names — asked of the plugin's own function, with the topology key read out of the state file the record just wrote |
-| the consent | the withheld app is watched, running and **in the recording**, and has no file. Asserted by name as well as by count |
+| the write | Record stores one picture per watched app, and each is the file `PanelModel.captureFileName(identity, occurrence, topologyKey)` names — asked of the plugin's own function, with the topology key read out of the state file the record just wrote. **By name, both of them**: a count of two cannot tell "one each" from "two of one", and the two windows are the same binary |
+| the subject | each stored JPEG's aspect ratio matches its own window's and differs from the other's, checked in both directions. The name proves the key; this proves the pixels |
 | the format | a 30-line SOF parser in node walks the segment chain to a frame header and reads the width. `file` would say only that two bytes are right, and neither host nor guest has an imaging library — walking to a frame marker is the decode this venue can honestly perform. The width must be ≤ 512 |
 | re-record | records again and requires the file to have been **written again** (mtime, not bytes: an idle terminal really can encode to the same JPEG twice) |
 | undo | the layout comes back and the pictures go. Undo cannot put pictures *back* — the re-record overwrote them in place — so the restored recording falls back to icons, asserted as behaviour rather than left as a surprise |
@@ -254,10 +257,11 @@ that photographed everything it watches.
 | a failed capture | the cache directory is made **uncreatable** and a Record is performed. It must answer `recorded`, the state file must carry the layout with both apps and a timestamp, and no picture may exist. Driven, not argued |
 | a wiped cache | the whole directory is deleted under a live panel. Every chip must go on reporting an icon source, no chip may report a `capturePath`, and nothing may error |
 | both render paths | the layout's geometry is stripped so the recorded map drops to the stacked fallback, and the **same file** must still be drawn there — at a tier that carries the app's name |
-| the first-Record dialogue | the **first** Record with picturable apps puts the panel in the consent state: `consentOpen`, `pictureConsent: "unasked"`, exactly three answers (`keep` / `not-these` / `none` — ids from the model, labels from the buttons that drew them), and a thumbnail whose Image reports **Ready** at the same URL the recorded map binds. A strip of empty boxes would satisfy a count, so `ready` is asserted and not only `source` |
-| asked once | the answer is read back off the state file, the **shell is restarted**, and the restarted panel still reports it. Then a Record — the same event that opened the prompt the first time — must not reopen it |
-| "Delete these" | driven end to end: the cameras go off **and** the pictures already taken are deleted. Either half alone is the wrong behaviour — a camera left on photographs them again at the next Record, and a picture left on disk is exactly what the user just said they did not want kept. Reaching the second ask means setting `pictureConsent` back to `"unasked"` in the file, which is what a user who wanted asking again would do |
-| the live map | the Live map draws what the windows look like **now**, from memory: every app whose camera is on reports `liveCapture: true` with a non-empty `liveSource`, the withheld app reports neither, every chip still reports an `iconSource`, and **the cache directory is not even created**. Asserted between the wiped-cache step and the unwritable-cache step, both of which need that directory gone, so the filesystem carries the claim rather than a count. Then the camera is switched off with the panel still open and the live pictures stop — no reopen |
+| no prompt, ever | after the Record that stored the pictures — the exact event that used to open the first-Record dialogue — the payload carries **none** of `consentOpen`, `consentChoices`, `consentCaptures`, `pictureConsent`, asserted **absent** with `has()` rather than null, and `pictures` is present and `true`. The state file carries no `pictureConsent` and no per-identity `pictured` either. An absence needs a test more than a presence does: nothing else fails when a prompt comes back |
+| the switch | `setPictures off` with the panel open stops the live pictures **and** deletes every stored one, on every desk, and writes `pictures: false` to the file; `setPictures on` runs a live round in the panel that is already open — no reopen — and the next Record stores again |
+| the switch survives a restart | it is switched off, the **shell is restarted**, and a fresh panel reports `pictures: false`, takes no live picture and stores none on a Record. That is what makes it a fact about the tool and not about one panel session |
+| the live map | the Live map draws what the windows look like **now**, from memory: both watched windows report `liveCapture: true` with a non-empty `liveSource`, each one its own (asserted per window address, because a count of two is satisfied by two pictures of one window), every chip still reports an `iconSource`, and **the cache directory is not even created**. Asserted between the wiped-cache step and the unwritable-cache step, both of which need that directory gone, so the filesystem carries the claim rather than a count |
+| unticking one app | still takes **that app's** pictures, on every desk, and leaves the other app's — asserted by name. The global switch did not swallow the per-identity eviction on its way in, and a `cache_is 0` here would pass on a build that deleted everything |
 | one capture deleted | the file goes and the panel is re-summoned. It must be offered no picture at all: no `captureSource`, no `capturePath`, icon and name intact. Asserted on a fresh panel because that is the honest shape — within one session a chip that already decoded its picture goes on drawing it, and the shell destroys the panel on hide anyway |
 
 **How a Record is reached.** Through the panel's own `record`, `undoRecord` and
@@ -293,17 +297,24 @@ omarchy-shell dock-recall setView recorded       # "live" | "recorded" | "unknow
 omarchy-shell dock-recall setPaused on           # "paused" | "active" | "unknown" | "no-state"
 omarchy-shell dock-recall setOverflow open       # "open" | "closed" | "unknown"
 omarchy-shell dock-recall toggleRow <row key>    # "toggled" | "not-clickable" | "no-row" | "unknown"
-omarchy-shell dock-recall setPictured <row key> on
-                                                 # "on" | "off" | "not-picturable" | "no-row" | "no-state" | "unknown"
+omarchy-shell dock-recall setPictures off        # "on" | "off" | "no-state" | "unknown"
 omarchy-shell dock-recall hoverLink <link key>   # the key now hovered, or "none"
 omarchy-shell dock-recall record                 # "recorded" | "refused" | "cannot-record" | "no-state"
 omarchy-shell dock-recall undoRecord             # "undone" | "refused" | "nothing-to-undo"
 omarchy-shell dock-recall forgetLayout           # "forgotten" | "nothing-to-forget" | "no-state"
-omarchy-shell dock-recall answerConsent keep     # "keep" | "not-these" | "none" | "not-asking"
-                                                 #   | "refused" | "no-state" | "unknown"
 ```
 
-The last three exist because **Record is the moment a picture is taken**, and
+`setPictures` takes no key, and that is the change it records rather than an
+omission: there is one switch for the whole tool (schema v7), so there is
+nothing to key it by. It answers the position the switch is **in afterwards**,
+exactly as `setPaused` does, and routes through the panel's own `setPictures` —
+the one place that re-reads the file, evicts both stores on the way off and
+restarts the live round on the way on. Its predecessors `setPictured <row key>`
+and `answerConsent` are **gone**, not renamed: there is no per-app grant and no
+dialogue to answer.
+
+`record`, `undoRecord` and `forgetLayout` exist because **Record is the moment a
+picture is taken**, and
 until they landed the act had no door a headless test could open:
 `scripts/record-current` writes through `StateModel` without ever instantiating
 a panel, so it takes no captures and never could. Each routes to the panel's own
@@ -332,17 +343,14 @@ would be a second writer with none of that discipline.
   "badgeTone": "accent",
   "overflowOpen": false,
   "overflowLayouts": [],
-  "pictureConsent": "unasked",
-  "consentOpen": false,
-  "consentChoices": [],
-  "consentCaptures": [],
+  "pictures": true,
   "workspaces": [
     { "id": 7, "name": "7", "monitorName": "eDP-1", "renderPath": "positioned",
       "badgeValue": "7", "badgeFocused": true }
   ],
   "chips": [
     { "key": "0x5581f0a1", "name": "Alacritty", "workspaceId": 7,
-      "monitorName": "eDP-1", "watched": true, "pictured": false,
+      "monitorName": "eDP-1", "watched": true,
       "liveCapture": false,
       "renderPath": "positioned", "placed": true, "width": 214, "height": 120,
       "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
@@ -539,27 +547,34 @@ same make and model and different EDID serials share a name, and keying on it
 would have both rows carrying whichever delegate finished last — `current`
 included. The payload still carries the name, which is what a consumer reads.
 
-### The first-Record dialogue
+### The pictures switch
 
-Four keys, answering four different questions:
+One key, and it is the only picture key in the payload:
 
 | key | question |
 |---|---|
-| `pictureConsent` | what the **file** says the user answered: `"unasked"`, `"keep"`, `"not-these"` or `"none"`. Schema v6, beside `paused`, so it survives a shell restart — which is what makes "asked once" a claim about the tool and not about one panel session |
-| `consentOpen` | is the prompt on screen right now |
-| `consentChoices` | what it is **offering**, from the buttons that drew it: `{id, label}` per answer. The id comes from the model and the label from the button, so a prompt offering the right three ids under the wrong three words fails |
-| `consentCaptures` | what it is **showing**: `{identityId, occurrence, name, source, ready}` per thumbnail. `ready` is `Image.Ready` and nothing looser — a strip that reported three sources and one ready picture is a prompt showing the user two empty boxes |
+| `pictures` | may this tool photograph the windows it watches? **Always present and always a boolean.** Schema v7, beside `paused`, so it survives a shell restart — which is what makes it a fact about the tool and not about one panel session. `true` by default: a watched app is a pictured one |
 
-The last three are reported by the prompt's own delegates and are empty while it
-is shut, on the same discipline `overflowLayouts` uses: never reset, gated at
-read time on `consentOpen`, and iterated from the **model** so a report left over
-from a previous offer cannot enter the payload.
+**Four keys are gone and their absence is normative.** `pictureConsent`,
+`consentOpen`, `consentChoices` and `consentCaptures` are not in the payload, not
+as `null` and not as empty arrays — see "Absent vs `null`" above for why that
+distinction is the contract rather than a detail. So are the per-app grants
+`pictured` (chips and rows) and `picturable` (rows). The captures test asserts
+every one of those with `has()`, and the panel test asserts the per-app pair
+absent on **every** chip and **every** row.
 
-`answerConsent` routes to the panel's own `answerConsent` and nothing else — the
-one place that re-reads the file, composes the answer and any withdrawal into a
-**single** write, evicts the pictures *after* that write goes through, and logs.
-An IPC path that set `pictureConsent` directly would record an answer without
-performing it: a "Delete all" that deleted nothing.
+`setPictures on|off` routes to the panel's own `setPictures` and nothing else —
+the one place that re-reads the file, writes the one field, and only then evicts
+both stores on the way off or restarts the live round on the way on. An IPC path
+that set the flag directly would switch the pictures off without deleting one.
+
+**Why one switch and not eleven.** Increment 06 shipped a per-app camera on every
+row plus a three-answer dialogue on the first Record. The person who commissioned
+it could not find the camera on his own desk, and the dialogue — a modal
+offering to delete the pictures it had just taken — talked him out of the feature
+he had asked for. Pictures are what the panel is for. They are on, and turning
+them off is one entry in the overflow menu, whose tooltip says what off costs
+before the press.
 
 ### The app list
 
@@ -599,43 +614,24 @@ author. The same test asserts the shell components the panel hands untrusted
 strings to (`Ui/PanelToolTip`, `Ui/Toggle`, `Ui/PanelHero`) still declare it too —
 the tooltip carries a raw window title, and that binding is not ours to guard.
 
-### The second consent
+### Watched, and pictured
 
-`pictured` is on chips **and** rows; `picturable` is on rows alone. Being
-*watched* lets the tool move an app's windows; being *pictured* lets it
-photograph them at Record and keep the picture on disk. Those are different
-permissions — someone who wants their password manager restored has not agreed
-to have it photographed — so they are two fields, granted separately, and
-`pictured` defaults **off**.
+Since schema v7 those are one question. **A watched app is a pictured app**, and
+the only thing in front of a capture is the global `pictures` switch above.
+There is no `pictured` on a chip or a row and no `picturable` on a row: the
+per-app grant those three keys carried is gone, and the panel test pins their
+absence on every chip and every row.
 
-`picturable` exists because `pictured: false` says two different things. A
-watched app that has withheld the grant reports `picturable: true,
-pictured: false` and draws a camera; an unwatched live window and an orphaned
-recorded ghost report `picturable: false` and draw none, because `pictured` is a
-field **on an identity** and an identity exists exactly while the app is
-watched. The camera is on the **row** rather than on the chip: the map is
-already the control surface for the first tick, and a second consent there would
-have to be a modifier-click or a second hit zone inside a rectangle that is
-16 × 10 px at its floor — an invisible affordance for a privacy decision.
+What is still per app is being WATCHED, and unwatching still takes that app's
+pictures with it — on every desk, because being watched has no topology in it.
+The captures test drives that one by name: the wide app is unticked, both of its
+pictures go, and both of the tall app's stay. A `cache_is 0` there would pass on
+a build that deleted everything, which is the wrong behaviour and the one a
+global eviction would produce.
 
-Two invariants are checked on every payload: a chip that is not watched is never
-pictured, and a row that is not picturable never is. The grant itself is driven
-by `setPictured <row key> on|off`, which routes through the panel's own
-`setPicturedFor` — a fresh read of the file, `StateModel.setPictured` (one
-field, one identity, every other identity byte-identical), and a log line gated
-on the write. Like `setPaused` it answers the position the camera is **in
-afterwards**, so a refused write is visible without reading a log.
-
-The test then requires that the grant moved **only** `pictured`: the row is
-still watched, no other row became pictured, and the state file on disk still
-carries both identities with the seeded one's patterns and launch unchanged. It
-restarts the shell and re-asserts, because a flag that lives only in a panel
-property is not a consent the user gave.
-
-The limit, pinned in `tests/state.test.js` so it is a decision rather than a
-surprise: unwatching an app removes its identity and takes the grant with it,
-and re-watching starts from the default. Consent is not remembered for an app
-nobody is watching, which is the safe direction.
+The limit, unchanged and pinned in `tests/state.test.js`: unwatching an app
+removes its identity, and re-watching creates a fresh one. Nothing about an app
+nobody is watching is remembered.
 
 ### The stored picture
 
@@ -684,16 +680,15 @@ the **panel**, one from the **chip**.
 
 `liveCapture` is on **every** chip and is **always** a boolean — never absent,
 never `null`. It is the panel's claim: *a photograph of this window, taken when
-the panel opened, is in memory right now*. It is `false` on the Recorded map, on
-a chip whose app has no camera, and in the moments before the grab lands.
+the panel opened, is in memory right now*. It is `false` on the Recorded map, while
+the pictures are switched off, and in the moments before the grab lands.
 
 It is a boolean and not a path **because there is no path**. Live pictures are
 held in memory only — photographed when the panel opens, drawn from memory,
 never written to disk, discarded when the panel closes — which is the human's
 ratified choice for this feature, made after being shown an on-disk cache as the
-alternative. The whole consent architecture around `capturePath` is about
-pictures that *persist*: where they are, how they are evicted, what a withdrawal
-deletes. A live picture has none of that surface, and the absence of a path in
+alternative. Everything around `capturePath` is about pictures that *persist*:
+where they are, how they are evicted, what the switch deletes. A live picture has none of that surface, and the absence of a path in
 this payload is that design saying so. **A test that finds a file on this path
 has found a defect**, not a detail: the captures suite asserts the cache
 directory is untouched while the Live map is drawing.
@@ -725,17 +720,18 @@ The dependency therefore runs one way only: the live round stands aside for
 Record — parking mid-queue and walking on afterwards — and Record never waits for
 it. `canRecord` does not mention the live store, and a source-scan test pins that.
 
-**Consent is shared and unchanged.** An app is photographed live only while its
-camera is on, read through the same `pictured` flag Record obeys. Switching a
-camera off stops the drawing in the same frame the flag is written and takes the
-pixels out of memory, with **no panel reopen** — and `liveCapture` goes `false`
-for that app's chips accordingly.
+**Governed by the one switch.** Live pictures obey `pictures` and nothing else
+— the same boolean Record obeys, read at draw time. Switching it off stops the
+drawing in the same frame the flag is written and takes the pixels out of memory,
+with **no panel reopen**: `liveCapture` goes `false` for every chip and the
+`liveSource` keys go absent.
 
-Granting one does *not* work in reverse within a session: the round is taken when
-the panel **opens**, so a camera switched on under an open panel produces a live
-picture at the next open. That is the same shape as the recorded half — granting
-a camera does not create a stored picture either; it grants what the next
-picture-taking act may do.
+And ON works inside the same session, which the per-app camera it replaced did
+not. A live round is once per panel session, so `setPictures on` drops that latch
+and runs a new round — a user who switches the pictures back on with the panel
+open sees them without closing it. The recorded half needs nothing: the next
+Record asks the same property and stores again. Both directions are driven in
+the captures test, in one open panel.
 
 ### The row-to-chip link
 
