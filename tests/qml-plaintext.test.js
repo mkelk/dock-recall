@@ -56,10 +56,12 @@ const PANEL_QML = path.join(REPO_ROOT, "Panel.qml");
 
 // THE SET, from a glob and not from a list. See SCOPE above for why that is the
 // whole point of this file rather than a convenience.
-const QML_FILE_COUNT = 8;   // BarWidget, CaptureStore, LiveCaptureStore,
-                            // MapWorkspace, Motion, Panel, Service,
-                            // ToplevelBridge. (ConsentPrompt was the ninth,
-                            // deleted with the first-Record dialogue.)
+const QML_FILE_COUNT = 9;   // AppStrip, BarWidget, CaptureStore,
+                            // LiveCaptureStore, MapWorkspace, Motion, Panel,
+                            // Service, ToplevelBridge. (ConsentPrompt was a
+                            // tenth, deleted with the first-Record dialogue;
+                            // AppStrip is the flat list, extracted out of
+                            // Panel.qml in tick kex.)
                             //
                             // Spelled ONCE. It was spelled three times with two
                             // different numbers, two of them stale, in the file
