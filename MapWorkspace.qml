@@ -32,6 +32,7 @@
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import QtQuick.Shapes
 import Quickshell
 import qs.Commons
@@ -108,9 +109,11 @@ BorderSurface {
   onRenderKeyChanged: workspaceSlot.reportRender()
   Component.onCompleted: workspaceSlot.reportRender()
 
-  // The drawing area, inside the border and under the workspace number badge
-  // (`workspaceLabel` below — tick o9o replaced the flat "ws N" caption with
-  // it, and the id outlived the wording).
+  // The drawing area: the whole tile inside its padding. It used to sit UNDER
+  // the workspace number badge, which took a line of the box for itself; since
+  // tick ep6 the badge is an overlay in the tile's corner (`workspaceLabel`
+  // below — tick o9o replaced the flat "ws N" caption with it, and the id
+  // outlived the wording) and the canvas has the tile.
   readonly property real canvasWidth: Math.max(1, workspaceSlot.boxWidth
     - workspaceSlot.contentLeftInset - workspaceSlot.contentRightInset)
   // A workspace fills its monitor, so its box is the MONITOR's shape —
@@ -201,65 +204,27 @@ BorderSurface {
   // Explicit, never derived from the children: the chips are positioned
   // INSIDE this height, so measuring the children to find it is a binding
   // loop even when the numbers happen to settle.
-  height: workspaceLabel.implicitHeight + Style.space(3) + workspaceSlot.canvasHeight
+  //
+  // The badge is no longer a term in it (tick ep6). It used to sit in a label
+  // row of its own above the canvas, so every workspace box was a caption
+  // stacked on a picture; it is an overlay in the tile's corner now and the
+  // canvas is the whole tile.
+  height: workspaceSlot.canvasHeight
     + workspaceSlot.contentTopInset + workspaceSlot.contentBottomInset
-  color: "transparent"
-  borderSpec: Border.controlSpec("normal", panel.faintForeground, panel.faintForeground)
+  // A TILE, NOT A BOX (tick ep6). The outline is gone and the faint ground the
+  // map surface gave up is here instead: five nested rectangles in the same
+  // beige line gave the eye no hierarchy at all, and the one line weight the
+  // map keeps is the 1-px chip edge below. A ground says "this is a workspace"
+  // without drawing a fourth frame around the pictures inside it.
+  color: Style.normalFillFor(panel.foreground, Color.accent)
+  borderSpec: Border.none()
   radius: Style.cornerRadius
   padding: Style.space(4)
-
-  // THE WORKSPACE NUMBER BADGE. A filled pill rather than the flat "ws N" it
-  // replaces: on a desk with ten workspaces per monitor the numbers are the
-  // map's coordinates, and a caption in the faint foreground is the least
-  // readable thing the panel draws.
-  //
-  // Accent-filled when this is the workspace in front of the user, quiet
-  // otherwise — one filled badge on the whole map, so it reads as a position
-  // rather than as a fifth state to decode. The quiet fill is the faint
-  // foreground at low alpha, which is the same ink the flat label used and no
-  // new colour.
-  //
-  // Its implicitHeight is load-bearing: the workspace box computes its own
-  // height from it and the canvas is positioned under it.
-  Rectangle {
-    id: workspaceLabel
-    anchors.top: parent.top
-    anchors.left: parent.left
-    anchors.topMargin: workspaceSlot.contentTopInset
-    anchors.leftMargin: workspaceSlot.contentLeftInset
-    // Never narrower than it is tall: a one-digit badge is a circle, not a
-    // sliver.
-    implicitWidth: Math.max(workspaceBadgeText.implicitWidth + Style.space(7),
-      workspaceLabel.implicitHeight)
-    implicitHeight: workspaceBadgeText.implicitHeight + Style.space(2)
-    width: implicitWidth
-    height: implicitHeight
-    // Follows the theme the way the kit's own switches do: pill on rounded
-    // corners, square on sharp.
-    radius: Style.cornerRadius > 0 ? height / 2 : 0
-    color: workspaceSlot.badgeFocused
-      ? Color.accent : Util.alpha(panel.faintForeground, 0.22)
-
-    Text {
-      id: workspaceBadgeText
-      textFormat: Text.PlainText
-      anchors.centerIn: parent
-      text: workspaceSlot.badgeValue
-      // On the accent fill the text has to be the panel's GROUND, not its
-      // foreground — an accent-on-foreground badge is unreadable on any theme
-      // whose accent is light.
-      color: workspaceSlot.badgeFocused
-        ? Color.popups.background : panel.faintForeground
-      font.family: panel.fontFamily
-      font.pixelSize: Style.font.caption
-      font.bold: workspaceSlot.badgeFocused
-    }
-  }
 
   Item {
     id: workspaceCanvas
     x: workspaceSlot.contentLeftInset
-    y: workspaceSlot.contentTopInset + workspaceLabel.implicitHeight + Style.space(3)
+    y: workspaceSlot.contentTopInset
     width: workspaceSlot.canvasWidth
     height: workspaceSlot.canvasHeight
 
@@ -611,6 +576,13 @@ BorderSurface {
           ? (chipSlot.drawn ? chipSlot.drawn.height : panel.chipFloorHeight)
           : workspaceSlot.stackRowHeight
         radius: Style.cornerRadius
+        // THE ONE LINE WEIGHT THE MAP KEEPS, as a number two bindings read:
+        // the border below draws it, and the picture's mask (chipPictureMask,
+        // in the tab delegate) holds it back so it is not painted over. A
+        // theme that asks for a thicker normal border gets one; a theme that
+        // asks for none still gets this, because a chip with no edge at all is
+        // a photograph floating on a tile.
+        readonly property int edgeWidth: Math.max(1, Style.normalBorderWidth)
         // THE STATE FILL. Three states, three fills, all from Style so a
         // theme moves them together:
         //
@@ -634,11 +606,24 @@ BorderSurface {
         // gap it documents). A drifted chip under the pointer keeps that edge
         // and picks up the hover FILL instead, which is the same
         // separate-channels rule applied twice.
+        //
+        // THE WIDTH IS FIXED AND THE STATE ONLY CHOOSES THE COLOUR (tick ep6),
+        // because a state's width is a THEME's to set and one of them sets it
+        // to nothing: `Commons/Style.qml` defaults `selected-border-width` to
+        // 0. So the DRIFTED chip — the one thing on this map the user is meant
+        // to act on — drew no edge at all on the default theme, and the breathe
+        // above spent its whole loop animating the alpha of a zero-width
+        // border. `Border.withWidth` keeps the state's resolved colour and
+        // replaces the widths, which is the one place this map still spends a
+        // line: after this tick the 1-px chip edge is the ONLY outline between
+        // the card and a picture.
         borderSpec: chipSlot.anyGhost && !chipSlot.highlighted
           ? Border.none()
-          : Border.controlSpec(chipSlot.anyDrifted ? "selected"
-              : (chipSlot.highlighted ? "hover-cursor" : "normal"),
-            chipSlot.breathingEdge, chipSlot.breathingEdge)
+          : Border.withWidth(
+            Border.controlSpec(chipSlot.anyDrifted ? "selected"
+                : (chipSlot.highlighted ? "hover-cursor" : "normal"),
+              chipSlot.breathingEdge, chipSlot.breathingEdge),
+            chipSlot.edgeWidth)
         // A ghost is drawn quieter than a running window, and a chip entering
         // on a view switch is drawn quieter still while it arrives. The two are
         // multiplied rather than one overriding the other: a recorded ghost
@@ -1099,6 +1084,15 @@ BorderSurface {
               // same for both, which is why they share one Image rather than
               // getting one each. `pictureSource` is the union; the payload
               // still says which kind it is.
+              //
+              // NO DOUBLE FRAME (tick ep6). The picture used to fill this tab
+              // with SQUARE corners under a rectangular clip, inside a slot with
+              // rounded ones — so a thumbnail carried the window's own outline
+              // and then the chip's, which is the "double framing on every
+              // thumbnail" the redesign is answering. It is masked to the slot's
+              // rounded rectangle now, and the mask is held back by the edge's
+              // width so the 1-px chip edge is not painted over by the very
+              // thing it is supposed to be edging. See chipPictureMask.
               Image {
                 id: chipCapture
                 anchors.fill: parent
@@ -1114,6 +1108,66 @@ BorderSurface {
                 // width does not ask for a 0x0 decode.
                 sourceSize.width: Math.max(1, Math.round(chipTab.width * Screen.devicePixelRatio))
                 sourceSize.height: Math.max(1, Math.round(chipTab.height * Screen.devicePixelRatio))
+                // THE SHELL'S OWN MASK IDIOM, copied rather than invented:
+                // `plugins/image-picker/ImagePicker.qml` renders its carousel
+                // slide into a layer and hands the layer a MultiEffect whose
+                // `maskSource` is an invisible, layered Item holding the shape
+                // it wants (`plugins/background/Background.qml` does the same
+                // for its reveal). Qt has no rounded clip — `clip: true` is a
+                // rectangle and nothing else — so a layer plus a mask is how
+                // the shell rounds a photograph, and this is that.
+                layer.enabled: true
+                layer.smooth: true
+                layer.effect: MultiEffect {
+                  maskEnabled: true
+                  maskSource: chipPictureMask
+                  maskThresholdMin: 0.3
+                  maskSpreadAtMin: 0.3
+                }
+              }
+
+              // THE SHAPE THE PICTURE IS CUT TO. Drawn, never shown: an Item
+              // with `layer.enabled` is a texture provider, and its ALPHA is
+              // what the MultiEffect above keeps. White inside the shape,
+              // nothing outside it.
+              //
+              // IT IS THE SLOT'S RECTANGLE, NOT THIS TAB'S, and that is the
+              // whole reason it is spelled with `chipRow` and `-chipTab.x`
+              // rather than anchored to this delegate. A fused tab group is ONE
+              // pill with dividers — rounding each tab to the slot's radius
+              // would round the joins in the middle of it, which is four corners
+              // the pill does not have. Masking every tab with the same
+              // group-wide rounded rectangle rounds only the ends, which is what
+              // the pill actually looks like. A solo chip is a strip of one, so
+              // it gets the whole rectangle and nothing special happens.
+              //
+              // HELD BACK BY THE EDGE'S WIDTH so the 1-px border reads ON TOP of
+              // the picture: QML paints an Item's children over the Rectangle
+              // that draws them, border included, so a picture filling the tab
+              // covers the very edge that is meant to frame it. Cutting the
+              // outer ring out of the picture is what puts the edge back —
+              // without moving the chip's own width or height, which the
+              // treatment ladder and the payload both read.
+              Item {
+                id: chipPictureMask
+                anchors.fill: parent
+                visible: false
+                layer.enabled: true
+
+                Rectangle {
+                  id: chipPictureShape
+                  x: -chipTab.x + chipSlot.edgeWidth
+                  y: chipSlot.edgeWidth
+                  width: Math.max(0, chipRow.width - chipSlot.edgeWidth * 2)
+                  height: Math.max(0, chipRow.height - chipSlot.edgeWidth * 2)
+                  // The slot's own corner, minus the ring held back above, so
+                  // the picture follows the inside of the edge rather than
+                  // crossing it. Square when the theme is square: Style's
+                  // cornerRadius mirrors Hyprland's `decoration:rounding` and 0
+                  // is a legitimate answer.
+                  radius: Math.max(0, chipSlot.radius - chipSlot.edgeWidth)
+                  color: "white"
+                }
               }
 
               // THE VEIL, and it is a layer rather than a colour: it sits
@@ -1206,16 +1260,28 @@ BorderSurface {
                     // chip is the window's own rectangle scaled, from the
                     // 16×10 floor up to a fullscreen window's whole
                     // workspace, and one fixed size would be a smear on the
-                    // first and a stamp on the last. Capped at the kit's
-                    // large icon so a big chip does not become a poster,
-                    // floored at 8 px because below that an icon is noise —
-                    // and the half-of-the-shorter-side rule is what keeps it
-                    // inside a chip at any tier without a second fit test of
-                    // its own. The LADDER decides whether it is drawn at all.
+                    // first and a stamp on the last. Floored at 8 px because
+                    // below that an icon is noise — and the
+                    // half-of-the-shorter-side rule is what keeps it inside a
+                    // chip at any tier without a second fit test of its own.
+                    // The LADDER decides whether it is drawn at all.
+                    //
+                    // THE CAP IS NO LONGER THE KIT'S LARGE ICON (tick ep6). At
+                    // `Style.font.iconLarge` — 18 px — the half-of-the-shorter-
+                    // side rule stopped mattering above a 36 px chip, so a
+                    // watched app with no picture drew an 18 px stamp in the
+                    // middle of a workspace-sized rectangle. That is the "half
+                    // the boxes are empty" the redesign is answering: a box with
+                    // a tiny mark in it reads as a hole, and the same icon at
+                    // half the chip reads as the app. The cap is now the
+                    // largest thing a chip could sensibly be asked to draw, so
+                    // it binds only on a genuinely enormous chip. `sourceSize`
+                    // below still decodes at the DRAWN size in physical pixels,
+                    // which is the one thing an icon may not get wrong.
                     Image {
                       id: chipIcon
                       readonly property real side: Math.max(8,
-                        Math.min(Style.font.iconLarge,
+                        Math.min(Style.space(56),
                           Math.min(chipTab.width, chipTab.height) * 0.5))
                       // NOT ON TOP OF A PHOTOGRAPH (human's call, on the live
                       // panel). A chip drawing its own window does not need an
@@ -1408,6 +1474,66 @@ BorderSurface {
           }
         }
       }
+    }
+  }
+
+  // THE WORKSPACE NUMBER BADGE. A filled pill rather than the flat "ws N" it
+  // replaces: on a desk with ten workspaces per monitor the numbers are the
+  // map's coordinates, and a caption in the faint foreground is the least
+  // readable thing the panel draws.
+  //
+  // Accent-filled when this is the workspace in front of the user, quiet
+  // otherwise — one filled badge on the whole map, so it reads as a position
+  // rather than as a fifth state to decode.
+  //
+  // IT IS AN OVERLAY NOW, AND THAT IS WHY IT IS DECLARED LAST (tick ep6). It
+  // used to own a label row above the canvas, which cost every workspace a
+  // caption's height and made the tile a caption stacked on a picture. On the
+  // tile's own corner it costs nothing and the pictures have the whole box —
+  // but it now sits ON the chips, so it has to be painted after them. QML
+  // paints siblings in document order, so being the last child IS the z-order;
+  // the explicit `z` says it in the one place a reader looks for it, and the
+  // guard in tests/map-chrome.test.js checks both.
+  //
+  // ITS QUIET FILL IS THE PILL'S. `Util.alpha(Color.popups.background, 0.72)`
+  // is exactly what chipPill uses to keep a name legible over a photograph,
+  // which is now this badge's problem too: the faint foreground at 0.22 was a
+  // tint on a bare box and is nearly invisible over a screenshot.
+  Rectangle {
+    id: workspaceLabel
+    z: 1
+    anchors.top: parent.top
+    anchors.left: parent.left
+    // Inset from the TILE's corner rather than from the canvas's, so the badge
+    // reads as a mark ON the workspace instead of as a chip inside it.
+    anchors.topMargin: Style.space(3)
+    anchors.leftMargin: Style.space(3)
+    // Never narrower than it is tall: a one-digit badge is a circle, not a
+    // sliver.
+    implicitWidth: Math.max(workspaceBadgeText.implicitWidth + Style.space(7),
+      workspaceLabel.implicitHeight)
+    implicitHeight: workspaceBadgeText.implicitHeight + Style.space(2)
+    width: implicitWidth
+    height: implicitHeight
+    // Follows the theme the way the kit's own switches do: pill on rounded
+    // corners, square on sharp.
+    radius: Style.cornerRadius > 0 ? height / 2 : 0
+    color: workspaceSlot.badgeFocused
+      ? Color.accent : Util.alpha(Color.popups.background, 0.72)
+
+    Text {
+      id: workspaceBadgeText
+      textFormat: Text.PlainText
+      anchors.centerIn: parent
+      text: workspaceSlot.badgeValue
+      // On the accent fill the text has to be the panel's GROUND, not its
+      // foreground — an accent-on-foreground badge is unreadable on any theme
+      // whose accent is light.
+      color: workspaceSlot.badgeFocused
+        ? Color.popups.background : panel.faintForeground
+      font.family: panel.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: workspaceSlot.badgeFocused
     }
   }
 }
