@@ -269,11 +269,66 @@ test("the strip's switch is the bare ToggleSwitch, sized down, and not Ui/Toggle
   assert.match(code, /cellHeight:\s*Style\.spacing\.popupRowHeight/,
     "the cell height is no longer a popup row's");
   assert.match(code, /minCellWidth:\s*Style\.space\(140\)/);
-  assert.match(code, /cellGap:\s*Style\.space\(8\)/);
   assert.match(code, /rowSpacing:\s*Style\.space\(2\)/);
 });
 
-test("the cell is fixed-width, its switch is at the right edge, and the name elides", () => {
+// The `Style.space(n)` a named token of the strip is spelled as. Read from the
+// QML rather than restated here, so AppStrip.qml stays the one normative site
+// for the geometry and this file only does arithmetic on it.
+function spaceToken(name) {
+  const found = codeOf(APP_STRIP).match(
+    new RegExp("readonly property int " + name + ":\\s*Style\\.space\\((\\d+)\\)"));
+  assert.ok(found,
+    "AppStrip.qml no longer states `" + name + "` as a Style.space() token, so the"
+    + " arithmetic below has nothing to read");
+  return Number(found[1]);
+}
+
+test("a switch is nearer its own name than the next cell's icon (VM finding S1)", () => {
+  // WHAT THE FIRST LOOK FOUND. With the switch anchored to the cell's RIGHT
+  // edge and an 8-px column gap, a short name left ~45 px between "Dr Panel"
+  // and its switch while the next cell's icon began ~16 px past it — so the eye
+  // filed every switch under the app to its right and the line read as one
+  // run-on control. The fix is two numbers, and this is the relation between
+  // them that must hold however a theme scales them (Style.space multiplies
+  // both sides, so the ratio is what matters).
+  const gap = spaceToken("cellGap");
+  const padding = spaceToken("cellPaddingX");
+  const nameGap = spaceToken("nameGap");
+
+  // Worst case for the separation: a name long enough to elide, so the switch
+  // ends one padding short of its own cell's right edge and the next cell's
+  // icon starts one padding past the gap.
+  const toNextCell = padding + gap + padding;
+  assert.ok(toNextCell >= 3 * nameGap,
+    `a switch is ${nameGap} px from its own name and, at worst, ${toNextCell} px`
+    + " from the next cell's icon — too close to tell apart. That is finding S1"
+    + " coming back: widen cellGap or tighten nameGap.");
+  assert.match(codeOf(APP_STRIP), /cellGap:\s*Style\.space\(20\)/,
+    "the column gap is no longer the shell's own multi-column spacing"
+    + " (plugins/panels/network/Panel.qml:1227)");
+});
+
+test("four columns still fit the panel card, at the gap the look asked for", () => {
+  // The card is Math.min(Style.space(660), 94 % of the screen) wide, and its
+  // content is that less two borders and two popup paddings — 628 px at the
+  // acceptance VM's 1280×800 on the stock theme, which is where the pictures
+  // that found S1 were taken. Widening the gap costs cell width, and the floor
+  // is that the grid must not lose a column for it.
+  const CARD_CONTENT = 628;
+  const packed = panel.stripLayout(9, CARD_CONTENT, spaceToken("minCellWidth"),
+    spaceToken("cellGap"));
+  assert.strictEqual(packed.columns, 4,
+    "the panel card now packs " + packed.columns + " columns instead of four;"
+    + " the DoD's floor is two, but dropping one is a change to say out loud");
+  // And a cell still has room for an icon, a switch and a name worth reading.
+  const content = spaceToken("cellPaddingX") * 2 + 18 + spaceToken("iconGap")
+    + spaceToken("nameGap") + 27;
+  assert.ok(packed.cellWidth - content >= 70,
+    "a cell leaves the name only " + (packed.cellWidth - content) + " px");
+});
+
+test("the cell is fixed-width, its switch sits with its name, and the name elides", () => {
   const code = codeOf(APP_STRIP);
 
   // Checklist item 5, as structure. The width comes from the pure function and
@@ -284,10 +339,29 @@ test("the cell is fixed-width, its switch is at the right edge, and the name eli
   assert.match(code, /PanelModel\.stripLayout\(/, "the packing is not the pure function's");
   assert.match(code, /elide:\s*Text\.ElideRight/, "the name no longer elides");
 
-  // The switch anchors to the CELL's right edge, not to whatever is beside it.
+  // PACKED LEFT (finding S1): the switch follows the name at `nameGap`, and
+  // every pixel of slack in a cell falls after it, where the column gap is.
   const switchBlock = blockAround(code, /ToggleSwitch\s*\{/);
-  assert.match(switchBlock, /anchors\.right:\s*parent\.right/,
-    "the switch is not anchored to the cell's right edge:\n" + switchBlock);
+  assert.match(switchBlock, /anchors\.left:\s*cellLearn\.right/,
+    "the switch no longer follows the name and the learn mark:\n" + switchBlock);
+  assert.match(switchBlock, /anchors\.leftMargin:\s*appStrip\.nameGap/, switchBlock);
+  assert.ok(!/anchors\.right:\s*parent\.right/.test(switchBlock),
+    "the switch is back on the cell's right edge, which is what paired it with"
+    + " the NEXT cell's icon:\n" + switchBlock);
+
+  // AND IT STILL CANNOT LEAVE THE CELL. `nameRoom` reserves the switch, the
+  // mark and both paddings before the name gets any of the width, and the name
+  // takes the smaller of that and what it wants — one Math.min carrying the
+  // whole of "a long name elides, it does not push the switch out".
+  assert.match(code, /width:\s*Math\.min\(cellName\.implicitWidth,\s*appCell\.nameRoom\)/,
+    "the name is no longer capped by nameRoom, so a long one pushes the switch"
+    + " past the cell's right edge and into the app beside it");
+  const room = blockAround(code, /readonly property int nameRoom:/);
+  for (const term of ["cellPaddingX", "cellIcon.width", "iconGap", "cellLearn",
+    "nameGap", "cellSwitch.implicitWidth"]) {
+    assert.ok(room.indexOf(term) !== -1,
+      "nameRoom does not reserve `" + term + "`, so the name can eat it:\n" + room);
+  }
 
   // One hover language with the map: the same fill a chip lights up with.
   assert.match(code, /Style\.hoverFillFor\(appStrip\.panel\.foreground,\s*Color\.accent\)/,

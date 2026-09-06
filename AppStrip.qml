@@ -22,11 +22,22 @@
 // A CELL IS FIXED-WIDTH, and that is not a detail — it is the answer to
 // "the right edge holds when an app is unwatched". Every cell is
 // `PanelModel.stripLayout`'s `cellWidth`, which is a function of the strip's
-// WIDTH alone; the name elides inside it and the switch anchors to its right
-// edge. Unticking an app changes a colour and the position of a knob. It cannot
-// change a width, and it cannot change how many cells share a line — which is
-// what the old list did every time, and what tick 5jl had already had to fix
-// once on the caption.
+// WIDTH alone, and the name elides against `nameRoom` rather than sizing
+// anything. Unticking an app changes a colour and the position of a knob. It
+// cannot change a cell width, and it cannot change how many cells share a line
+// — which is what the old list did every time, and what tick 5jl had already
+// had to fix once on the caption.
+//
+// A CELL IS PACKED LEFT, and the first VM look is why (finding S1). The switch
+// was anchored to the cell's RIGHT edge, so a short name left ~45 px of nothing
+// between "Dr Panel" and its switch while the next cell's icon began ~16 px
+// past it: the eye filed every switch under the app to its right, and the line
+// read as one run-on control rather than as three apps. Now the icon, the name,
+// the learn mark and the switch sit together at the left, the switch `nameGap`
+// (8) after the name it belongs to, and every pixel a short name does not use
+// falls AFTER the switch where it joins the column gap (20). The distance the
+// eye measures is therefore ~28 px between apps against 8 px within one, and
+// tests/strip.test.js pins that relation rather than the two numbers.
 //
 // WHY A Grid AND NOT A Flow. The strip wants a wide gap between cells (they are
 // separate controls) and a narrow one between lines (they are one list), and
@@ -76,17 +87,35 @@ Grid {
   //
   // The minimum width is what a cell needs before it stops being readable —
   // an 18-px icon, a name worth eliding and a 27-px switch — and it is the
-  // number that decides how many columns there are. The gap is wide (cells are
-  // separate switches and must not read as one run-on control); the line
-  // spacing is narrow (the lines are one list).
+  // number that decides how many columns there are. The line spacing is narrow
+  // because the lines are one list.
   readonly property int minCellWidth: Style.space(140)
-  readonly property int cellGap: Style.space(8)
   readonly property int cellHeight: Style.spacing.popupRowHeight
+
+  // THE COLUMN GAP IS THE WHOLE SEPARATION BETWEEN TWO APPS, and the first VM
+  // look is why it is 20 and not 8 (finding S1). At 8 the switch was ~45 px
+  // from the short name it belongs to and ~16 px from the NEXT cell's icon, so
+  // the eye paired every switch with the wrong app and the line read as one
+  // run-on control: "Dr Panel [on] [icon] Dock Recall N… [off]". The cell is
+  // packed left now so the switch sits 8 px after its own name, and every pixel
+  // of slack in a cell falls AFTER the switch — which makes this gap the
+  // distance the eye actually measures. `Style.space(20)` is the shell's own
+  // multi-column spacing (plugins/panels/network/Panel.qml:1227, a GridLayout's
+  // columnSpacing), and it holds four columns at the panel card's 628 px.
+  readonly property int cellGap: Style.space(20)
+
   // Breathing room inside a cell, at the two ends where its content meets the
   // next cell's. Deliberately not `Style.spacing.rowPaddingX` (12): that is a
-  // padding for a full-width row, and on a 150-px cell it would take a fifth of
+  // padding for a full-width row, and on a 140-px cell it would take a fifth of
   // the width away from the name.
   readonly property int cellPaddingX: Style.space(4)
+
+  // The gap between the icon and the name, and between the name and what
+  // follows it. The second is the one that does the pairing work: it is a
+  // quarter of the column gap, so a switch is unambiguously nearer to its own
+  // name than to anything in the cell beside it.
+  readonly property int iconGap: Style.space(6)
+  readonly property int nameGap: Style.space(8)
 
   // How the cells pack, decided by the pure function and obeyed here. See
   // stripLayout for why the number of cells is not allowed to narrow the grid.
@@ -138,6 +167,18 @@ Grid {
       // from (PanelModel.appRows explains why), and its predecessor's ticked
       // box and dead click were the review finding that rule replaced.
       readonly property bool clickable: appCell.modelData.clickable !== false
+
+      // HOW MUCH OF THE CELL THE NAME MAY HAVE, which is everything the icon,
+      // the learn mark, the switch and the two paddings do not need. The name
+      // takes the SMALLER of this and what it wants (see cellName), and that
+      // one Math.min is the whole of checklist item 5 inside a cell: a short
+      // name lets the switch come to it, a long one elides against this
+      // boundary, and neither can push the switch past the cell's right edge.
+      readonly property int nameRoom: Math.max(0, appCell.width
+        - appStrip.cellPaddingX * 2
+        - cellIcon.width - appStrip.iconGap
+        - (cellLearn.visible ? cellLearn.implicitWidth + Style.space(4) : 0)
+        - appStrip.nameGap - cellSwitch.implicitWidth)
 
       // Is the pointer on this app — here, or on one of its chips up on the map?
       readonly property bool linked: appStrip.panel.hoveredLinkKey !== ""
@@ -257,9 +298,10 @@ Grid {
         source: appCell.iconSource
       }
 
-      // The app's name, and the only text on the cell. It ELIDES rather than
-      // sizing the cell, because a cell that grew to fit its longest name would
-      // put every switch in the strip at a different x — see stripLayout.
+      // The app's name, and the only text on the cell. It takes what it wants
+      // up to `nameRoom` and elides after that — so the CELL never sizes itself
+      // off its content (that would move every switch on the line each time an
+      // app was ticked), and the switch never leaves the cell.
       Text {
         id: cellName
         textFormat: Text.PlainText
@@ -269,10 +311,9 @@ Grid {
         font.family: appStrip.panel.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
+        width: Math.min(cellName.implicitWidth, appCell.nameRoom)
         anchors.left: cellIcon.right
-        anchors.leftMargin: Style.space(6)
-        anchors.right: cellLearn.left
-        anchors.rightMargin: Style.space(6)
+        anchors.leftMargin: appStrip.iconGap
         anchors.verticalCenter: parent.verticalCenter
       }
 
@@ -301,14 +342,22 @@ Grid {
         font.family: appStrip.panel.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
-        anchors.right: cellSwitch.left
-        anchors.rightMargin: cellLearn.visible ? Style.space(4) : 0
+        anchors.left: cellName.right
+        anchors.leftMargin: cellLearn.visible ? Style.space(4) : 0
         anchors.verticalCenter: parent.verticalCenter
       }
 
-      // The switch, at the cell's right edge — the one thing whose position is
-      // identical on every cell in the strip, which is what makes the column of
-      // them readable as a switchboard.
+      // THE SWITCH SITS WITH ITS NAME, `nameGap` after it, and not at the
+      // cell's right edge. The first VM look (finding S1) is the whole reason:
+      // right-anchored, a short name left ~45 px of nothing between "Dr Panel"
+      // and its switch while the next cell's icon was ~16 px past it, so the
+      // switch read as belonging to the app on its RIGHT. A switchboard whose
+      // switches align into a column is worth nothing if each one is filed
+      // under the wrong app. The slack goes after the switch instead, where it
+      // joins the column gap and separates the cells.
+      //
+      // It still cannot leave the cell: `nameRoom` reserves its width and the
+      // paddings before the name is allowed any of it.
       //
       // `trackHeight` is the override the whole file exists for: 1.4 × the
       // caption is a control sized off the text beside it, the way the shell's
@@ -316,8 +365,8 @@ Grid {
       // onto fractional pixels.
       ToggleSwitch {
         id: cellSwitch
-        anchors.right: parent.right
-        anchors.rightMargin: appStrip.cellPaddingX
+        anchors.left: cellLearn.right
+        anchors.leftMargin: appStrip.nameGap
         anchors.verticalCenter: parent.verticalCenter
 
         trackHeight: Math.round(Style.font.caption * 1.4)
