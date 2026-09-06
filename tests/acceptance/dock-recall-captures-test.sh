@@ -1246,6 +1246,19 @@ fi
 [[ ! -e $CACHE_DIR ]] ||
   fail "a live picture reached the disk" \
     "$CACHE_DIR exists after the Live map drew its pictures — live pictures are memory only"
+# The shot waits for the MORPH to land (tick omw). `setView live` above flies
+# every chip from its recorded place to its live one over Motion.sweepDuration,
+# and a flying chip draws an icon on the selected fill with a full-strength
+# accent edge — never a picture. A screenshot inside the sweep therefore shows
+# icons sitting exactly over chips whose own report, underneath the overlay,
+# says a picture is drawn: that was ep6's first look, and it was the overlay,
+# not a chip state. The assertions above read the payload and are unaffected;
+# this only makes the picture show what the payload says. A timeout is not a
+# failure — the picture is for eyes, not for the gate.
+morph_landed() {
+  panel_state_json | jq -e '([.chips[]|select(.morphFlying == true)]|length) == 0' >/dev/null
+}
+poll 10 morph_landed || true
 screenshot "success-dock-recall-captures-04-live-pictures"
 pass "the Live map drew both windows from memory, one picture each: nothing was written"
 
