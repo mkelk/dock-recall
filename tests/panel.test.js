@@ -216,12 +216,12 @@ test("what a toggle produces survives StateModel's normalizer intact", () => {
   const identities = panel.toggleWatchedIdentities(state.identities(before), "md.obsidian.Obsidian", "");
   const next = state.setIdentities(before, identities);
   const round = state.parseState(state.serializeState(next));
-  // A panel-created identity says nothing about titles and consents to no
-  // picture, and the schema materializes both — an empty list and a withheld
-  // flag — rather than leaving either key absent.
+  // A panel-created identity says nothing about titles, and the schema
+  // materializes the empty list rather than leaving the key absent. Four fields
+  // is the whole of an identity since v7 removed the per-app picture flag.
   assert.deepStrictEqual(round.state.identities, [
     { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], titlePatterns: [],
-      launch: "", pictured: false }
+      launch: "" }
   ]);
 });
 
@@ -1258,7 +1258,7 @@ test("a launch repair round-trips through the file with its titles intact", () =
   const round = state.parseState(state.serializeState(state.setIdentities(before, repaired)));
   assert.deepStrictEqual(round.state.identities, [
     { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-      launch: "foot --title herdr", pictured: false }
+      launch: "foot --title herdr" }
   ]);
 });
 
@@ -3962,15 +3962,15 @@ test("a ticked title identity is prepended, so first-match reaches it first", ()
 });
 
 test("a proposed title identity survives StateModel's normalizer intact", () => {
-  // The field whitelist has to carry both lists, the launch AND the v5 consent
-  // through a write — an identity that loses `titlePatterns` on the way in
-  // stops matching its window and nothing says why.
+  // The field whitelist has to carry both lists AND the launch through a write
+  // — an identity that loses `titlePatterns` on the way in stops matching its
+  // window and nothing says why.
   const identities = panel.toggleWatchedIdentities([], "foot", "",
     footChildDerivation([{ pid: 901, argv: ["herdr"] }]));
   const round = state.parseState(state.serializeState(state.setIdentities(state.defaultState(), identities)));
   assert.deepStrictEqual(round.state.identities, [{
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr", pictured: false
+    launch: "foot --title=herdr herdr"
   }]);
 });
 
@@ -7896,14 +7896,18 @@ test("a capture is not written for an app whose consent went away mid-round", ()
   // routes to StateModel.isPictured, which is pure and testable here — the
   // reason the hand-rolled QML copy this replaced was worth deleting.
   const st = require("../StateModel.js");
-  const withConsent = st.parseState(JSON.stringify({
-    version: 6,
+  const watched = st.parseState(JSON.stringify({
+    version: 7,
     identities: [
-      { id: "seen", patterns: ["^foot$"], pictured: true },
-      { id: "watched-only", patterns: ["^foot$"], pictured: false }
+      { id: "seen", patterns: ["^foot$"] },
+      { id: "watched-only", patterns: ["^foot$"] }
     ],
     layouts: {}
   })).state;
+  // The grant is made in memory, because v7 removed `pictured` from the FILE:
+  // the schema now carries one `pictures` switch for the whole tool, and this
+  // per-app predicate is on its way out with the camera that fed it.
+  const withConsent = st.setPictured(watched, "seen", true);
 
   assert.strictEqual(st.isPictured(withConsent, "seen"), true,
     "an app with its camera on is owed its picture");

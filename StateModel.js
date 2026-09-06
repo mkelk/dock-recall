@@ -14,7 +14,7 @@
 // the panel epic (writes it). Add fields; never repurpose one.
 //
 //   State {
-//     version:    6                 // the schema generation. A file at an
+//     version:    7                 // the schema generation. A file at an
 //                                   // OLDER version is UPGRADED in place on the
 //                                   // read (see "Migration" below); a file from
 //                                   // the FUTURE keeps its own number, is still
@@ -34,26 +34,31 @@
 //                                   // file rather than the status file because
 //                                   // it is a user decision that must survive a
 //                                   // shell restart.
-//     pictureConsent:               // v6. THE ANSWER TO THE FIRST-RECORD
-//       "unasked"                   // DIALOGUE, and it is one answer for the
-//       | "keep"                    // whole tool rather than one per identity —
-//       | "not-these"               // the per-app grant is `Identity.pictured`
-//       | "none"                    // below, and this is the moment the user was
-//                                   // SHOWN what that grant produces and said
-//                                   // what they thought of it. It lives here for
-//                                   // the same reason `paused` does: it is a
-//                                   // decision, and a decision the user has to
-//                                   // make twice is a decision they were not
-//                                   // asked about the first time.
-//                                   // "unasked" is the default and the ONLY
-//                                   // value that makes the prompt appear; the
-//                                   // other three all mean "asked, and answered"
-//                                   // and differ in what the answer DID (see
-//                                   // Panel.qml, answerConsent). Nothing here
-//                                   // gates a capture: the gate is `pictured`,
-//                                   // per app, and every one of these answers
-//                                   // acts by changing that field rather than by
-//                                   // becoming a second switch in front of it.
+//     pictures:   true              // v7. THE ONE SWITCH. May this tool
+//                                   // PHOTOGRAPH the windows it watches? It
+//                                   // gates every capture there is — the
+//                                   // recorded pictures under ~/.cache and the
+//                                   // live ones that never reach disk — and
+//                                   // there is nothing in front of it or
+//                                   // beneath it: a watched app is pictured.
+//                                   // Lives here for the same reason `paused`
+//                                   // does: a user decision that must survive
+//                                   // a shell restart.
+//                                   // DEFAULT TRUE, which is the exact
+//                                   // opposite of the generation it replaces
+//                                   // (v5's per-app `pictured`, default off,
+//                                   // plus v6's dialogue on the first Record).
+//                                   // The pictures ARE the feature: a panel
+//                                   // that draws icons until you find a
+//                                   // control is a panel that never shows you
+//                                   // anything, and the dialogue talked its
+//                                   // own author out of the thing he had
+//                                   // asked for. Off is one click in the
+//                                   // overflow menu, it deletes every stored
+//                                   // picture, and it says so before it does
+//                                   // it — see Panel.qml, setPictures.
+//                                   // Only the literal `false` is off; see
+//                                   // picturesOn for why that direction.
 //     identities: Identity[]        // ORDER IS PRIORITY ORDER — engine.js
 //                                   // matchClient() returns the FIRST match, so
 //                                   // specific webapp identities must sit
@@ -99,17 +104,13 @@
 //                         // started automatically, and the reason the restore
 //                         // executor treats a launch-less identity as a
 //                         // permanent miss instead of retrying.
-//     pictured: boolean   // v5. May this identity's windows be PHOTOGRAPHED?
-//                         // Defaults to false, and it is a SEPARATE consent
-//                         // from being watched: an app can be watched without
-//                         // being pictured. Someone who wants their password
-//                         // manager RESTORED has not thereby agreed to have it
-//                         // captured to disk, so the two are not one switch and
-//                         // watching something never turns this on.
-//                         // Only a literal `true` grants it — see
-//                         // normalizeIdentity, which reads it the way `paused`
-//                         // is read — and it is ALWAYS PRESENT (see Migration).
 //   }
+//
+//   An identity has NO picture field. v5 gave it one (`pictured`, a per-app
+//   consent) and v7 took it away again: whether a window is photographed is a
+//   fact about the tool, not about the app, and it is the top-level `pictures`
+//   switch above. See the v6 -> v7 note under Migration for what happens to the
+//   old per-app values (they are dropped, and the reason is there).
 //
 //   Layout — exactly what engine.buildLayout() returns:
 //     { topologyKey, recordedAt, apps: [ { identityId, occurrence,
@@ -175,11 +176,11 @@
 //   `version` becomes 4. No layout entry moves at all — this generation touches
 //   identities only.
 //
-//   v4 -> v5 is additive again, and identity-only again: every identity that
-//   does not carry `pictured` gains `pictured: false`, and `version` becomes 5.
-//   No layout entry moves, and nothing an identity already said changes — an
-//   upgrade can only ever WITHHOLD this consent, never grant it, which is the
-//   one direction a migration is allowed to decide on the user's behalf.
+//   v4 -> v5 added `pictured: false` to every identity — a per-app photograph
+//   consent, withheld by default — and v7 has since removed the field
+//   altogether. The step is kept here as history, not as behaviour: a v4 file
+//   read today gains nothing per identity, because there is nothing at that
+//   level to gain. See v6 -> v7 below.
 //
 //   THE DELIBERATE CHOICE, v4: the empty list IS MATERIALIZED. normalizeIdentity
 //   writes `titlePatterns` on every identity it returns, so a v3 file read and
@@ -193,12 +194,9 @@
 //   `launch: ""`, both of which have always been written whether the file said
 //   so or not.
 //
-//   AND AGAIN, v5: `pictured` follows that precedent exactly. It is written on
-//   every identity normalizeIdentity returns, false included, so a v4 file read
-//   and written back gains a `"pictured": false` line per identity. A consumer
-//   must never need has("pictured"): "absent" and "not consented" are the same
-//   answer, and a capture path that had to tell them apart would eventually get
-//   it backwards on the one identity whose key went missing.
+//   v5 made the same choice for `pictured` and v7 unmade it by deleting the
+//   field. The precedent survives its first casualty: it is about fields that
+//   EXIST, and the cheapest way to keep a shape honest is still to write it.
 //
 //   THE ONE THING v4 TAKES AWAY (tick j8o): a migrated `launch` that forces a
 //   window class NO pattern of its own identity claims — the signature of v3's
@@ -209,31 +207,43 @@
 //   Everything else an identity said is carried through untouched, and all of
 //   it is pinned by tests/state.test.js.
 //
-//   v5 -> v6 is additive once more, and this time at the TOP level: a file that
-//   does not carry `pictureConsent` gains `pictureConsent: "unasked"`, and
-//   `version` becomes 6. Nothing an identity says moves at all.
+//   v5 -> v6 added `pictureConsent` at the TOP level — the answer to a dialogue
+//   the first Record put up — and v7 has removed that too. Kept as history for
+//   the same reason v5 is: the value it holds is the only input v6 -> v7 has.
 //
-//   "unasked" is the only honest default, and it is the direction that costs the
-//   user nothing: a file written before this generation existed was written by a
-//   build that never put the question, so nobody has answered it. The upgrade
-//   therefore ARRANGES FOR THE QUESTION rather than answering it — the opposite
-//   of v5, where the safe direction was to withhold. The two are the same rule
-//   seen from both ends: a migration may never invent a consent, and it may never
-//   pretend one was sought.
+//   v6 -> v7 is the first step that REPLACES rather than adds. One top-level
+//   `pictures` boolean, default TRUE, takes the place of both consent fields:
+//   the per-identity `pictured` and the file-level `pictureConsent`. `version`
+//   becomes 7. No layout entry moves.
 //
-//   MATERIALIZED, like v4's and v5's: normalizeState writes `pictureConsent` on
-//   every state it returns, so a v5 file read and written back gains one
-//   `"pictureConsent": "unasked"` line. A consumer never has to tell absent from
-//   unasked, and an unrecognised word (a hand edit, a newer generation's answer
-//   stripped by a round trip that should never have happened) reads as "unasked"
-//   — which asks again rather than assuming an answer nobody in this build can
-//   understand.
+//   The derivation is the one thing the user actually said. `pictureConsent`
+//   held four values and exactly one of them is a refusal: "none" — "delete
+//   them all, take no more". That becomes `pictures: false`. "keep",
+//   "not-these", "unasked" and an absent field all become `pictures: true`,
+//   because none of them is a person saying no to pictures as such: two are
+//   consents, and the other two are silence from before the question existed.
+//   THE ONE REFUSAL IS HONOURED AND NOTHING ELSE IS INVENTED — a user who
+//   answered "No pictures" opens this build to a tool that is still not taking
+//   any.
 //
-//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 -> v5 -> v6 in one read —
-//   because normalizeLayout writes the v2 and v3 fields, normalizeIdentity
-//   writes the v4 and v5 fields and normalizeState writes the v6 one, all
-//   unconditionally, so there are no intermediate states to sequence. A v6 file
-//   read and written back is byte-identical to itself.
+//   Per-identity `pictured` values are DROPPED, not folded in. They cannot be:
+//   the new field is one boolean for the whole tool, and there is no honest way
+//   to turn "three of your eleven apps were pictured" into it. Any-of would
+//   photograph the eight the user never granted, all-of would silence the three
+//   they did. The switch starts on, which is what this generation means, and it
+//   is one click to turn off — a click the old model made nearly unfindable,
+//   which is why it is gone.
+//
+//   MATERIALIZED, like the generations before it: normalizeState writes
+//   `pictures` on every state it returns, so a v6 file read and written back
+//   gains one `"pictures": true` line and loses `pictureConsent` and every
+//   `"pictured"` line in the same write.
+//
+//   A v1 file therefore CHAINS — v1 -> ... -> v7 in one read — because
+//   normalizeLayout writes the v2 and v3 fields, normalizeIdentity writes the
+//   v4 one and normalizeState writes the v7 one, all unconditionally, so there
+//   are no intermediate states to sequence. A v7 file read and written back is
+//   byte-identical to itself.
 //
 //   And every step of it happens IN MEMORY. Nothing here writes a file: the
 //   service reads an older file, runs from the upgraded state, and the file on
@@ -364,21 +374,23 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 6;
+var STATE_VERSION = 7;
 
-// The four values `pictureConsent` can hold (v6). Named rather than spelled out
-// at each site, because three of them are compared against in Panel.qml, in the
-// IPC verb that answers the prompt and in the tests, and a typo in a string
-// literal is a silent "unasked" for ever.
+// The four values `pictureConsent` can hold. RETIRED BY v7 and kept for two
+// reasons only: the v6 -> v7 migration has to recognise "none", which is the
+// one answer that carries forward, and the prompt that wrote these is deleted
+// by the next tick of this epic rather than this one. Nothing v7 writes uses
+// them, and a typo in a string literal is still a silent "unasked".
 var PICTURE_CONSENT_UNASKED = "unasked";
 var PICTURE_CONSENT_KEEP = "keep";
 var PICTURE_CONSENT_NOT_THESE = "not-these";
 var PICTURE_CONSENT_NONE = "none";
 
 // Anything at all -> one of the four. An unrecognised word is "unasked" on
-// purpose: see the v5 -> v6 note above. This is a WHITELIST for the same reason
-// normalizeIdentity is one — the file is hand-editable, and a typo must degrade
-// to "ask me again" rather than to a fifth state nothing in this build handles.
+// purpose. This is a WHITELIST for the same reason normalizeIdentity is one —
+// the file is hand-editable, and a typo must degrade to the one value that
+// claims nothing rather than to a fifth state nothing in this build handles.
+// v7 reads it once, to migrate: everything but "none" means pictures stay on.
 function normalizePictureConsent(value) {
   var word = typeof value === "string" ? value : "";
   if (word === PICTURE_CONSENT_KEEP) return PICTURE_CONSENT_KEEP;
@@ -438,10 +450,22 @@ function defaultState() {
   return {
     version: STATE_VERSION,
     paused: false,
-    pictureConsent: PICTURE_CONSENT_UNASKED,
+    // v7. On, because that is what this tool does — see the schema block.
+    pictures: true,
     identities: [],
     layouts: {}
   };
+}
+
+// The v7 field, derived from whatever a file actually carries.
+//
+// The field wins whenever it is there at all (by picturesOn's rule). Only a file
+// that has never heard of it falls back to the v6 answer, and only one of those
+// four answers is a refusal — see the v6 -> v7 note in the schema block.
+function normalizePictures(value) {
+  if (!value || typeof value !== "object") return true;
+  if (Object.prototype.hasOwnProperty.call(value, "pictures")) return value.pictures !== false;
+  return normalizePictureConsent(value.pictureConsent) !== PICTURE_CONSENT_NONE;
 }
 
 // Coerce whatever a pattern list contains into an array of non-empty strings.
@@ -615,16 +639,11 @@ function normalizeIdentity(value, migrating) {
     // when empty, so nothing downstream has to tell absent from empty. An
     // identity from a v3 file gains it here; that IS the v3 -> v4 migration.
     titlePatterns: normalizePatterns(value.titlePatterns),
-    launch: migrating ? migratedLaunch(launch, patterns) : launch,
-    // v5. A CONSENT, and the same shape rule as titlePatterns: always written,
-    // even when false, so nothing downstream has to tell absent from off. An
-    // identity from a v4 file gains it here; that IS the v4 -> v5 migration.
-    //
-    // `=== true` and not a truthiness test, exactly as `paused` above: a file
-    // that does not say yes has not said yes, and `"false"`, `1` and `null` are
-    // all things a hand edit produces while meaning something else. The only
-    // grant is the literal the writer of this file emits.
-    pictured: value.pictured === true
+    launch: migrating ? migratedLaunch(launch, patterns) : launch
+    // No `pictured`. v5 put a per-app photograph consent here and v7 replaced
+    // it with the top-level `pictures` switch, so this whitelist DROPS the old
+    // field the way it drops any other key it does not know — which is what
+    // makes the v6 -> v7 migration happen on the read, with no separate pass.
   };
 }
 
@@ -810,11 +829,11 @@ function normalizeState(value) {
     // pausing is a file from before the switch existed, and the tool has always
     // been active. Only an explicit `true` pauses.
     paused: value.paused === true,
-    // v6, and the default is again the direction that assumes nothing: a file
-    // that does not mention the picture question was written before there was
-    // one to ask, so it has not been answered. See normalizePictureConsent for
-    // why an unrecognised word lands here too.
-    pictureConsent: normalizePictureConsent(value.pictureConsent),
+    // v7, and the default runs the other way: this one is a feature switch, not
+    // a consent, so a file that does not mention it gets the pictures. A v6
+    // file's answer is consulted first, and only "none" turns them off — see
+    // normalizePictures and the v6 -> v7 note in the schema block.
+    pictures: normalizePictures(value),
     // The v4 migration is the first that is not purely additive — see
     // migratedLaunch — so the identities need to know whether this read IS a
     // migration. Every other caller of normalizeIdentities is a WRITE path and
@@ -979,12 +998,11 @@ function serializeState(state) {
 // It exists because every setter here used to end with the same literal:
 //   `return { version: …, paused: …, identities: …, layouts: … }`
 // written out four times. That is precisely the enumerated-field-list shape
-// .tick/learnings.md calls "a data-loss bug waiting for the next field", and v6
-// is that next field: `pictureConsent` would have survived a pause toggle and
-// been silently dropped by the first Record, because upsertLayout's literal
-// never mentioned it. The identity half of this module learned the lesson at v5
-// (identityWithPictured copies and replaces one key); this is the same discipline
-// one level up.
+// .tick/learnings.md calls "a data-loss bug waiting for the next field", and it
+// has had two of them since: v6's `pictureConsent` and now v7's `pictures`,
+// either of which would have survived a pause toggle and been silently dropped
+// by the first Record, because upsertLayout's literal never mentioned it.
+// Turning the switch off and then recording would have turned it back on.
 //
 // The copy is of the NORMALIZED base, so a caller handing in half a state still
 // gets a whole one, and the patch is applied over it — so a field this function
@@ -1117,7 +1135,52 @@ function isPaused(state) {
   return !!(state && state.paused === true);
 }
 
-// ------------------------------------------------- the SECOND consent (v5)
+// -------------------------------------------------- the one switch (v7)
+
+// Does this state allow photographs? THE gate, asked by the panel before every
+// capture round, every live source and every cache lookup.
+//
+// TRUE UNLESS THE STATE SAYS `false`, and the asymmetry is the whole point: this
+// is the opposite discipline from the consent it replaces. `pictured` and
+// `paused` read `=== true`, because a file that has not said yes has not
+// consented and a missing key must never grant something. `pictures` is not a
+// consent — it is the feature, and it ships on — so a missing key must never
+// SILENCE it either. A hand edit that mistypes the value, a key lost to a
+// botched round trip, a caller holding half a state: every one of them lands on
+// "take the pictures", which is what the user chose by installing this.
+//
+// Only the literal `false` is off, for the same reason only the literal `true`
+// used to be on: `"false"`, `0` and `null` are things a hand edit produces while
+// meaning something else, and the value that stops the photographs had better be
+// the one the writer of this file emits.
+function picturesOn(state) {
+  return !(state && state.pictures === false);
+}
+
+// Throw the switch. One field, one write — and the same caller contract as
+// setPaused, for the same reason: read the file FRESH, apply this, write
+// atomically. The service rewrites this file underneath the panel.
+//
+// `on !== false` rather than `on === true`, so the reading rule is picturesOn's
+// at both ends of the field's life. It matters more here than it reads: OFF is
+// the destructive direction — the panel deletes every stored picture on the
+// transition — and a garbled argument must not be the thing that does that.
+function setPictures(state, on) {
+  return stateWith(state, { pictures: on !== false });
+}
+
+// -------------------------------- the SECOND consent (v5), RETIRED BY v7
+//
+// Everything from here to the end of `pictureConsentAsked` is the picture
+// consent v7 replaced with the one switch above, and it no longer reaches the
+// FILE: normalizeIdentity does not emit `pictured` and normalizeState does not
+// emit `pictureConsent`, so these functions now operate purely in memory and
+// the first round trip forgets what they did. They are still exported for one
+// commit because the prompt and the per-app camera that call them are deleted
+// by the next tick of this epic, and a commit where Panel.qml calls a function
+// that no longer exists is a QML fault no static gate in this repository would
+// catch. The paragraphs below describe what the consent WAS; read them as the
+// record of a design that is on its way out, not as the contract.
 //
 // `pictured` is a field on ONE identity, and this is the only setter for it.
 // Not `setIdentities` with a hand-rebuilt list: that is a whitelist rebuild of
@@ -1800,6 +1863,10 @@ if (typeof module !== "undefined") {
     setIdentities: setIdentities,
     setPaused: setPaused,
     isPaused: isPaused,
+    picturesOn: picturesOn,
+    setPictures: setPictures,
+    // Retired by v7 and exported for one commit longer: the prompt and the
+    // per-app camera that call them are deleted by the next tick of this epic.
     setPictured: setPictured,
     isPictured: isPictured,
     clearPictured: clearPictured,

@@ -1411,11 +1411,12 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //
 // STATE_VERSION has moved on since, and every generation after v3 has been
 // about IDENTITIES or about the file as a whole rather than about entries —
-// `titlePatterns`, then `pictured`, then `pictureConsent` — so a file written
-// today carries more than this paragraph describes, and NO layout entry has
-// changed shape since v3. The current number is StateModel.STATE_VERSION and is
-// deliberately not repeated here: a generation named in prose is a generation
-// that goes stale, which is exactly what this sentence did.
+// `titlePatterns` at v4, two picture consents at v5 and v6, and at v7 the one
+// `pictures` switch that replaced both — so a file written today carries more
+// than this paragraph describes, and NO layout entry has changed shape since
+// v3. The current number is StateModel.STATE_VERSION and is deliberately not
+// repeated here: a generation named in prose is a generation that goes stale,
+// which is exactly what this sentence did.
 
 // The tab order to believe for `client`'s group.
 //
