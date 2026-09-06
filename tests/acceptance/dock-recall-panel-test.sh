@@ -90,14 +90,38 @@
 #                  session), but because the payload only reads their reports
 #                  while overflowOpen is true — which is what makes a non-empty
 #                  list evidence of drawing rather than of a model.
-#   rows         — the app list, every row on the shell's Ui/Toggle. appRows
-#                  builds THREE states and all three are required: an unwatched
-#                  live window, a watched identity, and a recorded-but-unwatched
-#                  GHOST — which needs an identity that is never launched, so
-#                  the seed carries one. Each row reports its icon the way its
-#                  chip does; the ghost has no window and so no window class, so
-#                  its resolved icon also pins the identity fallback on the list
-#                  side.
+#   rows         — the app list, which is a STRIP now (tick 0kv): a cell is an
+#                  icon, a name and a small switch, several to a line, and the
+#                  54-px Ui/Toggle rows with a placement caption stranded on the
+#                  right are gone. appRows still builds THREE states and all
+#                  three are still required: an unwatched live window, a watched
+#                  identity, and a recorded-but-unwatched GHOST — which needs an
+#                  identity that is never launched, so the seed carries one.
+#                  Each row reports its icon the way its chip does; the ghost
+#                  has no window and so no window class, so its resolved icon
+#                  also pins the identity fallback on the list side. What a cell
+#                  no longer draws is asserted as hard as what it does: no
+#                  `where`, `placement` or `caption` key on any row, with has(),
+#                  because an absence needs a test more than a presence does —
+#                  nothing else fails when a caption comes back.
+#   hoverText    — where those captions went. A cell says a name, and the class,
+#                  the placement, the drift, the diagnosis and the launch hint
+#                  are a tooltip now. This venue has no pointer rig (`hyprctl
+#                  dispatch movecursor` warps without motion events on 0.56), so
+#                  `hoverLink <key>` lights the cell and the cell reports the
+#                  text a real pointer would have made it show — PRESENT on the
+#                  one lit row, ABSENT on every other, and gone again when the
+#                  hover clears.
+#   strip,       — the strip as it was LAID OUT, and the two heights it is
+#   mapHeight,     judged against. `strip.columns` is how many cells share the
+#   panelHeight    FIRST LINE, `rowHeight` is a cell's own height and `height`
+#                  is the whole component's; `mapHeight` is the map surface's
+#                  and `panelHeight` the card's. None of them is a number
+#                  restated from Style, which would pass on a strip whose cells
+#                  had all collapsed. The epic's question is a COMPARISON — the
+#                  panel is not taller than the map needs — and
+#                  `strip.height <= mapHeight` is a real finding only because
+#                  the two heights are laid out by chains that never meet.
 #   linkKey,     — the row-to-chip pairing, on BOTH surfaces. One key, and
 #   linked         everything answering to it lights up whichever direction the
 #                  pointer came from. Driven here by setting `hoveredLinkKey`,
@@ -233,6 +257,10 @@ ICON_URL=""
 # The payloads the two view predicates capture. Same reason.
 LIVE_JSON=""
 RECORDED_JSON=""
+# And the payload the hover predicate captures, for the same reason again: the
+# text a lit cell is showing goes into a pass line, and a second read to fetch
+# it would be a second answer with the refresh timer running in between.
+HOVER_JSON=""
 
 # ---------------------------------------------------------------- primitives
 
@@ -364,6 +392,37 @@ CHIP_MIN_H=10
 # legitimate (a headless output set has no focus at all), which is why this is a
 # ceiling rather than an equality.
 #
+# THE STRIP, AND THE TWO HEIGHTS IT IS JUDGED AGAINST (tick 0kv's redesign).
+# `strip`, `mapHeight` and `panelHeight` are required on BOTH views, and that is
+# not decoration: the strip sits in the card's own column BELOW the map and is
+# the same component whichever tab is showing, so a payload carrying them on one
+# view only would be describing a switchboard that went away with the map. The
+# shape is pinned here; the three COMPARISONS the redesign is judged by are made
+# once, on the live payload, where the run has all three row states on screen.
+# Integers rather than merely numbers, because every one of them is a pixel
+# count the panel rounded on the way out — a fractional one means something
+# stopped being read off a laid-out item.
+#
+# WHAT A CELL NO LONGER DRAWS, with has()|not, beside the two per-app grants the
+# consent model took with it. A cell is an icon, a name and a small switch; the
+# placement caption the old 54-px row printed down its right-hand side is hover
+# text now, so no row may carry `where`, `placement` or `caption`. Absences are
+# asserted for the reason the retired consent keys are: nothing else fails when
+# one comes back.
+#
+# AND `hoverText` IMPLIES `linked`, on every payload including the hovered one.
+# The key is stated by the delegate only while its cell is lit and gated AGAIN
+# by panelState() on that same reported `linked`, because the report registry
+# merges and is never pruned — so the last cell hovered would otherwise keep
+# reporting its text after the pointer left. This is the half of that contract
+# that holds always; the positive half is driven under `hoverLink` below.
+#
+# A CHIP HAS A PICTURE SOURCE OR AN ICON SOURCE, NEVER NEITHER — stated as the
+# disjunction the map promises (a stored picture, a live one, or the app icon
+# that steps in for both) rather than left to the icon clause above, which is
+# the stronger of the two TODAY and stops being so the moment a picture-drawing
+# chip is allowed an empty icon. It is the clause that survives that change.
+#
 # NOTHING inside the shape below may carry an apostrophe or a `#` comment: it is
 # a single-quoted shell string, and an apostrophe ends it. `$state` is bound by
 # the callers, because
@@ -389,6 +448,8 @@ STATE_SHAPE='
              or .edgeTone == "watched" or .edgeTone == "quiet"))]|length) == (.chips|length)
   and ([.chips[]|select(.watched == true and .fillState == "unwatched")]|length) == 0
   and ([.chips[]|select(.watched == false and .fillState != "unwatched")]|length) == 0
+  and ([.chips[]|select((.capturePath // .liveSource // .iconSource // "") != "")]|length)
+      == (.chips|length)
   and ([.workspaces[]|select((.badgeValue|type) == "string" and (.badgeValue|length) > 0
         and (.badgeFocused|type) == "boolean")]|length) == (.workspaces|length)
   and ([.workspaces[]|select(.badgeValue != (.name|tostring))]|length) == 0
@@ -428,8 +489,18 @@ STATE_SHAPE='
         and (.iconSource|type) == "string" and (.iconSource|length) > 0
         and (.iconResolved|type) == "boolean"
         and (has("pictured")|not) and (has("picturable")|not)
+        and (has("where")|not) and (has("placement")|not) and (has("caption")|not)
         and (.linkKey|type) == "string" and (.linked|type) == "boolean")]|length) == (.rows|length)
   and ((.rows|map(.key)|unique|length) == (.rows|length))
+  and ([.rows[]|select(has("hoverText") and .linked != true)]|length) == 0
+  and has("strip") and (.strip|type) == "object"
+  and (.strip.columns|type) == "number" and ((.strip.columns|floor) == .strip.columns)
+  and (.strip.rowHeight|type) == "number" and ((.strip.rowHeight|floor) == .strip.rowHeight)
+  and (.strip.height|type) == "number" and ((.strip.height|floor) == .strip.height)
+  and has("mapHeight") and (.mapHeight|type) == "number"
+  and ((.mapHeight|floor) == .mapHeight)
+  and has("panelHeight") and (.panelHeight|type) == "number"
+  and ((.panelHeight|floor) == .panelHeight)
 '
 
 # The two view predicates below CAPTURE what they validated. The payload used to
@@ -921,8 +992,9 @@ if ! poll 30 capture_live_state; then
   # it is a chip clause just because the chip clauses are listed first below.
   fail "panel IPC reports the live map" \
     "no live payload from '$IPC_TARGET state' satisfied the shape:
-       CHIPS — uniquely-keyed, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, each carrying a non-empty iconSource and a treatment its own width and height earn, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved and fill=watched with edge=drift, $NOICON_ADDRESS reporting the generic icon unresolved and fill=unwatched;
-       ROWS — all three of appRows' states present at once (watched/live, unwatched/live, ghost/recorded); the watched non-ghost row AND the ghost row (which has no window class, so this pins the identity-side fallback) both reporting $ICON_URL resolved; the no-entry window's row, found through its chip's own linkKey, reporting the generic icon unresolved with a non-empty source;
+       CHIPS — uniquely-keyed, each placed above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor on the positioned path, each carrying a non-empty iconSource and a treatment its own width and height earn, each with a picture source or an icon source and never neither, one of them the watched window $APP_ADDRESS reporting $ICON_URL resolved and fill=watched with edge=drift, $NOICON_ADDRESS reporting the generic icon unresolved and fill=unwatched;
+       ROWS — all three of appRows' states present at once (watched/live, unwatched/live, ghost/recorded); the watched non-ghost row AND the ghost row (which has no window class, so this pins the identity-side fallback) both reporting $ICON_URL resolved; the no-entry window's row, found through its chip's own linkKey, reporting the generic icon unresolved with a non-empty source; NO row carrying where, placement, caption, pictured or picturable, and none carrying hoverText while it is not linked;
+       THE STRIP — a 'strip' object with integer columns, rowHeight and height, beside integer mapHeight and panelHeight;
        WORKSPACES — exactly one workspace badge filled
        (see the raw payload above)"
 fi
@@ -969,12 +1041,65 @@ live_badges=$(printf '%s' "$LIVE_JSON" | jq -r \
   '[.workspaces[]|"\(.monitorName)/\(.badgeValue)\(if .badgeFocused then " (focused)" else "" end)"]|join(", ")')
 pass "POSITIONED workspace badges: $live_badges"
 
-# The app list. All three of appRows' row states are required by the poll; this
-# says which row came out as which, so a run in which one state never appeared
+# The app strip. All three of appRows' row states are required by the poll; this
+# says which cell came out as which, so a run in which one state never appeared
 # would be visible rather than merely passing a ">= 1".
 live_rows=$(printf '%s' "$LIVE_JSON" | jq -r \
   '[.rows[]|"\(.name) watched=\(.watched) ghost=\(.ghost) icon=\(if .iconResolved then "own" else "generic" end)"]|join(", ")')
-pass "app list rows, all three states on Ui/Toggle: $live_rows"
+pass "app strip cells, all three row states — an icon, a name and a small switch each, no captions: $live_rows"
+
+# ------------------------------------------------- 5b. THE STRIP'S OWN SHAPE
+#
+# STATE_SHAPE has already required the five numbers, as integers, on BOTH views.
+# These are the three COMPARISONS the redesign is judged by, and every one of
+# them is a claim about what the panel LAID OUT: `strip.columns` is counted off
+# the delegates that ended up on the first line, `strip.rowHeight` is a cell's
+# own height and `strip.height` the component's, so a Style constant restated in
+# the payload could not satisfy any of them.
+strip_columns=$(printf '%s' "$LIVE_JSON" | jq -r '.strip.columns')
+strip_row_height=$(printf '%s' "$LIVE_JSON" | jq -r '.strip.rowHeight')
+strip_height=$(printf '%s' "$LIVE_JSON" | jq -r '.strip.height')
+map_height=$(printf '%s' "$LIVE_JSON" | jq -r '.mapHeight')
+panel_height=$(printf '%s' "$LIVE_JSON" | jq -r '.panelHeight')
+
+# SEVERAL APPS TO A LINE, which is the whole of what "the list becomes a strip"
+# means from out here. The floor is two rather than the four the VM's card fits,
+# because the number of cells on a line is bounded by the number of apps and
+# this desk seeds three: a run with three watched-or-recorded apps cannot prove
+# four columns, and asserting a number this test does not control would fail on
+# a desk rather than on a regression.
+if ! printf '%s' "$LIVE_JSON" | jq -e '.strip.columns >= 2' >/dev/null; then
+  diagnostics
+  fail "the strip puts several apps on one line" \
+    "strip.columns is $strip_columns at this panel width, with these rows: $live_rows.
+       One cell to a line is the shape the redesign replaced — either stripLayout packed a single column or the cells did not end up where the Grid put them."
+fi
+
+# A CELL IS A POPUP ROW, NOT A FORM ROW. 28 is Style.spacing.popupRowHeight at
+# the VM's default scale, and it is precisely the number the old list could not
+# get under: Ui/Toggle.qml:45 reads `implicitHeight: Math.max(54, ...)` — a
+# literal with no property in front of it — so every row of a list built out of
+# Ui/Toggle was 54 px whatever it held. A CEILING rather than an equality: a
+# theme at a smaller scale is not a regression, a cell that grew back past a
+# popup row is.
+if ! printf '%s' "$LIVE_JSON" | jq -e '.strip.rowHeight <= 28' >/dev/null; then
+  diagnostics
+  fail "a strip cell is no taller than a popup row" \
+    "strip.rowHeight is $strip_row_height and Style.spacing.popupRowHeight at the VM's default scale is 28 — a cell that tall is a form row again, which is what Ui/Toggle's 54-px floor made every row of the old list"
+fi
+
+# THE PANEL IS NOT TALLER THAN THE MAP NEEDS — the epic's own words, and the one
+# comparison here that is not self-consistent. `strip.height` is read off the
+# strip component and `mapHeight` off the map surface, and the two are laid out
+# by chains that never meet: the strip packs cells into a Grid under the card
+# column, the map scales its monitor boxes off mapGeometry. A panel agreeing
+# with itself could not fail this; a switchboard that outgrew its hero does.
+if ! printf '%s' "$LIVE_JSON" | jq -e '.strip.height <= .mapHeight' >/dev/null; then
+  diagnostics
+  fail "the strip does not outgrow the map" \
+    "strip.height is $strip_height against mapHeight $map_height — the apps under the map take more of the card than the map does, which is the panel the redesign set out to end"
+fi
+pass "the strip as it was laid out: $strip_columns cell(s) on the first line, ${strip_row_height}px each, ${strip_height}px in all, under a ${map_height}px map, in a ${panel_height}px card"
 
 # A picture of the live map with its pictures drawn (tick i93). The captures
 # test PROVES the live round; this only waits for it, so the screenshot shows
@@ -1029,7 +1154,7 @@ fi
 if ! poll 30 capture_recorded_state; then
   diagnostics
   fail "panel IPC reports the recorded map" \
-    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, each above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor, at least one of them reaching a tier that DRAWS ITS NAME (pill or strip — a stacked row is canvas-wide and one line tall, and gating the name on the pill tier alone is what emptied this tab once), agreeing with their own workspace on their own monitor, at least one resolving its identity icon to $ICON_URL, exactly one fill=ghost ($GHOST_IDENTITY) beside exactly one fill=watched, and exactly one workspace badge filled (see the raw payload above)"
+    "no recorded payload from '$IPC_TARGET state' satisfied the shape: uniquely-keyed chips, all on the FALLBACK path, each above the ${CHIP_MIN_W}x${CHIP_MIN_H} floor, each with a picture source or an icon source and never neither, at least one of them reaching a tier that DRAWS ITS NAME (pill or strip — a stacked row is canvas-wide and one line tall, and gating the name on the pill tier alone is what emptied this tab once), agreeing with their own workspace on their own monitor, at least one resolving its identity icon to $ICON_URL, exactly one fill=ghost ($GHOST_IDENTITY) beside exactly one fill=watched, exactly one workspace badge filled, and — the strip is the same component on both tabs, so it is required here too — a 'strip' object with integer columns, rowHeight and height beside integer mapHeight and panelHeight (see the raw payload above)"
 fi
 printf '%s\n' "$RECORDED_JSON" > "$ARTIFACTS/dock-recall-panel-state-recorded.json" 2>/dev/null || true
 screenshot "success-dock-recall-panel-02-recorded"
@@ -1235,43 +1360,101 @@ seeded_link=$(printf '%s' "$LIVE_JSON" | jq -r --arg addr "$APP_ADDRESS" \
 [[ -n $seeded_link ]] ||
   fail "the seeded chip reports a link key (panel IPC)" "no linkKey on the chip keyed $APP_ADDRESS"
 
+# NOTHING IS HOVERED YET, AND THE STRIP SAYS SO BY SAYING NOTHING. `hoverText`
+# is the text a cell's tooltip is showing, and a cell nobody is pointing at is
+# showing none — which this payload spells ABSENT, never "" and never null: two
+# spellings of one silence would make "the tooltip is empty" indistinguishable
+# from "there is no tooltip" (README.md, "Absent vs `null`", is normative).
+#
+# Read off $LIVE_JSON, the payload the poll above captured and validated, rather
+# than fetched again: this is the state the run is actually in at this line, and
+# the precondition — hoveredLinkKey still "" — is asserted rather than assumed,
+# because "no row has hoverText" says nothing at all if something was hovered.
+if ! printf '%s' "$LIVE_JSON" | jq -e '.hoveredLinkKey == ""
+  and ([.rows[]|select(has("hoverText"))]|length) == 0' >/dev/null; then
+  diagnostics
+  unhovered_state=$(printf '%s' "$LIVE_JSON" | jq -c \
+    '{hoveredLinkKey, rowsWithHoverText: [.rows[]|select(has("hoverText"))|.key]}')
+  fail "an unhovered strip says nothing" \
+    "before any hoverLink, the payload already carries hover text: $unhovered_state.
+       Either something is hovered (which nothing in this test has done yet) or the read-time gate in panelState() has stopped asking the delegate's own linked — the report registry merges and is never pruned, so an ungated read reports the last cell hovered for ever."
+fi
+pass "with nothing hovered, no row carries hoverText at all — absent, not empty"
+
 hover_answer=$(omarchy-shell "$IPC_TARGET" hoverLink "$seeded_link" 2>&1)
 if [[ $hover_answer != "$seeded_link" ]]; then
   diagnostics
   fail "panel IPC can light a link" "hoverLink answered '$hover_answer', expected '$seeded_link'"
 fi
 
+# AND WHAT THE LIT CELL SAYS, which is the other half of the redesign: the class,
+# the placement, the drift and the launch hint used to be printed down the right
+# of a 54-px row and are a tooltip now, so the only way to ask whether they
+# survived the move is to light a cell and read back the text it is showing.
+#
+# Both halves of the identification are computed FROM THIS PAYLOAD rather than
+# from a literal or from an earlier read (learnings, j18: compare like with
+# like). The lit row must contain its OWN name — not any name, which a cell
+# stuck on the wrong model would also satisfy — and the monitor its own chip
+# reports, which is the placement line the caption used to carry. The chip is
+# the second site: two delegates on two surfaces, agreeing about one app.
+#
+# The payload is CAPTURED, as the two view predicates capture theirs, so the
+# text quoted in the pass line below is the text that passed.
 link_lit() {
-  panel_state_json | jq -e --arg link "$seeded_link" '
-    .hoveredLinkKey == $link
-    and ([.rows[]|select(.linkKey == $link and .linked == true)]|length) == 1
+  HOVER_JSON=$(panel_state_json)
+  printf '%s' "$HOVER_JSON" | jq -e --arg link "$seeded_link" '
+    [.rows[]|select(.linkKey == $link and .linked == true)] as $lit
+    | [.chips[]|select(.linkKey == $link)] as $litchips
+    | .hoveredLinkKey == $link
+    and ($lit|length) == 1
     and ([.chips[]|select(.linkKey == $link and .linked == true)]|length) >= 1
     and ([.rows[]|select(.linkKey != $link and .linked == true)]|length) == 0
-    and ([.chips[]|select(.linkKey != $link and .linked == true)]|length) == 0' >/dev/null
+    and ([.chips[]|select(.linkKey != $link and .linked == true)]|length) == 0
+    and ($lit[0]|has("hoverText"))
+    and ($lit[0].hoverText|type) == "string"
+    and ($lit[0].name|type) == "string"
+    and ($lit[0].hoverText|contains($lit[0].name))
+    and ($litchips|length) >= 1
+    and ($litchips[0].monitorName|type) == "string"
+    and ($lit[0].hoverText|contains($litchips[0].monitorName))
+    and ([.rows[]|select(has("hoverText"))]|length) == 1' >/dev/null
 }
 if ! poll 20 link_lit; then
   diagnostics
-  fail "hovering an app lights its row AND its chips, and nothing else" \
-    "with hoveredLinkKey '$seeded_link', the payload did not report exactly that row and its chips linked"
+  fail "hovering an app lights its row AND its chips, and the lit cell says what the caption used to" \
+    "with hoveredLinkKey '$seeded_link', the payload did not report exactly that row and its chips linked, with hoverText on that ONE row and on no other, naming the row's own app and the monitor its own chip reports"
 fi
+lit_hover=$(printf '%s' "$HOVER_JSON" | jq -r --arg link "$seeded_link" \
+  'first(.rows[]|select(.linkKey == $link and .linked == true)|.hoverText|gsub("\n"; " / "))//"absent"')
 pass "the row-to-chip link still pairs them: '$seeded_link' lights its row and its chips, and nothing else"
+pass "and the lit cell says what the caption used to: \"$lit_hover\""
 
 cleared=$(omarchy-shell "$IPC_TARGET" hoverLink none 2>&1)
 [[ $cleared == "none" ]] || fail "panel IPC clears the link" "hoverLink none answered '$cleared'"
+# AND THE TEXT GOES WITH IT. The registry that holds a cell's report MERGES and
+# is never pruned, so the text of the last cell hovered outlives the hover in
+# the store by design — this is the assertion that the read-time gate is still
+# in front of it. A hoverText surviving here is a panel telling the user about
+# an app the pointer left.
 link_dark() {
   panel_state_json | jq -e '.hoveredLinkKey == ""
     and ([.rows[]|select(.linked == true)]|length) == 0
-    and ([.chips[]|select(.linked == true)]|length) == 0' >/dev/null
+    and ([.chips[]|select(.linked == true)]|length) == 0
+    and ([.rows[]|select(has("hoverText"))]|length) == 0' >/dev/null
 }
 if ! poll 20 link_dark; then
   diagnostics
-  fail "the link goes out again" "after hoverLink none, something is still reported as linked"
+  fail "the link goes out again" \
+    "after hoverLink none, something is still reported as linked, or a row is still carrying the hoverText of a cell nobody is hovering"
 fi
-pass "and it goes out again on both surfaces"
+pass "and it goes out again on both surfaces, hover text included"
 
-# TICKING A ROW. Ui/Toggle's clicked() calls root.toggleChip(row) and nothing
-# else, and `toggleRow` is that call on the row carrying a given key — pressing
-# the widget itself would need the same virtual pointer this venue does not have.
+# TICKING A ROW. The strip cell's own MouseArea calls panel.toggleChip(row) and
+# nothing else — the ToggleSwitch inside the cell is `interactive: false`, the
+# same division Ui/Toggle makes between a labeled row and the switch parked at
+# the end of it — and `toggleRow` is that call on the row carrying a given key.
+# Pressing the cell itself would need the virtual pointer this venue lacks.
 #
 # The row ticked is the NO-ENTRY window, not the seeded one: unticking the seeded
 # app would delete the identity its recorded layout names, and ticking it back
