@@ -6958,6 +6958,74 @@ test("setPictures cannot be switched OFF by a garbled argument", () => {
   }
 });
 
+test("the overflow menu's Pictures entry actually throws the switch", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const at = source.indexOf("function activateOverflow() {");
+  assert.ok(at !== -1, "Panel.qml has no activateOverflow");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+
+  // THE PRESS PATH, which nothing else in this repository reaches. The menu
+  // MODEL is pure and is tested above; the payload carries no menu actions at
+  // all, so the acceptance VM cannot see one either — which means a build whose
+  // "pictures" entry did nothing would satisfy every other assertion about the
+  // switch, in node and in the VM alike, and the user would press it and watch
+  // nothing happen.
+  const branch = body.indexOf("action.id === \"pictures\"");
+  assert.ok(branch !== -1,
+    "activateOverflow has no branch for the pictures entry, so pressing it does nothing:\n"
+    + body);
+  const call = body.indexOf("root.setPictures(!root.picturesOn)", branch);
+  assert.ok(call !== -1,
+    "the pictures branch does not throw the switch through the panel's own setter — "
+    + "which owns the fresh read, the eviction and the log:\n" + body);
+
+  // AND THE MENU STAYS OPEN, which is what the entry's own comment promises and
+  // what makes the press legible: the label flips under the cursor, so the menu
+  // is its own receipt. Forget and Re-record both close it; this one must not.
+  assert.strictEqual(body.indexOf("closeOverflow", call), -1,
+    "the pictures branch closes the menu, so the flipped label — the only "
+    + "feedback the press has — is never seen:\n" + body);
+});
+
+test("switching the pictures off is the ONLY thing that empties the whole cache", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // THE OTHER HALF OF THE DoD's SECOND CLAUSE: "a v6 file's stored pictures
+  // SURVIVE on disk when `pictures` resolves true". The VM can watch a migration
+  // and can watch the cache, but it seeds no v6 file — so survival is asserted
+  // here, as a property of the code: there is exactly one call to `evictAll` in
+  // the whole panel, and it is inside `setPictures`. Nothing on the read path,
+  // nothing on the migration path, and nothing a panel open touches can empty
+  // the cache; only the user throwing the switch can.
+  //
+  // A COUNT, deliberately, and it is the assertion that would catch the
+  // regression this is written against — a second `evictAll` added to a
+  // load-time or migrate-time branch would leave every other test in this
+  // repository green while quietly deleting the user's pictures the first time
+  // they opened the panel after an upgrade.
+  const calls = source.split("evictAll(").length - 1;
+  assert.strictEqual(calls, 1,
+    "Panel.qml calls evictAll " + calls + " times; exactly one call, inside setPictures, "
+    + "is what makes \"a migrated file's pictures survive\" a property of the code");
+
+  const at = source.indexOf("function setPictures(on) {");
+  assert.ok(at !== -1, "Panel.qml has no setPictures");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+  assert.ok(body.indexOf("evictAll(") !== -1,
+    "the one evictAll is not in setPictures — something else empties the cache:\n" + body);
+
+  // And it is on the OFF branch only: switching the pictures ON must not delete
+  // the pictures a migrated file arrived with.
+  const off = body.indexOf("if (!want) {");
+  assert.ok(off !== -1 && off < body.indexOf("evictAll("),
+    "evictAll is not inside the off branch, so switching the pictures ON would "
+    + "delete them:\n" + body);
+});
+
 test("switching the pictures back ON restarts the live round under an open panel", () => {
   const fs = require("node:fs");
   const path = require("node:path");

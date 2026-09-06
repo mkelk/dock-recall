@@ -398,6 +398,32 @@ after_control=$(launch_json "$CONTROL_ID")
 
 pass "migrated on disk: v$SEED_VERSION -> v$CURRENT_VERSION, subject launch $SEED_SUBJECT_LAUNCH -> $after_subject, control launch $after_control unchanged"
 
+# AND THE PICTURE GENERATION, on the same persisted file (epic wau, schema v7).
+#
+# The DoD's second clause — "a v6 file carrying `pictured` flags and any
+# `pictureConsent` value reads clean, its identities and layouts intact, and its
+# stored pictures survive on disk" — has a shape this suite can check and a shape
+# it cannot. What it CAN check is the file: whatever generation was seeded, the
+# persisted result carries the one switch and neither retired key. That is
+# asserted here rather than in the captures test because THIS is the file in
+# this suite that performs a migration and writes the result back; the captures
+# test seeds the current version and so migrates nothing.
+#
+# WHAT THIS DOES NOT CLAIM: that a v6 file with per-identity `pictured` flags was
+# read. This test seeds v$SEED_VERSION, and inventing a second seed to reach v6
+# would be a fixture written to satisfy a sentence rather than a case anybody
+# has. The v6 -> v7 derivation — every one of its four answers, and the dropped
+# per-identity flags — is pinned in node, in tests/state.test.js, against files
+# hand-shaped for exactly that; see tests/acceptance/README.md.
+jq -e '.pictures == true
+  and (has("pictureConsent")|not)
+  and ([.identities[]|select(has("pictured"))]|length) == 0' "$STATE" >/dev/null || {
+  diagnostics
+  fail "the migrated file carries the v7 switch and neither retired consent key" \
+    "the persisted file says $(jq -c '{pictures, pictureConsent, pictured: [.identities[]|.pictured?]}' "$STATE" 2>&1)"
+}
+pass "and it is a v$CURRENT_VERSION picture generation on disk: pictures true, no pictureConsent, no per-identity pictured"
+
 # ------------------------------------------------ 6. the subject is repairable
 
 # Assertion (d). Empty is not a dead end, it is the ONE repair the existing

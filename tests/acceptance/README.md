@@ -557,6 +557,17 @@ which are claims about a single window rather than about the tool:
 |---|---|
 | `pictures` | may this tool photograph the windows it watches? **Always present and always a boolean.** Schema v7, beside `paused`, so it survives a shell restart — which is what makes it a fact about the tool and not about one panel session. `true` by default: a watched app is a pictured one |
 
+**The v6 -> v7 derivation is pinned in node, not here.** The VM seeds no v6
+file: the migration test seeds v3 (its subject is v3's retired `--app-id`
+launch) and the captures test seeds the current version, so nothing in this
+suite reads a file carrying `pictureConsent` or per-identity `pictured` flags.
+What the suite DOES assert is the other end — the migration test's persisted
+file must carry `pictures: true` and neither retired key — and the derivation
+itself, all four answers and the dropped per-app flags, lives in
+`tests/state.test.js` against files hand-shaped for it. That split is
+deliberate: a v6 fixture invented here would be a seed written to satisfy a
+sentence in a DoD rather than a case anybody has.
+
 **Before the state file has been read**, the panel reports the schema's default —
 `pictures: true` — because that is what `StateModel.defaultState()` says, and it
 takes no picture at all: `startLiveRound` is guarded on `stateLoaded` and is

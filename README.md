@@ -340,7 +340,13 @@ qmllint -I "$OMARCHY_PATH/shell" *.qml   # every QML file, from a glob — never
 One command for the whole stack, cheapest tier first, and **every step runs even
 after one fails**: the point of a pre-release pass is to learn everything that is
 wrong in one sitting, not one thing per run. It prints a table and exits nonzero
-if anything did. A real run of it, 2026-09-02:
+if anything did.
+
+**A HISTORICAL TRANSCRIPT follows** — a real run of 2026-09-02, kept verbatim as
+evidence that the summary reads the suite's own footer. Its numbers are that
+day's and are deliberately NOT refreshed: a transcript edited to match today is
+no longer evidence of anything. The count to trust is the one in the command
+block above, which is quoted in exactly one place for that reason.
 
 ```
 #  STEP                                             RESULT   SECONDS

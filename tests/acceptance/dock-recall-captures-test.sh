@@ -270,6 +270,36 @@ poll() {
   return 1
 }
 
+# RECORD ONCE, AND THEN WAIT — never `poll <n> some_function_that_records`.
+#
+# A poll whose body issues `record` re-issues it on the SUCCESSFUL iteration
+# too: the loop records, the check it is polling for finally passes, and the
+# section proceeds with the round that very call just started STILL IN FLIGHT.
+# Everything after it — an untick, a dock, a switch — then lands mid-round,
+# which is the interleave the store's write-time gate exists for and is not what
+# any of these steps means to be testing. It is also how a step can pass for the
+# wrong reason: the assertion sees the PREVIOUS round's files while a new round
+# is still writing over them.
+#
+# THE ONE LEGITIMATE RETRY is the busy refusal. `record` answers "cannot-record"
+# when `canRecord` is dimmed, and a capture round in flight is exactly what dims
+# it — so "ask again in a second" is the right answer to that and only to that.
+# "The file does not say what I wanted yet" is not a reason to record again; it
+# is a reason to keep waiting, which is what the caller's own poll is for.
+record_once() {
+  local what="$1" answer deadline
+  deadline=$((SECONDS + 60))
+  while :; do
+    answer=$(omarchy-shell "$IPC_TARGET" record 2>&1)
+    [[ $answer == "recorded" ]] && return 0
+    [[ $answer == "cannot-record" ]] || break
+    ((SECONDS < deadline)) || break
+    sleep 1
+  done
+  diagnostics
+  fail "panel IPC records ($what)" "record answered '$answer'"
+}
+
 # Every .jpg the cache holds right now, one per line, sorted. A missing
 # directory is an empty listing and NOT an error — that is the state the plugin
 # ships in and the state a cleaner leaves behind.
@@ -344,6 +374,14 @@ ensure_pkg() {
 }
 
 diagnostics() {
+  # THE SHELL INSTANCES FIRST, because two of this file's failures are only
+  # legible against them. `dr_log` reads the log of the shell at
+  # $OMARCHY_PATH/shell, and this test restarts that shell — so a failure after
+  # the restart can be "the assertion is wrong" or "the log being read belongs
+  # to a process that is gone", and nothing else in this dump tells those apart.
+  # `qs list -j` names every running instance with its pid and its path.
+  echo "--- quickshell instances ---" >&2
+  qs list -j >&2 2>/dev/null || echo "(qs list unavailable)" >&2
   echo "--- cache dir ---" >&2
   ls -la "$CACHE_DIR" >&2 2>/dev/null || echo "(no $CACHE_DIR)" >&2
   ls -ld "$CACHE_PARENT" >&2 2>/dev/null || echo "(no $CACHE_PARENT)" >&2
@@ -846,17 +884,21 @@ fi
 # landing on disk — so an assertion made the instant the picture appears would
 # have passed on the build that still had one.
 sleep 3
-no_prompt ||
+no_prompt || {
+  diagnostics
   fail "no prompt appears after the pictures are stored" \
     "a consent key turned up in the payload $(panel_state_json | jq -c '{consentOpen, pictureConsent}' 2>&1)"
+}
 
 # AND THE STATE FILE SAYS THE SAME. The payload is what the panel reports; this
 # is what it wrote, and it is the half that survives a restart (asserted at 10b).
 file_keys=$(jq -r '([select(has("pictureConsent"))]|length)
   + ([.identities[]|select(has("pictured"))]|length)' "$STATE")
-[[ $file_keys == "0" ]] ||
+[[ $file_keys == "0" ]] || {
+  diagnostics
   fail "no consent key is written to the state file" \
     "the state file grew a pictureConsent or a per-identity pictured after the record"
+}
 file_switch=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
 [[ $file_switch == "true" ]] ||
   fail "the switch is on in the state file (captures)" "the state file says pictures '$file_switch'"
@@ -1255,9 +1297,23 @@ off_on_disk=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
 pass "pictures off: the live ones stopped in the open panel, every stored one deleted, and the file says so"
 
 # AND BACK ON, in the same panel. The recorded half needs nothing but the next
-# Record; the LIVE half needs the round re-run, because a live round is once per
+# Record; the LIVE half needs the round RE-RUN, because a live round is once per
 # panel session — so this is the assertion that the switch drops that latch
 # rather than leaving the user to close and reopen the panel.
+#
+# THE PAYLOAD ALONE CANNOT TELL A NEW ROUND FROM THE OLD PIXELS DRAWN AGAIN, and
+# that is why the bracket is counted here. `live_pictures_gone` above is
+# satisfied by the DRAW-TIME gate on its own — `liveSourceOf` returns "" while
+# the switch is off whatever is still in memory — so a build that switched off
+# without calling `clear()` AND switched on without dropping the latch passes
+# both halves: the old URLs simply start drawing again. Each mutation alone is
+# caught; the PAIR is not, and a pair is what a single missing `if` produces.
+#
+# LiveCaptureStore opens every round with a line naming what it is about to do
+# (the bracket rule, tick 070) — the same line 10b waits on — so a round that
+# genuinely ran is a round that COUNTED, and that is a fact no draw-time gate
+# can fake.
+rounds_before_on=$(dr_log | grep -c "live picture round:")
 pictures_on=$(omarchy-shell "$IPC_TARGET" setPictures on 2>&1)
 [[ $pictures_on == "on" ]] ||
   fail "the pictures can be switched back on (captures)" "setPictures on answered '$pictures_on'"
@@ -1267,13 +1323,17 @@ on_on_disk=$(jq -r '.pictures|tostring' "$STATE" 2>/dev/null)
     "the state file says pictures '$on_on_disk'"
 
 # NO REOPEN — this poll is the whole point of the assertion, so nothing here
-# hides or summons the panel.
-if ! poll "$ROUND_S" live_pictures_drawn; then
+# hides or summons the panel. BOTH halves: a NEW round opened (the count grew)
+# and it produced pictures the panel is drawing.
+live_round_is_new() {
+  [[ $(dr_log | grep -c "live picture round:") -gt $rounds_before_on ]] && live_pictures_drawn
+}
+if ! poll "$ROUND_S" live_round_is_new; then
   diagnostics
-  fail "switching the pictures back on runs a live round without a panel reopen" \
-    "$(panel_state_json | jq -c '{pictures, chips: [.chips[]|{key, liveCapture, liveSource}]}' 2>&1)"
+  fail "switching the pictures back on runs a NEW live round without a panel reopen" \
+    "rounds logged before the switch: $rounds_before_on, now $(dr_log | grep -c "live picture round:") — $(panel_state_json | jq -c '{pictures, chips: [.chips[]|{key, liveCapture, liveSource}]}' 2>&1)"
 fi
-pass "pictures on again: a live round ran in the panel that was already open"
+pass "pictures on again: a NEW live round opened and drew, in the panel that was already open"
 
 # AND THE NEXT RECORD STORES AGAIN. The recorded half of "on resumes", and the
 # one the tooltip promises.
@@ -1440,9 +1500,11 @@ no_live_after_restart() {
     and ([.chips[]|select((.iconSource|type) == "string"
        and (.iconSource|length) > 0)]|length) == (.chips|length)' >/dev/null
 }
-no_live_after_restart ||
+no_live_after_restart || {
+  diagnostics
   fail "a panel opened with the pictures off takes none" \
     "$(panel_state_json | jq -c '[.chips[]|select(.liveCapture == true)|{key, liveSource}]' 2>&1)"
+}
 
 # AND A RECORD STORES NOTHING, which is the recorded half of the same fact —
 # waited on the same way, through the round's own line rather than a clock. With
@@ -1457,9 +1519,11 @@ if ! poll "$ROUND_S" record_took_nothing; then
   fail "a Record with the pictures off says it took none" \
     "no 'no pictures for this recording' line after a Record with the switch off"
 fi
-cache_is 0 ||
+cache_is 0 || {
+  diagnostics
   fail "a Record with the pictures off stores nothing" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
+}
 pass "the switch survived a shell restart: a fresh panel reports it off, its live round planned nothing and its Record stored nothing"
 
 # Back on for the rest of the file.
@@ -1514,13 +1578,20 @@ await_panel_docked "two desks"
 
 # The panel has to have SEEN the new desk before it can record for it — a Record
 # on a stale monitor list would file the second layout under the first key and
-# quietly turn this into a one-desk test again.
-docked_record() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && layouts_are 2; }
-if ! poll 60 docked_record; then
+# quietly turn this into a one-desk test again. `await_panel_docked` above is
+# that precondition, which is why ONE record is enough here: the retry loop this
+# replaced was insurance against a wait that already happened, and it bought the
+# insurance by leaving a round in flight for the untick and the switch below.
+record_once "the second desk"
+
+# NOT A POLL, for the reason step 5 spells out (tick m4s): "recorded" is a
+# promise that the bytes are on disk, and polling would turn a broken promise
+# into a slow one.
+layouts_are 2 || {
   diagnostics
   fail "panel IPC records a SECOND topology (captures)" \
-    "after docking $DOCK_OUTPUT the state file still holds $(layout_count) layout(s)"
-fi
+    "after docking $DOCK_OUTPUT the state file holds $(layout_count) layout(s)"
+}
 if ! poll "$ROUND_S" cache_is 4; then
   diagnostics
   fail "each desk stores its own pictures (captures)" \
@@ -1584,8 +1655,8 @@ untick_switch_on=$(omarchy-shell "$IPC_TARGET" setPictures on 2>&1)
     "setPictures on answered '$untick_switch_on'"
 
 # The dock from 10d is still plugged in, so this desk is desk TWO.
-untick_record_two() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 2; }
-if ! poll 60 untick_record_two; then
+record_once "the second desk, for the untick round"
+if ! poll "$ROUND_S" cache_is 2; then
   diagnostics
   fail "the second desk has pictures to untick away (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
@@ -1594,11 +1665,30 @@ fi
 hyprctl output remove "$DOCK_OUTPUT" >/dev/null 2>&1
 wait_until "the fake dock went for the untick round (captures)" 20 monitor_absent "$DOCK_OUTPUT"
 await_panel_undocked "the untick round"
-untick_record_one() { [[ $(omarchy-shell "$IPC_TARGET" record 2>&1) == "recorded" ]] && cache_is 4; }
-if ! poll 60 untick_record_one; then
+rounds_before_untick=$(dr_log | grep -c "picture(s) stored")
+record_once "the first desk, for the untick round"
+if ! poll "$ROUND_S" cache_is 4; then
   diagnostics
   fail "both desks have pictures to untick away (captures)" \
     "$CACHE_DIR holds $(cache_count): $(cache_files | tr '\n' ' ')"
+fi
+
+# AND THE ROUND HAS CLOSED before the untick below. `cache_is 4` is the last
+# file LANDING, which is not the same as the round being over — and the untick
+# is precisely the act whose interleave with a live round the store's write-time
+# gate exists for, so a step that means to test the eviction must not be testing
+# that gate by accident.
+#
+# THE OBSERVABLE IS THE ROUND'S OWN CLOSING LINE, counted, and it is deliberately
+# not `record` answering something other than "cannot-record": asking the panel
+# to record is how you find out a round has finished AND how you start the next
+# one, and a probe that mutates what it measures is the shape this whole section
+# was repaired out of.
+records_closed() { [[ $(dr_log | grep -c "picture(s) stored") -gt $rounds_before_untick ]]; }
+if ! poll "$ROUND_S" records_closed; then
+  diagnostics
+  fail "the capture round closed before the untick (captures)" \
+    "no new 'picture(s) stored' line after the first desk's Record — the round never reported"
 fi
 
 # The row to untick, found the way a finger finds it: from the WINDOW, through
