@@ -147,6 +147,12 @@ WIDE_TITLE="dock-recall-wide"
 WIDE_IDENTITY="dr-wide"
 TALL_TITLE="dock-recall-tall"
 TALL_IDENTITY="dr-tall"
+# The two of them as the recording will list them. Every "which apps does the
+# layout name" check below reads the file through jq's `sort`, so the expected
+# side is sorted by the SAME tool — "dr-tall" sorts before "dr-wide", and the
+# first remote gate run (j18) failed on a literal written in declaration order
+# against a list jq had sorted. Like with like, computed once.
+EXPECTED_APPS=$(jq -rn --arg a "$WIDE_IDENTITY" --arg b "$TALL_IDENTITY" '[$a, $b] | sort | join(",")')
 APP_CLASS="foot"
 
 PANEL_NAMESPACE="mkelk-dock-recall"
@@ -744,9 +750,11 @@ if [[ -z $TOPOLOGY_KEY ]]; then
 fi
 
 recorded_apps=$(jq -r --arg k "$TOPOLOGY_KEY" '[.layouts[$k].apps[]|.identityId]|sort|join(",")' "$STATE")
-[[ $recorded_apps == "$WIDE_IDENTITY,$TALL_IDENTITY" ]] ||
+if [[ $recorded_apps != "$EXPECTED_APPS" ]]; then
+  diagnostics
   fail "both watched apps are in the recording (captures)" \
-    "the layout names '$recorded_apps', expected '$WIDE_IDENTITY,$TALL_IDENTITY'"
+    "the layout names '$recorded_apps', expected '$EXPECTED_APPS'"
+fi
 
 # THE EXPECTED NAME, asked of the plugin's own naming function with the topology
 # key the record actually wrote. The test does not re-implement the key — that
@@ -1381,7 +1389,7 @@ fi
 # doing its whole job while the capture path was failing.
 blocked_apps=$(jq -r --arg k "$TOPOLOGY_KEY" '[.layouts[$k].apps[]|.identityId]|sort|join(",")' "$STATE" 2>/dev/null)
 blocked_stamp=$(jq -r --arg k "$TOPOLOGY_KEY" '.layouts[$k].recordedAt//empty' "$STATE" 2>/dev/null)
-if [[ $blocked_apps != "$WIDE_IDENTITY,$TALL_IDENTITY" || -z $blocked_stamp ]]; then
+if [[ $blocked_apps != "$EXPECTED_APPS" || -z $blocked_stamp ]]; then
   chmod 700 "$CACHE_PARENT"
   diagnostics
   fail "the record is complete though no picture could be stored" \
