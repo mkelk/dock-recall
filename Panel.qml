@@ -4154,8 +4154,18 @@ Item {
               // the numbers happen to settle.
               height: Math.max(root.mapMinHeight, mapCanvas.height)
                 + mapSurface.contentTopInset + mapSurface.contentBottomInset
-              color: Style.normalFillFor(root.foreground, Color.accent)
-              borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+              // THE CARD IS THE FRAME (tick ep6). This surface drew a filled,
+              // outlined box inside the card's own 2-px outline, and the monitor
+              // box drew a third inside that — five nested rectangles in the
+              // same beige line, from the card down to a window's picture, with
+              // no hierarchy for the eye to read. It is a spacer now: the
+              // padding stays, because that is the gap between the map and
+              // everything above and below it, and both the fill and the line
+              // are gone. The faint ground moved DOWN, to the workspace tile,
+              // where it separates one workspace from the next instead of
+              // separating the map from the card it is already inside.
+              color: "transparent"
+              borderSpec: Border.none()
               radius: Style.cornerRadius
               padding: Style.space(8)
 
@@ -4234,10 +4244,31 @@ Item {
                       // they need, and the map grows rather than shrinking them.
                       height: monitorColumn.implicitHeight
                         + monitorRect.contentTopInset + monitorRect.contentBottomInset
+                      // THE MONITOR BOX IS GONE, AND THE MONITOR SECTION IS NOT
+                      // (tick ep6). What a reader needs from this level is which
+                      // tiles belong to which screen, and on a laptop — one
+                      // monitor, every tile under it — there is no such question
+                      // to answer: the box was a rectangle drawn around
+                      // everything, inside two more. So it draws nothing at all
+                      // now, on every monitor count, and the labels below carry
+                      // the separation when there is more than one screen.
+                      //
+                      // IT STILL EXISTS, AND THAT IS DELIBERATE RATHER THAN
+                      // LAZY. `morphOverlay.height` binds to `monitorRow.height`
+                      // (below), and the workspace-canvas report path mirrors
+                      // only `workspaceSlot.x/y` (MapWorkspace.qml) — so a
+                      // parent added or removed conditionally moves every box
+                      // under it with no handler firing anywhere, and every
+                      // morph flight then lands on a stale origin, silently.
+                      // Change what these elements DRAW; never whether they are
+                      // there.
                       color: "transparent"
-                      borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+                      borderSpec: Border.none()
                       radius: Style.cornerRadius
-                      padding: Style.space(5)
+                      // Nothing to hold off a border that is no longer drawn.
+                      // The gap between sections is the Row's `mapGap`, and the
+                      // gap around the whole map is mapSurface's padding.
+                      padding: 0
 
                       Column {
                         id: monitorColumn
@@ -4249,9 +4280,22 @@ Item {
                         anchors.rightMargin: monitorRect.contentRightInset
                         spacing: Style.space(4)
 
+                        // THE LABEL ROW, AND ONLY WHEN THERE IS SOMETHING TO
+                        // TELL APART. On one monitor the name is a caption over
+                        // the only thing on screen; on two or more it is what
+                        // says which tiles are which screen's. A Column skips an
+                        // invisible item entirely — no height, no spacing — so
+                        // on a laptop the section IS its workspace Flow, with no
+                        // box and no label above it.
+                        //
+                        // The wrapper carries the same condition as the Texts
+                        // inside it rather than leaving them invisible in a row
+                        // that still reserves their height.
                         Item {
+                          id: monitorLabelRow
                           width: parent.width
                           implicitHeight: monitorName.implicitHeight
+                          visible: root.mapModel.monitors.length > 1
 
                           Text {
                             id: monitorName
@@ -4261,6 +4305,7 @@ Item {
                             font.family: root.fontFamily
                             font.pixelSize: Style.font.caption
                             anchors.left: parent.left
+                            visible: root.mapModel.monitors.length > 1
                           }
 
                           Text {
@@ -4272,8 +4317,10 @@ Item {
                             font.pixelSize: Style.font.caption
                             anchors.right: parent.right
                             // A narrow laptop rectangle has room for the name or
-                            // the mode, not both.
-                            visible: parent.width > monitorName.implicitWidth + monitorSize.implicitWidth + Style.space(8)
+                            // the mode, not both — and on a single monitor there
+                            // is no name to place either of them beside.
+                            visible: root.mapModel.monitors.length > 1
+                              && parent.width > monitorName.implicitWidth + monitorSize.implicitWidth + Style.space(8)
                           }
                         }
 
@@ -4395,24 +4442,42 @@ Item {
                       // second drawing of the same thing, free to drift from the
                       // first, and it is on screen for 120 ms. What has to be
                       // recognisable while it moves is which app it is.
+                      //
+                      // BUT IT WEARS WHAT THE CHIP WEARS (tick ep6). The edge's
+                      // width is the chip's `edgeWidth` said again here —
+                      // `Math.max(1, Style.normalBorderWidth)`, so a theme moves
+                      // both together — and the icon follows the chip's rule
+                      // rather than a cap of its own. A flight that changes
+                      // shape in mid-air is the one thing the eye is guaranteed
+                      // to catch, because motion is what it was already
+                      // following.
                       radius: Style.cornerRadius
                       color: Style.selectedFillFor(root.foreground, Color.accent)
-                      border.width: 1
+                      border.width: Math.max(1, Style.normalBorderWidth)
                       border.color: Color.accent
 
                       Image {
+                        id: flyingIcon
                         anchors.centerIn: parent
-                        // The icon never outgrows the rectangle carrying it, and
-                        // a rectangle too small to hold one shows none — the
-                        // flight is still the fill moving, which is the part
-                        // that reads at speed.
-                        readonly property int side: Math.min(Style.space(16),
-                          Math.floor(Math.min(flyingChip.width, flyingChip.height) - Style.space(4)))
-                        visible: side > 0
+                        // THE CHIP'S OWN ICON RULE: half the shorter side,
+                        // floored at 8 px and capped where a chip's is. Half a
+                        // rectangle always fits inside it, so the fit test the
+                        // old `- Style.space(4)` was doing is in the formula.
+                        // A rectangle too small to hold the floor shows no icon
+                        // at all — the flight is still the fill moving, which is
+                        // the part that reads at speed.
+                        readonly property int side: Math.round(Math.max(8,
+                          Math.min(Style.space(56),
+                            Math.min(flyingChip.width, flyingChip.height) * 0.5)))
+                        visible: Math.min(flyingChip.width, flyingChip.height) >= 8
                         width: Math.max(1, side)
                         height: Math.max(1, side)
-                        sourceSize.width: Math.max(1, side)
-                        sourceSize.height: Math.max(1, side)
+                        // Decoded at PHYSICAL pixels, like every other icon the
+                        // panel draws: the rectangle it is flying on is the size
+                        // of the chip it left, so a logical-size decode is an
+                        // upscaled PNG for the whole flight.
+                        sourceSize.width: Math.max(1, Math.round(width * Screen.devicePixelRatio))
+                        sourceSize.height: Math.max(1, Math.round(height * Screen.devicePixelRatio))
                         fillMode: Image.PreserveAspectFit
                         // LOADED SYNCHRONOUSLY, unlike every other icon in this
                         // panel, because this delegate lives about 120ms and is
