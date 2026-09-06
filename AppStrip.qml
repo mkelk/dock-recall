@@ -190,7 +190,7 @@ Grid {
       // the last two beside the switch; the cell has no room and no need, since
       // the map above says where things are.
       readonly property string tipText: PanelModel.wrapTooltip(
-        PanelModel.rowHoverText(appCell.modelData),
+        PanelModel.rowTooltipText(appCell.modelData),
         appStrip.panel.chipTooltipColumns)
 
       // The app's icon, resolved exactly as a chip's is — identity first, class
@@ -321,8 +321,8 @@ Grid {
       // now one accent mark: a command was derived for this app and one click
       // writes it into the state file. It appears only when there is something
       // to press — `launchRepairable` — so it is an offer and never a label,
-      // and the words themselves survive in the tooltip, where
-      // PanelModel.rowHoverText puts the launch hint.
+      // and the words themselves survive in the tooltip, whose last line is
+      // PanelModel.rowTooltipText's launch hint.
       //
       // A PLAIN "+" AND NOT A SYMBOL, measured rather than assumed: the theme
       // picks the font family, the default is JetBrainsMono Nerd Font, and

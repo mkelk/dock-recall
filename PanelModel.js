@@ -4309,6 +4309,22 @@ function chipTooltipText(chip) {
 // The same, for a row. A row has no window title — it is one line per APP, and
 // an app with three windows has three titles — so it leads with the app's name
 // instead.
+//
+// THE LAST LINE IS THE LAUNCH HINT, and it is here rather than in a second
+// function (tick pct). The hint used to be PRINTED on the row, in italics
+// beside the placement caption; the strip has no captions — a cell is an icon,
+// a name and a switch — so "no launch cmd" has nowhere left to be, and it is
+// the one thing on that row a user cannot work out from the map. Tick 0kv could
+// not put it here because the strip may not edit tests/panel.test.js, which
+// pins this function's exact lines for a watched terminal row, and every
+// WATCHED row appRows builds carries a launchHint (an identity with no launch
+// command says "no launch cmd"; an unwatched class row carries "", and gets no
+// line). So 0kv shipped a `rowHoverText` wrapper and left the fold to the tick
+// that owns both files. This is that tick: one function, one answer, and the
+// panel.test.js pin re-stated with the hint in it.
+//
+// Empty hint, no line: joinLines drops it, so a row with nothing to say about
+// its launch reads exactly as it did before — no trailing blank.
 function rowTooltipText(row) {
   if (!row) return "";
   return joinLines([
@@ -4316,31 +4332,9 @@ function rowTooltipText(row) {
     row.className,
     row.position,
     driftLine(row.drifted, row.driftTo),
-    row.mismatch
+    row.mismatch,
+    row.launchHint
   ]);
-}
-
-// WHAT A STRIP CELL SAYS ON HOVER (tick 0kv): everything the row tooltip says,
-// plus what Restore can and cannot do for this app.
-//
-// The launch hint used to be PRINTED on the row, in italics beside the
-// placement caption. The strip has no captions — a cell is an icon, a name and
-// a switch — so the hint has nowhere left to be except here, and "no launch
-// cmd" is the one thing on that row a user cannot work out from the map.
-//
-// A FUNCTION OF ITS OWN rather than a sixth line inside rowTooltipText, and the
-// reason is worth stating because it is not a design preference: tests/
-// panel.test.js pins rowTooltipText's exact lines for a watched terminal row
-// ("a row tooltip leads with the app, not with a window it does not have"), and
-// EVERY row appRows builds carries a launchHint — a watched identity with no
-// launch command says "no launch cmd" — so a sixth line there is a different
-// answer to a question that test has already been given. This tick may not edit
-// that file (the epic's partition keeps it for the wave that owns it), so the
-// strip asks its own question instead. Folding the two back together is a
-// judgement for the tick that owns both files; see tick pct.
-function rowHoverText(row) {
-  if (!row) return "";
-  return joinLines([rowTooltipText(row), row.launchHint]);
 }
 
 // One live window as a chip.
@@ -7267,7 +7261,6 @@ if (typeof module !== "undefined") {
     REFUSAL_TAGS: REFUSAL_TAGS,
     chipTooltipText: chipTooltipText,
     rowTooltipText: rowTooltipText,
-    rowHoverText: rowHoverText,
     verdictIndexByOccurrence: verdictIndexByOccurrence,
     driftIndexByAddress: driftIndexByAddress,
     occurrenceOf: occurrenceOf,

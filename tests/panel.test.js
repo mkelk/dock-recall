@@ -2732,15 +2732,28 @@ test("a row tooltip leads with the app, not with a window it does not have", () 
   const scene = linkScenario();
   const row = scene.rows.find((r) => r.identityId === "terminal");
   const lines = panel.rowTooltipText(row).split("\n");
-  assert.deepStrictEqual(lines, ["Terminal", "foot", "eDP-1 · ws 1"]);
+  // The app, its class, where it is — and LAST what Restore can do for it.
+  // That fourth line arrived with tick pct: the strip has no captions left to
+  // print the launch hint on, so the tooltip is the only place it can be said,
+  // and every WATCHED row appRows builds has one (this identity has no launch
+  // command recorded, which is exactly "no launch cmd").
+  assert.deepStrictEqual(lines, ["Terminal", "foot", "eDP-1 · ws 1", "no launch cmd"]);
+
+  // An unwatched class row has no launchHint at all — nothing was ever recorded
+  // to launch — and gets no line rather than an empty one.
+  const unwatched = scene.rows.find((r) => r.identityId === "");
+  assert.strictEqual(unwatched.launchHint, "", "an unwatched row has no launch hint to give");
+  assert.strictEqual(panel.rowTooltipText(unwatched).split("\n").length, 3);
 
   // A ghost row has no class at all, and simply says less rather than leaving a
   // hole where the class line would be.
   const ghost = {
     key: "slack", identityId: "slack", className: "", linkKey: "id:slack", name: "Slack",
-    position: "DP-2 · ws 4 · not running", drifted: false, driftTo: "", mismatch: ""
+    position: "DP-2 · ws 4 · not running", drifted: false, driftTo: "", mismatch: "",
+    launchHint: "no launch cmd"
   };
-  assert.deepStrictEqual(panel.rowTooltipText(ghost), "Slack\nDP-2 · ws 4 · not running");
+  assert.deepStrictEqual(panel.rowTooltipText(ghost),
+    "Slack\nDP-2 · ws 4 · not running\nno launch cmd");
 });
 
 test("a tooltip never contains a blank line, and empty means empty", () => {
