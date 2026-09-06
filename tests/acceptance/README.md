@@ -356,7 +356,16 @@ would be a second writer with none of that discipline.
       "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
       "iconResolved": true, "treatment": "pill",
       "fillState": "watched", "edgeTone": "drift" }
-  ]
+  ],
+  "rows": [
+    { "key": "obsidian", "name": "Obsidian", "watched": true, "ghost": false,
+      "iconSource": "file:///usr/share/icons/hicolor/scalable/apps/obsidian.svg",
+      "iconResolved": true, "linkKey": "id:obsidian", "linked": true,
+      "hoverText": "Obsidian\nmd.obsidian.Obsidian\neDP-1 · ws 3" }
+  ],
+  "strip": { "columns": 4, "rowHeight": 28, "height": 58 },
+  "mapHeight": 214,
+  "panelHeight": 604
 }
 ```
 
@@ -418,6 +427,48 @@ nothing.
 `renderPath`, `placed`, `width`, `height`, `iconSource` and `iconResolved` are
 `null` while the delegate that draws the chip has not reported yet — a transient
 of the first frames, which is why every assertion here is polled.
+
+`rows[].hoverText` is the newest field the distinction carries, and the clearest
+case of it. A strip cell shows a tooltip only while the pointer is on it, so
+"what is this cell saying right now" has no answer at all for a cell nobody is
+hovering — that is **absent**, not `null` and certainly not `""`, which would be
+a second spelling of the same silence and would make "the tooltip is empty"
+indistinguishable from "there is no tooltip". The key is therefore present
+exactly while that row's `linked` is `true`:
+
+```bash
+omarchy-shell dock-recall hoverLink id:obsidian
+omarchy-shell dock-recall state | jq '.rows[]|select(.linked)|has("hoverText")'  # true
+omarchy-shell dock-recall state | jq '.rows[]|select(.linked|not)|has("hoverText")'  # false
+```
+
+It is gated twice, and the second gate is not spare. The delegate states the key
+only while it is lit, so a cell nobody has ever hovered has no text in the report
+store at all; but that store **merges and is never pruned** (the registries in
+`Panel.qml` explain why), so without a read-time gate the last cell hovered would
+keep reporting its text after the pointer left. `panelState()` therefore adds the
+key only when the delegate's own reported `linked` is `true` — the same value
+already in the payload, so the two halves of the answer cannot disagree.
+
+### The strip's shape, and the two heights it is judged against
+
+`strip` is always present, and its three numbers come from the strip **as it was
+laid out** rather than from `PanelModel.stripLayout` called a second time in the
+payload builder: `columns` is how many cells share the first line, `rowHeight` is
+a cell's actual height, `height` is the whole component's. A number restated from
+`Style` would pass on a strip whose cells had all collapsed, and a second call to
+the packing function would be the panel agreeing with itself.
+
+`mapHeight` (the map surface's own height) and `panelHeight` (the card's) travel
+with it because the question the redesign has to answer is a **comparison** — the
+panel is not taller than the map needs — and `strip.height <= mapHeight` is a real
+finding only because the two heights are laid out by chains that never meet.
+
+The strip has no captions: an app is an icon, a name and a small switch, several
+to a line, and the placement the old 54-px row printed down its right-hand side
+is hover text now. So no `rows[]` entry carries a `where`, `placement` or
+`caption` key — nor `pictured` or `picturable`, which went with the consent model
+— and what it carries in their place is the `hoverText` above.
 
 ### Icons
 

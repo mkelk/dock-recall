@@ -1,36 +1,60 @@
-// AppStrip.qml — the flat list under the map: one row per app, and everything
-// drawn on it — the icon, the switch, the launch hint and the placement text.
+// AppStrip.qml — the apps under the map, as a STRIP: an icon, a name and a
+// small switch, several to a line, and everything else on hover.
 //
-// Every row is the shell's Ui/Toggle: the LABELED one, which wraps a
-// ToggleSwitch with `interactive: false` so the ROW owns the click. That is the
-// component this list wanted — a hand-drawn teal square that had to be clicked
-// through the row around it was a checkbox reimplemented, without the kit's
-// fill, border, focus ring or keyboard.
+// WHAT IT REPLACES AND WHY (tick 0kv). This was ten bordered 54-px rows, each
+// one a shell `Ui/Toggle` with a placement caption stranded on the far right —
+// a form, sitting under a map that already says where every window is. The
+// human's verdict on first use was that the panel felt clunky, and this list
+// was half of the reason: it was heavier than the map, it repeated the map, and
+// the one control on it that mattered was a big switch next to a caption nobody
+// needed to read twice. The map is the hero; the strip is the switchboard.
 //
-// Around it, unchanged in role: the app's icon on the left (same resolution
-// path as the chips), and on the right the launch hint and the placement text
-// with its drift colouring. They sit OUTSIDE the Toggle rather than inside it
-// because Toggle gives its label whatever width is left after the switch, and
-// there is no way to reach in past that — anchoring them to the row and the
-// Toggle to them keeps every width derived rather than guessed.
+// THE 54 IS NOT REACHABLE FROM OUT HERE. `Ui/Toggle.qml:45` reads
+// `implicitHeight: Math.max(54, content.implicitHeight + Style.spacing.huge)` —
+// a literal, with no property in front of it — so every row of a list built out
+// of `Ui/Toggle` is 54 px tall whatever it contains. That is why this file uses
+// `Ui/ToggleSwitch` directly instead: the switch inside the labeled row,
+// factored out by the kit for exactly this, with `trackHeight` settable
+// (`ToggleSwitch.qml:58`). The shell does the same thing in its own compact
+// placements — `plugins/panels/network/Panel.qml:1317-1322` sizes the switch
+// off the label beside it rather than off the theme's control height.
+//
+// A CELL IS FIXED-WIDTH, and that is not a detail — it is the answer to
+// "the right edge holds when an app is unwatched". Every cell is
+// `PanelModel.stripLayout`'s `cellWidth`, which is a function of the strip's
+// WIDTH alone, and the name elides against `nameRoom` rather than sizing
+// anything. Unticking an app changes a colour and the position of a knob. It
+// cannot change a cell width, and it cannot change how many cells share a line
+// — which is what the old list did every time, and what tick 5jl had already
+// had to fix once on the caption.
+//
+// A CELL IS PACKED LEFT, and the first VM look is why (finding S1). The switch
+// was anchored to the cell's RIGHT edge, so a short name left ~45 px of nothing
+// between "Dr Panel" and its switch while the next cell's icon began ~16 px
+// past it: the eye filed every switch under the app to its right, and the line
+// read as one run-on control rather than as three apps. Now the icon, the name,
+// the learn mark and the switch sit together at the left, the switch `nameGap`
+// (8) after the name it belongs to, and every pixel a short name does not use
+// falls AFTER the switch where it joins the column gap (20). The distance the
+// eye measures is therefore ~28 px between apps against 8 px within one, and
+// tests/strip.test.js pins that relation rather than the two numbers.
+//
+// WHY A Grid AND NOT A Flow. The strip wants a wide gap between cells (they are
+// separate controls) and a narrow one between lines (they are one list), and
+// QtQuick's `Flow` has a single `spacing` for both axes — it inherits it from
+// QQuickBasePositioner and adds only `flow` and `layoutDirection`. `Grid` is
+// the positioner that carries `rowSpacing` and `columnSpacing` separately, and
+// it is also the one that has a use for `stripLayout`'s `columns`: a Flow wraps
+// by itself and would never ask. Same relationship to its pure function as the
+// map's workspace Flow has to `workspaceGridLayout` — the arithmetic is tested
+// in node, the positioner just obeys it.
 //
 // THREE ROW STATES come out of PanelModel.appRows and all three draw here: an
 // unwatched live window (unchecked, clickable), a watched identity (checked),
 // and a recorded-but-unwatched GHOST (dimmed, and `clickable: false` when there
-// is no pattern left to re-watch from).
-//
-// WHY IT IS ITS OWN FILE. This was `Panel.qml`'s "the flat list" block: 277
-// lines sitting six levels down — a Column in a Column in a ScrollView in a
-// PanelKeyCatcher in a BorderSurface in a PanelWindow — with the row delegate
-// at eight and its tooltip's condition at thirteen. Half of the block is
-// comment (131 lines of the 277), and at that depth the usable column is about
-// fifty-five characters, so the prose that is this list's only explanation cost
-// close to twice the lines it needed and had already begun breaking identifiers
-// across lines to fit: `reportRender()` was written `report` / `Render()`.
-// Extracted in tick kex with no behaviour change at all: the same bindings in
-// the same order, the same comments word for word, rewrapped to a column that
-// fits them. Exactly as tick xk5 moved the map out to MapWorkspace.qml, and for
-// the same reason.
+// is no pattern left to re-watch from). A ghost sits in the same grid as the
+// rest — a strip that reflowed around its ghosts would be telling the user
+// about this component's internals rather than about their desktop.
 //
 // THE INTERFACE IS ONE PROPERTY, the measurement MapWorkspace.qml states at its
 // own top and this file repeats. The strip reads thirteen distinct members of
@@ -39,66 +63,175 @@
 // `learnLaunchFor`, the tooltip width, two colours and the font. Thirteen
 // pass-through properties would be thirteen places to forget one when the next
 // binding needs a fourteenth, so the component takes a handle on the panel
-// itself and asks it directly.
+// itself and asks it directly. `grep -o 'panel\.[a-zA-Z]*' AppStrip.qml | sort
+// -u` is the complete list, and tests/qml-interface.test.js is the guard that
+// every name on it is really declared on Panel.qml's root.
 
 import QtQuick
 import qs.Commons
 import qs.Ui
 import "PanelModel.js" as PanelModel
 
-Column {
+Grid {
   id: appStrip
 
   // THE PANEL — the whole interface, and the reason it is one property is at
-  // the top of this file. Everything this component asks of the panel it asks
-  // through here, so `grep -o 'panel\.[a-zA-Z]*' AppStrip.qml | sort -u` is the
-  // complete list of what an extraction has to keep working.
+  // the top of this file.
   required property var panel
 
-  spacing: Style.space(4)
+  // THE CELL, in Style terms and nowhere else.
+  //
+  // `popupRowHeight` (28 at the default scale) rather than `controlHeight` or
+  // anything derived from `Ui/Toggle`: a cell here is a line in a list you scan,
+  // which is what a popup row is, and not a labeled form control.
+  //
+  // The minimum width is what a cell needs before it stops being readable —
+  // an 18-px icon, a name worth eliding and a 27-px switch — and it is the
+  // number that decides how many columns there are. The line spacing is narrow
+  // because the lines are one list.
+  readonly property int minCellWidth: Style.space(140)
+  readonly property int cellHeight: Style.spacing.popupRowHeight
+
+  // THE COLUMN GAP IS THE WHOLE SEPARATION BETWEEN TWO APPS, and the first VM
+  // look is why it is 20 and not 8 (finding S1). At 8 the switch was ~45 px
+  // from the short name it belongs to and ~16 px from the NEXT cell's icon, so
+  // the eye paired every switch with the wrong app and the line read as one
+  // run-on control: "Dr Panel [on] [icon] Dock Recall N… [off]". The cell is
+  // packed left now so the switch sits 8 px after its own name, and every pixel
+  // of slack in a cell falls AFTER the switch — which makes this gap the
+  // distance the eye actually measures. `Style.space(20)` is the shell's own
+  // multi-column spacing (plugins/panels/network/Panel.qml:1227, a GridLayout's
+  // columnSpacing), and it holds four columns at the panel card's 628 px.
+  readonly property int cellGap: Style.space(20)
+
+  // Breathing room inside a cell, at the two ends where its content meets the
+  // next cell's. Deliberately not `Style.spacing.rowPaddingX` (12): that is a
+  // padding for a full-width row, and on a 140-px cell it would take a fifth of
+  // the width away from the name.
+  readonly property int cellPaddingX: Style.space(4)
+
+  // The gap between the icon and the name, and between the name and what
+  // follows it. The second is the one that does the pairing work: it is a
+  // quarter of the column gap, so a switch is unambiguously nearer to its own
+  // name than to anything in the cell beside it.
+  readonly property int iconGap: Style.space(6)
+  readonly property int nameGap: Style.space(8)
+
+  // How the cells pack, decided by the pure function and obeyed here. See
+  // stripLayout for why the number of cells is not allowed to narrow the grid.
+  readonly property var packing: PanelModel.stripLayout(
+    appStrip.panel.appRows.length, appStrip.width,
+    appStrip.minCellWidth, appStrip.cellGap)
+
+  // WHAT THE STRIP ACTUALLY DID, for the payload — read off the delegates, not
+  // off `packing`. The two agree by construction, which is exactly what makes a
+  // disagreement worth reporting: `packing.columns` is what the arithmetic
+  // asked for, and this is how many cells ended up sharing the first line. A
+  // strip of three apps in a grid four columns wide answers 3, because 3 is
+  // what is on the line.
+  function drawnColumns() {
+    var n = 0
+    for (var i = 0; i < cells.count; i++) {
+      var cell = cells.itemAt(i)
+      // The Grid puts its first line at y 0; every later line is below it.
+      if (cell && cell.y <= 0) n += 1
+    }
+    return n
+  }
+
+  // The height of a cell as laid out, for the same reason: a number restated
+  // from Style would pass on a strip whose cells had all collapsed.
+  function drawnRowHeight() {
+    var first = cells.count > 0 ? cells.itemAt(0) : null
+    return first ? Math.round(first.height) : 0
+  }
+
+  columns: Math.max(1, appStrip.packing.columns)
+  columnSpacing: appStrip.cellGap
+  rowSpacing: Style.space(2)
 
   Repeater {
-    model: panel.appRows
+    id: cells
+    model: appStrip.panel.appRows
 
     delegate: Item {
-      id: appRow
+      id: appCell
       required property var modelData
 
-      width: parent.width
-      height: rowToggle.implicitHeight
-      opacity: appRow.modelData.ghost ? 0.6 : 1.0
+      width: appStrip.packing.cellWidth
+      height: appStrip.cellHeight
+      opacity: appCell.modelData.ghost ? 0.6 : 1.0
+
+      // A cell the panel cannot act on does not offer to be clicked: the
+      // "recorded · no longer watched" cell has no pattern left to re-watch
+      // from (PanelModel.appRows explains why), and its predecessor's ticked
+      // box and dead click were the review finding that rule replaced.
+      readonly property bool clickable: appCell.modelData.clickable !== false
+
+      // HOW MUCH OF THE CELL THE NAME MAY HAVE, which is everything the icon,
+      // the learn mark, the switch and the two paddings do not need. The name
+      // takes the SMALLER of this and what it wants (see cellName), and that
+      // one Math.min is the whole of checklist item 5 inside a cell: a short
+      // name lets the switch come to it, a long one elides against this
+      // boundary, and neither can push the switch past the cell's right edge.
+      readonly property int nameRoom: Math.max(0, appCell.width
+        - appStrip.cellPaddingX * 2
+        - cellIcon.width - appStrip.iconGap
+        - (cellLearn.visible ? cellLearn.implicitWidth + Style.space(4) : 0)
+        - appStrip.nameGap - cellSwitch.implicitWidth)
 
       // Is the pointer on this app — here, or on one of its chips up on the map?
-      readonly property bool linked: panel.hoveredLinkKey !== ""
-        && panel.hoveredLinkKey === appRow.modelData.linkKey
+      readonly property bool linked: appStrip.panel.hoveredLinkKey !== ""
+        && appStrip.panel.hoveredLinkKey === appCell.modelData.linkKey
+
+      // EVERYTHING THE CELL CANNOT FIT, which is now everything but the name:
+      // the window class, where the app is, where it should be, what is wrong
+      // with it, and what Restore can and cannot do for it. The old row printed
+      // the last two beside the switch; the cell has no room and no need, since
+      // the map above says where things are.
       readonly property string tipText: PanelModel.wrapTooltip(
-        PanelModel.rowTooltipText(appRow.modelData),
-        panel.chipTooltipColumns)
+        PanelModel.rowHoverText(appCell.modelData),
+        appStrip.panel.chipTooltipColumns)
 
       // The app's icon, resolved exactly as a chip's is — identity first, class
-      // second, so a ghost row (which has no window and therefore no class)
+      // second, so a ghost cell (which has no window and therefore no class)
       // still finds its own.
-      readonly property string iconSource: panel.iconSourceOf(
-        appRow.modelData.identityId, appRow.modelData.className)
-      readonly property bool iconResolved: panel.iconResolvedOf(
-        appRow.modelData.identityId, appRow.modelData.className)
+      readonly property string iconSource: appStrip.panel.iconSourceOf(
+        appCell.modelData.identityId, appCell.modelData.className)
+      readonly property bool iconResolved: appStrip.panel.iconResolvedOf(
+        appCell.modelData.identityId, appCell.modelData.className)
 
-      // What this row DREW, read back over IPC. Keyed by the row's own key,
+      // What this cell DREW, read back over IPC. Keyed by the row's own key,
       // which appRows already makes unique across all three states.
       function reportRender() {
-        panel.reportRow(appRow.modelData.key, {
-          name: String(appRow.modelData.name),
-          watched: appRow.modelData.watched === true,
-          ghost: appRow.modelData.ghost === true,
-          iconSource: appRow.iconSource,
-          iconResolved: appRow.iconResolved,
-          // The row's half of the row-to-chip link: the key it answers to, and
+        var report = {
+          name: String(appCell.modelData.name),
+          watched: appCell.modelData.watched === true,
+          ghost: appCell.modelData.ghost === true,
+          iconSource: appCell.iconSource,
+          iconResolved: appCell.iconResolved,
+          // The cell's half of the row-to-chip link: the key it answers to, and
           // whether it is answering right now.
-          linkKey: String(appRow.modelData.linkKey || ""),
-          linked: appRow.linked
-        })
+          linkKey: String(appCell.modelData.linkKey || ""),
+          linked: appCell.linked
+        }
+        // THE TEXT THE TOOLTIP IS SHOWING, and only while there is a tooltip to
+        // show it. Absent otherwise, which is the payload's contract for a key
+        // the panel has nothing to say about — tests/acceptance/README.md,
+        // "Absent vs `null`", is normative. This is the acceptance venue's only
+        // way to read the details the strip moved to hover: it has no pointer
+        // rig, so `hoverLink <key>` lights the cell and the cell says back what
+        // a real pointer would have made it say.
+        //
+        // The registry MERGES, so this key survives in the store after the
+        // hover ends; panelState() gates it on the `linked` above at read time
+        // for exactly that reason, and neither gate is redundant — this one
+        // keeps a text for an app nobody ever hovered out of the store, that
+        // one keeps a stale one out of the payload.
+        if (appCell.linked) report.hoverText = appCell.tipText
+        appStrip.panel.reportRow(appCell.modelData.key, report)
       }
-      onIconSourceChanged: appRow.reportRender()
+      onIconSourceChanged: appCell.reportRender()
       // This was the bug (sm1): the desktop-file scan that resolves an icon
       // lands AFTER open(), so both properties start out ""/false and are
       // re-evaluated once the scan completes. `reportRender()` above is called
@@ -112,34 +245,48 @@ Column {
       // showed the disagreement. (Named, not cited by line number: a line
       // reference is wrong at the next insertion above it, and this one was 120
       // lines out.)
-      onIconResolvedChanged: appRow.reportRender()
-      onLinkedChanged: appRow.reportRender()
-      onModelDataChanged: appRow.reportRender()
-      Component.onCompleted: appRow.reportRender()
+      onIconResolvedChanged: appCell.reportRender()
+      onLinkedChanged: appCell.reportRender()
+      // One handler per captured property, `hoverText` included — the whole of
+      // the rule sm1 above cost us, applied to the field this tick adds.
+      onTipTextChanged: appCell.reportRender()
+      onModelDataChanged: appCell.reportRender()
+      Component.onCompleted: appCell.reportRender()
 
-      // The link's list-side listener stays on the ROW rather than moving into
-      // the Toggle: it has to cover the icon and the placement text too, and it
-      // has to keep working on a row the Toggle itself is disabled on.
+      // The link's list-side listener stays on the CELL rather than moving into
+      // the switch: it has to cover the icon and the name too, and it has to
+      // keep working on a cell the click is disabled on.
       HoverHandler {
-        id: rowHover
+        id: cellHover
         onHoveredChanged: {
-          if (rowHover.hovered) panel.setHoveredLink(appRow.modelData.linkKey)
-          else panel.clearHoveredLink(appRow.modelData.linkKey)
+          if (cellHover.hovered) appStrip.panel.setHoveredLink(appCell.modelData.linkKey)
+          else appStrip.panel.clearHoveredLink(appCell.modelData.linkKey)
         }
         // Re-claim the key on every move too — see the chip MouseArea's
         // onPositionChanged for why: a live pointer must always re-assert its
         // key, not just on entry.
         onPointChanged: {
-          if (rowHover.hovered) panel.setHoveredLink(appRow.modelData.linkKey)
+          if (cellHover.hovered) appStrip.panel.setHoveredLink(appCell.modelData.linkKey)
         }
       }
 
+      // HOVER, as a layer under the cell's content and in the map's own
+      // language: the same `hoverFillFor` a chip lights up with, so a pointer on
+      // either surface says one thing in one colour. Declared first so it paints
+      // underneath, and translucent, as every Style *FillFor is.
+      Rectangle {
+        anchors.fill: parent
+        visible: appCell.linked
+        radius: Style.cornerRadius
+        color: Style.hoverFillFor(appStrip.panel.foreground, Color.accent)
+      }
+
       Image {
-        id: rowIcon
+        id: cellIcon
         width: Style.font.iconLarge
         height: Style.font.iconLarge
         anchors.left: parent.left
-        anchors.leftMargin: Style.spacing.rowPaddingX
+        anchors.leftMargin: appStrip.cellPaddingX
         anchors.verticalCenter: parent.verticalCenter
         fillMode: Image.PreserveAspectFit
         smooth: true
@@ -148,147 +295,130 @@ Column {
         sourceSize.width: width * Screen.devicePixelRatio
         sourceSize.height: height * Screen.devicePixelRatio
         asynchronous: true
-        source: appRow.iconSource
+        source: appCell.iconSource
       }
 
-      Toggle {
-        id: rowToggle
-        anchors.left: rowIcon.right
-        anchors.leftMargin: Style.space(8)
-        anchors.right: rowLaunch.left
-        anchors.rightMargin: Style.space(8)
-        anchors.verticalCenter: parent.verticalCenter
-
-        label: appRow.modelData.name
-        checked: appRow.modelData.watched === true
-        // The list has no keyboard cursor of its own — the panel's walks the
-        // chips — so `hasCursor` carries the LINK instead. It drives the same
-        // hover fill the map uses, which is what the hand-drawn Rectangle behind
-        // this row used to do: one language for one hover, now the kit's.
-        hasCursor: appRow.linked
-        // A row the panel cannot act on does not offer to be clicked: the
-        // "recorded · no longer watched" row has no pattern left to re-watch
-        // from (PanelModel.appRows explains why), and its predecessor's ticked
-        // box and dead click were the review finding this replaces.
-        enabled: appRow.modelData.clickable !== false
-        foreground: panel.foreground
-        accent: Color.accent
-        fontFamily: panel.fontFamily
-        titleSize: Style.font.caption
-        onClicked: panel.toggleChip(appRow.modelData)
-      }
-
-      // What Restore can and cannot do for this app, in three words. "no launch
-      // cmd" is the honest dead end — nothing on this machine says how to start
-      // it, so a restore will move its window if it is open and skip it if it is
-      // not. "learn launch" is an offer: a command was derived and one click
-      // writes it. "launch cmd looks broken" is a warning about a command
-      // already in the file that cannot run (a whole command line quoted as one
-      // word, from before the quoting fix) — an offer too when a replacement was
-      // derived, which is what `launchRepairable` says and the colour shows.
+      // The app's name, and the only text on the cell. It takes what it wants
+      // up to `nameRoom` and elides after that — so the CELL never sizes itself
+      // off its content (that would move every switch on the line each time an
+      // app was ticked), and the switch never leaves the cell.
       Text {
-        id: rowLaunch
+        id: cellName
         textFormat: Text.PlainText
-        text: appRow.modelData.launchHint || ""
-        visible: text !== ""
-        width: visible ? implicitWidth : 0
-        color: appRow.modelData.launchRepairable ? Color.accent : panel.faintForeground
-        font.family: panel.fontFamily
-        font.pixelSize: Style.font.caption
-        font.italic: true
-        anchors.right: rowWhere.left
-        anchors.rightMargin: rowLaunch.visible ? Style.space(8) : 0
-        anchors.verticalCenter: parent.verticalCenter
-      }
-
-      // Where the app is, where it should be, and — since the verdict table —
-      // WHAT is wrong with it.
-      //
-      // The arrow alone said the same thing about every kind of drift: a window
-      // sitting in exactly the right place with its tabs the wrong way round got
-      // "ws 10 → DP-2 · ws 10", which reads as a contradiction rather than as a
-      // diagnosis. The mismatch phrase is the diagnosis, and when the last
-      // restore tried and was refused it carries the compositor's reason too
-      // (PanelModel.verdictLine).
-      //
-      // Capped and elided: a blocked reason can be a sentence, and the app's own
-      // name must not be squeezed out by it. The full text is in the tooltip.
-      Text {
-        id: rowWhere
-        textFormat: Text.PlainText
-        readonly property string placement: appRow.modelData.drifted && appRow.modelData.driftTo
-          ? appRow.modelData.position + " → " + appRow.modelData.driftTo
-          : appRow.modelData.position
-        text: appRow.modelData.mismatch
-          ? rowWhere.placement + " · " + appRow.modelData.mismatch
-          : rowWhere.placement
-        color: (appRow.modelData.drifted || appRow.modelData.mismatch)
-          ? Color.accent : panel.faintForeground
-        font.family: panel.fontFamily
+        text: appCell.modelData.name
+        color: appCell.modelData.watched
+          ? appStrip.panel.foreground : appStrip.panel.faintForeground
+        font.family: appStrip.panel.fontFamily
         font.pixelSize: Style.font.caption
         elide: Text.ElideRight
-        // A FIXED COLUMN, NOT A CONTENT WIDTH (tick 5jl, second pass — found
-        // live, by unwatching an app).
-        //
-        // This was `Math.min(implicitWidth, 45%)`, so the caption was as wide as
-        // whatever it happened to say — and every control on the row anchors
-        // leftwards off it. Unwatch an app and its caption grows from
-        // "eDP-1 · ws 3" to "eDP-1 · ws 3 · recorded · no longer watched", which
-        // dragged that row's switch and whole bordered box visibly inward while
-        // its neighbours stayed put.
-        //
-        // The column is FIXED, so the right edge holds however long the caption
-        // gets. (5jl's first pass reserved a column for the per-app camera,
-        // which was the same defect one step further in; the camera is gone with
-        // the consent model it belonged to, and this half of the answer is what
-        // is left and still load-bearing.)
-        //
-        // The width is the old CAP, so nothing that fits today starts eliding; a
-        // longer caption elides and keeps its tooltip, which is what the tooltip
-        // is already for.
-        width: Math.round(appRow.width * 0.45)
-        horizontalAlignment: Text.AlignRight
-        anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.rowPaddingX
+        width: Math.min(cellName.implicitWidth, appCell.nameRoom)
+        anchors.left: cellIcon.right
+        anchors.leftMargin: appStrip.iconGap
         anchors.verticalCenter: parent.verticalCenter
-
-        HoverHandler { id: rowWhereHover }
-
-        // The same multi-line story the chips tell, on the surface where the
-        // text is elided in the first place. Shown when it says MORE than the
-        // row already does — either because the placement was cut short, or
-        // because there are lines (the class, the drift arrow, the diagnosis)
-        // the row has no room for at all. A tooltip that only repeats what is
-        // already on screen teaches the user to stop hovering.
-        //
-        // rowTooltipText always leads with the app's name and the placement,
-        // both of which the row shows on its own — an indexOf("\n") check is
-        // therefore true unconditionally and cannot tell "more" from "the same".
-        // Check the actual extra content instead: the class (never on the row),
-        // the drift arrow (only implied by rowWhere's "→", not spelled out), or
-        // a diagnosis this app has.
-        PanelToolTip {
-          visible: rowWhereHover.hovered && appRow.tipText !== ""
-            && (rowWhere.truncated
-              || appRow.modelData.className !== ""
-              || (appRow.modelData.drifted && appRow.modelData.driftTo !== "")
-              || appRow.modelData.mismatch !== "")
-          text: appRow.tipText
-          fontFamily: panel.fontFamily
-        }
       }
 
-      // "learn launch" is its own click, and it sits OUTSIDE the Toggle now — so
-      // it no longer has to be declared after a row-wide MouseArea to win
-      // against it. Pressing it must not also untick the app, and with the
-      // toggle's click confined to the toggle that is structural rather than an
-      // ordering trick.
+      // "LEARN LAUNCH", which used to be three italic words on the row and is
+      // now one accent mark: a command was derived for this app and one click
+      // writes it into the state file. It appears only when there is something
+      // to press — `launchRepairable` — so it is an offer and never a label,
+      // and the words themselves survive in the tooltip, where
+      // PanelModel.rowHoverText puts the launch hint.
+      //
+      // A PLAIN "+" AND NOT A SYMBOL, measured rather than assumed: the theme
+      // picks the font family, the default is JetBrainsMono Nerd Font, and
+      // `fc-list :charset=...` says that font has no U+270E pencil and no
+      // U+21BB refresh arrow. The codepoints that would read best here are
+      // emoji-presentation ones, which Qt resolves through a colour emoji font
+      // — at which point it is no longer accent-coloured and no longer small.
+      // "+" is in every font a theme can name, and it says "add the thing this
+      // app is missing", which is precisely the offer.
+      Text {
+        id: cellLearn
+        textFormat: Text.PlainText
+        text: "+"
+        visible: appCell.modelData.launchRepairable === true
+        width: visible ? implicitWidth : 0
+        color: Color.accent
+        font.family: appStrip.panel.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        anchors.left: cellName.right
+        anchors.leftMargin: cellLearn.visible ? Style.space(4) : 0
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      // THE SWITCH SITS WITH ITS NAME, `nameGap` after it, and not at the
+      // cell's right edge. The first VM look (finding S1) is the whole reason:
+      // right-anchored, a short name left ~45 px of nothing between "Dr Panel"
+      // and its switch while the next cell's icon was ~16 px past it, so the
+      // switch read as belonging to the app on its RIGHT. A switchboard whose
+      // switches align into a column is worth nothing if each one is filed
+      // under the wrong app. The slack goes after the switch instead, where it
+      // joins the column gap and separates the cells.
+      //
+      // It still cannot leave the cell: `nameRoom` reserves its width and the
+      // paddings before the name is allowed any of it.
+      //
+      // `trackHeight` is the override the whole file exists for: 1.4 × the
+      // caption is a control sized off the text beside it, the way the shell's
+      // own compact placements are, instead of a full-size switch scaled down
+      // onto fractional pixels.
+      ToggleSwitch {
+        id: cellSwitch
+        anchors.left: cellLearn.right
+        anchors.leftMargin: appStrip.nameGap
+        anchors.verticalCenter: parent.verticalCenter
+
+        trackHeight: Math.round(Style.font.caption * 1.4)
+        cursorPad: Style.space(3)
+        // The cell owns the click, so the switch is presentation only — exactly
+        // how `Ui/Toggle` parks it at the end of a labeled row.
+        interactive: false
+        checked: appCell.modelData.watched === true
+        foreground: appStrip.panel.foreground
+        accent: Color.accent
+      }
+
+      // The same multi-line story the chips tell, on the surface that no longer
+      // has room to tell any of it. Shown whenever the cell is hovered: the old
+      // row had a "says more than the row already does" gate, and it went with
+      // the caption it was about — a cell says a name, and the tooltip says the
+      // class, the placement, the drift, the diagnosis and the launch hint, so
+      // it always says more.
+      PanelToolTip {
+        visible: cellHover.hovered && appCell.tipText !== ""
+        text: appCell.tipText
+        fontFamily: appStrip.panel.fontFamily
+      }
+
+      // THE CELL OWNS THE CLICK, which is why the switch above is declared
+      // `interactive: false` — the same division `Ui/Toggle` makes between the
+      // labeled row and the switch parked at the end of it, and it is declared
+      // in the same place Toggle declares its own: LAST, over the content, so
+      // nothing about which sibling is on top has to be reasoned about. A
+      // hand-drawn target that had to be hit exactly would be a checkbox
+      // reimplemented, without the kit's fill, border or hover.
       MouseArea {
-        anchors.fill: rowLaunch
-        enabled: appRow.modelData.launchRepairable === true
+        id: cellClick
+        anchors.fill: parent
+        enabled: appCell.clickable
+        // Spelled out rather than left to `enabled`: a cell that cannot be
+        // acted on must not offer a pointing hand either, and that is a
+        // separate claim from whether the click lands.
+        cursorShape: appCell.clickable ? Qt.PointingHandCursor : Qt.ArrowCursor
+        onClicked: appStrip.panel.toggleChip(appCell.modelData)
+      }
+
+      // "Learn launch" is its own click and must NOT also untick the app.
+      // Structural rather than an ordering trick: this MouseArea covers the
+      // mark alone, and it is declared after the cell-wide one so it wins the
+      // press inside those few pixels.
+      MouseArea {
+        anchors.fill: cellLearn
+        enabled: appCell.modelData.launchRepairable === true
         visible: enabled
         cursorShape: Qt.PointingHandCursor
-        onClicked: panel.learnLaunchFor(appRow.modelData.identityId)
+        onClicked: appStrip.panel.learnLaunchFor(appCell.modelData.identityId)
       }
     }
   }
