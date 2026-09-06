@@ -3875,8 +3875,7 @@ test("ticking a terminal that hosts one app proposes the app, not the terminal",
     id: "herdr",
     patterns: ["^foot$"],
     titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr",
-    pictured: false
+    launch: "foot --title=herdr herdr"
   });
 
   // And that pair claims exactly one of the two foot windows on the desktop.
@@ -3915,7 +3914,7 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   const watchedFoot = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
   assert.deepStrictEqual(panel.suggestIdentity("foot", watchedFoot, herdr), {
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr", pictured: false
+    launch: "foot --title=herdr herdr"
   });
 
   // The same PAIR already on the list is the same rule, so nothing is added —
@@ -3997,7 +3996,7 @@ test("a window already launched with --title proposes that title", () => {
   const added = panel.suggestIdentity("foot", [], derived);
   assert.deepStrictEqual(added, {
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr", pictured: false
+    launch: "foot --title=herdr herdr"
   });
   assert.strictEqual(engine.clientMatchesIdentity(TITLED_WINDOW, added), true);
   assert.strictEqual(engine.clientMatchesIdentity(BARE_WINDOW, added), false);
@@ -4197,7 +4196,7 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
   // about a browser window, and there is nothing to refuse.
   assert.strictEqual(panel.tickRefusalReason("chromium", []), "");
   assert.deepStrictEqual(panel.suggestIdentity("chromium", []),
-    { id: "chromium", patterns: ["^chromium$"], launch: "", pictured: false });
+    { id: "chromium", patterns: ["^chromium$"], launch: "" });
 
   // Already watched is a no-op — and since tick v5c a no-op the panel can SAY,
   // because a silent one logged a success line for a click that changed nothing.
@@ -4280,7 +4279,7 @@ test("the panel names the exact relaunch command until a matching window exists"
     engine.couldShadow);
   assert.deepStrictEqual(identities, [{
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr", pictured: false
+    launch: "foot --title=herdr herdr"
   }]);
 
   // The bare window alone: nothing matches, and the panel says so with the
@@ -5117,10 +5116,11 @@ test("nothing recorded, or nothing recorded HERE, is said rather than left blank
   assert.strictEqual(here.hint, "");
 });
 
-test("the two actions are about THIS desk, and say why they are unavailable", () => {
+test("two acts about THIS desk plus the pictures switch, each saying why", () => {
   const model = panel.overflowMenuModel(
-    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop");
-  assert.deepStrictEqual(panel.menuActionIds(model.actions), ["forget", "rerecord"]);
+    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true);
+  assert.deepStrictEqual(panel.menuActionIds(model.actions),
+    ["forget", "rerecord", "pictures"]);
 
   const forget = panel.menuAction(model.actions, "forget");
   assert.strictEqual(forget.label, "Forget this layout");
@@ -5131,36 +5131,73 @@ test("the two actions are about THIS desk, and say why they are unavailable", ()
   assert.ok(panel.menuAction(model.actions, "rerecord").enabled);
 
   // Nothing recorded here: Forget stays visible and explains itself.
-  const cold = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop");
+  const cold = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop", true);
   assert.strictEqual(panel.menuAction(cold.actions, "forget").enabled, false);
   assert.ok(panel.menuAction(cold.actions, "forget").tooltip.indexOf("nothing to forget") !== -1);
   assert.strictEqual(panel.menuAction(cold.actions, "rerecord").enabled, false);
 
   // A topology with no name at all still gets sentences about "this setup".
-  const nameless = panel.overflowMenuModel([], "", [], false, "");
+  const nameless = panel.overflowMenuModel([], "", [], false, "", true);
   assert.ok(panel.menuAction(nameless.actions, "forget").tooltip.indexOf("this setup") !== -1);
   assert.strictEqual(panel.menuAction(nameless.actions, "nope"), null);
 });
 
+test("THE PICTURES ENTRY: the label flips, the tooltip says the cost, never disabled", () => {
+  // The whole affordance for schema v7's one switch, and the reason it is here
+  // rather than on eleven rows: it has to be FINDABLE. The label names the act
+  // the press performs, like the other two entries, so the menu is its own
+  // receipt — press it and the words say the other thing.
+  const on = panel.menuAction(panel.overflowMenuModel(
+    [], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true).actions, "pictures");
+  const off = panel.menuAction(panel.overflowMenuModel(
+    [], LAPTOP_KEY, monitorsLaptop, true, "Laptop", false).actions, "pictures");
+
+  assert.strictEqual(on.label, "Turn pictures off");
+  assert.strictEqual(off.label, "Turn pictures on");
+
+  // NEVER DISABLED, in either position. A dimmed privacy control is worse than
+  // none: both directions always mean something.
+  assert.strictEqual(on.enabled, true);
+  assert.strictEqual(off.enabled, true);
+
+  // The tooltip is where the cost is said, BEFORE the press — this panel never
+  // blocks, so there is no confirmation dialog to say it in afterwards.
+  assert.ok(on.tooltip.indexOf("Delete every stored picture") !== -1, on.tooltip);
+  assert.ok(on.tooltip.indexOf("every desk") !== -1, on.tooltip);
+  assert.ok(on.tooltip.indexOf("stop photographing") !== -1, on.tooltip);
+  // And the other direction says what comes back, and when.
+  assert.ok(off.tooltip.indexOf("Photograph every watched window") !== -1, off.tooltip);
+  assert.ok(off.tooltip.indexOf("Record") !== -1, off.tooltip);
+
+  // `!== false`, StateModel.picturesOn's rule: only the literal false is off.
+  for (const junk of [undefined, "false", 0, null, {}]) {
+    assert.strictEqual(panel.menuAction(panel.overflowMenuModel(
+      [], LAPTOP_KEY, monitorsLaptop, true, "Laptop", junk).actions, "pictures").label,
+      "Turn pictures off", JSON.stringify(junk) + " read as off");
+  }
+});
+
 test("the keyboard cursor lands on something pressable, and walks the actions", () => {
   const warm = panel.overflowMenuModel(
-    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop");
+    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true);
   assert.strictEqual(panel.firstEnabledActionId(warm.actions), "forget");
 
   // Nothing to forget: the cursor skips to the action that can be pressed.
-  const noLayout = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, true, "Laptop");
+  const noLayout = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true);
   assert.strictEqual(panel.firstEnabledActionId(noLayout.actions), "rerecord");
 
-  // Everything disabled: the cursor still has to be somewhere.
-  const frozen = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop");
-  assert.strictEqual(panel.firstEnabledActionId(frozen.actions), "forget");
+  // Nothing recorded and nothing to record: the pictures switch is always
+  // pressable, so the cursor lands on it rather than on a dimmed row.
+  const frozen = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop", true);
+  assert.strictEqual(panel.firstEnabledActionId(frozen.actions), "pictures");
   assert.strictEqual(panel.firstEnabledActionId([]), "");
 
   // Arrows walk the same wrap-around walker the panel sections use.
   const ids = panel.menuActionIds(warm.actions);
   assert.strictEqual(panel.nextSection(ids, "forget", 1), "rerecord");
-  assert.strictEqual(panel.nextSection(ids, "rerecord", 1), "forget");
-  assert.strictEqual(panel.nextSection(ids, "forget", -1), "rerecord");
+  assert.strictEqual(panel.nextSection(ids, "rerecord", 1), "pictures");
+  assert.strictEqual(panel.nextSection(ids, "pictures", 1), "forget");
+  assert.strictEqual(panel.nextSection(ids, "forget", -1), "pictures");
 });
 
 test("forgetting arms the SAME one-shot undo a record arms", () => {
@@ -5884,7 +5921,7 @@ test("tickOutcome answers the whole click in one pass", () => {
   assert.strictEqual(add.refusal, "");
   assert.deepStrictEqual(add.added, {
     id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-    launch: "foot --title=herdr herdr", pictured: false
+    launch: "foot --title=herdr herdr"
   });
   assert.deepStrictEqual(add.identities, [add.added]);
 
@@ -6010,8 +6047,8 @@ test("the /proc maps are reassigned only when they changed", () => {
 // so a plan can be asked about occurrence 0 AND occurrence 1.
 function captureDesk() {
   const identities = [
-    { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot", pictured: true },
-    { id: "browser", patterns: ["^chromium$"], titlePatterns: [], launch: "chromium", pictured: false }
+    { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" },
+    { id: "browser", patterns: ["^chromium$"], titlePatterns: [], launch: "chromium" }
   ];
   const clients = [
     makeClient({ address: "0xaaa", class: "foot", workspace: 1, at: [0, 0] }),
@@ -6081,9 +6118,9 @@ test("every picture of one recording shares the topology prefix, which is what e
   assert.notStrictEqual(prefix, panel.captureTopologyPrefix("Laptop"));
 });
 
-test("a capture plan takes one picture per PICTURED window and none of the rest", () => {
+test("a capture plan takes one picture per WATCHED window, and every one of them", () => {
   const desk = captureDesk();
-  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen);
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, true);
 
   assert.strictEqual(plan.topologyKey, desk.layout.topologyKey);
   assert.strictEqual(plan.prefix, panel.captureTopologyPrefix(desk.layout.topologyKey));
@@ -6091,10 +6128,10 @@ test("a capture plan takes one picture per PICTURED window and none of the rest"
   // Two terminals are two pictures, at two occurrences, of two DIFFERENT
   // windows — captures are the only thing that can tell duplicates apart, and a
   // plan that photographed one window twice would defeat the point.
-  assert.deepStrictEqual(plan.captures.map((c) => c.identityId), ["terminal", "terminal"]);
-  assert.deepStrictEqual(plan.captures.map((c) => c.occurrence), [0, 1]);
-  assert.strictEqual(new Set(plan.captures.map((c) => c.address)).size, 2);
-  assert.strictEqual(new Set(plan.captures.map((c) => c.file)).size, 2);
+  const terminals = plan.captures.filter((c) => c.identityId === "terminal");
+  assert.deepStrictEqual(terminals.map((c) => c.occurrence), [0, 1]);
+  assert.strictEqual(new Set(plan.captures.map((c) => c.address)).size, 3);
+  assert.strictEqual(new Set(plan.captures.map((c) => c.file)).size, 3);
 
   // The window each entry names is the one buildLayout numbered that
   // occurrence, taken from the same chosenWindows index — not a second match.
@@ -6105,26 +6142,44 @@ test("a capture plan takes one picture per PICTURED window and none of the rest"
       panel.captureFileName(capture.identityId, capture.occurrence, plan.topologyKey));
   }
 
-  // The browser is watched and recorded and NOT pictured, which is the whole
-  // point of the second consent — so it is skipped, and said so.
-  assert.deepStrictEqual(plan.skipped,
-    [{ identityId: "browser", occurrence: 0, reason: "not-pictured" }]);
+  // THE BROWSER IS PHOTOGRAPHED TOO (schema v7). It is watched and it has a
+  // window, and that is now the whole of the question — the per-app camera it
+  // used to be skipped by is gone, and with pictures on nothing in a healthy
+  // plan is skipped at all.
+  assert.deepStrictEqual(plan.captures.map((c) => c.identityId).sort(),
+    ["browser", "terminal", "terminal"]);
+  assert.deepStrictEqual(plan.skipped, []);
 });
 
-test("withholding the consent is the default, so a plan for a fresh file is empty", () => {
+test("with the pictures off the plan is empty, and every app says why", () => {
   const desk = captureDesk();
-  const withheld = desk.identities.map((i) => Object.assign({}, i, { pictured: false }));
-  const plan = panel.capturePlan(desk.layout, withheld, desk.chosen);
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, false);
   assert.deepStrictEqual(plan.captures, []);
-  assert.strictEqual(plan.skipped.length, 3, "and every one of them says why");
-  assert.ok(plan.skipped.every((s) => s.reason === "not-pictured"));
+  assert.strictEqual(plan.skipped.length, desk.layout.apps.length,
+    "every app in the layout is accounted for, not silently absent");
+  assert.ok(plan.skipped.every((s) => s.reason === "pictures-off"),
+    JSON.stringify(plan.skipped));
+  // The prefix is still named, because the round still EVICTS: a re-record with
+  // the pictures switched off has to drop the ones the last one took.
+  assert.strictEqual(plan.prefix, panel.captureTopologyPrefix(desk.layout.topologyKey));
 
-  // Only an explicit true grants it, exactly as the file reader has it: a
-  // truthy value is not a consent.
-  for (const junk of ["true", 1, {}]) {
-    const loose = desk.identities.map((i) => Object.assign({}, i, { pictured: junk }));
-    assert.deepStrictEqual(panel.capturePlan(desk.layout, loose, desk.chosen).captures, []);
+  // Only the literal false is off — StateModel.picturesOn's rule, applied at
+  // the one other place the switch is read.
+  for (const junk of [true, undefined, "false", 0, null, {}]) {
+    assert.strictEqual(panel.capturePlan(desk.layout, desk.identities, desk.chosen, junk)
+      .captures.length, 3, JSON.stringify(junk) + " read as off");
   }
+});
+
+test("a layout entry whose identity has gone is not photographed", () => {
+  // A watched app IS pictured, so "watched" is the only per-app question left —
+  // and a recorded ghost, whose identity the file no longer carries, is not.
+  const desk = captureDesk();
+  const fewer = desk.identities.filter((i) => i.id !== "browser");
+  const plan = panel.capturePlan(desk.layout, fewer, desk.chosen, true);
+  assert.deepStrictEqual(plan.captures.map((c) => c.identityId), ["terminal", "terminal"]);
+  assert.deepStrictEqual(plan.skipped,
+    [{ identityId: "browser", occurrence: 0, reason: "not-watched" }]);
 });
 
 test("a recorded app whose window has gone is skipped, not guessed at", () => {
@@ -6132,24 +6187,25 @@ test("a recorded app whose window has gone is skipped, not guessed at", () => {
   // The layout still names both terminals; the desk no longer has the second.
   const fewer = desk.clients.filter((c) => c.address !== "0xbbb");
   const chosen = engine.chosenWindows(fewer, desk.identities, monitorsLaptop);
-  const plan = panel.capturePlan(desk.layout, desk.identities, chosen);
+  const plan = panel.capturePlan(desk.layout, desk.identities, chosen, true);
 
-  assert.deepStrictEqual(plan.captures.map((c) => c.occurrence), [0]);
+  assert.deepStrictEqual(
+    plan.captures.filter((c) => c.identityId === "terminal").map((c) => c.occurrence), [0]);
   assert.ok(plan.skipped.some((s) => s.identityId === "terminal" && s.reason === "no-window"));
 });
 
 test("a layout with no topology plans nothing, because a picture with no prefix cannot be evicted", () => {
   const desk = captureDesk();
   const plan = panel.capturePlan({ topologyKey: "", apps: desk.layout.apps },
-    desk.identities, desk.chosen);
+    desk.identities, desk.chosen, true);
   assert.deepStrictEqual(plan, { topologyKey: "", prefix: "", captures: [], skipped: [] });
-  assert.deepStrictEqual(panel.capturePlan(null, desk.identities, desk.chosen).captures, []);
+  assert.deepStrictEqual(panel.capturePlan(null, desk.identities, desk.chosen, true).captures, []);
 });
 
 test("the capture log line reads as best-effort, and says all four numbers", () => {
   const plan = {
     skipped: [
-      { identityId: "browser", occurrence: 0, reason: "not-pictured" },
+      { identityId: "browser", occurrence: 0, reason: "pictures-off" },
       { identityId: "slack", occurrence: 0, reason: "no-window" }
     ]
   };
@@ -6659,7 +6715,7 @@ test("two evictions cannot cross, and a `find` that failed is not silent (tick i
 });
 
 // ---------------------------------------------------------------------------
-// Withdrawing consent deletes the pictures, on every desk (tick sp7)
+// Unwatching an app deletes its pictures, on every desk (tick sp7)
 // ---------------------------------------------------------------------------
 
 // `find -name` is fnmatch, so the pattern is testable against real file names
@@ -6673,7 +6729,7 @@ function globToRegExp(glob) {
     .replace(/\*/g, ".*") + "$");
 }
 
-test("a withdrawn camera names EVERY picture of that app, on every desk (tick sp7)", () => {
+test("an unwatched app names EVERY picture of itself, on every desk (tick sp7)", () => {
   const mine = "obsidian";
   const theirs = "slack";
   const pattern = panel.captureIdentityPattern(mine);
@@ -6681,9 +6737,9 @@ test("a withdrawn camera names EVERY picture of that app, on every desk (tick sp
 
   // The topology segment is wildcarded and the occurrence is left open, so one
   // pattern names this app's pictures wherever and however often they were
-  // taken. This is the whole repair: a camera is a fact about an APP, and an
-  // eviction keyed on the desk you happen to be plugged into left every other
-  // desk's copies with nobody who would ever come back for them.
+  // taken. This is the whole repair: being watched is a fact about an APP, and
+  // an eviction keyed on the desk you happen to be plugged into left every
+  // other desk's copies with nobody who would ever come back for them.
   for (const key of ["Laptop", "Laptop + AOC U34", "", "eDP-1|DP-3|HDMI-A-1"]) {
     for (const occurrence of [0, 1, 7, 23]) {
       const name = panel.captureFileName(mine, occurrence, key);
@@ -6731,7 +6787,7 @@ test("the identity pattern carries no glob metacharacter of its own (tick sp7)",
   assert.deepStrictEqual(panel.captureIdentityPatterns(null), []);
 });
 
-test("EVERY WAY OF WITHDRAWING A CAMERA DELETES THE PICTURES, on every desk (tick sp7)", () => {
+test("EVERY WAY OF DROPPING A PICTURE DELETES IT, on every desk (tick sp7)", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
@@ -6743,39 +6799,33 @@ test("EVERY WAY OF WITHDRAWING A CAMERA DELETES THE PICTURES, on every desk (tic
     return source.slice(at, source.indexOf("\n  }\n", at));
   };
 
-  // 1. THE CONSENT ANSWER. "Delete these" withdraws the camera globally
-  //    (clearPictured takes no topology), so it has to delete globally too — and
-  //    it must not read the LIVE topologyKey, which a dock can change while the
-  //    prompt is up, pointing the delete at a desk the user is not looking at.
-  const answer = bodyOf("function answerConsent(answer) {");
-  assert.ok(answer.indexOf("captureStore.evictIdentities(ids, \"declined\")") !== -1,
-    "the consent answer no longer evicts by identity:\n" + answer);
-  assert.strictEqual(answer.indexOf("captureTopologyPrefix"), -1,
-    "the consent answer still evicts one desk's prefix — the other desks keep the pictures forever");
-  // The eviction is still AFTER the write: a refused write must not take the
-  // pictures with it.
-  assert.ok(answer.indexOf("if (!root.writeState(next)) return false")
-    < answer.indexOf("captureStore.evictIdentities"), answer);
+  // 1. THE SWITCH, which is now the whole of the global half: off deletes every
+  //    stored picture on every desk and empties the live store as well, and both
+  //    happen only once the write is known to have landed.
+  const switched = bodyOf("function setPictures(on) {");
+  assert.ok(switched.indexOf("captureStore.evictAll(\"switched off\")") !== -1,
+    "switching the pictures off no longer deletes the stored ones:\n" + switched);
+  assert.ok(switched.indexOf("liveCaptures.clear()") !== -1,
+    "switching the pictures off leaves the live ones in memory:\n" + switched);
+  assert.ok(switched.indexOf("if (!root.writeState(StateModel.setPictures(fresh, want))) return")
+    < switched.indexOf("captureStore.evictAll"),
+    "the pictures go before the write that switches them off is known to have landed");
+  assert.strictEqual(switched.indexOf("captureTopologyPrefix"), -1,
+    "the switch evicts one desk's prefix — the other desks would keep their pictures forever");
 
-  // 2. THE PER-APP CAMERA. It used to write the flag, log a sentence about the
-  //    future, and delete nothing at all.
-  const setPictured = bodyOf("function setPicturedFor(identityId, want) {");
-  assert.ok(setPictured.indexOf("captureStore.evictIdentities([identityId]") !== -1,
-    "switching a camera off still deletes nothing:\n" + setPictured);
-  assert.ok(setPictured.indexOf("if (want !== true) captureStore.evictIdentities") !== -1,
-    "the eviction is not gated on the withdrawal — granting a camera would delete");
-  assert.ok(setPictured.indexOf("StateModel.setPictured(fresh") < setPictured.indexOf("evictIdentities"),
-    "the pictures go before the write that withdraws the camera is known to have landed");
-
-  // 3. UNWATCHING, which is what makes the README's promise true: it took the
-  //    camera FLAG (the field lives on the identity that goes), never the files.
+  // 2. UNWATCHING, which is what makes the README's promise true: it took the
+  //    identity, never the files.
   const toggle = bodyOf("function toggleChip(chip) {");
   assert.ok(toggle.indexOf("captureStore.evictIdentities([chip.identityId], \"unwatched\")") !== -1,
     "unticking an app still leaves its photographs on disk:\n" + toggle);
   assert.ok(toggle.indexOf("if (root.writeState(StateModel.setIdentities")
     < toggle.indexOf("evictIdentities"), "the pictures go before the unwatch is written");
+  // And the LIVE half of the same act, handed the set that is LEFT rather than
+  // the id that went — the shape LiveCaptureStore.retain documents.
+  assert.ok(toggle.indexOf("liveCaptures.retain(remaining)") !== -1,
+    "unticking an app leaves its live picture on the map:\n" + toggle);
 
-  // 4. THE STORE'S SIDE: one process for the whole list, built from the pure
+  // 3. THE STORE'S SIDE: one process for the whole list, built from the pure
   //    function, and an empty list deletes nothing — exactly as an empty prefix
   //    does.
   const evictIds = store.slice(store.indexOf("function evictIdentities(identityIds, reason)"));
@@ -6787,6 +6837,122 @@ test("EVERY WAY OF WITHDRAWING A CAMERA DELETES THE PICTURES, on every desk (tic
   const match = store.slice(store.indexOf("function _matchArgs(names)"));
   const matchBody = match.slice(0, match.indexOf("\n  }\n"));
   assert.ok(matchBody.indexOf("\"-o\"") !== -1 && matchBody.indexOf("\"(\"") !== -1, matchBody);
+});
+
+// ---------------------------------------------------------------------------
+// ONE SWITCH, AND NO SECOND ANSWER ANYWHERE (epic wau)
+// ---------------------------------------------------------------------------
+//
+// Increment 06 shipped two consents: a camera on every row and a three-answer
+// dialogue on the first Record. The human used them, could not find the camera,
+// and was talked out of his own pictures by the dialogue. Both are gone, and
+// these are the pins that keep them gone — an absence needs a test more than a
+// presence does, because nothing else fails when one comes back.
+
+test("the consent prompt does not exist, in any file", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = path.join(__dirname, "..");
+
+  assert.strictEqual(fs.existsSync(path.join(root, "ConsentPrompt.qml")), false,
+    "ConsentPrompt.qml is back");
+
+  const source = fs.readFileSync(path.join(root, "Panel.qml"), "utf8");
+  for (const word of ["consentOpen", "ConsentPrompt", "answerConsent", "pictureConsent",
+    "consentChoices", "consentCaptures", "picturedOf(", "picturableOf(", "setPicturedFor"]) {
+    assert.strictEqual(source.indexOf(word), -1,
+      "Panel.qml still names " + word + " — the prompt or the per-app camera is back");
+  }
+
+  // The map's chips lost their per-app grant too: the switch is the panel's and
+  // there is no second derivation of it anywhere a chip can reach.
+  const map = fs.readFileSync(path.join(root, "MapWorkspace.qml"), "utf8");
+  assert.strictEqual(map.indexOf("pictured"), -1, "MapWorkspace still reports a per-app grant");
+
+  // And the pure model: the prompt's vocabulary went with it.
+  const model = fs.readFileSync(path.join(root, "PanelModel.js"), "utf8");
+  for (const fn of ["function consentChoices", "function isConsentChoice",
+    "function consentPromptDue", "function picturedIdentityIds"]) {
+    assert.strictEqual(model.indexOf(fn), -1, "PanelModel still defines " + fn);
+  }
+  assert.strictEqual(panel.consentChoices, undefined, "consentChoices is still exported");
+  assert.strictEqual(panel.picturedIdentityIds, undefined,
+    "picturedIdentityIds is still exported");
+});
+
+test("the payload states the switch and none of the consent keys", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const state = source.slice(source.indexOf("function panelState()"));
+
+  // ALWAYS PRESENT and always a boolean: whether this tool may photograph is a
+  // fact the panel has, not a draw-time value it waits for. A key that vanished
+  // when the answer was "off" would make "the pictures are off" and "this build
+  // has no switch" the same payload.
+  assert.ok(state.indexOf("pictures: root.picturesOn") !== -1,
+    "the payload no longer carries the switch");
+
+  // ABSENT, never null — tests/acceptance/README.md is normative about the
+  // difference, and the acceptance suite asserts these with has().
+  for (const key of ["pictureConsent:", "consentOpen:", "consentChoices:", "consentCaptures:",
+    "pictured:", "picturable:"]) {
+    assert.strictEqual(state.indexOf(key), -1,
+      "the payload still carries " + key + " — it must be absent, not null");
+  }
+});
+
+test("the IPC verb is setPictures, and setPictured is not a verb", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // One switch, so no key: `setPictured(key, value)` is not renamed, it is gone.
+  assert.ok(source.indexOf("function setPictures(value: string): string") !== -1,
+    "the setPictures verb is missing");
+  assert.strictEqual(source.indexOf("function setPictured("), -1,
+    "the per-row setPictured verb is back");
+  assert.strictEqual(source.indexOf("function answerConsent("), -1,
+    "the answerConsent verb is back");
+
+  const at = source.indexOf("function setPictures(value: string): string");
+  const body = source.slice(at, source.indexOf("\n    }\n", at));
+  // The two words it takes, the two it answers, and the one refusal that comes
+  // before the file has been read — the shape setPaused established.
+  assert.ok(body.indexOf('if (want !== "on" && want !== "off") return "unknown"') !== -1, body);
+  assert.ok(body.indexOf('if (!root.stateLoaded) return "no-state"') !== -1, body);
+  assert.ok(body.indexOf('return root.picturesOn ? "on" : "off"') !== -1,
+    "the verb answers what it was asked for rather than the resulting state:\n" + body);
+  // Through the panel's own setter, which owns the fresh read, the eviction and
+  // the log — an IPC path that wrote the flag itself would switch nothing off.
+  assert.ok(body.indexOf("root.setPictures(want === \"on\")") !== -1, body);
+});
+
+test("switching the pictures back ON restarts the live round under an open panel", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const at = source.indexOf("function setPictures(on) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+
+  // A live round is ONCE PER PANEL SESSION (the latch), so switching the
+  // pictures on with the panel already open would otherwise draw nothing until
+  // the user closed and reopened it. The latch is dropped and the round re-run;
+  // startLiveRound's own guards hold it back when the panel is shut.
+  const latch = body.indexOf("root.liveRoundStarted = false");
+  const start = body.indexOf("root.startLiveRound()");
+  assert.ok(latch !== -1 && start !== -1,
+    "switching the pictures on does not restart the live round:\n" + body);
+  assert.ok(latch < start, "the round is restarted before the latch is dropped:\n" + body);
+
+  // BOTH LOG LINES GATED ON THE WRITE (the writeState-returns-boolean rule): a
+  // refused write must not claim in the log that anything happened.
+  const write = body.indexOf("if (!root.writeState(StateModel.setPictures(fresh, want))) return");
+  assert.ok(write !== -1, body);
+  assert.ok(write < body.indexOf("pictures switched off"), body);
+  assert.ok(write < body.indexOf("pictures switched on"), body);
+  // And the off line says what it just destroyed, because nothing else will.
+  assert.ok(body.indexOf("every stored picture deleted") !== -1, body);
 });
 
 // ---------------------------------------------------------------------------
@@ -6808,7 +6974,7 @@ test("a SECOND window index is a second opinion, and it can photograph the wrong
   // This test exists to show the failure is real rather than theoretical, and to
   // make it impossible to reintroduce quietly. Both halves use the SAME layout;
   // the only difference is which index the plan is built from.
-  const identities = [{ id: "terminal", patterns: ["^foot$"], pictured: true }];
+  const identities = [{ id: "terminal", patterns: ["^foot$"] }];
   const atRecord = twoTerminals([100, 100], [900, 100]);
   const layout = engine.buildLayout(atRecord, monitorsLaptop, identities, AT);
 
@@ -6855,7 +7021,7 @@ test("a SECOND window index is a second opinion, and it can photograph the wrong
 });
 
 test("ONE INDEX, TWO USES: buildLayout takes the index the capture will be handed (tick 3xi)", () => {
-  const identities = [{ id: "terminal", patterns: ["^foot$"], pictured: true }];
+  const identities = [{ id: "terminal", patterns: ["^foot$"] }];
   const clients = twoTerminals([100, 100], [900, 100]);
   const chosen = engine.chosenWindows(clients, identities, monitorsLaptop);
 
@@ -6923,7 +7089,7 @@ test("the panel builds the window index ONCE, and the comment says what the code
   assert.ok(comment.indexOf("HANDED IN") !== -1, comment);
 });
 
-test("the map stops drawing a picture the camera has been taken off (tick sp7)", () => {
+test("the map stops drawing a picture the switch has turned off (tick sp7)", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
@@ -6931,16 +7097,17 @@ test("the map stops drawing a picture the camera has been taken off (tick sp7)",
 
   // A `find` is a process and the listing that follows it is another, so
   // `captureStore.has()` goes on answering yes for the frames in between. The
-  // gate is the FLAG, which is written synchronously — so the photograph stops
-  // being drawn in the same instant the camera goes off, and the delete is what
-  // makes that true on disk as well.
+  // gate is the SWITCH, which is written synchronously — so the photograph stops
+  // being drawn in the same instant it goes off, and the delete is what makes
+  // that true on disk as well.
   const at = source.indexOf("function captureFileFor(identityId, occurrence) {");
   const body = source.slice(at, source.indexOf("\n  }\n", at));
-  const gate = body.indexOf("if (!root.picturedOf(identityId)) return \"\"");
+  const gate = body.indexOf("if (!root.picturesOn) return \"\"");
   assert.ok(gate !== -1,
-    "the chip's capture is not gated on the camera, so a withdrawn picture keeps rendering:\n" + body);
+    "the chip's capture is not gated on the switch, so a picture keeps rendering after"
+    + " the pictures are turned off:\n" + body);
   assert.ok(gate < body.indexOf("captureStore.hasIn("),
-    "the listing is consulted before the camera is:\n" + body);
+    "the listing is consulted before the switch is:\n" + body);
 
   // ONE gate, in the funnel both readers go through — the chip's Image and the
   // panelState payload. A second copy in MapWorkspace's Image would let
@@ -6950,13 +7117,13 @@ test("the map stops drawing a picture the camera has been taken off (tick sp7)",
   // Since tick 2zi the Image binds `pictureSource`, which is the UNION of the
   // recorded source and the live one — declared in the delegate, from the two
   // reported properties themselves, so it still cannot be a second derivation of
-  // either gate. The assertion that matters is unchanged: no camera question is
+  // either gate. The assertion that matters is unchanged: no picture question is
   // asked inside the Image.
   const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
     map.indexOf("// THE VEIL"));
   assert.ok(image.indexOf("source: chipTab.pictureSource") !== -1, image);
-  assert.strictEqual(image.indexOf("pictured"), -1,
-    "the Image derives the camera a second time, so the reported source and the drawn one can differ");
+  assert.strictEqual(image.indexOf("picturesOn"), -1,
+    "the Image reads the switch a second time, so the reported source and the drawn one can differ");
 
   // And `pictureSource` is exactly the two reported properties and nothing else.
   const union = map.slice(map.indexOf("readonly property string pictureSource:"));
@@ -7085,10 +7252,9 @@ test("the capture source is a fact about the RECORDED map, and a file URL", () =
 // answer are pure and live here; the machinery is QML and is pinned at the
 // source, the way every other QML gate in this file is.
 
-// One live desk, as the instance index has it: two apps with a camera on
-// (`pictured` twice, at two occurrences), one watched app without one, and one
-// address the index does not carry at all — an unwatched window, which has no
-// identity and so cannot be planned.
+// One live desk, as the instance index has it: three watched apps over four
+// windows (one of them twice, at two occurrences), plus — by its absence — the
+// unwatched window, which has no identity and so is not in the index to plan.
 function liveDesk() {
   return {
     instances: {
@@ -7100,22 +7266,23 @@ function liveDesk() {
       }
     },
     identities: [
-      { id: "terminal", pictured: true },
-      { id: "browser", pictured: false },
-      { id: "editor", pictured: true }
+      { id: "terminal" },
+      { id: "browser" },
+      { id: "editor" }
     ]
   };
 }
 
-test("a live plan photographs one window per PICTURED live window, and names no file", () => {
+test("a live plan photographs one window per WATCHED live window, and names no file", () => {
   const desk = liveDesk();
-  const plan = panel.liveCapturePlan(desk.instances, desk.identities);
+  const plan = panel.liveCapturePlan(desk.instances, desk.identities, true);
 
   // Ordered by identity, then occurrence: an object's key order is an accident
   // of insertion, and a round that walked two identical desks in two different
   // orders would be a round nothing could pin.
   assert.deepStrictEqual(plan.captures,
-    [{ address: "0xdd", identityId: "editor", occurrence: 0 },
+    [{ address: "0xcc", identityId: "browser", occurrence: 0 },
+     { address: "0xdd", identityId: "editor", occurrence: 0 },
      { address: "0xaa", identityId: "terminal", occurrence: 0 },
      { address: "0xbb", identityId: "terminal", occurrence: 1 }]);
 
@@ -7129,33 +7296,52 @@ test("a live plan photographs one window per PICTURED live window, and names no 
   assert.strictEqual(plan.prefix, undefined);
   assert.strictEqual(plan.topologyKey, undefined);
 
-  // A camera that is off is the normal answer, not an error, and it is REPORTED
-  // so the log can say what the round did not do rather than only what it did.
-  assert.deepStrictEqual(plan.skipped,
-    [{ address: "0xcc", identityId: "browser", occurrence: 0, reason: "not-pictured" }]);
+  // With the pictures on and every window watched, nothing is skipped.
+  assert.deepStrictEqual(plan.skipped, []);
 });
 
-test("consent is the same flag Record obeys, and nothing looser", () => {
+test("the live plan obeys the same switch Record obeys, by the same rule", () => {
   const desk = liveDesk();
-  // The read of a CONSENT is `=== true`, which is the rule the state file is
-  // normalized by. A truthy value that is not `true` is a junk file, not a grant.
-  const loose = [{ id: "terminal", pictured: "yes" }, { id: "editor", pictured: 1 }];
-  assert.deepStrictEqual(panel.liveCapturePlan(desk.instances, loose).captures, []);
 
-  // An app nobody watches has consented to nothing, and it is not in the index
-  // to be asked: the index is built from resolved identities only.
+  // OFF: nothing planned, and every window REPORTED so the log can say what the
+  // round did not do rather than only what it did.
+  const off = panel.liveCapturePlan(desk.instances, desk.identities, false);
+  assert.deepStrictEqual(off.captures, []);
+  assert.strictEqual(off.skipped.length, 4);
+  assert.ok(off.skipped.every((s) => s.reason === "pictures-off"), JSON.stringify(off.skipped));
+
+  // Only the literal false is off — StateModel.picturesOn's rule again.
+  for (const junk of [true, undefined, "false", 0, null, {}]) {
+    assert.strictEqual(panel.liveCapturePlan(desk.instances, desk.identities, junk)
+      .captures.length, 4, JSON.stringify(junk) + " read as off");
+  }
+
+  // A window whose identity the file no longer carries is not photographed, and
+  // says so — the live half of "a WATCHED app is pictured".
+  const fewer = desk.identities.filter((i) => i.id !== "browser");
+  const some = panel.liveCapturePlan(desk.instances, fewer, true);
+  assert.deepStrictEqual(some.captures.map((c) => c.identityId),
+    ["editor", "terminal", "terminal"]);
+  assert.deepStrictEqual(some.skipped,
+    [{ address: "0xcc", identityId: "browser", occurrence: 0, reason: "not-watched" }]);
+
+  // An app nobody watches is not in the index to be asked at all: the index is
+  // built from resolved identities only.
   assert.strictEqual(
-    panel.liveCapturePlan(desk.instances, desk.identities).captures
+    panel.liveCapturePlan(desk.instances, desk.identities, true).captures
       .filter((c) => c.address === "0xee").length, 0);
 
-  // Nothing at all is not a failure — it is a desk with every camera off.
-  assert.deepStrictEqual(panel.liveCapturePlan(null, null), { captures: [], skipped: [] });
-  assert.deepStrictEqual(panel.liveCapturePlan({ byAddress: {} }, desk.identities).captures, []);
+  // Nothing at all is not a failure — it is a desk with no windows on it.
+  assert.deepStrictEqual(panel.liveCapturePlan(null, null, true), { captures: [], skipped: [] });
+  assert.deepStrictEqual(
+    panel.liveCapturePlan({ byAddress: {} }, desk.identities, true).captures, []);
 });
 
 test("the live round's log line says the pictures were never written", () => {
   const desk = liveDesk();
-  const plan = panel.liveCapturePlan(desk.instances, desk.identities);
+  // The browser unwatched, so the line has a skip to report as well as takes.
+  const plan = panel.liveCapturePlan(desk.instances,
+    desk.identities.filter((i) => i.id !== "browser"), true);
 
   const all = plan.captures.map((c) => ({ ok: true, reason: "" }));
   const line = panel.liveCaptureLogLine(plan, all);
@@ -7175,22 +7361,6 @@ test("the live round's log line says the pictures were never written", () => {
   // leaving them out of the arithmetic entirely.
   const short = panel.liveCaptureLogLine(plan, [{ ok: true, reason: "" }]);
   assert.ok(short.indexOf("2 not reached") !== -1, short);
-});
-
-test("the pictured id list is a SET, sorted, so a reorder is not a withdrawal", () => {
-  // The panel binds this and drops the live pictures of anything that leaves it.
-  // Identity order in the state file is PRIORITY order and moves without a
-  // camera moving, so an unsorted list would look changed and throw the pictures
-  // away for nothing.
-  assert.deepStrictEqual(
-    panel.picturedIdentityIds([{ id: "z", pictured: true }, { id: "a", pictured: true },
-      { id: "m", pictured: false }]), ["a", "z"]);
-  assert.deepStrictEqual(
-    panel.picturedIdentityIds([{ id: "a", pictured: true }, { id: "z", pictured: true }]),
-    ["a", "z"]);
-  // `=== true`, the same read as everywhere else a consent is looked at.
-  assert.deepStrictEqual(panel.picturedIdentityIds([{ id: "a", pictured: "true" }]), []);
-  assert.deepStrictEqual(panel.picturedIdentityIds(null), []);
 });
 
 test("NOTHING ON THE LIVE PATH CAN WRITE A FILE", () => {
@@ -7293,20 +7463,22 @@ test("the live source is a fact about the LIVE map, keyed by the window address"
   // about a recorded layout, and a picture of the window as it is now is a fact
   // about the live one.
   assert.ok(body.indexOf("if (root.showRecorded) return \"\"") !== -1, body);
-  // THE CAMERA GATE, in the one funnel both readers go through — the chip's
-  // Image and the payload — so a withdrawn picture stops being drawn in the same
-  // frame the flag is written, with no panel reopen and nothing to wait for.
-  assert.ok(body.indexOf("if (!root.picturedOf(identityId)) return \"\"") !== -1, body);
+  // THE SWITCH, in the one funnel both readers go through — the chip's Image
+  // and the payload — so a picture stops being drawn in the same frame the flag
+  // is written, with no panel reopen and nothing to wait for.
+  assert.ok(body.indexOf("if (!root.picturesOn) return \"\"") !== -1, body);
   // The map is PASSED IN, so the binding's dependency is visible at the call
   // site and cannot be tidied away (tick md1).
   assert.ok(body.indexOf("liveCaptures.urlIn(liveCaptures.pictures, address)") !== -1, body);
 
-  // A withdrawal is noticed by a HANDLER ON THE LIST, not by a call at each of
-  // the three sites that can withdraw a camera — the row's button, "Not for
-  // these apps", and unticking the app, which takes the identity and its flag
-  // away together.
-  assert.ok(source.indexOf("onPicturedIdentityIdsChanged: liveCaptures.retain(") !== -1,
-    "nothing drops a withdrawn app's live pictures out of memory");
+  // And the pixels go too, at both of the two sites that can drop a live
+  // picture: the switch (all of them at once) and an unwatch (one app's).
+  const off = source.slice(source.indexOf("function setPictures(on) {"));
+  assert.ok(off.slice(0, off.indexOf("\n  }\n")).indexOf("liveCaptures.clear()") !== -1,
+    "switching the pictures off leaves the live ones in memory");
+  const tick = source.slice(source.indexOf("function toggleChip(chip) {"));
+  assert.ok(tick.slice(0, tick.indexOf("\n  }\n")).indexOf("liveCaptures.retain(remaining)") !== -1,
+    "unticking an app leaves its live picture in memory");
 
   // And the payload's two halves: a boolean the panel always states, and the URL
   // the chip reports only once it has drawn it.
@@ -7328,9 +7500,10 @@ test("ONE ROUND PER PANEL SESSION, started by the first client list and discarde
   // does — so `opened` alone is too early to plan from.
   assert.ok(body.indexOf("if (!root.opened || !root.haveLiveData) return") !== -1, body);
   assert.ok(body.indexOf("if (root.liveRoundStarted) return") !== -1, body);
-  assert.ok(body.indexOf("PanelModel.liveCapturePlan(root.instanceIndex, root.identities)") !== -1,
-    "the plan is derived a second time instead of coming from the index the map is built from:\n"
-    + body);
+  assert.ok(body.indexOf("PanelModel.liveCapturePlan(") !== -1
+    && body.indexOf("root.instanceIndex, root.identities, root.picturesOn") !== -1,
+    "the plan is derived a second time instead of coming from the index the map is built from,"
+    + " or it no longer consults the switch:\n" + body);
 
   // Both triggers, and QML allows one handler per signal per object — so they
   // are inside the handlers that already exist rather than beside them.
@@ -7452,308 +7625,8 @@ test("the chip's report carries an onXChanged for EVERY property it captures (ti
 });
 
 // ---------------------------------------------------------------------------
-// THE FIRST-RECORD DIALOGUE (tick y28)
-// ---------------------------------------------------------------------------
-//
-// The human's decision, in full: at the first Record with picturable apps the
-// panel shows THE CAPTURES JUST TAKEN and offers exactly three answers — Keep
-// these / Delete these / Delete all — and the answer survives a shell
-// restart. Asked ONCE.
-//
-// The parts with a right answer are pure and live here; the modal's five moving
-// parts are QML and are pinned at the source below, the way every other QML gate
-// in this file is.
-
-test("the prompt offers exactly three answers, in the order it draws them", () => {
-  const choices = panel.consentChoices();
-  assert.deepStrictEqual(choices.map((c) => c.id), ["keep", "not-these", "none"]);
-  assert.deepStrictEqual(choices.map((c) => c.label),
-    ["Keep these", "Delete these", "Delete all"]);
-
-  // No answer is dimmed. A prompt with a disabled option is a question whose
-  // answer the asker has already decided.
-  for (const choice of choices) {
-    assert.strictEqual(choice.enabled, true, choice.id);
-    assert.ok(choice.tooltip.length > 0, choice.id + " says what pressing it will do");
-  }
-
-  // Shaped like the overflow menu's actions, so the SAME cursor helpers drive
-  // both surfaces rather than the prompt inventing a second vocabulary.
-  assert.deepStrictEqual(panel.menuActionIds(choices), ["keep", "not-these", "none"]);
-  assert.strictEqual(panel.firstEnabledActionId(choices), "keep");
-  assert.strictEqual(panel.nextSection(panel.menuActionIds(choices), "keep", 1), "not-these");
-  assert.strictEqual(panel.nextSection(panel.menuActionIds(choices), "keep", -1), "none");
-});
-
-test("only one of the three is an answer", () => {
-  for (const id of ["keep", "not-these", "none"]) assert.ok(panel.isConsentChoice(id), id);
-  for (const junk of ["", "Keep", "yes", "unasked", null, undefined, 7, {}]) {
-    assert.strictEqual(panel.isConsentChoice(junk), false, JSON.stringify(junk));
-  }
-});
-
-test("the strip is the pictures that were STORED, not the ones that were planned", () => {
-  // A round's results carry every planned capture, failures included. A
-  // thumbnail strip with a hole in it where a window on a sleeping monitor
-  // should be would be a prompt asking about a picture that does not exist.
-  const results = [
-    { identityId: "obsidian", occurrence: 0, file: "a.jpg", ok: true, reason: "" },
-    { identityId: "vault", occurrence: 0, file: "b.jpg", ok: false, reason: "no-frame" },
-    { identityId: "obsidian", occurrence: 1, file: "c.jpg", ok: true, reason: "" },
-    { identityId: "", occurrence: 0, file: "d.jpg", ok: true, reason: "" }
-  ];
-  assert.deepStrictEqual(panel.consentCaptureEntries(results), [
-    { identityId: "obsidian", occurrence: 0, file: "a.jpg" },
-    { identityId: "obsidian", occurrence: 1, file: "c.jpg" }
-  ]);
-  assert.deepStrictEqual(panel.consentCaptureEntries(null), []);
-
-  // "These apps" is the identities the user is LOOKING AT, deduped and in
-  // first-seen order — two windows of one app are one app.
-  assert.deepStrictEqual(panel.consentIdentityIds(panel.consentCaptureEntries(results)),
-    ["obsidian"]);
-  assert.deepStrictEqual(panel.consentIdentityIds(null), []);
-});
-
-test("the prompt is due once, and only when there is something to show", () => {
-  const shown = [{ identityId: "obsidian", occurrence: 0, file: "a.jpg" }];
-
-  assert.strictEqual(panel.consentPromptDue("unasked", shown), true);
-  assert.strictEqual(panel.consentPromptDue("", shown), true, "a state that has never said");
-
-  // ASKED ONCE — and all three answers close it, because what they DID differs
-  // and that they closed the question does not.
-  for (const answer of ["keep", "not-these", "none"]) {
-    assert.strictEqual(panel.consentPromptDue(answer, shown), false, answer);
-  }
-
-  // A round that stored nothing has nothing to demonstrate. The user is asked at
-  // the next Record that produces something, which is the first moment there is
-  // anything to ask about — a three-choice dialogue over an empty strip is
-  // precisely the warning label this moment is not.
-  assert.strictEqual(panel.consentPromptDue("unasked", []), false);
-  assert.strictEqual(panel.consentPromptDue("unasked", null), false);
-});
-
-test("PanelModel and StateModel spell the consent words identically", () => {
-  // The cross-pin. PanelModel may not require StateModel (siblings; neither
-  // imports the other), so `consentAnswered` is a copy of
-  // StateModel.pictureConsentAsked and this is what keeps the copy honest —
-  // exactly the arrangement TERMINAL_BINARIES already lives under.
-  const words = ["unasked", "keep", "not-these", "none", "", "Keep", "yes", null, 7];
-  for (const word of words) {
-    assert.strictEqual(panel.consentAnswered(word),
-      state.pictureConsentAsked({ pictureConsent: word }),
-      JSON.stringify(word) + ": the two spellings have drifted apart");
-  }
-  // And the three ids the prompt offers are exactly the three the file accepts.
-  for (const choice of panel.consentChoices()) {
-    assert.strictEqual(state.normalizePictureConsent(choice.id), choice.id,
-      choice.id + " is not a value the state file can hold");
-  }
-});
-
-test("the prompt's own words name what happened, in the past tense", () => {
-  assert.strictEqual(panel.consentTitle(1), "Dock Recall took a picture of this window");
-  assert.strictEqual(panel.consentTitle(3), "Dock Recall took pictures of these 3 windows");
-  assert.ok(panel.consentBody().indexOf("~/.cache") !== -1,
-    "a picture of your own window is self-explanatory; a cache directory is not");
-
-  // One log line per answer, naming what it DID rather than which button was
-  // pressed — the log is read by somebody asking what happened to their files.
-  assert.ok(panel.consentAnswerLine("keep", ["obsidian"]).indexOf("kept") !== -1);
-  const declined = panel.consentAnswerLine("not-these", ["obsidian", "vault"]);
-  assert.ok(declined.indexOf("obsidian") !== -1 && declined.indexOf("vault") !== -1,
-    "it names the apps it turned off: " + declined);
-  assert.ok(panel.consentAnswerLine("none", []).indexOf("every camera") !== -1);
-  assert.strictEqual(panel.consentAnswerLine("nonsense", []), "");
-});
-
-test("the modal mirrors the overflow menu's five parts, and stashes the cursor", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-
-  // 1. A BOOL of its own.
-  assert.ok(source.indexOf("property bool consentOpen: false") !== -1);
-
-  // 2. focusSection set to its own value on open, and 6. the previous one
-  //    STASHED first — the part the overflow menu does not need, because the
-  //    user tabbed to the ⋯ and did not ask for this.
-  const open = source.slice(source.indexOf("function openConsent() {"));
-  const openBody = open.slice(0, open.indexOf("\n  }\n"));
-  assert.ok(openBody.indexOf("root.consentReturnSection = root.focusSection") !== -1, openBody);
-  assert.ok(openBody.indexOf("root.consentReturnSection = root.focusSection")
-    < openBody.indexOf("root.focusSection = \"consent\""),
-    "the stash runs AFTER the overwrite, so what it stashes is \"consent\" itself");
-
-  // 3. handleMove checks it FIRST, so the panel cursor cannot move behind it.
-  const move = source.slice(source.indexOf("function handleMove(dx, dy) {"));
-  const moveBody = move.slice(0, move.indexOf("\n  }\n"));
-  assert.ok(moveBody.indexOf("root.consentOpen") !== -1, "handleMove ignores the prompt");
-  assert.ok(moveBody.indexOf("root.consentOpen") < moveBody.indexOf("root.overflowOpen"),
-    "the prompt is the panel's only true modal and has to be asked about first");
-
-  // Enter and Space too, and Tab — which the prompt keeps rather than letting it
-  // step out and leave a modal over a cursor somewhere behind it.
-  const activate = source.slice(source.indexOf("function activateCursor() {"));
-  assert.ok(activate.slice(0, activate.indexOf("\n  }\n")).indexOf("root.activateConsent()") !== -1);
-  const section = source.slice(source.indexOf("function moveSection(direction) {"));
-  assert.ok(section.slice(0, section.indexOf("\n  }\n")).indexOf("root.moveConsentCursor(") !== -1);
-
-  // 4. Auto-close when focus leaves — in the ONE onFocusSectionChanged handler,
-  //    because QML allows exactly one per signal per object.
-  const changed = source.slice(source.indexOf("onFocusSectionChanged: {"));
-  const changedBody = changed.slice(0, changed.indexOf("\n  }\n"));
-  assert.ok(changedBody.indexOf("root.closeConsent()") !== -1, changedBody);
-  assert.strictEqual(source.split("onFocusSectionChanged: {").length - 1, 1,
-    "a second onFocusSectionChanged on root would be a syntax error, not a second listener");
-
-  // 5. Escape unwinds ONE LEVEL AT A TIME: prompt, then menu, then the panel.
-  const escape = source.slice(source.indexOf("onCloseRequested:"), source.indexOf("onMoveRequested:"));
-  assert.ok(escape.indexOf("root.consentOpen ? root.dismissConsent()") !== -1, escape);
-  assert.ok(escape.indexOf("root.consentOpen") < escape.indexOf("root.overflowOpen"), escape);
-  assert.ok(escape.indexOf("root.dismiss()") !== -1, "and the panel is still the last level");
-
-  // And the cursor comes BACK. Dismissing is not an answer: nothing is written.
-  const close = source.slice(source.indexOf("function closeConsent() {"));
-  const closeBody = close.slice(0, close.indexOf("\n  }\n"));
-  assert.ok(closeBody.indexOf("root.focusSection = (back && root.focusOrder.indexOf(back) !== -1)") !== -1,
-    closeBody);
-  assert.strictEqual(closeBody.indexOf("writeState"), -1,
-    "dismissing the prompt writes something — a dismissal is not an answer");
-  assert.strictEqual(closeBody.indexOf("evict"), -1,
-    "dismissing the prompt deletes something");
-});
-
-test("answering is ONE write, and it deletes only after the write went through", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  const fn = source.slice(source.indexOf("function answerConsent(answer) {"));
-  const body = fn.slice(0, fn.indexOf("\n  }\n"));
-
-  // setPaused's discipline: a FRESH read, the adopt-what-the-file-says branch,
-  // a StateModel setter, and the log gated on writeState's boolean.
-  assert.ok(body.indexOf("root.freshState()") !== -1, "it writes from the panel's stale copy");
-  assert.ok(body.indexOf("StateModel.pictureConsentAsked(fresh)") !== -1,
-    "it overwrites an answer somebody else already gave");
-  assert.ok(body.indexOf("if (!root.writeState(next)) return false") !== -1, body);
-  assert.ok(body.indexOf("root.writeState(next)") < body.indexOf("root.log("),
-    "the log line is not gated on the write");
-
-  // ONE write for all three answers: the withdrawal is composed into the same
-  // state object rather than looped as N whole-file round trips.
-  assert.strictEqual(body.split("root.writeState(").length - 1, 1,
-    "answering the prompt writes the file more than once");
-  assert.ok(body.indexOf("StateModel.clearPictured(next, ids)") !== -1, body);
-  assert.ok(body.indexOf("StateModel.clearPictured(next, null)") !== -1,
-    "\"Delete all\" has to reach every identity, not just the ones on screen");
-  assert.ok(body.indexOf("StateModel.setPictureConsent(next, answer)") !== -1, body);
-
-  // THE PICTURES GO AFTER THE WRITE, like every other eviction in this file: a
-  // refused write must not take the pictures with it.
-  assert.ok(body.indexOf("root.writeState(next)") < body.indexOf("captureStore.evict"),
-    "a refused write still deletes the user's pictures");
-  assert.ok(body.indexOf("captureStore.evictAll(") !== -1,
-    "\"Delete all\" leaves the other desks' pictures on disk");
-});
-
-test("the prompt is offered by the capture round, after it finishes", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  const fn = source.slice(source.indexOf("function captureAfterRecord(layout, chosen) {"));
-  const body = fn.slice(0, fn.indexOf("\n  }\n"));
-
-  // Inside the completion callback and nowhere else. Asking before the round
-  // would mean asking about photographs nobody has seen, which is the warning
-  // label this feature deliberately is not.
-  assert.ok(body.indexOf("root.offerConsent(results)") !== -1, body);
-  assert.ok(body.indexOf("captureStore.capture(plan, function (results)")
-    < body.indexOf("root.offerConsent(results)"), body);
-
-  // And the no-captures early return does NOT offer it: a Record that stored
-  // nothing has nothing to ask about.
-  const early = body.slice(0, body.indexOf("captureStore.capture("));
-  assert.strictEqual(early.indexOf("offerConsent"), -1, early);
-});
-
-test("the strip is unloaded between offers, not merely hidden", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  const loader = source.slice(source.indexOf("sourceComponent: ConsentPrompt") - 400);
-
-  // The prompt's Images decode files off disk. A shut prompt that merely stopped
-  // painting would keep them decoded for the panel's life — for pictures of
-  // windows the user may just have said they do not want kept.
-  assert.ok(loader.indexOf("active: root.consentOpen") !== -1, loader.slice(0, 500));
-  assert.ok(loader.indexOf("sourceComponent: ConsentPrompt") !== -1);
-});
-
-test("the prompt reports what it drew, and reports nothing while it is shut", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  const prompt = fs.readFileSync(path.join(__dirname, "..", "ConsentPrompt.qml"), "utf8");
-
-  // The delegates write; panelState iterates the MODEL and looks entries up.
-  // Never reset — tick be1's lesson: a Repeater's delegates are created once and
-  // are not destroyed by the surface they sit on closing.
-  assert.ok(prompt.indexOf("prompt.panel.reportConsentChoice(") !== -1);
-  assert.ok(prompt.indexOf("prompt.panel.reportConsentCapture(") !== -1);
-
-  const fn = source.slice(source.indexOf("function panelState() {"));
-  const body = fn.slice(0, fn.indexOf("\n    return payload\n"));
-  assert.ok(body.indexOf("if (root.consentOpen) {") !== -1,
-    "a shut prompt reports the answers it is not offering");
-  assert.ok(body.indexOf("root.consentChoiceModel") !== -1,
-    "the choices are read off a registry rather than iterated from the model");
-  assert.ok(body.indexOf("pictureConsent: root.pictureConsent") !== -1,
-    "the stored answer — the one that proves \"asked once\" across a restart");
-
-  // The label comes from the BUTTON and the id from the MODEL. A prompt offering
-  // the right three ids under the wrong three words is what the pair catches.
-  assert.ok(body.indexOf("label: String(choiceReport.label)") !== -1, body);
-});
-
-// ---------------------------------------------------------------------------
 // The guards stop being whitelists, and the small correctness items (tick md1)
 // ---------------------------------------------------------------------------
-
-test("consentAnswered is DERIVED from the answer list, not a third copy of it", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const source = fs.readFileSync(path.join(__dirname, "..", "PanelModel.js"), "utf8");
-
-  // It was a third spelling of the vocabulary as bare literals — after
-  // consentChoices' ids and StateModel's own list — in a file whose header says
-  // a typo there is "a silent unasked for ever". A fourth answer added to
-  // consentChoices and forgotten here would leave consentPromptDue re-asking a
-  // question the user has already answered.
-  const at = source.indexOf("function consentAnswered(answer)");
-  assert.ok(at !== -1, "consentAnswered is gone");
-  const body = source.slice(at, source.indexOf("\n}\n", at));
-  for (const word of ["keep", "not-these", "none"]) {
-    assert.strictEqual(body.indexOf('"' + word + '"'), -1,
-      "consentAnswered still spells the vocabulary out:\n" + body);
-  }
-
-  // Behaviour, not only shape: every id the prompt offers is an answered one,
-  // and nothing else is.
-  for (const choice of panel.consentChoices()) {
-    assert.strictEqual(panel.consentAnswered(choice.id), true, choice.id);
-    assert.strictEqual(panel.isConsentChoice(choice.id), true, choice.id);
-  }
-  assert.strictEqual(panel.consentAnswered("unasked"), false);
-  assert.strictEqual(panel.consentAnswered(""), false);
-  assert.strictEqual(panel.consentAnswered(null), false);
-  assert.strictEqual(panel.consentAnswered("kept"), false);
-  // Whitespace is tolerated exactly as isConsentChoice tolerates it — one rule,
-  // so a hand-edited file cannot be read two ways.
-  assert.strictEqual(panel.consentAnswered("  keep "), panel.isConsentChoice("  keep "));
-});
 
 test("the chip's picture depends on the LISTING, in the call rather than in a dead branch (tick md1)", () => {
   const fs = require("node:fs");
@@ -7845,7 +7718,7 @@ test("the state file's writes block, so a record is on disk when it says it is",
     "freshState's view no longer reads the file synchronously");
 });
 
-test("a capture is not written for an app whose consent went away mid-round", () => {
+test("a capture is not written once the pictures have been switched off mid-round", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -7853,67 +7726,59 @@ test("a capture is not written for an app whose consent went away mid-round", ()
   // The defect this pins (tick zxg), from the acceptance log verbatim:
   //
   //   recorded 2 apps for topology "… | dr-cap-dock"
-  //   unwatched "dr-pictured" — its stored pictures are deleted, on every desk
+  //   unwatched "dr-two" — its stored pictures are deleted, on every desk
   //   dropped every stored picture of 1 app(s), on every desk (unwatched)
   //   1 picture(s) stored, 1 not pictured        <- the round's save, AFTER
   //
-  // Consent withdrawn, the pictures deleted, and then an in-flight round wrote
-  // one back. `_isCurrentStep` did not catch it and could not: the step WAS
-  // still current: the round was healthy, and it was the consent underneath it
-  // that had gone. So the save asks again, and it must ask BEFORE it writes.
+  // The pictures deleted, and then an in-flight round wrote one back.
+  // `_isCurrentStep` did not catch it and could not: the step WAS still
+  // current — the round was healthy, and it was the answer underneath it that
+  // had changed. So the save asks again, and it must ask BEFORE it writes.
   const grab = source.match(/grabToImage\(function \(result\) \{[\s\S]*?\n    \}/);
   assert.ok(grab, "CaptureStore.qml no longer has the grab callback");
 
   const gate = grab[0].indexOf("_stillOwed");
   const write = grab[0].indexOf("saveToFile");
   assert.ok(gate > -1,
-    "the grab callback no longer re-asks whether the app is still owed a picture");
+    "the grab callback no longer re-asks whether this picture is still owed");
   assert.ok(write > -1, "the grab callback no longer saves");
   assert.ok(gate < write,
-    "the consent is re-asked AFTER the file is written, which is too late — "
+    "the question is re-asked AFTER the file is written, which is too late — "
     + "the whole point is that no picture nobody is owed reaches the disk");
 
   // And the panel must actually supply the predicate, or the store's own
-  // default ("no predicate means yes") silently reopens the hole.
+  // default ("no predicate means yes") silently reopens the hole. BOTH stores
+  // get one, and both read the one switch (schema v7) rather than a per-app
+  // grant that no longer exists.
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,400}?picturedOf\(/,
-    "Panel.qml no longer hands the store a consent predicate built on picturedOf");
+  assert.match(panel, /stillOwed:\s*function\s*\(\s*identityId\s*,\s*topologyKey\s*\)[\s\S]{0,800}?root\.picturesOn/,
+    "the recorded store's predicate no longer reads the pictures switch");
+  assert.match(panel, /stillOwed:\s*function\s*\(\s*identityId\s*\)\s*\{[^}]*root\.picturesOn/,
+    "the live store's predicate no longer reads the pictures switch");
+  assert.strictEqual(panel.indexOf("picturedOf("), -1,
+    "the per-app camera predicate is back; there is one switch and it is picturesOn");
 
-  // AND THE SECOND QUESTION, learned from the gate: a Forget leaves the camera
-  // ON, so consent alone answers yes for a layout that no longer exists. The
-  // predicate must also ask whether the recording this picture belongs to is
-  // still there, and the store must pass it the round's topology key to ask
-  // with.
-  assert.match(panel, /stillOwed:\s*function\s*\(\s*identityId\s*,\s*topologyKey\s*\)/,
-    "Panel.qml's consent predicate no longer takes the round's topology key");
+  // AND THE SECOND QUESTION, learned from the gate: a Forget leaves the
+  // pictures ON, so the switch alone answers yes for a layout that no longer
+  // exists. The recorded predicate must also ask whether the recording this
+  // picture belongs to is still there, and the store must pass it the round's
+  // topology key to ask with. (The live one has no second half: a live picture
+  // belongs to no recording.)
   assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,600}?layoutFor\(/,
     "Panel.qml's predicate no longer checks the layout still exists");
-  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
-  assert.match(store, /stillOwed\(entry\.identityId,\s*key\)/,
+  assert.match(source, /stillOwed\(entry\.identityId,\s*key\)/,
     "CaptureStore no longer passes the round's topology key to the predicate");
 
   // AND THE PREDICATE ITSELF ANSWERS, which a grep for a name cannot show. It
-  // routes to StateModel.isPictured, which is pure and testable here — the
-  // reason the hand-rolled QML copy this replaced was worth deleting.
+  // routes to StateModel.picturesOn, which is pure and testable here.
   const st = require("../StateModel.js");
-  const watched = st.parseState(JSON.stringify({
-    version: 7,
-    identities: [
-      { id: "seen", patterns: ["^foot$"] },
-      { id: "watched-only", patterns: ["^foot$"] }
-    ],
-    layouts: {}
+  const on = st.parseState(JSON.stringify({
+    version: 7, pictures: true,
+    identities: [{ id: "seen", patterns: ["^foot$"] }], layouts: {}
   })).state;
-  // The grant is made in memory, because v7 removed `pictured` from the FILE:
-  // the schema now carries one `pictures` switch for the whole tool, and this
-  // per-app predicate is on its way out with the camera that fed it.
-  const withConsent = st.setPictured(watched, "seen", true);
+  const off = st.setPictures(on, false);
 
-  assert.strictEqual(st.isPictured(withConsent, "seen"), true,
-    "an app with its camera on is owed its picture");
-  assert.strictEqual(st.isPictured(withConsent, "watched-only"), false,
-    "a watched app with no camera is not");
-  assert.strictEqual(st.isPictured(withConsent, "unticked-mid-round"), false,
-    "and an app that is no longer in the file at all — unticked while its round "
-    + "was in flight — is not, which is the case this whole gate exists for");
+  assert.strictEqual(st.picturesOn(on), true, "with the switch on, the picture is owed");
+  assert.strictEqual(st.picturesOn(off), false,
+    "and the instant it is off nothing is — which is the case this gate exists for");
 });

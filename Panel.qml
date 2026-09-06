@@ -925,30 +925,12 @@ Item {
   })
 
   function moveSection(direction) {
-    // The first-Record dialogue owns Tab as well as the arrows (tick y28). It is
-    // a question the panel is waiting on an answer to, so Tab walks the three
-    // answers rather than leaving them: a Tab that stepped out of the prompt
-    // would leave a modal surface up with the cursor somewhere behind it, and
-    // Escape is the way out that exists on purpose.
-    if (root.consentOpen) {
-      root.moveConsentCursor(direction)
-      return
-    }
     root.focusSection = PanelModel.nextSection(root.focusOrder, root.focusSection, direction)
     if (root.focusSection === "chips" && !root.currentChip) root.moveChipCursor(1)
     if (root.focusSection === "failed" && !root.currentFailedRow) root.moveFailedCursor(1)
   }
 
   function handleMove(dx, dy) {
-    // THE PROMPT IS CHECKED FIRST, before even the menu (tick y28). It is the
-    // panel's only true modal — a question with the keyboard and a scrim over
-    // everything behind it — and the arrows walking the map underneath would
-    // move a cursor nobody can see, on a surface nobody can click. Horizontal
-    // first, because the answers are a row.
-    if (root.consentOpen) {
-      root.moveConsentCursor(dx !== 0 ? dx : dy)
-      return
-    }
     // An open menu owns the arrows: it is the only thing on screen the user is
     // looking at, and walking the map behind it would move a cursor nobody can
     // see. Vertical first, because the menu is a column.
@@ -991,13 +973,6 @@ Item {
   }
 
   function activateCursor() {
-    // The prompt first, for the reason handleMove checks it first: while it is
-    // up, Enter and Space belong to the answer under the cursor and to nothing
-    // behind it.
-    if (root.consentOpen) {
-      root.activateConsent()
-      return
-    }
     if (root.overflowOpen) {
       root.activateOverflow()
       return
@@ -1627,15 +1602,14 @@ Item {
   // "recorded" and a `jq` in the next process saw no layout at all.
   //
   // That is not merely an honesty problem. `freshState()` below re-reads this
-  // file SYNCHRONOUSLY (`blockAllReads`) and five functions rewrite the WHOLE
-  // file from what it returns — setPaused, setPicturedFor, undoRecord,
-  // answerConsent, forgetLayout. Two of those are, by design, the next thing
-  // the user does after a Record: Undo is armed by the record itself, and the
-  // consent prompt appears BECAUSE of it. With the write still in flight, the
-  // re-read hands back pre-record bytes and the rewrite files them back over
-  // the recording — or the in-flight write lands afterwards and erases the
-  // consent answer. Either way somebody's layout or somebody's answer is gone,
-  // and nothing logs it.
+  // file SYNCHRONOUSLY (`blockAllReads`) and four functions rewrite the WHOLE
+  // file from what it returns — setPaused, setPictures, undoRecord,
+  // forgetLayout. One of those is, by design, the next thing the user does
+  // after a Record: Undo is armed by the record itself. With the write still in
+  // flight, the re-read hands back pre-record bytes and the rewrite files them
+  // back over the recording — or the in-flight write lands afterwards and
+  // erases what the rewrite said. Either way somebody's layout or somebody's
+  // decision is gone, and nothing logs it.
   //
   // So the write is made blocking rather than the readers made to wait. The
   // file is a few KB and this is the panel's own click path; every comment in
@@ -1730,24 +1704,18 @@ Item {
     logPrefix: root.logPrefix
     hostScreen: root.focusedScreen
     hostMapped: root.opened
-    // THE CONSENT, RE-ASKED AT THE INSTANT OF THE WRITE (tick zxg). The store
-    // calls this just before saving, so a camera switched off — or a whole app
-    // unticked — while its round is in flight cannot have a picture written
-    // back after the withdrawal has already deleted them. Read from the state
-    // model each time, never from a copy the round started with.
-    // THROUGH THE PURE PREDICATE THAT ALREADY EXISTS. This was a hand-rolled
-    // third spelling of `StateModel.isPictured` — a loop over root.identities,
-    // in QML, where node cannot test it, on the privacy gate. It answered the
-    // same thing, which is exactly why it was worth deleting: an identical
-    // second implementation is a place for the two to diverge later, and the
-    // one that matters here is the one the file itself is normalized by.
-    // `picturedOf` reads the CURRENT state model on every call, which is the
-    // whole point — the round's plan is older than the question.
+    // THE SWITCH, RE-ASKED AT THE INSTANT OF THE WRITE (tick zxg). The store
+    // calls this just before saving, so pictures switched off while a round is
+    // in flight cannot have one written back after the switch has already
+    // deleted them all. `root.picturesOn` reads the CURRENT state model, which
+    // is the whole point — the round's plan is older than the question.
     stillOwed: function (identityId, topologyKey) {
-      // Consent, AND the recording this picture is for. A Forget leaves the
-      // camera on, so consent alone says yes for a layout that no longer
-      // exists — see the comment on _stillOwed for the log that proved it.
-      if (!root.picturedOf(identityId)) return false
+      // TWO QUESTIONS, and the second is not about the switch at all. A Forget
+      // leaves the pictures ON, so the switch alone says yes for a layout that
+      // no longer exists — see the comment on _stillOwed for the log that
+      // proved it. `identityId` is unused here now that the gate is global; the
+      // store passes it because its other caller-supplied predicate shapes do.
+      if (!root.picturesOn) return false
       if (!topologyKey) return true
       return !!StateModel.layoutFor(root.stateModel, topologyKey)
     }
@@ -1780,10 +1748,11 @@ Item {
     // builds its first view — so the compositor never holds two capture
     // sessions at once either.
     yielding: captureStore.busy
-    // THE CONSENT, RE-ASKED AT THE INSTANT THE PICTURE WOULD BE KEPT — the same
-    // predicate the recorded store gets, for the same reason (tick zxg): the
-    // round's plan is older than the question.
-    stillOwed: function (identityId) { return root.picturedOf(identityId) }
+    // THE SWITCH, RE-ASKED AT THE INSTANT THE PICTURE WOULD BE KEPT — the same
+    // question the recorded store's predicate asks first, for the same reason
+    // (tick zxg): the round's plan is older than the answer. There is no second
+    // half here, because a live picture belongs to no recording.
+    stillOwed: function (identityId) { return root.picturesOn }
   }
 
   // ONE ROUND PER PANEL SESSION. "Live shows real live" means the pictures are
@@ -1833,7 +1802,8 @@ Item {
     // FROM THE INSTANCE INDEX, which is what the live map itself is built from —
     // so the plan cannot name a window the map does not draw. PanelModel owns
     // the decision; this hands it the two values and passes the answer on.
-    liveCaptures.start(PanelModel.liveCapturePlan(root.instanceIndex, root.identities))
+    liveCaptures.start(PanelModel.liveCapturePlan(
+      root.instanceIndex, root.identities, root.picturesOn))
   }
 
   // The live picture this chip is drawing, as a URL its Image can bind, or "".
@@ -1843,13 +1813,13 @@ Item {
   // photograph of a window as it is now, laid over the place it is recorded to
   // go, would answer a question nobody asked.
   //
-  // THE CAMERA GATE IS HERE AND NOWHERE ELSE, exactly as `captureFileFor` holds
-  // the recorded one (tick sp7): switching a camera off stops the drawing in the
-  // same frame the flag is written, without a panel reopen and without waiting
-  // for anything asynchronous — because there is nothing asynchronous to wait
-  // for. `liveCaptures.forget` then takes the pixels out of memory as well, so a
-  // camera switched off and on again cannot show a frame from before the
-  // withdrawal.
+  // THE SWITCH IS READ HERE AND NOWHERE ELSE ON THIS PATH, exactly as
+  // `captureFileFor` reads it for the recorded one (tick sp7): switching the
+  // pictures off stops the drawing in the same frame the flag is written,
+  // without a panel reopen and without waiting for anything asynchronous —
+  // because there is nothing asynchronous to wait for. `liveCaptures.clear()`
+  // then takes the pixels out of memory as well, so pictures switched off and
+  // on again cannot show a frame from before the switch.
   //
   // THE MAP IS PASSED IN, for the reason `captureFileFor` passes the listing in
   // (tick md1): a QML binding re-evaluates when a property it READ changes, and
@@ -1859,23 +1829,9 @@ Item {
   function liveSourceOf(identityId, address) {
     if (root.showRecorded) return ""
     if (!identityId || !address) return ""
-    if (!root.picturedOf(identityId)) return ""
+    if (!root.picturesOn) return ""
     return liveCaptures.urlIn(liveCaptures.pictures, address)
   }
-
-  // EVERY APP WHOSE CAMERA IS ON, and the one place a withdrawal is noticed.
-  //
-  // The panel withdraws a camera in three places — the row's camera button, "Not
-  // for these apps" on the first-Record prompt, and unticking an app, which takes
-  // the identity and its flag away together. A `liveCaptures.forget(id)` call at
-  // each of them is a duty the fourth path would forget, and the pictures are
-  // the one thing a forgotten withdrawal leaves on screen. So the list is
-  // derived, the handler watches the LIST, and every path that changes a camera
-  // goes through it whether its author knew about this or not.
-  readonly property var picturedIdentityIds:
-    PanelModel.picturedIdentityIds(root.identities)
-
-  onPicturedIdentityIdsChanged: liveCaptures.retain(root.picturedIdentityIds)
 
   // The picture this (identity, occurrence) would have for the CURRENT
   // topology, or "" when the cache does not hold one.
@@ -1896,19 +1852,16 @@ Item {
   // `captureStore.files` to `hasIn` cannot be tidied away, because without it
   // there is no listing to look in.
   //
-  // AND GATED ON THE CAMERA (tick sp7). Withdrawing a camera — the row's button,
-  // "Delete these", or unticking the app — deletes that identity's
-  // pictures on every desk, but a `find` is a process and a listing is another,
-  // and until both have come back `captureStore.has()` still answers yes. Two
-  // frames of the photograph a user has just withdrawn is exactly the moment
-  // this feature must not have, so the gate is `pictured` and the delete is what
-  // makes it true on disk as well as on screen.
-  //
-  // It also covers the case no eviction can: a recorded-but-unwatched ghost has
-  // no identity in the file at all, so it has no camera, so it draws no picture.
+  // AND GATED ON THE SWITCH (tick sp7, now the one switch). Switching the
+  // pictures off deletes every one of them on every desk, but a `find` is a
+  // process and a listing is another, and until both have come back
+  // `captureStore.has()` still answers yes. Two frames of a photograph the user
+  // has just switched off is exactly the moment this feature must not have, so
+  // the gate is `picturesOn` and the delete is what makes it true on disk as
+  // well as on screen.
   function captureFileFor(identityId, occurrence) {
     if (!identityId || !root.topologyKey) return ""
-    if (!root.picturedOf(identityId)) return ""
+    if (!root.picturesOn) return ""
     var name = PanelModel.captureFileName(identityId, occurrence, root.topologyKey)
     return captureStore.hasIn(captureStore.files, name) ? name : ""
   }
@@ -2158,19 +2111,28 @@ Item {
       // "the write succeeded" has never been the same claim as "something
       // changed", and only `added` can tell them apart.
       if (chip.identityId) {
-        // UNWATCHING TAKES THE PICTURES WITH IT (tick sp7), on every desk.
+        // UNWATCHING TAKES THE PICTURES WITH IT (tick sp7), on every desk — and
+        // the global switch does not change that. Watching is still per app, so
+        // "stop watching this" is still an act about ONE app's pictures: an app
+        // the tool no longer knows about must not leave photographs behind on
+        // desks nothing would ever come back for (Record's eviction only runs
+        // for the desk you are on, and so does Forget).
         //
-        // The README has always promised "Unticking an app takes its camera
-        // consent with it", and until this tick it took the FLAG: the identity
-        // went, and with it the `pictured` field that lived on it — but the
-        // photographs stayed, the recorded map's ghost chip went on rendering
-        // them, and there was no longer even a camera button to press. This is
-        // the harder half of the same promise, and the one a user would actually
-        // check.
+        // BOTH STORES, because a live picture is held by window address and
+        // survives in memory until something drops it. `retain` is handed the
+        // list that is LEFT rather than the id that went, which is the shape
+        // LiveCaptureStore.retain documents: an id to drop is a duty each
+        // withdrawal site has to remember, and a set to keep cannot be
+        // half-applied.
         //
         // AFTER the write, like every other eviction in this file: a refused
         // write must not take the pictures with it.
         captureStore.evictIdentities([chip.identityId], "unwatched")
+        var remaining = []
+        for (var k = 0; k < next.length; k++) {
+          if (next[k] && next[k].id) remaining.push(String(next[k].id))
+        }
+        liveCaptures.retain(remaining)
         root.log("unwatched \"" + chip.identityId + "\" — " + next.length + " identities;"
           + " its stored pictures are deleted, on every desk")
       } else if (added) {
@@ -2324,101 +2286,62 @@ Item {
       : "activated — monitor changes will be acted on again")
   }
 
-  // -------------------------------------------- the second consent (tick qnc)
+  // ------------------------------------------------- the pictures switch (v7)
   //
-  // WATCHED IS NOT PICTURED. Watching an app means the tool may MOVE its
-  // windows; picturing it means the tool may PHOTOGRAPH them and keep the
-  // picture on disk. Someone who wants their password manager put back on the
-  // right workspace has not agreed to have it photographed mid-reveal, so the
-  // two are separate grants and the second one defaults OFF (schema v5 —
-  // StateModel.normalizeIdentity materializes `pictured: false` on every
-  // identity through every door, so nothing here ever has to tell absent from
-  // withheld).
+  // ONE SWITCH FOR THE WHOLE TOOL, and it is the only thing standing between a
+  // watched window and a photograph of it. It replaces a per-app camera on
+  // eleven rows plus a three-answer dialogue on the first Record, and the
+  // reason it replaces them is what the human found on the live panel: the
+  // camera was unfindable, and the dialogue — a modal offering to delete the
+  // pictures it had just taken — talked him out of the feature he had asked
+  // for. Pictures are what this panel is FOR. They are on, and turning them off
+  // is one entry in the overflow menu.
   //
-  // WHERE THE AFFORDANCE LIVES: the app LIST, one camera button per row, and
-  // not the map. The map is already the control surface for the first tick — a
-  // chip click watches or unwatches — and a second consent on the same surface
-  // would have to be a modifier-click or a second hit zone inside a rectangle
-  // that is 16×10 px at its floor. Both are invisible, and an invisible
-  // affordance for a privacy decision is the wrong kind of clever. The list is
-  // where the panel already keeps its PER-APP facts (the watched switch, the
-  // launch hint and its own separate click target, the placement), so the
-  // second per-app fact belongs beside them, with the same grammar: a small
-  // control that is not the row's toggle, clicked on its own.
+  // WHERE THE ANSWER LIVES: StateModel's `pictures`, schema v7, beside `paused`
+  // — panel-level, not per-identity, because it is a fact about the tool. It
+  // survives a shell restart for the same reason `paused` does.
+
+  readonly property bool picturesOn: StateModel.picturesOn(root.stateModel)
+
+  // Throw it, with the discipline setPaused established: a FRESH read (this
+  // rewrites the whole file, which also carries every layout and every
+  // identity), the StateModel setter that touches one field, and everything
+  // afterwards gated on writeState's boolean — a refused write must not delete
+  // a picture or claim in the log that it did.
   //
-  // Only a WATCHED identity can be pictured, and that is not a UI restriction
-  // but the shape of the data: `pictured` is a field ON an identity, and an
-  // identity exists exactly while the app is watched. So an unwatched row and
-  // an orphaned recorded ghost offer no camera at all rather than one that
-  // writes nowhere.
-
-  function picturedOf(identityId) {
-    return StateModel.isPictured(root.stateModel, identityId)
-  }
-
-  // Is there anything for a camera on this row to write to? An identity id
-  // that names a WATCHED identity — the recorded-but-unwatched ghost carries an
-  // id too, and it is an id the file no longer has.
-  function picturableOf(identityId) {
-    if (!identityId) return false
-    return StateModel.identityById(root.stateModel, identityId) !== null
-  }
-
-  // Grant or withdraw it, with the discipline setPaused established: a FRESH
-  // read (this rewrites the whole file, which also carries every layout), the
-  // adopt-what-the-file-says branch when somebody got there first, the
-  // StateModel setter that touches one field, and a success line gated on
-  // writeState's boolean — a refused write must not log a consent it did not
-  // record.
-  function setPicturedFor(identityId, want) {
-    if (!identityId) return
+  // OFF IS DESTRUCTIVE AND IMMEDIATE, which is what the menu entry's tooltip
+  // says before it is pressed. Both stores are emptied: `evictAll` takes the
+  // files off disk on every desk, and `clear()` takes the live pictures out of
+  // memory. The map stops drawing either in the same frame, because
+  // `captureFileFor` and `liveSourceOf` are gated on this property rather than
+  // on the stores' contents — so the asynchronous delete is not a window in
+  // which the user still sees what they just switched off.
+  //
+  // ON RESUMES BOTH, and the live half needs a nudge because a live round is
+  // once per panel session: the latch is dropped and the round re-run, so a
+  // user who switches the pictures back on with the panel open sees them
+  // without closing it. The recorded half needs nothing — the next Record
+  // stores again by asking this same property.
+  function setPictures(on) {
+    var want = on === true
+    if (want === root.picturesOn) return
     var fresh = root.freshState()
     if (!fresh) return
+    if (!root.writeState(StateModel.setPictures(fresh, want))) return
 
-    var identity = StateModel.identityById(fresh, identityId)
-    if (!identity) {
-      root.warn("cannot picture \"" + identityId + "\": it is not on the watched list — "
-        + "click its live window to watch it first")
+    if (!want) {
+      captureStore.evictAll("switched off")
+      liveCaptures.clear()
+      root.log("pictures switched off — every stored picture deleted, nothing is"
+        + " photographed until they are switched on")
       return
     }
-    if ((identity.pictured === true) === (want === true)) {
-      // Somebody got there first (a second panel, a hand edit). The user's
-      // intent is already the file's content; adopt it rather than writing it
-      // again, exactly as the pause toggle does.
-      root.stateModel = fresh
-      return
-    }
-    if (!root.writeState(StateModel.setPictured(fresh, identityId, want === true))) return
-    // SWITCHING A CAMERA OFF DELETES THE PICTURES (tick sp7), on every desk, and
-    // AFTER the write like every other eviction here.
-    //
-    // Until this tick it deleted nothing at all: the flag was written, the log
-    // said "Record will store no picture of it" — true about the FUTURE only —
-    // and the photographs already on disk stayed, with the Recorded map going on
-    // drawing them until some unrelated act happened to clear their prefix.
-    // Per-app withdrawal was absent from the whole eviction set. A camera is the
-    // control this feature gives a user over their own pictures; a control that
-    // only governs the next one is not that control.
-    //
-    // The map stops drawing them in the same instant rather than when the
-    // listing comes back — captureFileFor is gated on `pictured` — so the delete
-    // being asynchronous is not a window in which the user still sees what they
-    // just withdrew.
-    if (want !== true) captureStore.evictIdentities([identityId], "camera switched off")
-    // The LIVE pictures need no line here: `picturedIdentityIds` below is bound
-    // to this very flag, and dropping them is a reaction to the list changing
-    // rather than a duty at each of the three withdrawal sites (tick 2zi).
-    root.log(want === true
-      ? "picturing \"" + identityId + "\" — Record will store a picture of its windows"
-      : "no longer picturing \"" + identityId + "\" — its stored pictures are deleted,"
-        + " on every desk, and Record will store no more")
-  }
-
-  // The flip. Computed against the panel's copy and re-checked against the file
-  // inside setPicturedFor, which is what makes a stale copy adopt rather than
-  // write the wrong way round.
-  function togglePictured(identityId) {
-    root.setPicturedFor(identityId, !root.picturedOf(identityId))
+    // The panel may be shut (the IPC verb reaches this too), in which case the
+    // round that matters is the next open's and startLiveRound's own guards
+    // hold it back.
+    root.liveRoundStarted = false
+    root.startLiveRound()
+    root.log("pictures switched on")
   }
 
   // ------------------------------------------------ the one-shot record undo
@@ -2595,19 +2518,20 @@ Item {
   // No index, no pictures. Building one here would be exactly the second opinion
   // this tick removed, and this codebase refuses rather than guesses.
   //
-  // Consent is read from the identities, one `pictured === true` at a time, and
-  // an app that has withheld it is `skipped` rather than merely absent, so the
-  // log can say how many pictures were NOT taken as well as how many were.
+  // THE SWITCH is passed in, once, and it is the only gate there is: with
+  // pictures on every watched window in the layout is photographed, and with
+  // them off the plan is empty and says why (`pictures-off` on every app), so
+  // the log line can tell "nothing was owed" from "nothing worked".
   function captureAfterRecord(layout, chosen) {
     if (!chosen) {
       root.warn("this recording came with no window index, so no pictures were taken — a"
         + " picture whose window was matched a second time could be of a different window")
       return
     }
-    var plan = PanelModel.capturePlan(layout, root.identities, chosen)
+    var plan = PanelModel.capturePlan(layout, root.identities, chosen, root.picturesOn)
     if (!plan.captures.length) {
-      // Still an eviction: a re-record with the consent since withdrawn has to
-      // drop the pictures the previous record took, or the map would go on
+      // Still an eviction: a re-record with the pictures since switched off has
+      // to drop the ones the previous record took, or the map would go on
       // showing photographs the user has asked it to stop taking.
       captureStore.evict(plan.prefix, "re-recorded")
       if (plan.skipped.length) {
@@ -2617,239 +2541,7 @@ Item {
     }
     captureStore.capture(plan, function (results) {
       root.log(PanelModel.captureLogLine(plan, results))
-      // THE CONSENT MOMENT, and this is where it belongs: the round has
-      // finished, so the pictures the prompt is about are on disk and can be
-      // shown. Asking before the round would mean asking about photographs
-      // nobody has seen, which is the warning label this feature deliberately
-      // is not (tick y28).
-      root.offerConsent(results)
     })
-  }
-
-  // ----------------------------------------- the first-Record dialogue (y28)
-  //
-  // THE HUMAN'S DECISION, IN FULL: at the first Record with picturable apps the
-  // panel shows THE CAPTURES JUST TAKEN and offers exactly three answers — Keep
-  // these / Delete these / Delete all — and the answer survives a
-  // shell restart. Asked ONCE.
-  //
-  // WHY IT SHOWS THE PICTURES. It is an onboarding moment that demonstrates the
-  // feature, not a warning label. A sentence about photographs of your windows
-  // is a scary abstraction; three photographs of your own windows is a thing you
-  // can look at and have an opinion about. That framing is why this shows the
-  // captures rather than describing them, and it is why it happens AFTER the
-  // round rather than before it — there is no honest way to show somebody their
-  // own captures before taking them, and the per-app camera is what authorised
-  // taking them in the first place. What this adds is the chance to say the
-  // result is not what they wanted, with an answer that takes it back.
-  //
-  // WHERE THE ANSWER LIVES: StateModel.pictureConsent, schema v6, beside
-  // `paused` — panel-level, not per-identity, because it is an answer about the
-  // FEATURE. The per-app grant is `Identity.pictured` and it is not replaced by
-  // this; two of the three answers act by withdrawing it.
-  //
-  // The five parts of the modal are the overflow menu's five, mirrored: a bool
-  // (consentOpen), focusSection set to its own value on open, a guard at the top
-  // of handleMove so the panel cursor cannot walk behind it, an auto-close when
-  // focus leaves, and Escape unwinding one level at a time. Plus a sixth this
-  // one needs and the menu does not: the previous focusSection is STASHED and
-  // restored, because the prompt arrives unbidden — the user did not tab to it
-  // and did not ask for it, so putting the cursor back where they left it is the
-  // difference between an interruption and a derailment.
-
-  property bool consentOpen: false
-
-  // The prompt's own cursor, held as a CHOICE ID rather than an index, for the
-  // reason the map's is held as a chip key and the menu's as an action id: the
-  // list is a binding, and an index is a promise about an order.
-  property string consentCursor: ""
-
-  // Where the panel's cursor was when the prompt took the keyboard. Restored on
-  // the way out, whether the user answered or dismissed.
-  property string consentReturnSection: ""
-
-  // The strip: one entry per picture the round actually STORED, as
-  // { identityId, occurrence, file, name, source }. The successes and nothing
-  // else — see PanelModel.consentCaptureEntries for why a failed capture is not
-  // a hole in the strip but an absence from it.
-  property var consentEntries: []
-
-  readonly property var consentChoiceModel: PanelModel.consentChoices()
-  readonly property var consentChoiceIds: PanelModel.menuActionIds(root.consentChoiceModel)
-
-  // What the file says the user answered, or "unasked".
-  readonly property string pictureConsent: StateModel.pictureConsent(root.stateModel)
-
-  // The app name the strip puts under a thumbnail. Looked up in appRows rather
-  // than derived again here: the row is what the user reads this app's name off
-  // everywhere else in the panel, and a second derivation could name the same
-  // app two ways in one window. The id is the fallback, which is what a picture
-  // of an app whose row has since gone honestly is.
-  function consentAppName(identityId) {
-    var rows = root.appRows || []
-    for (var i = 0; i < rows.length; i++) {
-      if (String(rows[i].identityId || "") === String(identityId)) return String(rows[i].name)
-    }
-    return String(identityId)
-  }
-
-  // Offer the question, if it is still owed and there is something to ask about.
-  // Called from the capture round's completion and nowhere else.
-  function offerConsent(results) {
-    var entries = PanelModel.consentCaptureEntries(results)
-    if (!PanelModel.consentPromptDue(root.pictureConsent, entries)) return
-
-    // The strip's rows, each carrying the two things the component cannot work
-    // out for itself: what to call the app, and the URL its Image binds. The
-    // URL comes from captureStore.pathFor and Util.fileUrl — the same spelling
-    // of "a local file" the map's chips use, so a home directory with a space
-    // in it works here for the same reason it works there.
-    var strip = []
-    for (var i = 0; i < entries.length; i++) {
-      var path = captureStore.pathFor(entries[i].file)
-      strip.push({
-        identityId: entries[i].identityId,
-        occurrence: entries[i].occurrence,
-        file: entries[i].file,
-        name: root.consentAppName(entries[i].identityId),
-        source: path ? Util.fileUrl(path) : ""
-      })
-    }
-    root.consentEntries = strip
-    root.openConsent()
-  }
-
-  function openConsent() {
-    // STASHED BEFORE it is overwritten, and only when the prompt was not
-    // already up: a second offer while the first is on screen must not stash
-    // "consent" as the place to go back to.
-    if (!root.consentOpen) root.consentReturnSection = root.focusSection
-    root.consentOpen = true
-    root.focusSection = "consent"
-    root.consentCursor = PanelModel.firstEnabledActionId(root.consentChoiceModel)
-  }
-
-  // Put the keyboard back where it was. The one exit that is NOT an answer —
-  // Escape and a click on the scrim both land here — so nothing is written and
-  // nothing is deleted: the question is still owed, and the next Record that
-  // stores a picture asks it again. "Asked once" means asked once ANSWERED, and
-  // recording an answer the user did not give is the single thing a consent
-  // dialogue may never do.
-  function closeConsent() {
-    if (!root.consentOpen) return
-    root.consentOpen = false
-    root.consentCursor = ""
-    root.consentEntries = []
-    // Back where the user left it. `focusOrder` may no longer carry the stashed
-    // section (the Undo button can disappear under a prompt that was open while
-    // a topology changed), so an unknown one falls back to the map — which is
-    // where the panel opens and the one section that is always there.
-    var back = root.consentReturnSection
-    root.consentReturnSection = ""
-    root.focusSection = (back && root.focusOrder.indexOf(back) !== -1) ? back : "chips"
-    if (root.focusSection === "chips" && !root.currentChip) root.moveChipCursor(1)
-  }
-
-  function dismissConsent() {
-    root.closeConsent()
-  }
-
-  function moveConsentCursor(delta) {
-    root.consentCursor = PanelModel.nextSection(root.consentChoiceIds, root.consentCursor, delta)
-  }
-
-  function activateConsent() {
-    root.answerConsent(root.consentCursor)
-  }
-
-  // ANSWER IT. Returns whether the answer reached the file, so the IPC can tell
-  // a recorded answer from a refused write.
-  //
-  // The discipline is setPaused's, because it is the same kind of write: a FRESH
-  // read (this rewrites the whole file, which also carries every layout and
-  // every identity), the adopt-what-the-file-says branch when somebody got there
-  // first, a StateModel setter that touches only what the answer is about, a
-  // success line gated on writeState's boolean, and the log line last.
-  //
-  // ONE WRITE for all three answers, and that is what StateModel.clearPictured
-  // exists for: two of them withdraw a consent as well as recording one, and a
-  // loop of setPictured calls would be N whole-file round trips with the state
-  // after the third describing a decision the user never expressed.
-  //
-  //   Keep these         — records the answer. Nothing is deleted, nobody's
-  //                        camera moves.
-  //   Delete these       — the apps in the strip lose their camera, and every
-  //                        picture of them is deleted, on every desk (tick sp7).
-  //                        THESE apps: the ones the user is looking at. Other
-  //                        apps are untouched — but not other DESKS, because the
-  //                        camera it withdraws is not a per-desk grant and a
-  //                        photograph left on a desk whose camera is off is one
-  //                        nothing would ever come back for.
-  //   Delete all         — every camera goes off and EVERY stored picture is
-  //                        deleted, on every desk. Not a standing gate on top of
-  //                        the per-app consent, deliberately: `pictured` already
-  //                        defaults to off and only an explicit camera press
-  //                        turns it on, so after this answer nothing can be
-  //                        photographed again without the user saying so, app by
-  //                        app. A standing lock would add nothing except a way
-  //                        out that the panel has no affordance for — an
-  //                        unreachable off switch is not a consent model, it is
-  //                        a bricked feature.
-  function answerConsent(answer) {
-    if (!PanelModel.isConsentChoice(answer)) return false
-    var fresh = root.freshState()
-    if (!fresh) return false
-
-    var ids = PanelModel.consentIdentityIds(root.consentEntries)
-
-    if (StateModel.pictureConsentAsked(fresh)) {
-      // Somebody got there first (a second panel, a hand edit). The question is
-      // already answered on disk; adopt that rather than overwriting it with a
-      // second answer to a question that was only ever asked once.
-      root.stateModel = fresh
-      root.closeConsent()
-      return false
-    }
-
-    var next = fresh
-    if (answer === "not-these") next = StateModel.clearPictured(next, ids)
-    else if (answer === "none") next = StateModel.clearPictured(next, null)
-    next = StateModel.setPictureConsent(next, answer)
-
-    if (!root.writeState(next)) return false
-
-    // THE PICTURES, AFTER THE WRITE, like every other eviction in this file: a
-    // refused write must not take the pictures with it.
-    //
-    // "Delete these" evicts BY IDENTITY, on every desk (tick sp7). It used
-    // to evict this desk's topology prefix, which was wrong twice over and both
-    // ways were reachable by ordinary use:
-    //
-    //   · the answer withdraws the camera GLOBALLY (clearPictured takes no
-    //     topology), so a user who pressed Escape on desk A's prompt and then
-    //     answered "Delete these" on desk B kept desk A's pictures of
-    //     exactly those apps — cameras off, and nothing left that would ever
-    //     clean them: Record's eviction only runs for the desk you are on, and
-    //     so does Forget;
-    //   · it read the LIVE topologyKey rather than the round's, so a dock while
-    //     the prompt was up deleted another desk's pictures and left the ones
-    //     the user was looking at while pressing the button.
-    //
-    // The identity patterns have no topology segment at all, so "every desk"
-    // includes the one the prompt's own pictures were taken on whatever the
-    // panel has since docked into — which is the whole point.
-    //
-    // "Delete all" still reaches further: every app, not only the ones in the
-    // strip.
-    if (answer === "not-these") {
-      captureStore.evictIdentities(ids, "declined")
-    } else if (answer === "none") {
-      captureStore.evictAll("declined")
-    }
-
-    root.log(PanelModel.consentAnswerLine(answer, ids))
-    root.closeConsent()
-    return true
   }
 
   // --------------------------------------------- the header overflow menu (gwa)
@@ -2876,7 +2568,8 @@ Item {
   }
 
   readonly property var overflowModel: PanelModel.overflowMenuModel(
-    root.recordedLayouts, root.topologyKey, root.liveMonitors, root.canRecord, root.topologyName)
+    root.recordedLayouts, root.topologyKey, root.liveMonitors, root.canRecord, root.topologyName,
+    root.picturesOn)
   readonly property var overflowActionIds: PanelModel.menuActionIds(root.overflowModel.actions)
 
   property bool overflowOpen: false
@@ -2938,26 +2631,21 @@ Item {
       // is a second door onto the same function rather than its own write.
       root.recordLayout()
       root.closeOverflow()
+      return
+    }
+    if (action.id === "pictures") {
+      // THE MENU STAYS OPEN, unlike Re-record's door. The label flips under the
+      // cursor — "Turn pictures off" becomes "Turn pictures on" — so the menu
+      // is the receipt: the user sees what happened without the panel having to
+      // say it anywhere else, and switching back is the same key again.
+      root.setPictures(!root.picturesOn)
     }
   }
 
   // Tabbing away from the ⋯ closes what it opened: a menu left hanging over a
   // panel whose keyboard cursor has moved on is a surface with no owner.
-  //
-  // ONE HANDLER, both surfaces, because QML allows exactly one `onXChanged` per
-  // signal per object — a second `onFocusSectionChanged` here would be a syntax
-  // error, not a second listener.
-  //
-  // The prompt's half is not reachable by Tab (moveSection keeps Tab inside it)
-  // but it IS reachable: `onCanUndoRecordChanged` sends the cursor to "record"
-  // when the Undo button goes away, and `onFailedRowsChanged` sends it to
-  // "restore" when a cycle succeeds. Either can fire while the prompt is up, and
-  // a modal left hanging over a cursor that has moved on is exactly the state
-  // this guard exists for. Dismissed, not answered — nothing the panel does to
-  // itself may count as the user's answer.
   onFocusSectionChanged: {
     if (root.focusSection !== "overflow" && root.overflowOpen) root.closeOverflow()
-    if (root.focusSection !== "consent" && root.consentOpen) root.closeConsent()
   }
 
   // Delete this topology's layout. No confirmation — the panel never blocks —
@@ -2983,8 +2671,8 @@ Item {
     root.recordUndo = stash
     // THE PICTURES GO WITH THE RECORDING (tick sz6). Forgetting a layout is the
     // delete point, and a photograph of a window kept after the arrangement it
-    // belonged to was deleted is exactly the thing this epic's consent design
-    // exists not to leave lying around. AFTER the write, like the log line: a
+    // belonged to was deleted is exactly the thing this feature must not leave
+    // lying around. AFTER the write, like the log line: a
     // refused write must not take the pictures with it.
     //
     // The undo this arms puts the LAYOUT back and cannot put the pixels back —
@@ -3126,12 +2814,7 @@ Item {
   //     "badgeTone": "ok" | "muted" | "accent" | "urgent" | null,
   //     "overflowOpen": false,
   //     "overflowLayouts": [ { "name": "Laptop", "current": false } ],
-  //     "pictureConsent": "unasked" | "keep" | "not-these" | "none",
-  //     "consentOpen": false,
-  //     "consentChoices": [ { "id": "keep", "label": "Keep these" } ],
-  //     "consentCaptures": [ { "identityId": "obsidian", "occurrence": 0,
-  //                            "name": "Obsidian", "source": "file:///…",
-  //                            "ready": true } ],
+  //     "pictures": true,
   //     "hoveredLinkKey": "",
   //     "rows": [
   //       { "key": "obsidian", "name": "Obsidian", "watched": true,
@@ -3246,7 +2929,7 @@ Item {
   //
   // What is local to this file: every draw-time field (renderPath, placed,
   // width, height, iconSource, iconResolved, treatment, fillState, edgeTone,
-  // badgeValue, badgeFocused, pictured) is present-and-`null` while the delegate
+  // badgeValue, badgeFocused) is present-and-`null` while the delegate
   // has not reported yet — which is `reported()` below, and is why that helper
   // exists rather than a bare property read.
   //
@@ -3371,16 +3054,6 @@ Item {
   // what makes "a shut prompt reports no answers" true without a wipe, and it is
   // the lesson tick be1 paid for: a Repeater's delegates are created once and
   // are not destroyed by the surface they sit on going away.
-  property var consentChoiceReports: ({})
-  function reportConsentChoice(id, report) {
-    root.mergeRenderReport(root.consentChoiceReports, id, report)
-  }
-
-  property var consentCaptureReports: ({})
-  function reportConsentCapture(key, report) {
-    root.mergeRenderReport(root.consentCaptureReports, key, report)
-  }
-
   // One field of a render report, as `null` rather than as nothing when the
   // delegate has not reported it. The distinction is the payload's whole
   // convention: JSON.stringify DROPS an undefined property, so reading a field
@@ -3478,17 +3151,11 @@ Item {
               // delegate, for the reason the four above are.
               iconSource: root.reported(report, "iconSource"),
               iconResolved: root.reported(report, "iconResolved"),
-              // The SECOND consent (tick qnc), reported beside `watched` and
-              // never derived from it: the whole point of the pair is that they
-              // move independently, so a consumer has to be able to read them
-              // independently.
-              pictured: root.reported(report, "pictured"),
               // IS A LIVE PICTURE IN MEMORY FOR THIS CHIP (tick 2zi)? Always
-              // present and always a boolean, like `pictured` beside it and
-              // unlike `capturePath`: "no" is a fact this key always has to
-              // state, and a key that vanished when the answer was no would make
-              // "the live map draws nothing" indistinguishable from "this tick
-              // is not deployed".
+              // present and always a boolean, unlike `capturePath`: "no" is a
+              // fact this key always has to state, and a key that vanished when
+              // the answer was no would make "the live map draws nothing"
+              // indistinguishable from "this tick is not deployed".
               liveCapture: liveCapture,
               // The two colour channels, independently readable. A drifted chip
               // is fillState "watched" and edgeTone "drift" at once.
@@ -3574,10 +3241,6 @@ Item {
         ghost: root.reported(rowReport, "ghost"),
         iconSource: root.reported(rowReport, "iconSource"),
         iconResolved: root.reported(rowReport, "iconResolved"),
-        // The second consent, and whether this row has anything to grant it
-        // with. See the row delegate for why both are said.
-        pictured: root.reported(rowReport, "pictured"),
-        picturable: root.reported(rowReport, "picturable"),
         linkKey: root.reported(rowReport, "linkKey"),
         linked: root.reported(rowReport, "linked")
       })
@@ -3631,42 +3294,6 @@ Item {
       }
     }
 
-    // The first-Record dialogue, from the buttons and thumbnails that drew it,
-    // and ONLY while it is up (tick y28). Iterated from the MODEL — the choice
-    // list and the strip — for the reason the overflow rows are: a report left
-    // over from a previous offer cannot enter the payload, and a row the model
-    // carries but no delegate has drawn yet is skipped rather than reported
-    // half-drawn.
-    var consentChoices = []
-    var consentCaptures = []
-    if (root.consentOpen) {
-      var choiceModel = root.consentChoiceModel
-      for (var ci = 0; ci < choiceModel.length; ci++) {
-        var choiceId = String(choiceModel[ci].id)
-        var choiceReport = root.consentChoiceReports[choiceId] || null
-        // The id from the MODEL, the label from the BUTTON. A prompt offering
-        // the right three ids under the wrong three words is the failure this
-        // pair catches; one value read off the model twice could not.
-        if (choiceReport) consentChoices.push({ id: choiceId, label: String(choiceReport.label) })
-      }
-      var stripModel = root.consentEntries || []
-      for (var si = 0; si < stripModel.length; si++) {
-        var shotKey = String(stripModel[si].identityId) + "#" + String(stripModel[si].occurrence)
-        var shotReport = root.consentCaptureReports[shotKey] || null
-        if (!shotReport) continue
-        consentCaptures.push({
-          identityId: String(shotReport.identityId),
-          occurrence: shotReport.occurrence,
-          name: String(shotReport.name),
-          // What the Image was bound to, and whether it ARRIVED. The pair is the
-          // point: a strip that reports three sources and one ready picture is a
-          // prompt showing the user two empty boxes.
-          source: String(shotReport.source),
-          ready: shotReport.ready === true
-        })
-      }
-    }
-
     var payload = {
       topologyName: root.topologyName,
       showRecorded: root.showRecorded,
@@ -3683,24 +3310,17 @@ Item {
       badgeTone: root.reported(header, "badgeTone"),
       overflowOpen: root.overflowOpen,
       overflowLayouts: layouts,
-      // THE FIRST-RECORD DIALOGUE (tick y28). Three keys, and they answer three
-      // different questions:
+      // THE ONE SWITCH (schema v7, epic wau). ALWAYS PRESENT and always a
+      // boolean: whether this tool may photograph is a fact the panel has, not
+      // a value it is waiting for a delegate to report, and a key that vanished
+      // when the answer was "off" would make "the pictures are off" and "this
+      // build has no switch" the same payload.
       //
-      //   pictureConsent  — what the FILE says the user answered, or "unasked".
-      //                     The one that survives a shell restart, and therefore
-      //                     the one that proves "asked once".
-      //   consentOpen     — is the prompt on screen right now.
-      //   consentChoices  — what the prompt is OFFERING, from the buttons that
-      //                     drew it, and only while it is up.
-      //   consentCaptures — the thumbnails it is showing, likewise.
-      //
-      // `pictureConsent` is always present; the prompt's own three are always
-      // present too, empty when it is shut. Neither is a draw-time null: "the
-      // prompt is not up" is a fact the panel has, not a value it is waiting for.
-      pictureConsent: root.pictureConsent,
-      consentOpen: root.consentOpen,
-      consentChoices: consentChoices,
-      consentCaptures: consentCaptures,
+      // It is the only picture key in this payload. There is no consent answer,
+      // no prompt, no per-chip or per-row grant — the four keys that used to be
+      // here are ABSENT, not null, and tests/acceptance/README.md is normative
+      // about which of those two a missing fact is.
+      pictures: root.picturesOn,
       // What the panel is hovering, and therefore what is lit on both surfaces.
       hoveredLinkKey: root.hoveredLinkKey,
       workspaces: workspaces,
@@ -3812,37 +3432,26 @@ Item {
       return "no-row"
     }
 
-    // The SECOND consent, driven the way its camera drives it (tick qnc).
-    // Through root.setPicturedFor and nothing else — that function is the one
-    // place that re-reads the state file before writing, adopts what the file
-    // already says, and gates its log line on the write — for the same reason
-    // setPaused above routes through the panel's own setter.
+    // THE PICTURES SWITCH (schema v7, epic wau), driven the way the overflow
+    // menu drives it. Through root.setPictures and nothing else — that function
+    // is the one place that re-reads the state file before writing, evicts both
+    // stores on the way off, restarts the live round on the way on, and gates
+    // every one of those on the write — for the same reason setPaused above
+    // routes through the panel's own setter.
     //
-    // Keyed by ROW, not by identity id, so a caller cannot grant a consent to
-    // something the panel is not showing: the row is looked up in appRows, and
-    // a key that names no row answers "no-row" rather than acting on something
-    // else. A row with no identity to grant with — an unwatched window, an
-    // orphaned recorded ghost — answers "not-picturable", which is the same
-    // sentence its missing camera says.
+    // NO KEY, because there is nothing to key it by: one switch, whole tool.
+    // That is the change this verb records, and the reason `setPictured` (per
+    // row) is not merely renamed but gone.
     //
-    // Answers the position the camera is IN afterwards, exactly as setPaused
+    // Answers the position the switch is IN afterwards, exactly as setPaused
     // does, so a caller comparing the answer to its request learns about a
     // refused write without reading a log.
-    function setPictured(key: string, value: string): string {
+    function setPictures(value: string): string {
       var want = String(value || "").toLowerCase()
-      if (want !== "on" && want !== "off" && want !== "true" && want !== "false") return "unknown"
+      if (want !== "on" && want !== "off") return "unknown"
       if (!root.stateLoaded) return "no-state"
-      var wanted = String(key || "")
-      if (!wanted) return "unknown"
-      var list = root.appRows || []
-      for (var i = 0; i < list.length; i++) {
-        if (String(list[i].key) !== wanted) continue
-        var identityId = String(list[i].identityId || "")
-        if (!root.picturableOf(identityId)) return "not-picturable"
-        root.setPicturedFor(identityId, want === "on" || want === "true")
-        return root.picturedOf(identityId) ? "on" : "off"
-      }
-      return "no-row"
+      root.setPictures(want === "on")
+      return root.picturesOn ? "on" : "off"
     }
 
     // The row-to-chip link, driven without a pointer. `hoveredLinkKey` is what
@@ -3893,29 +3502,6 @@ Item {
     function forgetLayout(): string {
       if (!root.stateLoaded) return "no-state"
       return root.forgetLayout() ? "forgotten" : "nothing-to-forget"
-    }
-
-    // ANSWER THE FIRST-RECORD DIALOGUE (tick y28), the way its buttons answer
-    // it. Through root.answerConsent and nothing else: that function owns the
-    // fresh read, the single composed write, the eviction and the log line, and
-    // an IPC path that set `pictureConsent` directly would record an answer
-    // without performing it — a "Delete all" that deleted nothing.
-    //
-    // It exists because this prompt is otherwise reachable only by a finger on
-    // one of three buttons, and the acceptance venue has no pointer. The verb is
-    // the door a headless test drives it through, and the same door
-    // `omarchy-shell` gets.
-    //
-    // Answers what HAPPENED rather than what was asked for, exactly as setPaused
-    // and setPictured do: "not-asking" for a prompt that is not up, "unknown"
-    // for a word that is not one of the three, "refused" for a write the file
-    // would not take, and otherwise the answer that was recorded.
-    function answerConsent(answer: string): string {
-      var want = String(answer || "").toLowerCase()
-      if (!PanelModel.isConsentChoice(want)) return "unknown"
-      if (!root.stateLoaded) return "no-state"
-      if (!root.consentOpen) return "not-asking"
-      return root.answerConsent(want) ? want : "refused"
     }
 
     // The overflow menu, opened and closed by the panel's own verbs so the
@@ -4019,14 +3605,11 @@ Item {
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
 
-        // Esc backs out ONE LEVEL AT A TIME: the first-Record dialogue if it is
-        // up, then the menu, then the panel itself. The prompt is outermost
-        // because it is the only surface here that took the keyboard away from
-        // the panel entirely — and backing out of it is a dismissal, not an
-        // answer, so the question is asked again at the next Record that stores
-        // a picture (see closeConsent).
-        onCloseRequested: root.consentOpen ? root.dismissConsent()
-          : (root.overflowOpen ? root.closeOverflow() : root.dismiss())
+        // Esc backs out ONE LEVEL AT A TIME: the menu if it is open, then the
+        // panel itself. There is no third level — the first-Record dialogue was
+        // the one surface that ever took the keyboard away from the panel, and
+        // it is gone (epic wau).
+        onCloseRequested: root.overflowOpen ? root.closeOverflow() : root.dismiss()
         onMoveRequested: function (dx, dy) { root.handleMove(dx, dy) }
         // Space and Enter both land here (PanelKeyCatcher emits
         // activateRequested for each), which is exactly the rule the sketch
@@ -4964,14 +4547,6 @@ Item {
                   readonly property bool iconResolved: root.iconResolvedOf(
                     appRow.modelData.identityId, appRow.modelData.className)
 
-                  // The second consent, as this row draws it (tick qnc). Held
-                  // here rather than read twice, for the reason the icon pair
-                  // above is: the payload has to carry what the camera was
-                  // BOUND to, not a second derivation that could agree with the
-                  // state file while the row drew something else.
-                  readonly property bool picturable: root.picturableOf(appRow.modelData.identityId)
-                  readonly property bool pictured: root.picturedOf(appRow.modelData.identityId)
-
                   // What this row DREW, read back over IPC. Keyed by the row's
                   // own key, which appRows already makes unique across all three
                   // states.
@@ -4982,22 +4557,12 @@ Item {
                       ghost: appRow.modelData.ghost === true,
                       iconSource: appRow.iconSource,
                       iconResolved: appRow.iconResolved,
-                      // The SECOND consent, and whether this row can carry one
-                      // at all. Both, because "false" says two different things
-                      // — a watched app that has withheld the grant, and a row
-                      // (an unwatched window, an orphaned ghost) that has
-                      // nothing to grant it with — and the camera draws only in
-                      // the first case.
-                      pictured: appRow.pictured,
-                      picturable: appRow.picturable,
                       // The row's half of the row-to-chip link: the key it
                       // answers to, and whether it is answering right now.
                       linkKey: String(appRow.modelData.linkKey || ""),
                       linked: appRow.linked
                     })
                   }
-                  onPicturedChanged: appRow.reportRender()
-                  onPicturableChanged: appRow.reportRender()
                   onIconSourceChanged: appRow.reportRender()
                   // This was the bug (sm1): the desktop-file scan that resolves
                   // an icon lands AFTER open(), so both properties start out ""/
@@ -5054,15 +4619,6 @@ Item {
                     source: appRow.iconSource
                   }
 
-                  // Never drawn: it exists so the camera's inset can be the real
-                  // width of the switch it has to clear, on whatever theme is
-                  // loaded, instead of a number copied out of the kit.
-                  ToggleSwitch {
-                    id: rowSwitchMetrics
-                    visible: false
-                    interactive: false
-                  }
-
                   Toggle {
                     id: rowToggle
                     anchors.left: rowIcon.right
@@ -5090,141 +4646,6 @@ Item {
                     fontFamily: root.fontFamily
                     titleSize: Style.font.caption
                     onClicked: root.toggleChip(appRow.modelData)
-                  }
-
-                  // THE SECOND CONSENT, one camera per row (tick qnc).
-                  //
-                  // Drawn from primitives rather than set in an icon font, the
-                  // way the hero's monitor glyph and the overflow menu's mini
-                  // monitors are: this panel has no glyph font of its own and
-                  // borrowing one would make the camera the only piece of
-                  // chrome that changes shape with the user's theme.
-                  //
-                  // FILLED means granted. Outline-only means withheld, which is
-                  // the default and the state most rows are in — so the list
-                  // reads as "nothing is being photographed" at a glance, and a
-                  // grant is the thing that stands out. It is the same polarity
-                  // the watched switch uses and the opposite of a warning
-                  // badge, deliberately: consent is a positive act.
-                  //
-                  // Absent entirely on a row with nothing to write to — an
-                  // unwatched window, or the orphaned recorded ghost whose
-                  // identity the file no longer carries. `width: 0` when hidden
-                  // so the toggle beside it takes the space back rather than
-                  // anchoring against a gap.
-                  Item {
-                    id: rowCamera
-                    readonly property bool picturable: root.picturableOf(appRow.modelData.identityId)
-                    readonly property bool pictured: root.picturedOf(appRow.modelData.identityId)
-                    readonly property color tone: rowCamera.pictured ? Color.accent : root.faintForeground
-
-                    // THE COLUMN IS RESERVED WHETHER OR NOT IT DRAWS (tick 5jl).
-                    //
-                    // This used to collapse to width 0 when hidden, so "the
-                    // toggle beside it takes the space back rather than
-                    // anchoring against a gap". That traded one row's gap for
-                    // the whole list's alignment: the toggle, and therefore
-                    // every row's right edge, sat at a different x depending on
-                    // whether that app could be photographed. On a real desk
-                    // with two class rows among eleven it simply reads as
-                    // broken — which is how it was found, on the first look at
-                    // the live panel, by a human. No payload assertion in this
-                    // increment could see it, because alignment is not a value.
-                    //
-                    // A column that is sometimes empty is a column. A column
-                    // that is sometimes absent is a ragged edge.
-                    visible: rowCamera.picturable
-                    width: Style.font.iconLarge
-                    height: Style.font.iconLarge
-                    // INSIDE THE ROW'S OWN BOX, beside the watch switch, so the
-                    // row carries BOTH consents in one place (human's call, on
-                    // the live panel: "and where is that camera?" — it was
-                    // outside the border, dim, next to the placement caption,
-                    // and read as part of that caption rather than as a
-                    // control).
-                    //
-                    // A SIBLING DRAWN OVER THE TOGGLE, not a child of it. The
-                    // shell's Toggle fills itself with a Row and a full-size
-                    // MouseArea; a child would depend on that component's
-                    // internal ordering to get its clicks. A later sibling is
-                    // on top for both painting and input by QML's own rules,
-                    // which is a language guarantee rather than a fact about
-                    // somebody else's file.
-                    //
-                    // The margin clears the switch by MEASURING one rather than
-                    // hardcoding a width — Toggle insets its content by
-                    // rowPaddingX and puts the switch last, so the camera sits
-                    // one padding step to the left of it and follows the theme.
-                    anchors.right: rowToggle.right
-                    anchors.rightMargin: Style.spacing.rowPaddingX * 2
-                      + rowSwitchMetrics.implicitWidth
-                    anchors.verticalCenter: parent.verticalCenter
-                    opacity: rowCamera.pictured ? 1.0 : 0.75
-
-                    // The body: a rounded box, with a bump on top for the
-                    // viewfinder hump. Filled when the consent is granted,
-                    // hollow when it is not.
-                    Rectangle {
-                      id: cameraHump
-                      anchors.horizontalCenter: parent.horizontalCenter
-                      anchors.horizontalCenterOffset: -Math.round(parent.width * 0.14)
-                      anchors.top: parent.top
-                      anchors.topMargin: Math.round(parent.height * 0.14)
-                      width: Math.round(parent.width * 0.30)
-                      height: Math.round(parent.height * 0.14)
-                      radius: Math.max(1, Style.space(1))
-                      color: rowCamera.tone
-                    }
-
-                    Rectangle {
-                      id: cameraBody
-                      anchors.horizontalCenter: parent.horizontalCenter
-                      anchors.bottom: parent.bottom
-                      anchors.bottomMargin: Math.round(parent.height * 0.14)
-                      width: parent.width
-                      height: Math.round(parent.height * 0.58)
-                      radius: Math.max(1, Style.space(2))
-                      color: rowCamera.pictured ? rowCamera.tone : "transparent"
-                      border.width: Math.max(1, Style.space(1))
-                      border.color: rowCamera.tone
-
-                      // The lens. On a granted camera it is a hole punched in
-                      // the filled body (the panel's own background), so the
-                      // shape still reads as a camera at 18 px rather than as a
-                      // solid blob.
-                      Rectangle {
-                        anchors.centerIn: parent
-                        width: Math.round(parent.height * 0.56)
-                        height: width
-                        radius: width / 2
-                        color: rowCamera.pictured ? Color.popups.background : "transparent"
-                        border.width: rowCamera.pictured ? 0 : Math.max(1, Style.space(1))
-                        border.color: rowCamera.tone
-                      }
-                    }
-
-                    HoverHandler { id: rowCameraHover }
-
-                    // Its own click target, the way "learn launch" has one:
-                    // pressing the camera must not also untick the app, and
-                    // with the row's toggle confined to the Toggle itself that
-                    // is structural rather than a declaration-order trick.
-                    MouseArea {
-                      anchors.fill: parent
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.togglePictured(appRow.modelData.identityId)
-                    }
-
-                    // The consequence, said out loud. A privacy grant is the
-                    // one control in this panel where "what does this button
-                    // do" must not be inferable only from its shape.
-                    PanelToolTip {
-                      visible: rowCameraHover.hovered
-                      text: rowCamera.pictured
-                        ? "Pictured: Record stores a picture of this app's windows.\nClick to stop."
-                        : "Not pictured: Record stores no picture of this app.\nClick to allow one."
-                      fontFamily: root.fontFamily
-                    }
                   }
 
                   // What Restore can and cannot do for this app, in three
@@ -5288,10 +4709,15 @@ Item {
                     // control on the row anchors leftwards off it. Unwatch an
                     // app and its caption grows from "eDP-1 · ws 3" to
                     // "eDP-1 · ws 3 · recorded · no longer watched", which
-                    // dragged that row's camera, switch and whole bordered box
-                    // visibly inward while its neighbours stayed put. Reserving
-                    // the camera's column fixed the first ragged edge; this is
-                    // the same defect one step further out, and the same answer.
+                    // dragged that row's switch and whole bordered box visibly
+                    // inward while its neighbours stayed put.
+                    //
+                    // The column is FIXED, so the right edge holds however long
+                    // the caption gets. (5jl's first pass reserved a column for
+                    // the per-app camera, which was the same defect one step
+                    // further in; the camera is gone with the consent model it
+                    // belonged to, and this half of the answer is what is left
+                    // and still load-bearing.)
                     //
                     // The width is the old CAP, so nothing that fits today
                     // starts eliding; a longer caption elides and keeps its
@@ -5580,32 +5006,6 @@ Item {
               }
             }
           }
-        }
-      }
-
-      // ------------------------------------ the first-Record dialogue (y28)
-      //
-      // OVER THE WHOLE CARD, and declared AFTER the key catcher so it is drawn
-      // on top of it and its MouseAreas see a click first. It is not inside the
-      // ScrollView on purpose: a question the panel is waiting on an answer to
-      // must not be scrollable off the top of its own card, and the scroll
-      // position the user left behind is still theirs when the prompt goes.
-      //
-      // A LOADER, not a `visible` binding, and the difference is the thumbnail
-      // strip: the prompt's Images decode files off disk, and a shut prompt that
-      // merely stopped painting would keep them decoded for the panel's life —
-      // for pictures of windows the user may just have said they do not want
-      // kept. Unloaded, the strip does not exist between offers.
-      //
-      // Everything about the keyboard lives on the panel (consentOpen, the
-      // stashed section, the guards in handleMove/moveSection/activateCursor,
-      // the Escape chain); the component draws, reports, and reports a press.
-      Loader {
-        anchors.fill: parent
-        active: root.consentOpen
-        visible: root.consentOpen
-        sourceComponent: ConsentPrompt {
-          panel: root
         }
       }
     }

@@ -333,7 +333,7 @@ function identityClaimsSame(identity, pattern, titlePattern) {
 // hosting exactly one unambiguous child — the proposal is a TITLE identity:
 //
 //   { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
-//     launch: "foot --title=herdr herdr", pictured: false }
+//     launch: "foot --title=herdr herdr" }
 //
 // which under the v4 AND semantics means "the foot window titled herdr" and
 // nothing else.
@@ -422,24 +422,21 @@ function suggestIdentity(className, identities, derivation) {
   // the autofill pass to derive the identical string a moment later means the
   // identity is complete in the first write.
   //
-  // `pictured: false` on BOTH returns (schema v5, tick 2c3). Being watched and
-  // being photographed are separate consents, and a tick grants only the first:
-  // an app the user wants RESTORED has not thereby been offered up to be
-  // captured to disk. StateModel.normalizeIdentity would materialize the false
-  // on the way to the file anyway, so writing it here buys nothing on disk —
-  // what it buys is that the object this function HANDS BACK has the schema's
-  // shape before it ever reaches a file, and every caller that reads a proposal
-  // straight (the panel's confirmation line, the undo stash) sees the same
-  // identity the file will hold. The alternative is a field that is undefined
-  // for exactly as long as it takes to write, which is the window the learnings
-  // entry behind this tick was written about.
-  if (!titlePattern) return { id: id, patterns: [pattern], launch: "", pictured: false };
+  // NO PICTURE FIELD on either return, and that is the schema's shape since v7
+  // (tick fhy): whether a window is photographed is one switch for the whole
+  // tool, not a fact about an app, so there is nothing per-identity for a
+  // proposal to carry. The rule this obeys is still the one the learnings entry
+  // names — the object this function HANDS BACK has the schema's shape before
+  // it ever reaches a file, so every caller that reads a proposal straight (the
+  // panel's confirmation line, the undo stash) sees the same identity the file
+  // will hold. v5 satisfied that by writing `pictured: false`; v7 satisfies it
+  // by there being no such field at either end.
+  if (!titlePattern) return { id: id, patterns: [pattern], launch: "" };
   return {
     id: id,
     patterns: [pattern],
     titlePatterns: [titlePattern],
-    launch: dispatchableCommand(answer.command),
-    pictured: false
+    launch: dispatchableCommand(answer.command)
   };
 }
 
@@ -6195,12 +6192,29 @@ function overflowMenuRows(layouts, currentKey, monitors) {
   return currentRow ? [currentRow].concat(rows) : rows;
 }
 
-// The two acts, both about the CURRENT topology and both disabled with a
-// sentence rather than hidden: a menu whose contents change shape depending on
-// what is recorded is a menu the user has to re-read every time.
-function overflowMenuActions(hasLayout, canRecord, topologyName) {
+// The three acts. The first two are about the CURRENT topology and are disabled
+// with a sentence rather than hidden: a menu whose contents change shape
+// depending on what is recorded is a menu the user has to re-read every time.
+//
+// THE THIRD IS THE PICTURES SWITCH (schema v7, epic wau), and it is the whole
+// of the affordance — there is no per-app camera and no dialogue any more. It
+// lives here rather than on the header or in the app list because it is a
+// setting rather than an act on this desk, and because the thing the old design
+// got wrong was FINDABILITY: one entry in the one menu the panel already has
+// beats a 16 px glyph on eleven rows.
+//
+// It is never disabled. Both directions are always available and always mean
+// something, and a dimmed privacy control is worse than none.
+//
+// The label says what pressing it DOES, like the other two, and the tooltip
+// says what that costs — off deletes the stored pictures, and the sentence is
+// there before the click rather than in a confirmation after it, because this
+// panel does not block.
+function overflowMenuActions(hasLayout, canRecord, topologyName, picturesOn) {
   var name = trim(topologyName);
   if (!name || name === EMPTY_TOPOLOGY) name = "this setup";
+  // `!== false`, the reading rule StateModel.picturesOn owns.
+  var on = picturesOn !== false;
   return [
     {
       id: "forget",
@@ -6220,11 +6234,21 @@ function overflowMenuActions(hasLayout, canRecord, topologyName) {
         ? "Record what is on screen now for " + name + ", replacing the stored layout."
           + " The same single undo applies."
         : "There is nothing to record for " + name + " right now."
+    },
+    {
+      id: "pictures",
+      label: on ? "Turn pictures off" : "Turn pictures on",
+      enabled: true,
+      tooltip: on
+        ? "Delete every stored picture, on every desk, and stop photographing:"
+          + " the map draws icons instead. Nothing is asked twice."
+        : "Photograph every watched window again — at the next panel open (held"
+          + " in memory) and at the next Record (stored under ~/.cache)."
     }
   ];
 }
 
-function overflowMenuModel(layouts, currentKey, monitors, canRecord, topologyName) {
+function overflowMenuModel(layouts, currentKey, monitors, canRecord, topologyName, picturesOn) {
   var rows = overflowMenuRows(layouts, currentKey, monitors);
   var hasCurrent = rows.length > 0 && rows[0].current === true;
   var hint = "";
@@ -6234,7 +6258,7 @@ function overflowMenuModel(layouts, currentKey, monitors, canRecord, topologyNam
   return {
     title: "Recorded layouts",
     rows: rows,
-    actions: overflowMenuActions(hasCurrent, canRecord, topologyName),
+    actions: overflowMenuActions(hasCurrent, canRecord, topologyName, picturesOn),
     currentRecorded: hasCurrent,
     hint: hint
   };
@@ -6706,13 +6730,11 @@ function captureFileName(identityId, occurrence, topologyKey) {
 // sp7).
 //
 // The other eviction key is the topology prefix, and it answers "this
-// recording". This one answers the OTHER question the consent model asks, and
-// the one it had no answer for at all: a camera is a fact about an APP, not
-// about a desk, so switching it off has to reach the pictures of that app
-// wherever they were taken. Withdrawing a camera and deleting one desk's copy
-// left the others with nobody who would ever clean them — Record's eviction
-// only runs for the desk you are on, and Forget only touches the desk you are
-// on.
+// recording". This one answers the OTHER question: UNWATCHING an app has to
+// reach the pictures of that app wherever they were taken, because being
+// watched is not a fact about a desk. Deleting one desk's copy left the others
+// with nobody who would ever clean them — Record's eviction only runs for the
+// desk you are on, and so does Forget.
 //
 // captureFileName is <topology>-<id>-<idhash>-<occurrence>.jpg, and the
 // topology segment is exactly CAPTURE_HASH_CHARS hex digits, so a run of "?"
@@ -6738,9 +6760,9 @@ function captureIdentityPattern(identityId) {
     + "-*" + CAPTURE_SUFFIX;
 }
 
-// The same for a list, de-duplicated and with the empty ids dropped. One act —
-// "Delete these" over a strip of five — is one list, so the store can do
-// it in one process rather than five.
+// The same for a list, de-duplicated and with the empty ids dropped. One act
+// over several apps is one list, so the store can do it in one process rather
+// than one per app.
 function captureIdentityPatterns(identityIds) {
   var ids = isArray(identityIds) ? identityIds : [];
   var out = [];
@@ -6763,27 +6785,35 @@ function captureIdentityPatterns(identityIds) {
 // a picture filed under occurrence 1 that photographed the window buildLayout
 // called occurrence 0 would be a lie the map could never detect.
 //
-// `skipped` is not an error list. "not-pictured" is the normal, intended answer
-// for every app whose second consent is withheld, and it is the majority of a
-// healthy plan; "no-window" is an app the recording carries but the desk no
-// longer does. Both are reported so a caller can say what it did rather than
-// only what it managed.
+// A WATCHED APP IS PICTURED (schema v7). There is no per-app grant to consult
+// any more: `pictures` is one switch for the whole tool, so this takes it as a
+// boolean and either plans every watched window or plans nothing at all. The
+// `identities` list is still the WATCHED set — that is what "watched" means
+// here — and an app the file no longer carries is skipped rather than
+// photographed.
+//
+// `skipped` is not an error list. "pictures-off" is every app when the switch
+// is off, and it is the whole list rather than an empty plan so a caller can
+// say WHY nothing was taken; "not-watched" is a layout entry whose identity has
+// since gone; "no-window" is an app the recording carries but the desk no
+// longer does. All three are reported so a caller can say what it did rather
+// than only what it managed.
 //
 // A layout with no topologyKey plans nothing: without one there is no prefix,
 // and a picture with no prefix could not be evicted with the recording.
-function capturePlan(layout, identities, chosen) {
+function capturePlan(layout, identities, chosen, pictures) {
   var topologyKey = (layout && typeof layout.topologyKey === "string") ? layout.topologyKey : "";
   if (!topologyKey) return { topologyKey: "", prefix: "", captures: [], skipped: [] };
 
   var apps = (layout && isArray(layout.apps)) ? layout.apps : [];
   var list = isArray(identities) ? identities : [];
-  var pictured = {};
+  // `!== false`, the reading rule StateModel.picturesOn owns: only the literal
+  // false is off, so a caller that forgets the argument gets the pictures the
+  // tool exists to take rather than silence nobody asked for.
+  var on = pictures !== false;
+  var watched = {};
   for (var i = 0; i < list.length; i++) {
-    // `=== true` and nothing looser: this is the read of a CONSENT, and the
-    // same rule StateModel.normalizeIdentity applies to the file.
-    if (list[i] && typeof list[i].id === "string" && list[i].pictured === true) {
-      pictured[list[i].id] = true;
-    }
+    if (list[i] && typeof list[i].id === "string") watched[list[i].id] = true;
   }
 
   var byId = (chosen && chosen.byId) ? chosen.byId : {};
@@ -6795,8 +6825,13 @@ function capturePlan(layout, identities, chosen) {
     if (!identityId) continue;
     var occurrence = occurrenceOf(app.occurrence);
 
-    if (!own(pictured, identityId)) {
-      skipped.push({ identityId: identityId, occurrence: occurrence, reason: "not-pictured" });
+    if (!on) {
+      skipped.push({ identityId: identityId, occurrence: occurrence, reason: "pictures-off" });
+      continue;
+    }
+
+    if (!own(watched, identityId)) {
+      skipped.push({ identityId: identityId, occurrence: occurrence, reason: "not-watched" });
       continue;
     }
 
@@ -6891,22 +6926,20 @@ function captureLogLine(plan, results) {
 // the chip that will show the picture — the same discipline `capturePlan` gets
 // by taking `chosen` from the engine rather than re-matching.
 //
-// CONSENT IS THE SAME FLAG RECORD OBEYS. `pictured === true` and nothing looser:
-// this is the read of a CONSENT, and it is the rule StateModel.normalizeIdentity
-// applies to the file. An unwatched window has no identity at all, so it is not
-// in the index and cannot be planned — an app nobody watches has consented to
-// nothing.
+// THE SAME SWITCH RECORD OBEYS (schema v7), taken as a boolean by the same rule
+// — only the literal false is off. An unwatched window has no identity at all,
+// so it is not in the index and cannot be planned; a window whose identity the
+// file no longer carries is "not-watched".
 //
-// `skipped` is not an error list: "not-pictured" is the normal, intended answer
-// for every app whose camera is off, and on a healthy desk it is most of them.
-function liveCapturePlan(instances, identities) {
+// `skipped` is not an error list: "pictures-off" is every window on the desk
+// when the switch is off, said out loud rather than left as an empty plan.
+function liveCapturePlan(instances, identities, pictures) {
   var byAddress = (instances && instances.byAddress) ? instances.byAddress : {};
   var list = isArray(identities) ? identities : [];
-  var pictured = {};
+  var on = pictures !== false;
+  var watched = {};
   for (var i = 0; i < list.length; i++) {
-    if (list[i] && typeof list[i].id === "string" && list[i].pictured === true) {
-      pictured[list[i].id] = true;
-    }
+    if (list[i] && typeof list[i].id === "string") watched[list[i].id] = true;
   }
 
   var captures = [];
@@ -6921,8 +6954,13 @@ function liveCapturePlan(instances, identities) {
       identityId: identityId,
       occurrence: occurrenceOf(place.occurrence)
     };
-    if (!own(pictured, identityId)) {
-      entry.reason = "not-pictured";
+    if (!on) {
+      entry.reason = "pictures-off";
+      skipped.push(entry);
+      continue;
+    }
+    if (!own(watched, identityId)) {
+      entry.reason = "not-watched";
       skipped.push(entry);
       continue;
     }
@@ -6936,27 +6974,6 @@ function liveCapturePlan(instances, identities) {
   captures.sort(compareLiveCaptures);
   skipped.sort(compareLiveCaptures);
   return { captures: captures, skipped: skipped };
-}
-
-// Every identity whose camera is on, as a sorted list of ids.
-//
-// Sorted because the panel BINDS to this and drops the live pictures of anything
-// no longer in it: identity order in the state file is priority order and can
-// change without a camera changing, and a list that reorders is a list that
-// looks like it changed. Sorting makes "the same set" the same value.
-//
-// `pictured === true` and nothing looser — the rule the file itself is
-// normalized by, applied at every read of a consent.
-function picturedIdentityIds(identities) {
-  var list = isArray(identities) ? identities : [];
-  var out = [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && typeof list[i].id === "string" && list[i].pictured === true) {
-      out.push(list[i].id);
-    }
-  }
-  out.sort();
-  return out;
 }
 
 function compareLiveCaptures(x, y) {
@@ -7017,214 +7034,6 @@ function captureFileIndex(listing) {
   return out;
 }
 
-// ---------------------------------------------------------------------------
-// THE FIRST-RECORD DIALOGUE (tick y28)
-// ---------------------------------------------------------------------------
-//
-// WHAT IT IS, AND WHAT IT IS NOT. It is an ONBOARDING MOMENT that demonstrates
-// the feature, not a warning label. The user has already granted the per-app
-// consent (the camera on the row), a Record has just happened, and the pictures
-// exist — so the panel shows them THE PICTURES IT JUST TOOK and asks what they
-// think. That framing is the whole reason it shows thumbnails rather than
-// describing what a thumbnail would be: a sentence about photographs of your
-// windows is a scary abstraction, and three photographs of your own windows is
-// a thing you can look at and have an opinion about.
-//
-// It is asked ONCE. The answer lives in the state file
-// (StateModel.pictureConsent, schema v6), so it survives a shell restart, and
-// "unasked" is the only value that brings it back.
-//
-// WHY THE PICTURES ARE TAKEN FIRST. There is no honest way to show somebody
-// their own captures before taking them, and the alternative — describing the
-// feature and asking permission in the abstract — is exactly the warning label
-// the design rejects. The per-app camera is what authorises the capture; this
-// asks whether the RESULT is what the user expected, with an answer ("Not for
-// these apps") that takes it back.
-
-// The three answers, in the order they are drawn and tabbed through.
-//
-// Shaped like an overflow-menu action list — `{id, label, tooltip, enabled}` —
-// so menuActionIds, menuAction, firstEnabledActionId and nextSection drive this
-// prompt's cursor without a second navigation vocabulary. They are all always
-// enabled: a prompt with a dimmed answer is a question whose answer the asker
-// has already decided.
-//
-// The ORDER is the design's: the affirming answer first, because it is the one
-// the user is most likely to want and the one the moment is for, then the two
-// refusals in order of scope. Nothing here is a default — there is no preselect
-// beyond "the cursor starts on the first" — and Escape is not an answer.
-function consentChoices() {
-  return [
-    {
-      id: "keep",
-      label: "Keep these",
-      tooltip: "Keep the pictures above and go on taking one for each app whose"
-        + " camera is on. You can switch any app's camera off later.",
-      enabled: true
-    },
-    {
-      id: "not-these",
-      label: "Delete these",
-      tooltip: "Delete the pictures above and switch the camera off for these"
-        + " apps. Other apps are unaffected, and this is not asked again.",
-      enabled: true
-    },
-    {
-      id: "none",
-      label: "Delete all",
-      tooltip: "Delete every picture this plugin has stored — not only the ones"
-        + " above — and switch off every app's camera. Nothing is photographed"
-        + " again unless you switch a camera back on.",
-      enabled: true
-    }
-  ];
-}
-
-// Is `answer` one of the three? The IPC verb asks it, so a caller cannot answer
-// the prompt with a word the panel would then have to interpret.
-function isConsentChoice(answer) {
-  var wanted = trim(answer);
-  var choices = consentChoices();
-  for (var i = 0; i < choices.length; i++) {
-    if (choices[i].id === wanted) return true;
-  }
-  return false;
-}
-
-// The captures a finished round actually STORED, in the order they were taken —
-// the thumbnails the prompt shows, and the apps "Delete these" is about.
-//
-// The successes and nothing else. A round's results carry every planned capture
-// including the ones that failed, and a strip with a hole in it where a window
-// on a sleeping monitor should be would be a prompt asking about a picture that
-// does not exist. `identityId` and `occurrence` are carried through because the
-// map keys on the pair and the panel resolves the file the same way it resolves
-// a chip's.
-function consentCaptureEntries(results) {
-  var list = isArray(results) ? results : [];
-  var out = [];
-  for (var i = 0; i < list.length; i++) {
-    var result = list[i];
-    if (!result || result.ok !== true) continue;
-    var identityId = trim(result.identityId);
-    if (!identityId) continue;
-    out.push({
-      identityId: identityId,
-      occurrence: occurrenceOf(result.occurrence),
-      file: trim(result.file)
-    });
-  }
-  return out;
-}
-
-// The identities the strip is showing, deduped and in first-seen order. What
-// "these apps" means, said once, so the button's label and the write it performs
-// cannot describe two different sets.
-function consentIdentityIds(entries) {
-  var list = isArray(entries) ? entries : [];
-  var out = [];
-  var seen = {};
-  for (var i = 0; i < list.length; i++) {
-    var id = list[i] ? trim(list[i].identityId) : "";
-    if (!id || own(seen, id)) continue;
-    seen[id] = true;
-    out.push(id);
-  }
-  return out;
-}
-
-// SHOULD THE PROMPT OPEN? Asked when a capture round finishes, and the one place
-// the rule lives.
-//
-// Two conditions, and the second is not the one the DoD's sentence suggests.
-// "The first Record with picturable apps" is the case this fires in, but the
-// test is on the pictures that were actually STORED, not on the plan: a round
-// where every capture failed (a window on a monitor that is not rendering, the
-// one real failure mode this feature has) has nothing to show, and a
-// three-choice dialogue over an empty strip is precisely the warning label this
-// moment is not. The user is asked at the next Record that produces something,
-// which is the first moment there is anything to ask about.
-function consentPromptDue(answer, entries) {
-  if (consentAnswered(answer)) return false;
-  return (isArray(entries) ? entries : []).length > 0;
-}
-
-// Has the question been answered at all? A copy of
-// StateModel.pictureConsentAsked, spelled out here rather than imported:
-// PanelModel and StateModel are siblings and neither may require the other, so
-// the two spellings are pinned against each other in tests/panel.test.js — the
-// same arrangement TERMINAL_BINARIES already lives under.
-// DERIVED FROM consentChoices, not spelled out (tick md1). This was a THIRD
-// copy of the answer vocabulary as bare literals — after consentChoices' ids and
-// StateModel's own list — in a file whose header says out loud that a typo there
-// is a silent "unasked" for ever. It is `isConsentChoice` on a trimmed word and
-// nothing more, so a fourth answer added to consentChoices is answered here the
-// moment it exists. Without that, a fourth answer would leave consentPromptDue
-// re-asking a question the user has already answered, which is the one thing
-// this epic's headline invariant forbids.
-function consentAnswered(answer) {
-  return isConsentChoice(answer);
-}
-
-// What the prompt says above the strip, and what it says under it.
-//
-// The title names what happened, in the past tense, because it already has:
-// the Record is on disk and so are the pictures. The body is one sentence about
-// what they are FOR, because a picture of your own window is self-explanatory
-// and a cache under ~/.cache is not.
-function consentTitle(count) {
-  var n = (typeof count === "number" && isFinite(count) && count > 0) ? Math.round(count) : 0;
-  if (n === 1) return "Dock Recall took a picture of this window";
-  return "Dock Recall took pictures of these " + n + " windows";
-}
-
-// WHY THIS SPELLS OUT WHAT EACH ANSWER DESTROYS.
-//
-// It did not, and the cost was measured on a real desk: the human turned three
-// cameras on, pressed Record, saw "3 picture(s) stored" in the log — and then
-// answered "Delete these", which deleted all three. They came back asking
-// why the pictures had not been saved. Nothing was broken; the prompt had
-// talked them out of it.
-//
-// The old labels were "Keep pictures / Not for these apps / No pictures". Two of
-// those three DELETE what the user is looking at, and both read as scoping
-// preferences — "not for these apps" sounds like "stop asking me about these",
-// not "destroy these now". The consequence lived only in a tooltip, which is a
-// place you have to already suspect something to visit.
-//
-// So the labels are three parallel verbs — Keep these / Delete these / Delete
-// all — and the body says which is which. A dialogue that shows somebody three
-// photographs and then offers three buttons owes them a plain sentence about
-// which buttons take the photographs away.
-function consentBody() {
-  return "They are on this machine only, under ~/.cache, and they appear on the"
-    + " Recorded map so you can see which window was where. Recording again"
-    + " replaces them; forgetting the layout deletes them."
-    + "\n\n"
-    + "Only Keep these keeps the pictures above. Delete these removes them and"
-    + " switches the camera off for these apps. Delete all removes every picture"
-    + " the plugin has stored and switches off every camera.";
-}
-
-// The log line each answer leaves. One sentence per answer, naming what it DID
-// rather than which button was pressed — the log is read by somebody asking
-// what happened to their files.
-function consentAnswerLine(answer, identityIds) {
-  var ids = isArray(identityIds) ? identityIds : [];
-  if (answer === "keep") {
-    return "pictures kept — " + ids.length + " app(s) go on being photographed at Record";
-  }
-  if (answer === "not-these") {
-    return "no pictures for " + (ids.length ? "\"" + ids.join("\", \"") + "\"" : "these apps")
-      + " — their cameras are off and the pictures just taken are deleted";
-  }
-  if (answer === "none") {
-    return "no pictures at all — every camera is off and every stored picture is deleted;"
-      + " switch a camera back on to change that";
-  }
-  return "";
-}
-
 if (typeof module !== "undefined") {
   module.exports = {
     normalizedAddress: normalizedAddress,
@@ -7245,7 +7054,6 @@ if (typeof module !== "undefined") {
     captureLogLine: captureLogLine,
     liveCapturePlan: liveCapturePlan,
     liveCaptureLogLine: liveCaptureLogLine,
-    picturedIdentityIds: picturedIdentityIds,
 
     morphChipEntries: morphChipEntries,
     mapMorphPairs: mapMorphPairs,
@@ -7258,15 +7066,6 @@ if (typeof module !== "undefined") {
     morphFlightKeyAt: morphFlightKeyAt,
 
     captureFileIndex: captureFileIndex,
-    consentChoices: consentChoices,
-    isConsentChoice: isConsentChoice,
-    consentCaptureEntries: consentCaptureEntries,
-    consentIdentityIds: consentIdentityIds,
-    consentPromptDue: consentPromptDue,
-    consentAnswered: consentAnswered,
-    consentTitle: consentTitle,
-    consentBody: consentBody,
-    consentAnswerLine: consentAnswerLine,
     // Exported for the QML side as much as for the tests: an identity-id lookup
     // in Panel.qml has to go through this too (tick 8hp).
     own: own,

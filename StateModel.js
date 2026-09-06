@@ -376,28 +376,12 @@
 
 var STATE_VERSION = 7;
 
-// The four values `pictureConsent` can hold. RETIRED BY v7 and kept for two
-// reasons only: the v6 -> v7 migration has to recognise "none", which is the
-// one answer that carries forward, and the prompt that wrote these is deleted
-// by the next tick of this epic rather than this one. Nothing v7 writes uses
-// them, and a typo in a string literal is still a silent "unasked".
-var PICTURE_CONSENT_UNASKED = "unasked";
-var PICTURE_CONSENT_KEEP = "keep";
-var PICTURE_CONSENT_NOT_THESE = "not-these";
+// The one v6 word this build still recognises, and the only place it appears.
+// `pictureConsent` held four values and three of them said "yes" or "nothing";
+// only this one is a refusal, and only a refusal carries into v7. Everything
+// else about the consent generation — the other three words, the setter, the
+// per-identity flag and the prompt that wrote them — is gone.
 var PICTURE_CONSENT_NONE = "none";
-
-// Anything at all -> one of the four. An unrecognised word is "unasked" on
-// purpose. This is a WHITELIST for the same reason normalizeIdentity is one —
-// the file is hand-editable, and a typo must degrade to the one value that
-// claims nothing rather than to a fifth state nothing in this build handles.
-// v7 reads it once, to migrate: everything but "none" means pictures stay on.
-function normalizePictureConsent(value) {
-  var word = typeof value === "string" ? value : "";
-  if (word === PICTURE_CONSENT_KEEP) return PICTURE_CONSENT_KEEP;
-  if (word === PICTURE_CONSENT_NOT_THESE) return PICTURE_CONSENT_NOT_THESE;
-  if (word === PICTURE_CONSENT_NONE) return PICTURE_CONSENT_NONE;
-  return PICTURE_CONSENT_UNASKED;
-}
 
 // ES5, no Array.isArray assumptions about the QML JS engine's vintage: this is
 // the one array test that behaves the same in node and in Qt's V4.
@@ -461,11 +445,15 @@ function defaultState() {
 //
 // The field wins whenever it is there at all (by picturesOn's rule). Only a file
 // that has never heard of it falls back to the v6 answer, and only one of those
-// four answers is a refusal — see the v6 -> v7 note in the schema block.
+// four answers was a refusal — see the v6 -> v7 note in the schema block. The
+// comparison is on the raw word rather than through a normalizer, because
+// "none" is now the only one of the four this build has any use for: a typo, a
+// hand edit and a word from a generation that never existed all mean "not a
+// refusal", which is the same answer "unasked" always gave.
 function normalizePictures(value) {
   if (!value || typeof value !== "object") return true;
   if (Object.prototype.hasOwnProperty.call(value, "pictures")) return value.pictures !== false;
-  return normalizePictureConsent(value.pictureConsent) !== PICTURE_CONSENT_NONE;
+  return value.pictureConsent !== PICTURE_CONSENT_NONE;
 }
 
 // Coerce whatever a pattern list contains into an array of non-empty strings.
@@ -1169,160 +1157,6 @@ function setPictures(state, on) {
   return stateWith(state, { pictures: on !== false });
 }
 
-// -------------------------------- the SECOND consent (v5), RETIRED BY v7
-//
-// Everything from here to the end of `pictureConsentAsked` is the picture
-// consent v7 replaced with the one switch above, and it no longer reaches the
-// FILE: normalizeIdentity does not emit `pictured` and normalizeState does not
-// emit `pictureConsent`, so these functions now operate purely in memory and
-// the first round trip forgets what they did. They are still exported for one
-// commit because the prompt and the per-app camera that call them are deleted
-// by the next tick of this epic, and a commit where Panel.qml calls a function
-// that no longer exists is a QML fault no static gate in this repository would
-// catch. The paragraphs below describe what the consent WAS; read them as the
-// record of a design that is on its way out, not as the contract.
-//
-// `pictured` is a field on ONE identity, and this is the only setter for it.
-// Not `setIdentities` with a hand-rebuilt list: that is a whitelist rebuild of
-// every identity in the file (see normalizeIdentity), and a caller assembling
-// the list itself is the shape .tick/learnings.md names as "a data-loss bug
-// waiting for the next field". Copy the identity, replace the one field, leave
-// every other identity byte-identical — the same discipline
-// PanelModel.identityWithLaunch established for the launch command.
-//
-// WATCHED AND PICTURED ARE SEPARATE CONSENTS, and this function is where that
-// separation is enforced rather than merely intended: it touches `pictured` and
-// nothing else, so a grant can never smuggle a change to `patterns`, to
-// `launch`, or to which identities exist. The other direction — which identity
-// is watched at all — is membership of `identities`, and only setIdentities
-// changes that. Two writes, two functions, and neither can perform the other's
-// act by accident.
-//
-// An id no identity carries returns the base UNCHANGED rather than inventing
-// one. Consent is granted for something the user is already watching; minting
-// an identity here would be the panel deciding to watch an app because it was
-// asked to photograph it.
-//
-// Same caller contract as setPaused: read the file FRESH, apply this, write
-// atomically.
-function identityWithPictured(identity, pictured) {
-  var out = {};
-  for (var key in identity) {
-    if (Object.prototype.hasOwnProperty.call(identity, key)) out[key] = identity[key];
-  }
-  out.pictured = pictured === true;
-  return out;
-}
-
-function setPictured(state, identityId, pictured) {
-  var base = normalizeState(state);
-  var id = typeof identityId === "string" ? identityId : "";
-  if (!id) return base;
-
-  var want = pictured === true;
-  var next = [];
-  var found = false;
-  for (var i = 0; i < base.identities.length; i++) {
-    var identity = base.identities[i];
-    if (identity.id !== id) {
-      next.push(identity);
-      continue;
-    }
-    found = true;
-    next.push(identityWithPictured(identity, want));
-  }
-  if (!found) return base;
-
-  return stateWith(base, { identities: next });
-}
-
-// Has this identity granted the picture consent? False for an identity that
-// does not exist, which is the same answer as "no" on purpose: an app nobody
-// watches has consented to nothing.
-function isPictured(state, identityId) {
-  var identity = identityById(state, typeof identityId === "string" ? identityId : "");
-  return !!(identity && identity.pictured === true);
-}
-
-// WITHDRAW the picture consent, from a named set of identities or from ALL of
-// them. One write, however many identities it touches.
-//
-// It exists because two of the three answers to the first-Record dialogue are
-// withdrawals — "Delete these" names the apps that were just photographed,
-// "Delete all" names none and means every one — and both have to land in the
-// file as a SINGLE atomic write alongside the answer itself. A loop of
-// setPictured calls would be N writes, each one a whole-file round trip, with
-// the state after the third one describing a decision the user never expressed.
-//
-// `identityIds` null or undefined means EVERY identity. That is a deliberate,
-// documented spelling and not a defaulting accident, because the alternative —
-// an empty array meaning "all" — would turn a caller's empty list into a
-// wholesale withdrawal. An empty array here withdraws from nothing, which is
-// what an empty list of apps means.
-//
-// It only ever sets `pictured` to false. There is no grant half: granting is a
-// per-app act on a per-app control, and a bulk GRANT is the one operation this
-// consent model must not have.
-function clearPictured(state, identityIds) {
-  var base = normalizeState(state);
-  var all = identityIds === undefined || identityIds === null;
-  var wanted = {};
-  if (!all) {
-    var list = isArray(identityIds) ? identityIds : [identityIds];
-    for (var w = 0; w < list.length; w++) {
-      if (typeof list[w] === "string" && list[w]) wanted[list[w]] = true;
-    }
-  }
-
-  var next = [];
-  var changed = false;
-  for (var i = 0; i < base.identities.length; i++) {
-    var identity = base.identities[i];
-    var touch = all || own(wanted, identity.id) === true;
-    if (!touch || identity.pictured !== true) {
-      next.push(identity);
-      continue;
-    }
-    changed = true;
-    next.push(identityWithPictured(identity, false));
-  }
-  if (!changed) return base;
-
-  return stateWith(base, { identities: next });
-}
-
-// ------------------------------------ the first-Record dialogue's answer (v6)
-//
-// One answer for the whole tool, and the only setter for it. Same caller
-// contract as setPaused and setPictured: read the file FRESH, apply this, write
-// atomically — this is a decision the user could have been staring at while the
-// service rewrote the same file underneath them.
-//
-// COMPOSABLE ON PURPOSE. Two of the three answers also withdraw a consent, and
-// the panel spells that as `setPictureConsent(clearPictured(fresh, ids), answer)`
-// — one state, one write, one thing that happened. Neither function knows about
-// the other, which is what lets the third answer ("Keep these") use this one
-// alone.
-function setPictureConsent(state, answer) {
-  return stateWith(state, { pictureConsent: normalizePictureConsent(answer) });
-}
-
-// What the user answered, or "unasked". Never absent — normalizeState
-// materializes it — so this is a convenience over `state.pictureConsent` for
-// callers holding something that has not been through the normalizer.
-function pictureConsent(state) {
-  return normalizePictureConsent(state ? state.pictureConsent : "");
-}
-
-// Is the first-Record dialogue still owed? The one question the prompt's
-// visibility hangs on, said once so the panel and the IPC cannot disagree about
-// what "asked once" means: asked once is asked once ANSWERED, and the three
-// answers are indistinguishable here on purpose — what they DID differs, that
-// they closed the question does not.
-function pictureConsentAsked(state) {
-  return pictureConsent(state) !== PICTURE_CONSENT_UNASKED;
-}
-
 // ---------------------------------------------------------------------------
 // The status file: pure shaping
 // ---------------------------------------------------------------------------
@@ -1865,19 +1699,6 @@ if (typeof module !== "undefined") {
     isPaused: isPaused,
     picturesOn: picturesOn,
     setPictures: setPictures,
-    // Retired by v7 and exported for one commit longer: the prompt and the
-    // per-app camera that call them are deleted by the next tick of this epic.
-    setPictured: setPictured,
-    isPictured: isPictured,
-    clearPictured: clearPictured,
-    PICTURE_CONSENT_UNASKED: PICTURE_CONSENT_UNASKED,
-    PICTURE_CONSENT_KEEP: PICTURE_CONSENT_KEEP,
-    PICTURE_CONSENT_NOT_THESE: PICTURE_CONSENT_NOT_THESE,
-    PICTURE_CONSENT_NONE: PICTURE_CONSENT_NONE,
-    normalizePictureConsent: normalizePictureConsent,
-    setPictureConsent: setPictureConsent,
-    pictureConsent: pictureConsent,
-    pictureConsentAsked: pictureConsentAsked,
     stateWith: stateWith,
     defaultStatus: defaultStatus,
     normalizeStatus: normalizeStatus,

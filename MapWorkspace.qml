@@ -732,20 +732,11 @@ BorderSurface {
               readonly property bool iconResolved: panel.iconResolvedOf(
                 chipTab.modelData.identityId, chipTab.modelData.className)
 
-              // THE SECOND CONSENT, per chip (tick qnc). Watched says the tool
-              // may MOVE this window; pictured says it may PHOTOGRAPH it, and
-              // the two are independent grants — so the payload says both
-              // rather than one flag a consumer would have to guess the other
-              // from. Off for every chip whose window matches no identity: an
-              // app nobody watches has consented to nothing.
-              readonly property bool pictured: panel.picturedOf(
-                chipTab.modelData.identityId)
-
               // THE STORED PICTURE, as a URL the Image below binds (tick vbh).
-              // "" when this chip has none — an unpictured app, a recording
-              // taken before the consent was granted, a cache a cleaner has
-              // wiped — and "" on the LIVE map always, because a picture out of
-              // the CACHE is a fact about a recorded layout. What the live map
+              // "" when this chip has none — pictures switched off, an app
+              // recorded before there were any, a cache a cleaner has wiped —
+              // and "" on the LIVE map always, because a picture out of the
+              // CACHE is a fact about a recorded layout. What the live map
               // draws instead is `liveSource` below: the same window, as it
               // looks right now, which is a different picture and not a staler
               // copy of this one.
@@ -755,35 +746,36 @@ BorderSurface {
               // was BOUND, not a second derivation that could agree with the
               // cache while the Image drew nothing.
               //
-              // THE CAMERA GATE IS THE PANEL'S, NOT A SECOND ONE HERE (tick
-              // sp7). `panel.captureFileFor` already answers "" for an identity
-              // whose camera is off, so a withdrawn picture stops being drawn in
+              // THE SWITCH IS THE PANEL'S GATE, NOT A SECOND ONE HERE (tick
+              // sp7). `panel.captureFileFor` already answers "" when the
+              // pictures are off, so a switched-off picture stops being drawn in
               // the same frame the flag is written — before the `find` that
-              // deletes it has even been spawned. Adding `&& chipTab.pictured`
-              // to the Image below as well would be a SECOND derivation of the
-              // same fact, and this property — the one the payload reports as
-              // bound — would then be able to name a picture the chip is not
-              // drawing. That is precisely the disagreement the paragraph above
-              // exists to prevent, so the gate stays in the one place both
-              // readers go through.
+              // deletes it has even been spawned. Reading `panel.picturesOn`
+              // here as well would be a SECOND derivation of the same fact, and
+              // this property — the one the payload reports as bound — would
+              // then be able to name a picture the chip is not drawing. That is
+              // precisely the disagreement the paragraph above exists to
+              // prevent, so the gate stays in the one place both readers go
+              // through.
               readonly property string captureSource: panel.captureSourceOf(
                 chipTab.modelData.identityId, chipTab.modelData.occurrence)
 
               // THE LIVE PICTURE (tick 2zi) — what this window looks like RIGHT
               // NOW, taken when the panel opened and held in MEMORY. "" on the
-              // recorded map always, "" for an app whose camera is off, and ""
-              // until the grab lands.
+              // recorded map always, "" when the pictures are switched off,
+              // and "" until the grab lands.
               //
               // Keyed by the window ADDRESS and not by (identity, occurrence),
               // because there is no file: a live chip IS a window address, so
               // the panel's map needs no topology, no occurrence and no hash to
               // look one up.
               //
-              // THE CAMERA GATE IS THE PANEL'S, NOT A SECOND ONE HERE, for the
-              // reason spelled out over `captureSource`: `panel.liveSourceOf`
-              // already answers "" for an identity whose camera is off, and a
-              // second derivation here would let the property the payload
-              // reports as BOUND name a picture the chip is not drawing.
+              // THE SWITCH IS THE PANEL'S GATE, NOT A SECOND ONE HERE, for
+              // the reason spelled out over `captureSource`:
+              // `panel.liveSourceOf` already answers "" when the pictures are
+              // off, and a second derivation here would let the property the
+              // payload reports as BOUND name a picture the chip is not
+              // drawing.
               readonly property string liveSource: panel.liveSourceOf(
                 chipTab.modelData.identityId, chipTab.modelData.address)
 
@@ -855,9 +847,6 @@ BorderSurface {
                   // fallback stack cannot quietly draw something else.
                   iconSource: chipTab.iconSource,
                   iconResolved: chipTab.iconResolved,
-                  // The second consent, from the same delegate and on both
-                  // render paths, for the same reason the icon pair is.
-                  pictured: chipTab.pictured,
                   // The picture this chip IS DRAWING — the bound source, but
                   // only once the Image reports Ready. "" here becomes an
                   // ABSENT key in the payload, never an empty string, which
@@ -995,11 +984,10 @@ BorderSurface {
               onPlacedChanged: chipTab.reportRender()
               onIconSourceChanged: chipTab.reportRender()
               onIconResolvedChanged: chipTab.reportRender()
-              onPicturedChanged: chipTab.reportRender()
               onCaptureSourceChanged: chipTab.reportRender()
               // The live half, per the same rule — and this one genuinely moves
               // under a live delegate: the grab lands a second or two after the
-              // panel opens, and a camera switched off takes it away again
+              // panel opens, and the pictures switched off take it away again
               // without the panel closing.
               onLiveSourceChanged: chipTab.reportRender()
               // Both, per the report-site rule: a site must carry an onXChanged
