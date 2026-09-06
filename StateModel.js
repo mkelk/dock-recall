@@ -609,10 +609,12 @@ function migratedLaunch(launch, patterns) {
 // An identity without an id cannot be referred to by a layout, so it is
 // dropped; everything else is repaired to its default.
 //
-// `migrating` is true only when the FILE was an older schema generation. A file
-// already at this generation was written by a build that no longer derives
-// `--app-id`, so anything spelling it there was typed by hand, and a hand edit
-// of the launch field is a decision this module does not overrule.
+// `migrating` is true only when the file is older than v4 — the generation that
+// STOPPED deriving `--app-id` (see needsLaunchRepair, which owns that boundary
+// and is the only thing that sets this). A file at v4 or later was written by a
+// build that no longer derives the flag, so anything spelling it there was typed
+// by hand, and a hand edit of the launch field is a decision this module does
+// not overrule.
 function normalizeIdentity(value, migrating) {
   if (!value || typeof value !== "object") return null;
   var id = typeof value.id === "string" ? value.id : "";
@@ -808,6 +810,31 @@ function isOlderVersion(value) {
   return typeof value !== "number" || value < STATE_VERSION;
 }
 
+// Is this file old enough for v4's LAUNCH SUBTRACTION to apply to it?
+//
+// A SEPARATE QUESTION FROM isOlderVersion, and conflating the two was a bug
+// that shipped with the v5 -> v6 bump and survived to v7 (review z4b). The
+// subtraction is v3 -> v4's and only v3 -> v4's: it empties a `launch` that
+// forces an `--app-id` class no pattern of its own identity claims, because
+// that string is the signature of a mechanism v3 retired and cannot be repaired
+// downstream (see migratedLaunch). `normalizeState` passed `isOlderVersion`, so
+// the moment STATE_VERSION moved past 4 the subtraction started re-running on
+// every file below the CURRENT generation — a v6 identity carrying
+// `foot --app-id=herdr herdr` came back with `launch: ""` while the identical
+// identity in a v7 file was left alone.
+//
+// That is the module's own promise broken (normalizeIdentity, above): a file at
+// a generation that no longer DERIVES the flag can only have got it by hand, and
+// a hand edit of the launch field is a decision this module does not overrule.
+// v4 is where the deriving stopped, so v4 is the boundary — not wherever this
+// build's number happens to be today.
+//
+// A version-less object counts, for the reason isOlderVersion says: nothing has
+// written one since v1.
+function needsLaunchRepair(value) {
+  return typeof value !== "number" || value < 4;
+}
+
 // Turn anything at all into a state object this codebase can work with.
 function normalizeState(value) {
   if (!value || typeof value !== "object" || isArray(value)) return defaultState();
@@ -822,11 +849,13 @@ function normalizeState(value) {
     // file's answer is consulted first, and only "none" turns them off — see
     // normalizePictures and the v6 -> v7 note in the schema block.
     pictures: normalizePictures(value),
-    // The v4 migration is the first that is not purely additive — see
-    // migratedLaunch — so the identities need to know whether this read IS a
-    // migration. Every other caller of normalizeIdentities is a WRITE path and
-    // passes nothing, which is the same as "no".
-    identities: normalizeIdentities(value.identities, isOlderVersion(value.version)),
+    // The v3 -> v4 step is the one migration that is not purely additive — see
+    // migratedLaunch — so the identities need to know whether this read is
+    // crossing it. `needsLaunchRepair`, NOT `isOlderVersion`: the subtraction
+    // belongs to that one step and not to "any file older than today". Every
+    // other caller of normalizeIdentities is a WRITE path and passes nothing,
+    // which is the same as "no".
+    identities: normalizeIdentities(value.identities, needsLaunchRepair(value.version)),
     layouts: normalizeLayouts(value.layouts)
   };
 }
@@ -841,11 +870,13 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> v2 -> v3 -> v4 -> v5 -> v6, as far as it has to
-//               go, in the one pass). Not an error and not a recovery: nothing was
-//               invented, and the only thing dropped is the one v4 subtracts on
-//               purpose (migratedLaunch). The service logs it once and the next
-//               write persists the upgraded shape.
+//               upgraded (v1 -> ... -> v7, as far as it has to go, in the one
+//               pass). Not an error and not a recovery: nothing was invented,
+//               and the only things dropped are the one v3 -> v4 subtracts on
+//               purpose (migratedLaunch, and only for a file below v4 — see
+//               needsLaunchRepair) and the two consent fields v6 -> v7 replaced.
+//               The service logs it once and the next write persists the
+//               upgraded shape.
 function parseState(raw) {
   var text = typeof raw === "string" ? raw : "";
   if (!text.replace(/^\s+|\s+$/g, "")) {
@@ -993,9 +1024,14 @@ function serializeState(state) {
 // Turning the switch off and then recording would have turned it back on.
 //
 // The copy is of the NORMALIZED base, so a caller handing in half a state still
-// gets a whole one, and the patch is applied over it — so a field this function
-// has never heard of cannot leak in from `patch` either: normalizeState is the
-// whitelist, and it runs first.
+// gets a whole one — and the merged RESULT is normalized too, so a key this
+// schema has never heard of cannot ride in on `patch` either. Both passes are
+// needed and neither is redundant: the first repairs what the caller brought,
+// the second is the whitelist standing between `patch` and the object every
+// setter here returns. Normalizing only the base would let
+// `stateWith(state, { strayKey: 1 })` hand back a state carrying `strayKey` in
+// memory — harmless on the way to serializeState, which normalizes again, and
+// not harmless at all for the callers that read a setter's return directly.
 function stateWith(state, patch) {
   var base = normalizeState(state);
   var out = {};
@@ -1006,7 +1042,7 @@ function stateWith(state, patch) {
   for (key in patch) {
     if (Object.prototype.hasOwnProperty.call(patch, key)) out[key] = patch[key];
   }
-  return out;
+  return normalizeState(out);
 }
 
 function layoutFor(state, topologyKey) {
@@ -1129,9 +1165,10 @@ function isPaused(state) {
 // capture round, every live source and every cache lookup.
 //
 // TRUE UNLESS THE STATE SAYS `false`, and the asymmetry is the whole point: this
-// is the opposite discipline from the consent it replaces. `pictured` and
-// `paused` read `=== true`, because a file that has not said yes has not
-// consented and a missing key must never grant something. `pictures` is not a
+// is the opposite discipline from the consent it replaces. `paused` reads
+// `=== true`, and so did v5's `pictured` before v7 deleted it, because a file
+// that has not said yes has not consented and a missing key must never grant
+// something. `pictures` is not a
 // consent — it is the feature, and it ships on — so a missing key must never
 // SILENCE it either. A hand edit that mistypes the value, a key lost to a
 // botched round trip, a caller holding half a state: every one of them lands on

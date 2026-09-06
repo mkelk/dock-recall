@@ -1321,6 +1321,50 @@ test("the version bump is unchanged for a v3 file whose launches are clean", () 
   });
 });
 
+test("the launch subtraction belongs to v3 -> v4, not to \"older than today\"", () => {
+  // THE BUG THIS CLOSES, and it shipped with the v5 -> v6 bump and survived to
+  // v7 (review z4b). normalizeState handed normalizeIdentities `isOlderVersion`,
+  // which is "older than whatever STATE_VERSION is now" — so the moment the
+  // number moved past 4, v4's one deliberate subtraction started re-running on
+  // every file below the current generation. A v6 identity carrying a hand-typed
+  // `--app-id` launch came back EMPTIED, while the identical identity in a v7
+  // file was left alone: the same file, read by two builds, answering
+  // differently about a field the user typed.
+  //
+  // The boundary is v4, because v4 is where the deriving stopped. Below it the
+  // string is the retired mechanism's output and cannot be repaired downstream;
+  // at or above it the string was typed by hand, and normalizeIdentity's own
+  // contract is that a hand edit is not overruled.
+  const carrying = (version) => JSON.stringify({
+    version: version,
+    identities: [{ id: "herdr", patterns: ["^foot$"], titlePatterns: [],
+      launch: "foot --app-id=herdr herdr" }],
+    layouts: {}
+  });
+  const launchAt = (version) =>
+    state.parseState(carrying(version)).state.identities[0].launch;
+
+  // BELOW v4: still repaired, which is the whole point of the step and the one
+  // case that must not regress.
+  assert.strictEqual(launchAt(1), "", "v1 is below the boundary");
+  assert.strictEqual(launchAt(3), "", "v3 is the generation that derived it");
+
+  // AT v4 AND ABOVE: the user's, untouched, at every generation since — the
+  // assertion that would have failed on the shipped v6 and v7 builds.
+  for (const version of [4, 5, 6, 7]) {
+    assert.strictEqual(launchAt(version), "foot --app-id=herdr herdr",
+      "v" + version + " is at or past the generation that stopped deriving the flag,"
+      + " so this launch was typed by hand and is not this module's to empty");
+  }
+
+  // And it is still a MIGRATION at every one of those versions but the last —
+  // the repair being skipped is not the read being skipped.
+  for (const version of [1, 3, 4, 5, 6]) {
+    assert.strictEqual(state.parseState(carrying(version)).migrated, true, "v" + version);
+  }
+  assert.strictEqual(state.parseState(carrying(7)).migrated, false);
+});
+
 test("a v7 file's --app-id launch is the USER's and is never touched", () => {
   // Only a MIGRATED file carries the retired mechanism's data. A file already at
   // this generation was written by a build that no longer derives the flag, so
@@ -1492,9 +1536,10 @@ test("a v7 file re-reads byte-identical, and the three writes leave it v7", () =
 
 test("picturesOn is on unless the state says the literal false", () => {
   // The opposite discipline from the consent it replaces, and the comment on
-  // picturesOn says why: `pictured` and `paused` read `=== true` because a
-  // missing key must never GRANT anything, and `pictures` reads `!== false`
-  // because a missing key must never silence the feature the tool exists for.
+  // picturesOn says why: `paused` reads `=== true` (and so did v5's `pictured`,
+  // before v7 deleted it) because a missing key must never GRANT anything, and
+  // `pictures` reads `!== false` because a missing key must never silence the
+  // feature the tool exists for.
   assert.strictEqual(state.picturesOn({}), true, "absent: the switch ships on");
   assert.strictEqual(state.picturesOn({ pictures: true }), true);
   assert.strictEqual(state.picturesOn({ pictures: false }), false, "the one value that is off");

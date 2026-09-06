@@ -118,8 +118,10 @@ Item {
   // predicate answers yes, so this component is still usable on its own.
   //
   // The same shape as CaptureStore's `stillOwed` and for the same reason (tick
-  // zxg): a round can be perfectly healthy while the user unticks the very app
-  // it is photographing, and the plan is older than the question.
+  // zxg): a round can be perfectly healthy while the user UNTICKS the very app
+  // it is photographing — or switches the pictures off under it — and the plan
+  // is older than either question. The panel asks both; the second is the one a
+  // global switch cannot ask, because watching stayed per app.
   property var stillOwed: null
 
   // THE PICTURES, BY WINDOW ADDRESS — and the address is the key precisely
@@ -211,13 +213,13 @@ Item {
       return
     }
     var captures = (plan && plan.captures) ? plan.captures : []
-    var withheld = (plan && plan.skipped) ? plan.skipped.length : 0
+    var skippedCount = (plan && plan.skipped) ? plan.skipped.length : 0
     liveStore._plan = plan
     liveStore._results = []
     liveStore._queue = captures.slice()
     liveStore._handles = ({})
     liveStore.log("live picture round: " + captures.length + " window(s) to photograph, "
-      + withheld + " not pictured")
+      + skippedCount + " not pictured")
     if (liveStore._queue.length === 0) {
       liveStore._finish()
       return
@@ -225,9 +227,12 @@ Item {
     liveStore._resolveThenWalk()
   }
 
-  // EVERY PICTURE, GONE. The panel closing is the only caller: the pictures are
-  // discarded when the panel is, and on the path where the Loader survives a
-  // hide this is what makes that true anyway.
+  // EVERY PICTURE, GONE. Two callers, and they want the same thing for
+  // different reasons: the panel CLOSING (the pictures are discarded when the
+  // panel is, and on the path where the Loader survives a hide this is what
+  // makes that true anyway), and the pictures being SWITCHED OFF, where the
+  // whole point is that nothing survives the press. Neither names an app —
+  // `retain` below is for that.
   function clear() {
     liveStore._abandon("")
     liveStore.pictures = ({})
@@ -415,10 +420,11 @@ Item {
       // deadline or a yield can end this step while it works. A callback whose
       // step is over keeps nothing and says nothing.
       if (!liveStore._isCurrentStep(step)) return
-      // AND THE CONSENT IS RE-ASKED AT THE MOMENT THE PICTURE WOULD BE KEPT
+      // AND THE GATE IS RE-ASKED AT THE MOMENT THE PICTURE WOULD BE KEPT
       // (tick zxg's rule, in memory rather than on disk). `_isCurrentStep` only
       // says the step is still the one in flight; it says nothing about whether
-      // this app is still owed a picture at all.
+      // this app is still owed a picture at all — an untick, or the pictures
+      // switched off, and it is not.
       if (!liveStore._stillOwed(entry)) {
         liveStore._settle(step, false, "withdrawn")
         return

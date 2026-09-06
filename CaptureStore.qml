@@ -252,12 +252,12 @@ Item {
       "dropped every stored picture of " + names.length + " app(s), on every desk", reason, null)
   }
 
-  // EVERY picture, on every desk. The third answer to the first-Record dialogue
-  // ("Delete all", tick y28) is the only caller, and it is deliberately a
-  // separate function rather than `evict("")`: the prefix form refuses an empty
-  // prefix precisely so a caller with an unresolved topology key cannot delete
-  // the whole cache by accident, and a wholesale delete has to be something a
-  // caller ASKED for by name.
+  // EVERY picture, on every desk. Switching the pictures OFF is the only caller
+  // (Panel.setPictures), and this is deliberately a separate function rather
+  // than `evict("")`: the prefix form refuses an empty prefix precisely so a
+  // caller with an unresolved topology key cannot delete the whole cache by
+  // accident, and a wholesale delete has to be something a caller ASKED for by
+  // name.
   //
   // The pattern is `*.jpg` and not `*`, so this names only the files this store
   // writes. The directory is ours and holds nothing else today; saying so in the
@@ -273,8 +273,8 @@ Item {
   // flight.
   //
   // A job carries its own SENTENCE as well as its own names, because the three
-  // evictions delete different things and a line reading "this layout" after
-  // "Delete all" describes an act narrower than the one that ran.
+  // evictions delete different things and a line reading "this layout" after a
+  // wholesale switch-off describes an act narrower than the one that ran.
   property var _evictQueue: []
   property var _evictJob: null
   property var _evictMatch: []
@@ -354,8 +354,8 @@ Item {
       // so the sequence in the log reads as the user's own sequence.
       //
       // The sentence is the JOB's, because the three evictions delete different
-      // things and a line reading "this layout" after "Delete all" would
-      // describe an act narrower than the one that ran.
+      // things and a line reading "this layout" after a wholesale switch-off
+      // would describe an act narrower than the one that ran.
       if (job && job.reason) store.log(job.sentence + " (" + job.reason + ")")
       store.refresh()
       // The continuation belongs to THIS job, and the next job starts whatever
@@ -602,11 +602,14 @@ Item {
   // happens after that.
   property var stillOwed: null
 
-  // TWO QUESTIONS, NOT ONE, and the second was learned from the gate: are
-  // pictures still switched on, AND is the recording this picture belongs to
-  // still there? A Forget in flight does not switch the pictures off, so asking
-  // only about the switch let a round write a picture for a layout the user had
-  // just forgotten. The gate log caught it exactly:
+  // THREE QUESTIONS, NOT ONE, and each was learned from a different interleave:
+  // are pictures still switched on, is this app still WATCHED, and is the
+  // recording this picture belongs to still there? The panel answers all three
+  // behind this one call — see its `stillOwed` for which line is which.
+  //
+  // The third was learned from the gate. A Forget in flight switches nothing off
+  // and unticks nobody, so the first two say yes for a layout the user has just
+  // forgotten. The gate log caught it exactly:
   //
   //   dropped the pictures for this layout (re-recorded)   <- the round's own evict
   //   forgot the layout for topology "…" (2 apps)          <- the Forget
@@ -712,15 +715,17 @@ Item {
       // `_isCurrentStep` only says the step is still the one in flight. It says
       // nothing about whether this picture is still owed AT ALL, and the two are
       // not the same question: a round can be perfectly healthy while the user
-      // unticks the very app it is photographing, or switches the pictures off
-      // under it. The gate log caught the exact interleave —
+      // UNTICKS the very app it is photographing. That is the door the gate log
+      // caught, and the excerpt below is an unwatch from end to end —
       //
       //   recorded 2 apps for topology "… | dr-cap-dock"
       //   unwatched "dr-two" — its stored pictures are deleted, on every desk
       //   dropped every stored picture of 1 app(s), on every desk (unwatched)
       //   1 picture(s) stored, 1 not pictured        <- the round's save, AFTER
       //
-      // — the pictures deleted, and then an in-flight round wrote one back.
+      // — the app unwatched, its pictures deleted, and then an in-flight round
+      // wrote one back for an app nobody watches. Switching the pictures off is
+      // the second door onto the same instant and is answered by the same call.
       // Making the DELETE wait for the round would mean tearing down a live
       // ScreencopyView whose grabToImage can still fire, which is the orphan
       // class tick ilg exists to prevent. So the delete does not wait: the SAVE

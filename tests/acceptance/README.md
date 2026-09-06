@@ -549,11 +549,23 @@ included. The payload still carries the name, which is what a consumer reads.
 
 ### The pictures switch
 
-One key, and it is the only picture key in the payload:
+One key at the TOP LEVEL, and it is the only one there — the chips carry their
+own picture keys (`liveCapture`, `liveSource`, `captureSource`, `capturePath`),
+which are claims about a single window rather than about the tool:
 
 | key | question |
 |---|---|
 | `pictures` | may this tool photograph the windows it watches? **Always present and always a boolean.** Schema v7, beside `paused`, so it survives a shell restart — which is what makes it a fact about the tool and not about one panel session. `true` by default: a watched app is a pictured one |
+
+**Before the state file has been read**, the panel reports the schema's default —
+`pictures: true` — because that is what `StateModel.defaultState()` says, and it
+takes no picture at all: `startLiveRound` is guarded on `stateLoaded` and is
+re-triggered when that flips, exactly as `canRecord` is. The two hyprctl reads
+are processes and the `FileView` is not, so the desktop really can arrive first;
+without the guard a file that says `false` would still have had every watched
+window photographed into memory on the first open. Nothing would have been
+DRAWN — `liveSourceOf` re-asks the switch at draw time — which is precisely why
+it needed a guard rather than a reader.
 
 **Four keys are gone and their absence is normative.** `pictureConsent`,
 `consentOpen`, `consentChoices` and `consentCaptures` are not in the payload, not

@@ -6868,12 +6868,23 @@ function capturePlan(layout, identities, chosen, pictures) {
 //
 // Best-effort is stated OUT LOUD: a record whose pictures all failed is still a
 // good record, and the line has to read that way rather than as a failure.
-// A FAILURE SAYS WHY. The reasons are the whole diagnostic value of this line:
-// "no-frame" is a window on a monitor that is not rendering (the one real
-// failure mode this feature has), "no-handle" is a window that closed between
-// the record and the capture, "save-failed" is a disk that would not take it.
-// Without them the line is "1 could not be captured" and the next person has
-// nothing to go on.
+//
+// A FAILURE SAYS WHY, and a SKIP does not — the two halves of the line are not
+// symmetric and that is deliberate. The failure reasons are the whole diagnostic
+// value of this line: "no-frame" is a window on a monitor that is not rendering
+// (the one real failure mode this feature has), "no-handle" is a window that
+// closed between the record and the capture, "save-failed" is a disk that would
+// not take it. Without them the line is "1 could not be captured" and the next
+// person has nothing to go on. The SKIPS are counted rather than named because
+// they are not diagnostics: `pictures-off` and `not-watched` are the tool doing
+// what it was told, in numbers a user can already see on their own screen, and
+// naming them would put "(pictures-off, pictures-off, pictures-off)" in a log
+// line about a healthy round. Only `no-window` is split out, because "no longer
+// open" is a fact about the DESK rather than about the settings.
+//
+// The two counters below are named for what they count and not for why: v5 and
+// v6 called the skip bucket a WITHHELD consent, and there is no consent left to
+// withhold.
 function captureLogLine(plan, results) {
   var list = isArray(results) ? results : [];
   var taken = 0;
@@ -6892,16 +6903,19 @@ function captureLogLine(plan, results) {
       reasons.push(reason);
     }
   }
-  var withheld = 0;
+  var skippedCount = 0;
   var gone = 0;
   var skipped = (plan && isArray(plan.skipped)) ? plan.skipped : [];
   for (var s = 0; s < skipped.length; s++) {
-    if (skipped[s] && skipped[s].reason === "no-window") gone++; else withheld++;
+    if (skipped[s] && skipped[s].reason === "no-window") gone++; else skippedCount++;
   }
 
   var parts = [taken + " picture(s) stored"];
   if (failed) parts.push(failed + " could not be captured (" + reasons.join(", ") + ")");
-  if (withheld) parts.push(withheld + " not pictured");
+  // The STRING is unchanged: the acceptance suite greps these log lines, and a
+  // renamed local is not a reason to move an assertion in a VM nobody can run
+  // from here.
+  if (skippedCount) parts.push(skippedCount + " not pictured");
   if (gone) parts.push(gone + " no longer open");
   return parts.join(", ");
 }
@@ -6991,8 +7005,9 @@ function compareLiveCaptures(x, y) {
 // A FAILURE SAYS WHY, exactly as the recorded line does: "no-frame" is a window
 // on a monitor that is not rendering, "no-handle" is one that closed between the
 // plan and the grab, "withdrawn" is a picture that stopped being owed mid-round
-// (the pictures switched off, or the app unticked, while the grab was in
-// flight).
+// — the app UNTICKED, or the pictures switched off, while the grab was in
+// flight. Both doors settle here because both are asked at the instant of the
+// keep, which is the only moment either answer is current.
 function liveCaptureLogLine(plan, results) {
   var list = isArray(results) ? results : [];
   var taken = 0;
@@ -7012,13 +7027,13 @@ function liveCaptureLogLine(plan, results) {
     }
   }
   var planned = (plan && isArray(plan.captures)) ? plan.captures.length : 0;
-  var withheld = (plan && isArray(plan.skipped)) ? plan.skipped.length : 0;
+  var skippedCount = (plan && isArray(plan.skipped)) ? plan.skipped.length : 0;
   var unreached = Math.max(0, planned - taken - failed);
 
   var parts = [taken + " live picture(s) held in memory, never written to disk"];
   if (failed) parts.push(failed + " could not be taken (" + reasons.join(", ") + ")");
   if (unreached) parts.push(unreached + " not reached");
-  if (withheld) parts.push(withheld + " not pictured");
+  if (skippedCount) parts.push(skippedCount + " not pictured");
   return parts.join(", ");
 }
 

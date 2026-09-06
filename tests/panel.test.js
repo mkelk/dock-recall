@@ -6293,7 +6293,7 @@ test("the pictures are evicted at all three points a recording can end", () => {
   const after = source.slice(source.indexOf("function captureAfterRecord(layout, chosen)"));
   const afterBody = after.slice(0, after.indexOf("\n  }\n"));
   assert.ok(afterBody.indexOf("captureStore.evict(plan.prefix") !== -1,
-    "a re-record with the consent withdrawn leaves the old pictures behind");
+    "a re-record with the pictures since switched off leaves the old ones behind");
 
   // And the eviction of the REPLACED set is a step of the capture sequence, not
   // a second call the caller has to remember: `find -delete` racing a save is
@@ -6420,9 +6420,9 @@ test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round
   //    above it, so a second Record during a live round overwrote the FIRST
   //    round's fields with the refused one's — and then called _finish(), which
   //    since tick gox correctly resets everything, tearing down the round that
-  //    was actually running: its `done` lost (so its consent prompt never
-  //    appeared), its view left alive with a pending grab, and `busy` false so
-  //    the NEXT Record was not blocked either.
+  //    was actually running: its `done` lost (so its log line never appeared),
+  //    its view left alive with a pending grab, and `busy` false so the NEXT
+  //    Record was not blocked either.
   const guard = body.indexOf("if (store.busy)");
   assert.ok(guard !== -1, "capture() no longer refuses a second round on `busy`");
   for (const field of ["_plan", "_done", "_results", "_queue", "_handles", "_evictThen"]) {
@@ -6442,7 +6442,7 @@ test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round
     "capture()'s refusal paths call _finish() again — the exact bug tick ilg closed:\n" + refusals);
 
   // 3. The caller is still answered, with the empty round it always got: it
-  //    logs "0 picture(s) stored" and offers no consent prompt.
+  //    logs "0 picture(s) stored".
   assert.strictEqual((refusals.match(/callback\(\[\]\)/g) || []).length, 2,
     "capture()'s two refusals no longer both answer the caller with an empty round:\n" + refusals);
 });
@@ -6514,8 +6514,8 @@ test("a late grab cannot write a picture for a capture already reported failed (
     "the guard is stopped after the grab is queued, which is the race itself");
 
   // 2. THE SAVE IS GATED, not just the result. A file written after the step
-  //    ended is a picture no consent prompt ever showed, that "Not for these
-  //    apps" cannot reach, and that can land after evictAll("declined").
+  //    ended is a picture no listing knows about, that no eviction can reach,
+  //    and that can land after the switch-off has already emptied the cache.
   const grab = contentBody.slice(contentBody.indexOf("view.grabToImage(function (result)"));
   const gate = grab.indexOf("if (!store._isCurrentStep(step)) return");
   const save = grab.indexOf("saveToFile");
@@ -6525,8 +6525,8 @@ test("a late grab cannot write a picture for a capture already reported failed (
 
   // 3. _settle IS IDEMPOTENT PER ENTRY. A second answer for one step used to
   //    push a duplicate result AND shift the queue again — one window silently
-  //    dropped, unphotographed and unreported, and therefore missing from
-  //    consentCaptureEntries.
+  //    dropped, unphotographed and unreported, and therefore missing from the
+  //    round's results and from the log line built out of them.
   const settleAt = store.indexOf("function _settle(step, ok, reason)");
   const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
   const settleGate = settleBody.indexOf("if (!store._isCurrentStep(step)) return");
@@ -6926,6 +6926,36 @@ test("the IPC verb is setPictures, and setPictured is not a verb", () => {
   // Through the panel's own setter, which owns the fresh read, the eviction and
   // the log — an IPC path that wrote the flag itself would switch nothing off.
   assert.ok(body.indexOf("root.setPictures(want === \"on\")") !== -1, body);
+});
+
+test("setPictures cannot be switched OFF by a garbled argument", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const at = source.indexOf("function setPictures(on) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+
+  // `!== false` and never `=== true`, at the layer that actually calls evictAll
+  // and clear(). OFF is the destructive direction — it deletes every stored
+  // picture on every desk — and the reading rule StateModel.picturesOn owns
+  // exists precisely so that nothing but the literal `false` can select it. A
+  // `=== true` here would make every non-boolean argument a wholesale delete.
+  assert.ok(body.indexOf("var want = on !== false") !== -1,
+    "Panel.setPictures coerces its argument to OFF, which is the destructive "
+    + "direction — only the literal false may select it:\n" + body);
+  assert.strictEqual(body.indexOf("on === true"), -1, body);
+
+  // And the pure half, where it can be executed rather than grepped.
+  const st = require("../StateModel.js");
+  const on = st.defaultState();
+  const off = st.setPictures(on, false);
+  assert.strictEqual(st.picturesOn(off), false, "the literal false is off");
+  for (const junk of [undefined, null, 0, "", "false", "off", {}]) {
+    assert.strictEqual(st.picturesOn(st.setPictures(on, junk)), true,
+      JSON.stringify(junk) + " must not switch the pictures off");
+    assert.strictEqual(st.picturesOn(st.setPictures(off, junk)), true,
+      JSON.stringify(junk) + " on an already-off state is not a second switch-off");
+  }
 });
 
 test("switching the pictures back ON restarts the live round under an open panel", () => {
@@ -7436,8 +7466,8 @@ test("a chip is never blank: the icon is the fallback, and there is only one of 
   // The picture — either kind — draws only when the Image says Ready, and the
   // icon steps aside only for a picture that actually arrived. Every moment in
   // between (a grab still in flight, a window on a monitor that is not
-  // rendering, a camera switched off) is a moment this is false, and the chip
-  // draws its icon exactly as it did before this tick.
+  // rendering, the pictures switched off) is a moment this is false, and the
+  // chip draws its icon exactly as it did before this tick.
   const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
     map.indexOf("// THE VEIL"));
   assert.ok(image.indexOf("visible: chipCapture.status === Image.Ready") !== -1, image);
@@ -7555,8 +7585,9 @@ test("A LIVE ROUND IS A BRACKET: it says when it opens and when it closes", () =
   // failed with no line from this file anywhere in a 400-line log, and three
   // different faults produce exactly that silence: a round never started, a
   // round started with an empty plan, and a round that started and stalled. An
-  // unclosed bracket is now a stall and a bracket around zero is a desk with no
-  // cameras on — tick 070's lesson, applied one VM cycle earlier than last time.
+  // unclosed bracket is now a stall and a bracket around zero is a desk with
+  // nothing to photograph — tick 070's lesson, applied one VM cycle earlier
+  // than last time.
   const start = store.slice(store.indexOf("function start(plan) {"),
     store.indexOf("function clear()"));
   assert.ok(start.indexOf("liveStore.log(\"live picture round: \"") !== -1,
@@ -7699,10 +7730,9 @@ test("the state file's writes block, so a record is on disk when it says it is",
   // acceptance VM recorded a layout, the IPC answered "recorded", and a jq in
   // the very next process found no layout in the file. `setText` schedules an
   // asynchronous job unless the view is told otherwise, and five whole-file
-  // rewriters re-read this path SYNCHRONOUSLY through freshState() — two of
-  // them, Undo and the consent answer, are by design the next thing that
-  // happens after a Record. A write still in flight is a lost recording or a
-  // lost consent answer, silently.
+  // rewriters re-read this path SYNCHRONOUSLY through freshState() — one of
+  // them, Undo, is by design the next thing that happens after a Record. A
+  // write still in flight is a lost recording, silently.
   const view = source.match(/FileView\s*\{[^}]*?id:\s*stateFile[^}]*?\}/s);
   assert.ok(view, "Panel.qml no longer has a FileView with id: stateFile");
   assert.match(view[0], /^\s*blockWrites:\s*true\s*$/m,
@@ -7748,26 +7778,81 @@ test("a capture is not written once the pictures have been switched off mid-roun
 
   // And the panel must actually supply the predicate, or the store's own
   // default ("no predicate means yes") silently reopens the hole. BOTH stores
-  // get one, and both read the one switch (schema v7) rather than a per-app
-  // grant that no longer exists.
+  // get one, and each is read as a BODY rather than through a character budget:
+  // a `[\s\S]{0,N}` window is a test that fails the day somebody writes a
+  // longer comment, which is not a defect, and passes the day somebody moves
+  // the guard out of the function, which is.
   const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
-  assert.match(panel, /stillOwed:\s*function\s*\(\s*identityId\s*,\s*topologyKey\s*\)[\s\S]{0,800}?root\.picturesOn/,
-    "the recorded store's predicate no longer reads the pictures switch");
-  assert.match(panel, /stillOwed:\s*function\s*\(\s*identityId\s*\)\s*\{[^}]*root\.picturesOn/,
-    "the live store's predicate no longer reads the pictures switch");
+  const predicateBody = (signature) => {
+    const at = panel.indexOf(signature);
+    assert.ok(at !== -1, "Panel.qml has no " + signature);
+    let depth = 0;
+    for (let i = panel.indexOf("{", at); i < panel.length; i++) {
+      if (panel[i] === "{") depth += 1;
+      else if (panel[i] === "}") {
+        depth -= 1;
+        if (depth === 0) return panel.slice(at, i + 1);
+      }
+    }
+    assert.fail(signature + " is unbalanced");
+  };
+  const recorded = predicateBody("stillOwed: function (identityId, topologyKey)");
+  const live = predicateBody("stillOwed: function (identityId)");
+
+  // THE SWITCH, in both.
+  assert.ok(recorded.indexOf("root.picturesOn") !== -1,
+    "the recorded store's predicate no longer reads the pictures switch:\n" + recorded);
+  assert.ok(live.indexOf("root.picturesOn") !== -1,
+    "the live store's predicate no longer reads the pictures switch:\n" + live);
   assert.strictEqual(panel.indexOf("picturedOf("), -1,
     "the per-app camera predicate is back; there is one switch and it is picturesOn");
 
-  // AND THE SECOND QUESTION, learned from the gate: a Forget leaves the
-  // pictures ON, so the switch alone answers yes for a layout that no longer
-  // exists. The recorded predicate must also ask whether the recording this
-  // picture belongs to is still there, and the store must pass it the round's
-  // topology key to ask with. (The live one has no second half: a live picture
-  // belongs to no recording.)
-  assert.match(panel, /stillOwed:\s*function\s*\([\s\S]{0,600}?layoutFor\(/,
-    "Panel.qml's predicate no longer checks the layout still exists");
+  // AND WHETHER THE APP IS STILL WATCHED, in both — the question the switch
+  // cannot ask, and the one this gate lost when the per-app consent collapsed
+  // into a global boolean.
+  //
+  // WHAT THAT COST, and why it is pinned here rather than argued: the predicate
+  // this replaced was built on `StateModel.isPictured`, which answers false for
+  // an identity the file no longer carries — so unticking an app mid-round
+  // settled the step "withdrawn" as a side effect of how consent was stored.
+  // Reading only the switch handed that back: `toggleChip` evicts the app's
+  // pictures and a grab already on the render thread writes one after the
+  // delete, for an app nobody watches. Consent went global; WATCHING did not.
+  assert.ok(recorded.indexOf("StateModel.identityById(root.stateModel, identityId)") !== -1,
+    "the recorded store's predicate no longer asks whether the app is still watched, "
+    + "so an untick mid-round can still land a picture after the eviction:\n" + recorded);
+  assert.ok(live.indexOf("StateModel.identityById(root.stateModel, identityId)") !== -1,
+    "the live store's predicate no longer asks whether the app is still watched:\n" + live);
+
+  // AND THE THIRD QUESTION, learned from the gate: a Forget switches nothing
+  // off and unticks nobody, so neither question above says no for a layout that
+  // no longer exists. The recorded predicate must also ask whether the
+  // recording this picture belongs to is still there, and the store must pass
+  // it the round's topology key to ask with. (The live one has no third half: a
+  // live picture belongs to no recording — and asserting its ABSENCE is what
+  // stops the two predicates being quietly conflated.)
+  assert.ok(recorded.indexOf("layoutFor(") !== -1,
+    "the recorded predicate no longer checks the layout still exists:\n" + recorded);
+  assert.strictEqual(live.indexOf("layoutFor("), -1,
+    "the live predicate asks about a recording; a live picture belongs to none:\n" + live);
   assert.match(source, /stillOwed\(entry\.identityId,\s*key\)/,
     "CaptureStore no longer passes the round's topology key to the predicate");
+
+  // THE DRAW-TIME HALF OF THE SAME GUARANTEE. The eviction an untick starts is a
+  // `find`, and a hand edit that drops an identity starts none at all — so both
+  // source functions refuse an identity the file no longer carries, and the
+  // recorded map draws no picture for a ghost chip.
+  const sourceFn = (name) => {
+    const at = panel.indexOf("function " + name);
+    assert.ok(at !== -1, "Panel.qml has no " + name);
+    return panel.slice(at, panel.indexOf("\n  }\n", at));
+  };
+  for (const name of ["captureFileFor(identityId, occurrence)", "liveSourceOf(identityId, address)"]) {
+    const body = sourceFn(name);
+    assert.ok(body.indexOf("root.picturesOn") !== -1, name + " no longer reads the switch:\n" + body);
+    assert.ok(body.indexOf("StateModel.identityById(root.stateModel, identityId)") !== -1,
+      name + " draws a picture for an app the file no longer carries:\n" + body);
+  }
 
   // AND THE PREDICATE ITSELF ANSWERS, which a grep for a name cannot show. It
   // routes to StateModel.picturesOn, which is pure and testable here.

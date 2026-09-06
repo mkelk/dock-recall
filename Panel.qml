@@ -1555,6 +1555,12 @@ Item {
     }
     root.stateModel = result.state
     root.stateLoaded = true
+    // THE FOURTH PRECONDITION IS A TRIGGER TOO, for the reason `haveLiveData`
+    // is one (tick 2zi, second pass): a function guarded on four facts has to
+    // be fired by whichever of them lands last, and on a panel opened over a
+    // desk that is already quiet this is it. The latch inside makes the extra
+    // call free.
+    root.startLiveRound()
   }
 
   // Persist. Atomic, because the service watches this file and a truncating
@@ -1710,12 +1716,23 @@ Item {
     // deleted them all. `root.picturesOn` reads the CURRENT state model, which
     // is the whole point — the round's plan is older than the question.
     stillOwed: function (identityId, topologyKey) {
-      // TWO QUESTIONS, and the second is not about the switch at all. A Forget
-      // leaves the pictures ON, so the switch alone says yes for a layout that
-      // no longer exists — see the comment on _stillOwed for the log that
-      // proved it. `identityId` is unused here now that the gate is global; the
-      // store passes it because its other caller-supplied predicate shapes do.
+      // THREE QUESTIONS, and only the first is the switch. Collapsing the
+      // per-app CONSENT into one global boolean did not collapse WATCHING,
+      // which is still per app and is still a door onto this interleave: the
+      // predicate this replaced asked `picturedOf` about the identity, and
+      // StateModel.isPictured answered false for one the file no longer
+      // carried, so an untick mid-round settled the step "withdrawn". A gate
+      // that asks only the global question hands that back — toggleChip evicts
+      // this app's pictures and a grab already on the render thread then writes
+      // one back, after the delete, for an app nobody watches.
       if (!root.picturesOn) return false
+      // STILL WATCHED. `identityId` is not decoration: it is the whole of the
+      // question the switch cannot ask.
+      if (!StateModel.identityById(root.stateModel, identityId)) return false
+      // AND THE RECORDING THIS PICTURE IS FOR. A Forget leaves the pictures ON
+      // and leaves the app watched, so neither question above says no for a
+      // layout that no longer exists — see the comment on _stillOwed for the
+      // log that proved it.
       if (!topologyKey) return true
       return !!StateModel.layoutFor(root.stateModel, topologyKey)
     }
@@ -1748,11 +1765,16 @@ Item {
     // builds its first view — so the compositor never holds two capture
     // sessions at once either.
     yielding: captureStore.busy
-    // THE SWITCH, RE-ASKED AT THE INSTANT THE PICTURE WOULD BE KEPT — the same
-    // question the recorded store's predicate asks first, for the same reason
-    // (tick zxg): the round's plan is older than the answer. There is no second
-    // half here, because a live picture belongs to no recording.
-    stillOwed: function (identityId) { return root.picturesOn }
+    // THE SWITCH AND THE WATCH, RE-ASKED AT THE INSTANT THE PICTURE WOULD BE
+    // KEPT — the same two questions the recorded store's predicate asks first,
+    // for the same reason (tick zxg): the round's plan is older than the
+    // answer, and unticking an app mid-round is exactly the interleave that
+    // reason was written about. There is no THIRD half here, because a live
+    // picture belongs to no recording.
+    stillOwed: function (identityId) {
+      if (!root.picturesOn) return false
+      return !!StateModel.identityById(root.stateModel, identityId)
+    }
   }
 
   // ONE ROUND PER PANEL SESSION. "Live shows real live" means the pictures are
@@ -1796,6 +1818,15 @@ Item {
   onHaveLiveDataChanged: root.startLiveRound()
 
   function startLiveRound() {
+    // AND THE STATE FILE, which is the precondition `canRecord` already carries
+    // and this path did not (review z4b). `stateModel` starts life as
+    // StateModel.defaultState(), whose `pictures` is TRUE, and the desktop read
+    // is two processes that can land before the FileView does — so on a file
+    // that says false a first open would photograph every watched window into
+    // memory, hold it and log a round about it. Nothing would ever be DRAWN
+    // (liveSourceOf re-asks the switch at draw time), which is precisely why it
+    // could sit there unnoticed.
+    if (!root.stateLoaded) return
     if (!root.opened || !root.haveLiveData) return
     if (root.liveRoundStarted) return
     root.liveRoundStarted = true
@@ -1830,6 +1861,11 @@ Item {
     if (root.showRecorded) return ""
     if (!identityId || !address) return ""
     if (!root.picturesOn) return ""
+    // AND ONLY FOR AN APP THE FILE STILL CARRIES, which is the same guarantee
+    // captureFileFor makes and for the same reason: the pictures of an unticked
+    // app are deleted asynchronously, and the frames until that lands must not
+    // show one.
+    if (!StateModel.identityById(root.stateModel, identityId)) return ""
     return liveCaptures.urlIn(liveCaptures.pictures, address)
   }
 
@@ -1859,9 +1895,19 @@ Item {
   // has just switched off is exactly the moment this feature must not have, so
   // the gate is `picturesOn` and the delete is what makes it true on disk as
   // well as on screen.
+  //
+  // AND ON BEING WATCHED, which is the half the switch cannot cover and the
+  // case no eviction can: a recorded-but-unwatched ghost has no identity in the
+  // file at all. Unticking an app deletes its pictures on every desk, but the
+  // `find` that does it is asynchronous — and a state file hand-edited to drop
+  // an identity never triggers one — so without this the ghost chip goes on
+  // drawing a photograph of an app the tool no longer knows about. README.md
+  // promises the opposite, and this is the line that keeps the promise on
+  // screen while the delete catches up on disk.
   function captureFileFor(identityId, occurrence) {
     if (!identityId || !root.topologyKey) return ""
     if (!root.picturesOn) return ""
+    if (!StateModel.identityById(root.stateModel, identityId)) return ""
     var name = PanelModel.captureFileName(identityId, occurrence, root.topologyKey)
     return captureStore.hasIn(captureStore.files, name) ? name : ""
   }
@@ -2323,7 +2369,12 @@ Item {
   // without closing it. The recorded half needs nothing — the next Record
   // stores again by asking this same property.
   function setPictures(on) {
-    var want = on === true
+    // `on !== false`, never `=== true`. This is the layer that actually calls
+    // evictAll and clear(), so OFF is the destructive direction — and a garbled
+    // argument must not be the thing that selects it. Same rule as
+    // StateModel.setPictures and StateModel.picturesOn, said once more at the
+    // site where getting it wrong deletes pictures.
+    var want = on !== false
     if (want === root.picturesOn) return
     var fresh = root.freshState()
     if (!fresh) return
@@ -3316,10 +3367,13 @@ Item {
       // when the answer was "off" would make "the pictures are off" and "this
       // build has no switch" the same payload.
       //
-      // It is the only picture key in this payload. There is no consent answer,
-      // no prompt, no per-chip or per-row grant — the four keys that used to be
-      // here are ABSENT, not null, and tests/acceptance/README.md is normative
-      // about which of those two a missing fact is.
+      // It is the only TOP-LEVEL picture key in this payload — the chips carry
+      // their own (liveCapture, liveSource, captureSource, capturePath), which
+      // are claims about one WINDOW rather than about the tool. There is no
+      // consent answer, no prompt, no per-chip or per-row grant: the four keys
+      // that used to be here are ABSENT, not null, and
+      // tests/acceptance/README.md is normative about which of those two a
+      // missing fact is.
       pictures: root.picturesOn,
       // What the panel is hovering, and therefore what is lit on both surfaces.
       hoveredLinkKey: root.hoveredLinkKey,
