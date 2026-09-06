@@ -2870,7 +2870,8 @@ Item {
   //     "rows": [
   //       { "key": "obsidian", "name": "Obsidian", "watched": true,
   //         "ghost": false, "iconSource": "file:///…", "iconResolved": true,
-  //         "linkKey": "id:obsidian", "linked": false }
+  //         "linkKey": "id:obsidian", "linked": false,
+  //         "hoverText": "Obsidian\neDP-1 · ws 3" }    // ABSENT unless linked
   //     ],
   //     "workspaces": [
   //       { "id": 7, "name": "7", "monitorName": "eDP-1",
@@ -2894,6 +2895,9 @@ Item {
   //         "morphRole": "paired" | "live-only" | "recorded-only" | "" | null,
   //         "morphFlying": false | null }
   //     ],
+  //     "strip": { "columns": 4, "rowHeight": 28, "height": 58 },
+  //     "mapHeight": 214,
+  //     "panelHeight": 604,
   //     "morph": {
   //       "active": false,
   //       "durationMs": 120,
@@ -2972,6 +2976,28 @@ Item {
   // curve. The bar widget's animations are NOT here — it is a separate entry
   // point the panel cannot see into, and reports through its own read-only
   // `dock-recall-bar` handler.
+  //
+  // THE STRIP'S SHAPE (tick 0kv), and it is the whole of what this venue can
+  // ask about a redesign. `strip` is always present and its three numbers are
+  // read off the strip as it was LAID OUT — `columns` is how many cells share
+  // its first line, `rowHeight` is a cell's actual height, `height` is the
+  // component's. None of them is Style restated: the assertion is that several
+  // apps fit on a line and that a line is no taller than a popup row, and only
+  // numbers that came from the drawn thing answer it.
+  //
+  // `mapHeight` and `panelHeight` travel with it because the DoD's question is
+  // a comparison — "the panel is not taller than the map needs" — and two
+  // independently laid-out heights are what makes `strip.height <= mapHeight` a
+  // real finding rather than a value compared with itself.
+  //
+  // `hoverText` on a row is the other half: the strip moved the placement, the
+  // drift and the launch hint into a tooltip, and this venue has no pointer rig
+  // (`hyprctl dispatch movecursor` warps without motion events on 0.56). So
+  // `hoverLink <key>` lights the cell, and the cell reports the text a real
+  // pointer would have made it show. PRESENT ONLY WHILE `linked`, absent
+  // otherwise — the delegate states it only when it is showing one, and the
+  // projection below gates it again on the delegate's own `linked`, because the
+  // report registry merges and never forgets.
   //
   // ABSENT vs `null` is the payload's contract, and it is NORMATIVE in
   // tests/acceptance/README.md, "Absent vs `null` — the normative statement".
@@ -3278,13 +3304,14 @@ Item {
       }
     }
 
-    // The app list, iterated off the MODEL exactly as the chips are — a report
+    // The app strip, iterated off the MODEL exactly as the chips are — a report
     // for a row that is no longer in appRows cannot reach the payload.
     var rows = []
     var rowModel = root.appRows || []
     for (var r = 0; r < rowModel.length; r++) {
       var rowKey = rowModel[r].key
       var rowReport = root.rowReports[rowKey] || null
+      var rowLinked = root.reported(rowReport, "linked")
       rows.push({
         key: rowKey,
         name: root.reported(rowReport, "name"),
@@ -3293,8 +3320,25 @@ Item {
         iconSource: root.reported(rowReport, "iconSource"),
         iconResolved: root.reported(rowReport, "iconResolved"),
         linkKey: root.reported(rowReport, "linkKey"),
-        linked: root.reported(rowReport, "linked")
+        linked: rowLinked
       })
+      // WHAT THE CELL'S TOOLTIP IS SAYING (tick 0kv), and only while the cell is
+      // lit. ADDED rather than assigned, because the payload's rule is that a
+      // key the panel has nothing to say about is ABSENT — a cell nobody is
+      // hovering is showing no tooltip, and "" would be a second spelling of
+      // that silence.
+      //
+      // GATED HERE AS WELL AS AT THE REPORT SITE, and neither gate is spare.
+      // The delegate only ever states `hoverText` while it is lit, so a cell
+      // nobody has ever hovered has no text in the store at all; but the
+      // registry MERGES and is never pruned (see rowReports), so the text of the
+      // last cell hovered would otherwise outlive the hover. Reading the gate
+      // off the delegate's OWN `linked` — the one already in this payload — is
+      // what keeps the two halves of the answer from being able to disagree.
+      if (rowLinked === true) {
+        var hoverText = root.reported(rowReport, "hoverText")
+        if (hoverText !== null) rows[rows.length - 1].hoverText = hoverText
+      }
     }
 
     // The header, from the three items that drew it: the hero (title and meta),
@@ -3380,6 +3424,23 @@ Item {
       workspaces: workspaces,
       chips: chips,
       rows: rows,
+      // THE STRIP AS IT WAS LAID OUT (tick 0kv), always present: how many cells
+      // share its first line, how tall one of them ended up, and how much of the
+      // card the whole thing takes. Read off the component rather than
+      // recomputed from PanelModel.stripLayout — the redesign's claim is about
+      // what was DRAWN, and a second call to the same pure function here would
+      // be the panel agreeing with itself.
+      strip: {
+        columns: appStrip.drawnColumns(),
+        rowHeight: appStrip.drawnRowHeight(),
+        height: Math.round(appStrip.height)
+      },
+      // The two heights the strip has to be compared WITH. `mapHeight` is the
+      // map surface's own; `panelHeight` is the card's, for the record. Both
+      // laid out by chains that never meet the strip's, which is what makes
+      // `strip.height <= mapHeight` a real question.
+      mapHeight: Math.round(mapSurface.height),
+      panelHeight: Math.round(card.height),
       // THE MORPH. `root.morph` is the pairing, computed once above; this is a
       // projection of that same object and never a second pairing. The three
       // motion facts come off `morphFade` itself — its `running` is the
@@ -4548,19 +4609,24 @@ Item {
 
             PanelSeparator { foreground: root.foreground }
 
-            // ------------------------------------------------ the flat list
+            // --------------------------------------------------- the strip
             //
-            // THE LIST AND EVERY ROW ON IT: AppStrip.qml.
+            // THE APPS AND EVERY CELL THEY DRAW: AppStrip.qml.
             //
             // 277 lines used to end here, six levels down with the row
             // delegate at eight — half of them comment, in a column of about
             // fifty-five characters. Moved out whole in tick kex: same
-            // bindings, same words, no behaviour change.
+            // bindings, same words, no behaviour change. Tick 0kv then
+            // replaced what was inside it — ten bordered 54-px form rows
+            // became a grid of compact cells, several to a line.
             //
             // `panel` IS THE INTERFACE, because the strip reads thirteen
             // distinct members of this root and thirteen pass-through
             // properties would be thirteen places to forget the fourteenth.
+            // The id is the other direction: panelState() below reads the
+            // strip's DRAWN shape back off it.
             AppStrip {
+              id: appStrip
               panel: root
               width: parent.width
             }

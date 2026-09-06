@@ -3255,6 +3255,48 @@ function workspaceGridLayout(wsCount, monitorAspect, availableWidth, gap, minWid
   };
 }
 
+// The APP STRIP's packing: how many fixed-width cells fit across `width`, and
+// how wide each of them is. The same idiom as workspaceGridLayout above — the
+// arithmetic that decides a layout is a pure function with a test in node, not
+// a binding nobody can ask a question of.
+//
+// THE COUNT DOES NOT NARROW THE GRID, and that is the whole of checklist item 5
+// ("the right edge holds"). Only `width` decides how many columns there are, so
+// unticking an app — which can genuinely change the number of rows, since a
+// watched identity with two windows is two rows and the unwatched class it
+// falls back to is one — moves a colour and a knob and nothing else. Clamping
+// the columns to the number of cells would make every tick reflow the whole
+// strip to a different cell width, which is exactly the defect tick 5jl fixed
+// on the old list and this one must not reintroduce.
+//
+// `count` is here for the empty case alone, and answers it the way
+// workspaceGridLayout answers its own: no cells means no columns, rather than
+// one column of nothing. The caller floors it at 1 before handing it to a
+// positioner.
+function stripLayout(count, width, minCellWidth, gap) {
+  var n = Math.round(Number(count));
+  if (!isFinite(n) || n <= 0) return { columns: 0, cellWidth: 0 };
+
+  var g = Math.round(Number(gap));
+  if (!isFinite(g) || g < 0) g = 0;
+  var minW = positiveOr(minCellWidth, 1);
+  var w = Number(width);
+  if (!isFinite(w) || w < 0) w = 0;
+
+  // At least one column, always: a panel too narrow for even one readable cell
+  // gets a single cell at whatever width there is, which is honest, where a
+  // cell drawn wider than the strip it sits in is not.
+  var columns = Math.floor((w + g) / (minW + g));
+  if (columns < 1) columns = 1;
+
+  // What is left after the gaps, shared out and floored — so
+  // columns × cellWidth + (columns − 1) × gap is never more than `width`.
+  var cellWidth = Math.floor((w - g * (columns - 1)) / columns);
+  if (cellWidth < 0) cellWidth = 0;
+
+  return { columns: columns, cellWidth: cellWidth };
+}
+
 // Split `availableWidth` between the monitor sections, left to right.
 //
 // Proportional to the monitors' logical widths — a 34" ultrawide next to a
@@ -4276,6 +4318,29 @@ function rowTooltipText(row) {
     driftLine(row.drifted, row.driftTo),
     row.mismatch
   ]);
+}
+
+// WHAT A STRIP CELL SAYS ON HOVER (tick 0kv): everything the row tooltip says,
+// plus what Restore can and cannot do for this app.
+//
+// The launch hint used to be PRINTED on the row, in italics beside the
+// placement caption. The strip has no captions — a cell is an icon, a name and
+// a switch — so the hint has nowhere left to be except here, and "no launch
+// cmd" is the one thing on that row a user cannot work out from the map.
+//
+// A FUNCTION OF ITS OWN rather than a sixth line inside rowTooltipText, and the
+// reason is worth stating because it is not a design preference: tests/
+// panel.test.js pins rowTooltipText's exact lines for a watched terminal row
+// ("a row tooltip leads with the app, not with a window it does not have"), and
+// EVERY row appRows builds carries a launchHint — a watched identity with no
+// launch command says "no launch cmd" — so a sixth line there is a different
+// answer to a question that test has already been given. This tick may not edit
+// that file (the epic's partition keeps it for the wave that owns it), so the
+// strip asks its own question instead. Folding the two back together is a
+// judgement for the tick that owns both files; see tick pct.
+function rowHoverText(row) {
+  if (!row) return "";
+  return joinLines([rowTooltipText(row), row.launchHint]);
 }
 
 // One live window as a chip.
@@ -7173,6 +7238,7 @@ if (typeof module !== "undefined") {
     workspaceKey: workspaceKey,
     focusedWorkspaceKey: focusedWorkspaceKey,
     workspaceGridLayout: workspaceGridLayout,
+    stripLayout: stripLayout,
     monitorSectionWidths: monitorSectionWidths,
     chipRectsForCanvas: chipRectsForCanvas,
     chipTreatment: chipTreatment,
@@ -7201,6 +7267,7 @@ if (typeof module !== "undefined") {
     REFUSAL_TAGS: REFUSAL_TAGS,
     chipTooltipText: chipTooltipText,
     rowTooltipText: rowTooltipText,
+    rowHoverText: rowHoverText,
     verdictIndexByOccurrence: verdictIndexByOccurrence,
     driftIndexByAddress: driftIndexByAddress,
     occurrenceOf: occurrenceOf,
