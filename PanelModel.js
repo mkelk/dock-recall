@@ -3366,6 +3366,220 @@ function monitorSectionWidths(widths, availableWidth, gap, minWidth) {
   return rounded;
 }
 
+// ONE SCALE FOR THE WHOLE MAP (tick dmm), and the whole of the human's
+// "the sizes are uneven".
+//
+// WHAT WAS WRONG, measured on the real desk (eDP-1 logical 1440x900 beside DP-1
+// logical 2150x900, ten apps): the laptop's tiles came out 190x120 and the
+// ultrawide's 185x80 — the same WIDTH at two different SCALES, so two monitors
+// of identical logical height drew tiles of different heights and the rows
+// beside each other did not line up. That is what the two functions above do
+// when they are composed the obvious way: `monitorSectionWidths` splits the map
+// in proportion to logical width, then `workspaceGridLayout` fills each section
+// with as many columns as IT can hold, which sets a scale per monitor
+// (0.132 for the laptop, 0.086 for the ultrawide) and never compares them.
+//
+// THE RULE. There is ONE scale `s` for the map. Every workspace tile is its own
+// monitor's logical size times `s`; a section takes the width its columns need
+// at that size; and `s` is the largest value at which every section still fits.
+// Two monitors of equal logical height then draw tiles of equal height, and a
+// 1080 beside a 900 draws proportionally TALLER tiles — which is the README's
+// "true proportions" promise, which the chips inside a tile have always kept
+// (chipRectsForCanvas), finally extended to the monitors themselves.
+//
+// HOW, and it composes the two functions above rather than replacing them: take
+// today's per-section column choice exactly as today, then solve for the one
+// `s` that fills the row. With the columns fixed the width the row needs is
+// linear in `s`, so "the largest that fits" is a division and not a search:
+//
+//   s = (available − gaps between sections − per-section gaps and tile padding)
+//       / Σ (columns_i × logicalWidth_i)
+//
+// A SEARCH WOULD HAVE BEEN THE WRONG SHAPE ANYWAY. Shrinking the tiles frees
+// width, which could afford another column, which changes the arithmetic — an
+// iteration whose termination is an argument. Keeping the column choice makes
+// the answer closed-form and keeps the one thing the human looks at (how many
+// tiles per row) exactly where the previous look left it.
+//
+// ONE MONITOR IS TODAY'S ANSWER, TO THE PIXEL, and that is a separate branch on
+// purpose rather than a happy coincidence. With a single monitor there is
+// nothing to share a scale WITH, so the rule above is vacuous and the only
+// thing worth guaranteeing is that the acceptance VM's pictures and assertions
+// do not move: the branch returns `workspaceGridLayout`'s own answer and the
+// tile height the map has always derived from it. The two branches agree on
+// what they are computing; they differ in which rounding they inherit, and the
+// single-monitor one inherits the shipped one.
+//
+// `tilePadding` is the space a tile keeps around its drawing area (both sides
+// together) — handed in for the reason `gap`, `boxMinWidth` and `boxMaxWidth`
+// are: the numbers are the theme's, the arithmetic is this file's.
+//
+// Each section answers with the tile's OUTER width and the tile's CANVAS
+// height, because those are the two numbers the delegate cannot work out for
+// itself once the scale is shared: deriving the height from its own width and
+// aspect is exactly what made the tiles disagree.
+function mapSectionLayout(monitors, availableWidth, gap, sectionMinWidth,
+                          boxMinWidth, boxMaxWidth, tilePadding) {
+  var list = isArray(monitors) ? monitors : [];
+  var n = list.length;
+  if (!n) return { scale: 0, sections: [] };
+
+  var g = positiveOr(gap, MAP_BOX_GAP);
+  var maxW = positiveOr(boxMaxWidth, MAP_BOX_MAX_WIDTH);
+  var pad = Number(tilePadding);
+  if (!isFinite(pad) || pad < 0) pad = 0;
+
+  var widths = [];
+  var heights = [];
+  var counts = [];
+  var i;
+  for (i = 0; i < n; i++) {
+    var lw = positiveOr(list[i].logicalWidth, 1);
+    widths.push(lw);
+    heights.push(positiveOr(list[i].logicalHeight, lw * 9 / 16));
+    var c = Math.round(Number(list[i].workspaceCount));
+    counts.push((isFinite(c) && c > 0) ? c : 0);
+  }
+
+  // Today's split and today's column choice, untouched.
+  var sectionWidths = monitorSectionWidths(widths, availableWidth, g, sectionMinWidth);
+  var grids = [];
+  for (i = 0; i < n; i++) {
+    grids.push(workspaceGridLayout(counts[i], widths[i] / heights[i],
+      sectionWidths[i], g, boxMinWidth, maxW));
+  }
+
+  if (n === 1) {
+    var only = grids[0];
+    var canvasW = Math.max(1, only.boxW - pad);
+    return {
+      scale: only.boxW > 0 ? canvasW / widths[0] : 0,
+      sections: [{
+        width: sectionWidths[0],
+        tileWidth: only.boxW,
+        // The delegate's own formula, moved here and not changed: the drawing
+        // area is the tile inside its padding, at the monitor's shape.
+        canvasHeight: only.boxW > 0
+          ? Math.max(1, Math.round(canvasW / (widths[0] / heights[0]))) : 0,
+        cols: only.cols,
+        rows: only.rows
+      }]
+    };
+  }
+
+  var available = positiveOr(availableWidth, 1);
+  var minW = positiveOr(boxMinWidth, MAP_BOX_MIN_WIDTH);
+  var widest = 0;
+  for (i = 0; i < n; i++) if (widths[i] > widest) widest = widths[i];
+  // A tile wider than the cap is a poster rather than a map — the same ceiling
+  // workspaceGridLayout applies inside one section, read here as a tile width
+  // and applied to the monitor that would hit it first.
+  var ceiling = Math.max(1, maxW - pad) / widest;
+
+  // How many columns each section is allowed. Today's answer to start with; the
+  // loop below may take one back.
+  var budgets = [];
+  for (i = 0; i < n; i++) budgets.push(grids[i].cols);
+
+  // Today's balance rule, restated so a reduced budget reshapes a section the
+  // same way workspaceGridLayout would: count the rows first, then spread the
+  // columns evenly over them — 7 into a strip that holds 5 is two rows either
+  // way, and 4+3 beats 5+2.
+  function columnsFor(count, budget) {
+    if (count <= 0 || budget <= 0) return 0;
+    var cap = budget > count ? count : budget;
+    return Math.ceil(count / Math.ceil(count / cap));
+  }
+
+  function solve(cols) {
+    // What the row spends on things that do NOT scale: the gap between
+    // sections, and inside each section the gaps between its columns plus every
+    // tile's own padding. Whatever is left is what the logical widths share.
+    var fixed = g * (n - 1);
+    var denominator = 0;
+    var k;
+    for (k = 0; k < n; k++) {
+      if (cols[k] <= 0) continue;
+      fixed += cols[k] * pad + g * (cols[k] - 1);
+      denominator += cols[k] * widths[k];
+    }
+    if (denominator <= 0) return 0;
+    var s = (available - fixed) / denominator;
+    // A panel too narrow to honour the arithmetic still draws something: one
+    // logical pixel per monitor pixel is the smallest honest answer.
+    if (!(s > 0)) s = 1 / widest;
+    return s > ceiling ? ceiling : s;
+  }
+
+  // SOLVE, THEN CHECK THE NARROWEST TILE — and if the shared scale has put one
+  // under the readable minimum, SPEND A ROW rather than draw a tile nobody can
+  // read. That is the same trade workspaceGridLayout makes inside one section
+  // ("a narrow section keeps the box readable and spends rows instead"), and it
+  // is needed here because the column choice was made against the PROPORTIONAL
+  // split, where each section had more width than one shared scale can give it.
+  // Without it the laptop beside the ultrawide loses a third of its tile width
+  // to line up, which trades one complaint for another.
+  //
+  // The column given back is taken from the section spending the most of the
+  // row (columns × logical width), because that is where a row buys the most
+  // scale back for everyone. The loop cannot run away: every pass strictly
+  // reduces one section's column count and no section goes below one, so it
+  // ends in at most as many passes as there are columns.
+  var cols = [];
+  for (i = 0; i < n; i++) cols.push(columnsFor(counts[i], budgets[i]));
+  var scale = solve(cols);
+  var guard = 0;
+  var total = 0;
+  for (i = 0; i < n; i++) total += cols[i];
+  while (guard++ < total + n) {
+    var worstAt = -1;
+    for (i = 0; i < n; i++) {
+      if (cols[i] > 0 && widths[i] * scale + pad < minW) { worstAt = i; break; }
+    }
+    if (worstAt < 0) break;
+
+    var spendAt = -1;
+    var spendCost = 0;
+    for (i = 0; i < n; i++) {
+      if (cols[i] <= 1) continue;
+      if (cols[i] * widths[i] > spendCost) { spendCost = cols[i] * widths[i]; spendAt = i; }
+    }
+    // Nobody left to take a column from: the map is genuinely too narrow, and
+    // an unreadable tile is the honest answer rather than an overflowing row.
+    if (spendAt < 0) break;
+    budgets[spendAt] = cols[spendAt] - 1;
+    cols[spendAt] = columnsFor(counts[spendAt], budgets[spendAt]);
+    scale = solve(cols);
+  }
+
+  var sections = [];
+  for (i = 0; i < n; i++) {
+    var c = cols[i];
+    if (c <= 0 || scale <= 0) {
+      sections.push({ width: 0, tileWidth: 0, canvasHeight: 0, cols: 0, rows: 0 });
+      continue;
+    }
+    // Floored, never rounded: a tile rounded UP can make its section wider than
+    // the share the scale was solved for, and a row that overflows its canvas
+    // is the one outcome this function exists to prevent.
+    var tileW = Math.max(1, Math.floor(widths[i] * scale) + pad);
+    // AND THE HEIGHT COMES OFF THE SCALE, not off the floored width. That is
+    // the difference between "the tiles line up" and "the tiles usually line
+    // up": two monitors of equal logical height must land on the same integer,
+    // and a height derived from a width that has just been floored by different
+    // amounts can miss it by a pixel.
+    sections.push({
+      width: c * tileW + g * (c - 1),
+      tileWidth: tileW,
+      canvasHeight: Math.max(1, Math.round(heights[i] * scale)),
+      cols: c,
+      rows: Math.ceil(counts[i] / c)
+    });
+  }
+
+  return { scale: scale, sections: sections };
+}
+
 // One workspace's chips, resolved from 0..1 fractions to whole pixels on a
 // canvas — floors applied, and NEVER at the price of drawing two separate
 // windows on top of each other.
@@ -7234,6 +7448,7 @@ if (typeof module !== "undefined") {
     workspaceGridLayout: workspaceGridLayout,
     stripLayout: stripLayout,
     monitorSectionWidths: monitorSectionWidths,
+    mapSectionLayout: mapSectionLayout,
     chipRectsForCanvas: chipRectsForCanvas,
     chipTreatment: chipTreatment,
     MAP_BOX_MIN_WIDTH: MAP_BOX_MIN_WIDTH,

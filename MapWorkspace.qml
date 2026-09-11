@@ -48,14 +48,30 @@ BorderSurface {
   // the complete list of what an extraction has to keep working.
   required property var panel
 
-  // The two things the map's outer scope knows and the panel does not: which
+  // The things the map's outer scope knows and the panel does not: which
   // monitor box this workspace is sitting in (it qualifies the render key and
   // the focus key, because a stale recording can name one workspace id under
-  // two monitors), and the width the Flow's grid allotted this box. Passed in
-  // rather than reached for — a component that reads its parent's ids is not a
+  // two monitors), and the SIZE the map allotted this tile. Passed in rather
+  // than reached for — a component that reads its parent's ids is not a
   // component.
+  //
+  // THE HEIGHT IS HANDED IN TOO SINCE TICK dmm, and that is the repair rather
+  // than a convenience. This tile used to take its width and work its own height
+  // out from its monitor's aspect, which is only right if every tile on the map
+  // is drawn at the same scale — and nothing made them. On a real two-monitor
+  // desk a 1440x900 laptop and a 2150x900 ultrawide were given the same tile
+  // WIDTH by two different scales, so their tiles came out 120 and 80 tall and
+  // the rows beside each other did not line up. The map now solves for one
+  // scale across every monitor (PanelModel.mapSectionLayout) and hands each tile
+  // both numbers; deriving either of them here again would be a second opinion
+  // about the one thing the whole map has to agree on.
+  //
+  // `boxHeight` is the CANVAS's height — the drawing area inside the tile's
+  // padding — not the tile's outer height, which this file adds its own insets
+  // to below.
   required property string monitorName
   required property real boxWidth
+  required property real boxHeight
 
   required property var modelData
 
@@ -137,20 +153,22 @@ BorderSurface {
   // on the path where the overlay is the point.
   readonly property real badgeInset: workspaceSlot.positioned
     ? 0 : workspaceLabel.implicitHeight + Style.space(2)
-  // A workspace fills its monitor, so its box is the MONITOR's shape —
-  // anything else and every window drawn inside it is at the wrong
-  // proportions, which is the whole point of drawing them to scale.
-  readonly property real aspect: workspaceSlot.modelData.aspect > 0
-    ? workspaceSlot.modelData.aspect : (16 / 9)
   readonly property real stackRowHeight: Style.space(17)
   readonly property real stackGap: Style.space(3)
-  // Positioned: exactly the monitor's shape, which is what makes a half-width
-  // window read as half a box. Fallback: the stacked rows this panel drew
-  // before rects existed, and the box grows if there are more of them than
+  // Positioned: the monitor's shape at the map's one scale, which is what makes
+  // a half-width window read as half a box AND two monitors of the same logical
+  // height draw tiles of the same height. Fallback: the stacked rows this panel
+  // drew before rects existed, and the box grows if there are more of them than
   // the monitor's shape has room for.
+  //
+  // The shape is no longer worked out here (tick dmm). It used to be
+  // `canvasWidth / modelData.aspect`, which is the monitor's aspect applied to
+  // whatever width this tile happened to be given — right only if every tile on
+  // the map was scaled the same way, and on a two-monitor desk none of them
+  // were. `boxHeight` is that answer, solved once for the whole map.
   readonly property real canvasHeight: workspaceSlot.positioned
-    ? Math.max(1, Math.round(workspaceSlot.canvasWidth / workspaceSlot.aspect))
-    : Math.max(Math.round(workspaceSlot.canvasWidth / workspaceSlot.aspect),
+    ? Math.max(1, workspaceSlot.boxHeight)
+    : Math.max(workspaceSlot.boxHeight,
       workspaceSlot.slotCount * workspaceSlot.stackRowHeight
       + Math.max(0, workspaceSlot.slotCount - 1) * workspaceSlot.stackGap)
 
@@ -242,7 +260,11 @@ BorderSurface {
   color: Style.normalFillFor(panel.foreground, Color.accent)
   borderSpec: Border.none()
   radius: Style.cornerRadius
-  padding: Style.space(4)
+  // The panel's number, not this file's (tick dmm): the map subtracts this
+  // padding from the row before it solves for the scale every tile is drawn at,
+  // so a tile padded by a different number than the scale was solved for is a
+  // row that does not fit its canvas. `panel.mapTilePadding` is the one site.
+  padding: panel.mapTilePadding
 
   Item {
     id: workspaceCanvas

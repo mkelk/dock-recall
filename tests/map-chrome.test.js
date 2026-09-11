@@ -190,9 +190,19 @@ test("the workspace is a TILE: a ground, and no outline of its own", () => {
     "the workspace tile lost the faint ground that replaced its border, so a"
     + " workspace with no windows in it is now invisible:\n" + color);
 
-  // The chips still sit inside the tile rather than on its edge.
+  // The chips still sit inside the tile rather than on its edge — and the
+  // number is the PANEL's (tick dmm), because the map subtracts it from the row
+  // before it solves for the scale every tile is drawn at. A tile padded by a
+  // different number than the scale was solved for is a row that does not fit
+  // its canvas.
   const padding = bindingAfterId("MapWorkspace.qml", MAP, "workspaceSlot", "padding");
-  assert.match(padding, /Style\.space\(4\)/, padding);
+  assert.match(padding, /panel\.mapTilePadding/,
+    "the tile pads itself by a number of its own, which the map's shared scale"
+    + " knows nothing about:\n" + padding);
+  assert.match(PANEL, /readonly property int mapTilePadding: Style\.space\(\d+\)/,
+    "Panel.qml no longer states the tile padding it hands the layout function,"
+    + " so the number the scale was solved for and the number the tile spends"
+    + " can differ");
 });
 
 // ---------------------------------------------------------------------------

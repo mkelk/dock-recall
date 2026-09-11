@@ -244,13 +244,16 @@ Item {
   //
   // mapWidth/mapHeight only feed mapGeometry's shared-scale computation
   // (scale, geometry.width/height, and each box's x/y/width/height) — the
-  // rendering below (mapCanvas.sectionWidths, workspaceGridLayout) reads only
+  // rendering below (mapCanvas.layout, PanelModel.mapSectionLayout) reads only
   // logicalWidth/logicalHeight/sizeLabel/name/label/workspaces off the model
   // and never touches those scaled fields, a leftover from when the map WAS
   // one scaled picture (see the "why this exists" comment on mapGeometry).
+  // (The map has a shared scale again since tick dmm — but it is the RENDERED
+  // one, solved from the panel's own width in mapSectionLayout, and these
+  // fields are still not what it reads.)
   // Left in rather than trimmed: mapGeometry.label is still what
   // recordedMapModel groups a recorded app onto its monitor by, the sort that
-  // orders sectionWidths left-to-right lives there too, and
+  // orders the sections left-to-right lives there too, and
   // tests/panel.test.js asserts directly on the scaled x/width/height/scale —
   // mapGeometry is still exactly the function those tests describe.
   readonly property int mapHeight: Math.round(root.mapWidth * 0.6)
@@ -258,6 +261,14 @@ Item {
   readonly property int mapMinHeight: Style.space(60)
   // The gap between monitor sections, and between workspace boxes.
   readonly property int mapGap: Style.space(6)
+  // A WORKSPACE TILE'S OWN PADDING, on one side — the space between the tile's
+  // edge and the canvas its chips are drawn on. It is MapWorkspace that spends
+  // it, and it is stated HERE for the same reason `chipFloorWidth` is: the map's
+  // shared scale has to subtract it from the row before it can solve for a scale
+  // (PanelModel.mapSectionLayout, tick dmm), and a tile padded by one number
+  // while the scale was solved for another is a row that does not fit its
+  // canvas. Two readers, one number.
+  readonly property int mapTilePadding: Style.space(4)
 
   // How narrow a FOOTER button's tooltip wraps. The footer row is anchored to
   // the panel's right edge and Ui/Button builds its own ToolTip centred on the
@@ -4237,18 +4248,40 @@ Item {
                 width: Math.max(1, mapSurface.width - mapSurface.contentLeftInset - mapSurface.contentRightInset)
                 height: childrenRect.height
 
-                // How the panel's width is shared out between the monitors —
-                // proportional to their real widths, floored so the narrowest
-                // one can still hold a readable workspace box. The monitors
-                // arrive already ordered left to right (mapGeometry sorts them
-                // by their place on the desk), so the row below IS the desk's
-                // arrangement.
-                readonly property var sectionWidths: {
+                // HOW BIG EVERY TILE ON THE MAP IS, at ONE scale (tick dmm).
+                //
+                // The monitors arrive already ordered left to right (mapGeometry
+                // sorts them by their place on the desk), so the row below IS the
+                // desk's arrangement; this decides what each section is wide and
+                // what one of its tiles measures.
+                //
+                // It used to be `monitorSectionWidths` alone, and each section
+                // then sized its own tiles to its own width — which is how a
+                // 1440x900 laptop and a 2150x900 ultrawide came out with tiles
+                // the same WIDTH and different HEIGHTS, so nothing lined up. The
+                // arithmetic that fixes it is in PanelModel.mapSectionLayout,
+                // which composes the same two functions and then solves for the
+                // one scale that fits: a layout question with a right answer,
+                // argued in node rather than in a screenshot.
+                //
+                // THE COPY IS NOT CEREMONY. `monitors` reaches this binding as a
+                // property var, so its members are QVariant-wrapped on the way
+                // in and a model function that type-checks arrays would reject
+                // them (.tick/learnings.md, the QML/JS boundary). Plain objects
+                // in a plain array is what the pure function is handed.
+                readonly property var layout: {
                   var monitors = root.mapModel.monitors
-                  var widths = []
-                  for (var i = 0; i < monitors.length; i++) widths.push(monitors[i].logicalWidth)
-                  return PanelModel.monitorSectionWidths(widths, mapCanvas.width,
-                    root.mapGap, Style.space(112))
+                  var plain = []
+                  for (var i = 0; i < monitors.length; i++) {
+                    plain.push({
+                      logicalWidth: monitors[i].logicalWidth,
+                      logicalHeight: monitors[i].logicalHeight,
+                      workspaceCount: monitors[i].workspaces.length
+                    })
+                  }
+                  return PanelModel.mapSectionLayout(plain, mapCanvas.width,
+                    root.mapGap, Style.space(112), Style.space(96), Style.space(220),
+                    root.mapTilePadding * 2)
                 }
 
                 Text {
@@ -4286,19 +4319,19 @@ Item {
                       required property var modelData
                       required property int index
 
-                      readonly property int sectionWidth: {
-                        var widths = mapCanvas.sectionWidths
-                        return (monitorRect.index >= 0 && monitorRect.index < widths.length)
-                          ? widths[monitorRect.index] : mapCanvas.width
+                      // THIS SECTION'S SHARE OF THE MAP, at the map's one scale
+                      // (tick dmm): how wide the section is, how wide a tile in
+                      // it is, and how tall that tile's canvas is. All three
+                      // come from the same pure answer, so a section cannot be
+                      // laid out to a width its own tiles disagree with.
+                      readonly property var section: {
+                        var sections = mapCanvas.layout.sections
+                        return (monitorRect.index >= 0 && monitorRect.index < sections.length)
+                          ? sections[monitorRect.index]
+                          : { width: mapCanvas.width, tileWidth: 0, canvasHeight: 0, cols: 0, rows: 0 }
                       }
 
-                      // The monitor's own shape, which is the shape every
-                      // workspace box under it is drawn at — a workspace fills
-                      // its monitor, so any other ratio draws every window
-                      // inside it at the wrong proportions.
-                      readonly property real aspect: monitorRect.modelData.logicalHeight > 0
-                        ? (monitorRect.modelData.logicalWidth / monitorRect.modelData.logicalHeight)
-                        : (16 / 9)
+                      readonly property int sectionWidth: Math.max(1, monitorRect.section.width)
 
                       width: monitorRect.sectionWidth
                       // Follows its content: the workspaces decide how many rows
@@ -4385,18 +4418,17 @@ Item {
                           }
                         }
 
-                        // Uniform mini-monitors, wrapped into as many rows as the
-                        // section's width needs. The packing (how many columns,
-                        // how wide a box) is a pure function so it can be argued
-                        // with in a test rather than in a screenshot.
+                        // Mini-monitors at the map's one scale, wrapped into as
+                        // many rows as the section's width needs. The packing
+                        // (how many columns, how big a tile) is a pure function
+                        // so it can be argued with in a test rather than in a
+                        // screenshot — and since tick dmm it is the SAME answer
+                        // for every section, which is what makes two monitors'
+                        // rows line up.
                         Flow {
                           id: workspaceFlow
                           width: parent.width
                           spacing: root.mapGap
-
-                          readonly property var grid: PanelModel.workspaceGridLayout(
-                            monitorRect.modelData.workspaces.length, monitorRect.aspect,
-                            workspaceFlow.width, root.mapGap, Style.space(96), Style.space(220))
 
                           Repeater {
                             model: monitorRect.modelData.workspaces
@@ -4421,7 +4453,13 @@ Item {
                             delegate: MapWorkspace {
                               panel: root
                               monitorName: monitorRect.modelData.name
-                              boxWidth: workspaceFlow.grid.boxW
+                              boxWidth: monitorRect.section.tileWidth
+                              // AND ITS HEIGHT, handed in rather than derived
+                              // (tick dmm). A tile that worked its own height out
+                              // from its own width and its monitor's aspect is
+                              // exactly how two monitors of equal logical height
+                              // ended up with tiles of different heights.
+                              boxHeight: monitorRect.section.canvasHeight
                             }
                           }
                         }

@@ -1546,6 +1546,240 @@ test("pinning one monitor at the floor can push the next one under it too", () =
   assert.ok(widths[0] > floor, "the section that never got pinned keeps more than the floor");
 });
 
+// ------------------------------------------------- one scale across the map
+
+// THE DEFECT, measured by the human on his own desk (gate yxa, 2026-09-11):
+// eDP-1 at logical 1440×900 beside DP-1 at logical 2150×900, ten apps watched.
+// The laptop's tiles came out 190×120 and the ultrawide's 185×80 — the same
+// WIDTH at two different scales — so two monitors of identical logical height
+// drew tiles of different heights, the rows beside each other did not line up,
+// and the map read as one unsorted run of boxes. "The sizes are uneven", in his
+// words, with a red box around one of each.
+//
+// The cause is the composition, not either function: monitorSectionWidths
+// splits the row in proportion to logical width, then workspaceGridLayout fills
+// each section with as many columns as THAT section can hold — which sets a
+// scale per monitor and never compares them. mapSectionLayout composes the same
+// two and then solves for the one scale that fits.
+//
+// The desk, as the panel sees it. The panel there is ~1035 px wide and the map
+// canvas ~959 after the card's and the surface's padding.
+const DESK_WIDTH = 959;
+const DESK = [
+  { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 3 },   // eDP-1: ws 5, 6, 9
+  { logicalWidth: 2150, logicalHeight: 900, workspaceCount: 5 }    // DP-1: ws 1, 2, 3, 8, 10
+];
+
+function fits(layout, availableWidth, gap) {
+  let total = gap * (layout.sections.length - 1);
+  for (const s of layout.sections) total += s.width;
+  return total <= availableWidth;
+}
+
+test("two monitors of the same logical height draw tiles of the same height", () => {
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, 6, 112, 96, 220, 8);
+
+  assert.strictEqual(layout.sections.length, 2);
+  const [laptop, ultrawide] = layout.sections;
+
+  // THE ASSERTION THE HUMAN MADE WITH A RED BOX. 900 = 900, so the tiles are
+  // the same height — whatever else the arithmetic decides.
+  assert.strictEqual(laptop.canvasHeight, ultrawide.canvasHeight,
+    `equal logical heights must draw equal tile heights, got ${laptop.canvasHeight}`
+    + ` and ${ultrawide.canvasHeight}`);
+
+  // And the widths are NOT equal any more: they are the monitors' own, in
+  // proportion. This is the pair that used to be the wrong way round.
+  assert.ok(ultrawide.tileWidth > laptop.tileWidth,
+    `the ultrawide's tile must be the wider one, got ${laptop.tileWidth}`
+    + ` and ${ultrawide.tileWidth}`);
+  const drawnRatio = (ultrawide.tileWidth - 8) / (laptop.tileWidth - 8);
+  assert.ok(Math.abs(drawnRatio - 2150 / 1440) < 0.02,
+    `and wider by exactly the monitors' own ratio, got ${drawnRatio.toFixed(3)}`
+    + ` against ${(2150 / 1440).toFixed(3)}`);
+});
+
+test("one scale means every tile is its own monitor at that scale", () => {
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, 6, 112, 96, 220, 8);
+
+  // The scale is a fact about the MAP, so every section reproduces it. Asked of
+  // the drawn numbers rather than of `layout.scale` alone: a scale nobody drew
+  // at would agree with itself.
+  for (const s of layout.sections) {
+    const fromWidth = (s.tileWidth - 8) / (s === layout.sections[0] ? 1440 : 2150);
+    assert.ok(Math.abs(fromWidth - layout.scale) < 0.005,
+      `a tile drawn at ${fromWidth.toFixed(4)} on a map whose scale is`
+      + ` ${layout.scale.toFixed(4)}`);
+  }
+});
+
+test("the row fills the map and never overflows it", () => {
+  // The point of solving for the largest scale that fits rather than taking the
+  // smaller monitor's: the map is used, not left with a third of it empty.
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, 6, 112, 96, 220, 8);
+  assert.ok(fits(layout, DESK_WIDTH, 6), "the sections and their gap overflow the map");
+
+  let total = 6;
+  for (const s of layout.sections) total += s.width;
+  assert.ok(total >= DESK_WIDTH - 12,
+    `the map is left ${DESK_WIDTH - total} px empty, which is the slack that`
+    + " taking the smaller monitor's scale would have wasted");
+});
+
+test("a taller monitor draws proportionally taller tiles — true proportions, between monitors", () => {
+  // 1920×1080 beside 1440×900: not the same height, and that is the point. The
+  // heights must be in the monitors' own ratio, which is what "one scale" means
+  // when the logical heights differ.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 1920, logicalHeight: 1080, workspaceCount: 4 },
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 4 }
+  ], DESK_WIDTH, 6, 112, 96, 220, 8);
+
+  const [big, small] = layout.sections;
+  assert.ok(big.canvasHeight > small.canvasHeight, "1080 draws taller than 900");
+  const heightRatio = big.canvasHeight / small.canvasHeight;
+  assert.ok(Math.abs(heightRatio - 1080 / 900) < 0.03,
+    `taller by the monitors' own ratio, got ${heightRatio.toFixed(3)}`);
+  const widthRatio = (big.tileWidth - 8) / (small.tileWidth - 8);
+  assert.ok(Math.abs(widthRatio - 1920 / 1440) < 0.03,
+    `and wider by it too, got ${widthRatio.toFixed(3)}`);
+});
+
+test("one monitor is what it has always been, to the pixel", () => {
+  // With a single monitor there is nothing to share a scale WITH, so the rule
+  // is vacuous and the only thing worth guaranteeing is that the acceptance
+  // VM's pictures and assertions do not move. The expected side is computed the
+  // way the panel computed it before this tick — workspaceGridLayout, then the
+  // delegate's own height from its own width — rather than written as a
+  // literal, because a literal in declaration order is a restatement and not an
+  // oracle (.tick/learnings.md, tick j18).
+  for (const [lw, lh, count, width] of [
+    [1440, 900, 7, 600], [1440, 900, 3, 959], [3440, 1440, 10, 700],
+    [1920, 1080, 1, 900], [1440, 900, 5, 300]
+  ]) {
+    const layout = panel.mapSectionLayout(
+      [{ logicalWidth: lw, logicalHeight: lh, workspaceCount: count }], width, 6, 112, 96, 220, 8);
+    const before = panel.workspaceGridLayout(count, lw / lh, width, 6, 96, 220);
+
+    assert.strictEqual(layout.sections.length, 1);
+    const only = layout.sections[0];
+    assert.strictEqual(only.tileWidth, before.boxW,
+      `${lw}x${lh} x${count} in ${width}: the tile's width moved`);
+    assert.strictEqual(only.cols, before.cols, `${lw}x${lh} x${count}: the columns moved`);
+    assert.strictEqual(only.rows, before.rows, `${lw}x${lh} x${count}: the rows moved`);
+    // The delegate's old binding, restated: the canvas is the tile inside its
+    // padding, at the monitor's shape.
+    assert.strictEqual(only.canvasHeight,
+      Math.max(1, Math.round(Math.max(1, before.boxW - 8) / (lw / lh))),
+      `${lw}x${lh} x${count} in ${width}: the tile's canvas height moved`);
+    // And the section is still the whole map, as monitorSectionWidths answers
+    // it for a single monitor.
+    assert.strictEqual(only.width, panel.monitorSectionWidths([lw], width, 6, 112)[0]);
+  }
+});
+
+test("a shared scale spends a ROW before it draws a tile nobody can read", () => {
+  // THE COST OF ONE SCALE, and the clause that keeps it from trading one
+  // complaint for another. The column count is chosen against the PROPORTIONAL
+  // split, where every section has more width than a single shared scale can
+  // give it — so solving for one scale and stopping there shrinks the narrower
+  // monitor's tiles below the readable minimum. The laptop on the human's desk
+  // went to 89 px that way, under the 96 px floor whose whole definition is
+  // "narrower than this cannot show two windows side by side".
+  //
+  // So a section gives a column back and spends a row instead, which is exactly
+  // the trade workspaceGridLayout already makes inside one section.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 3 },
+    { logicalWidth: 2150, logicalHeight: 900, workspaceCount: 5 }
+  ], 959, 6, 112, 96, 220, 8);
+
+  for (const s of layout.sections) {
+    assert.ok(s.tileWidth >= 96,
+      `a tile at ${s.tileWidth} px is under the readable floor: ${JSON.stringify(layout.sections)}`);
+  }
+  // The row that was spent: the ultrawide's five workspaces no longer fit on
+  // one line, and it is the section spending the most of the row that gives the
+  // column back.
+  assert.strictEqual(layout.sections[1].rows, 2);
+  assert.ok(layout.sections[1].cols * layout.sections[1].rows >= 5,
+    "every workspace still has somewhere to go");
+  assert.strictEqual(layout.sections[0].canvasHeight, layout.sections[1].canvasHeight,
+    "and the heights still line up after the row was spent");
+  assert.ok(fits(layout, 959, 6));
+});
+
+test("when nobody can give a column back, an unreadable tile beats an overflowing row", () => {
+  // One workspace each on a map too narrow for two readable tiles: there is no
+  // column left to spend, so the floor loses. That is the same answer
+  // monitorSectionWidths gives when even its floor does not fit — an honest
+  // small picture rather than a row drawn wider than its canvas.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 3440, logicalHeight: 1440, workspaceCount: 1 },
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 1 }
+  ], 150, 6, 112, 96, 220, 8);
+
+  assert.ok(fits(layout, 150, 6), "the row overflowed rather than shrinking");
+  for (const s of layout.sections) {
+    assert.strictEqual(s.cols, 1, "there was never a second column to give back");
+    assert.ok(s.tileWidth >= 1);
+  }
+});
+
+test("the shared scale survives the shapes that used to break the split", () => {
+  // A small screen beside a huge one: monitorSectionWidths pins the small one at
+  // its floor, so the column choice is the floor's — and the scale still has to
+  // come out one number that fits.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 5120, logicalHeight: 2160, workspaceCount: 6 },
+    { logicalWidth: 800, logicalHeight: 600, workspaceCount: 2 }
+  ], 600, 6, 112, 96, 220, 8);
+  assert.ok(fits(layout, 600, 6), "the sections overflow a 600 px map");
+  assert.ok(layout.scale > 0, "a scale of zero draws nothing at all");
+  for (const s of layout.sections) {
+    assert.ok(s.tileWidth >= 1 && s.canvasHeight >= 1, JSON.stringify(s));
+  }
+
+  // Three monitors on a narrow map: everyone is on equal shares, and one scale
+  // still fits.
+  const three = panel.mapSectionLayout([
+    { logicalWidth: 3440, logicalHeight: 1440, workspaceCount: 2 },
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 2 },
+    { logicalWidth: 1920, logicalHeight: 1080, workspaceCount: 2 }
+  ], 300, 6, 112, 96, 220, 8);
+  assert.strictEqual(three.sections.length, 3);
+  assert.ok(fits(three, 300, 6), "three sections overflow a 300 px map");
+});
+
+test("no monitors, junk monitors and a monitor with no workspaces are answers, not throws", () => {
+  assert.deepStrictEqual(panel.mapSectionLayout([], 600, 6, 112, 96, 220, 8),
+    { scale: 0, sections: [] });
+  assert.deepStrictEqual(panel.mapSectionLayout(null, 600, 6, 112, 96, 220, 8),
+    { scale: 0, sections: [] });
+
+  // A logical size the read came back without: the fallback aspect, not a
+  // division by zero.
+  const junk = panel.mapSectionLayout([
+    { logicalWidth: 0, logicalHeight: 0, workspaceCount: 2 },
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 2 }
+  ], 600, 6, 112, 96, 220, 8);
+  assert.strictEqual(junk.sections.length, 2);
+  for (const s of junk.sections) assert.ok(isFinite(s.tileWidth) && isFinite(s.canvasHeight),
+    JSON.stringify(s));
+
+  // A monitor with nothing on it takes no width rather than a section of
+  // nothing — and it is still IN the list, because the sections are indexed by
+  // the monitor's place in the row.
+  const empty = panel.mapSectionLayout([
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 0 },
+    { logicalWidth: 2150, logicalHeight: 900, workspaceCount: 4 }
+  ], 600, 6, 112, 96, 220, 8);
+  assert.strictEqual(empty.sections.length, 2);
+  assert.strictEqual(empty.sections[0].cols, 0);
+  assert.strictEqual(empty.sections[0].width, 0);
+  assert.ok(empty.sections[1].tileWidth > 0, "the monitor that HAS workspaces still draws");
+});
+
 // --------------------------------------------- the chip floor, and its barrier
 
 // A workspace box at the size the packing above produces on the laptop desk.
