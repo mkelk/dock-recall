@@ -259,8 +259,14 @@ Item {
   readonly property int mapHeight: Math.round(root.mapWidth * 0.6)
   // The map's shortest sensible height: enough for the "No monitors" line.
   readonly property int mapMinHeight: Style.space(60)
-  // The gap between monitor sections, and between workspace boxes.
+  // The gap between workspace tiles.
   readonly property int mapGap: Style.space(6)
+  // And between MONITOR SECTIONS, which stack since tick yn6 — so this is the
+  // vertical gap between the laptop's section and each external screen's. Its
+  // own number rather than `mapGap` reused, and that is load-bearing: the map
+  // solves for a scale that FITS, and a gap widened after the fact is a stack
+  // that overflows what it was measured against.
+  readonly property int mapSectionGap: Style.space(12)
   // A WORKSPACE TILE'S OWN PADDING, on one side — the space between the tile's
   // edge and the canvas its chips are drawn on. It is MapWorkspace that spends
   // it, and it is stated HERE for the same reason `chipFloorWidth` is: the map's
@@ -4279,9 +4285,16 @@ Item {
                       workspaceCount: monitors[i].workspaces.length
                     })
                   }
-                  return PanelModel.mapSectionLayout(plain, mapCanvas.width,
-                    root.mapGap, Style.space(112), Style.space(96), Style.space(220),
-                    root.mapTilePadding * 2)
+                  return PanelModel.mapSectionLayout(plain, mapCanvas.width, {
+                    tileGap: root.mapGap,
+                    sectionGap: root.mapSectionGap,
+                    tileMinWidth: Style.space(96),
+                    tileMaxWidth: Style.space(220),
+                    tilePadding: root.mapTilePadding * 2,
+                    // A section draws no chrome of its own yet, so it costs the
+                    // stack nothing. Tick 0qd is what puts a frame around one.
+                    sectionPadding: 0
+                  })
                 }
 
                 Text {
@@ -4298,18 +4311,39 @@ Item {
                   font.pixelSize: Style.font.caption
                 }
 
-                // The desk, left to right. The monitors were drawn at their
-                // scaled positions before, inside a box of fixed height — which
-                // is what made a 7-workspace laptop come out as a strip of
-                // portrait slivers with most of the panel's width unused. A
-                // section keeps the monitor's PLACE in the row and its share of
-                // the width; what it gives up is being a to-scale rectangle,
-                // because a workspace you cannot read is not a truer picture
-                // than a section that is a little too tall.
-                Row {
+                // THE DESK, ONE MONITOR PER ROW — the laptop first, then each
+                // external screen in its own left-to-right order (mapGeometry's
+                // sort). The monitors were drawn at their scaled positions
+                // before, inside a box of fixed height, which is what made a
+                // 7-workspace laptop come out as a strip of portrait slivers
+                // with most of the panel's width unused; then they were sections
+                // sharing one row. What a section gives up is being a to-scale
+                // rectangle, because a workspace you cannot read is not a truer
+                // picture than a section that is a little too tall.
+                //
+                // THEY STACK SINCE TICK yn6, in the human's own words answering
+                // his gate: "I want two separated sections vertically, one
+                // section for laptop and one (or more) for each external
+                // monitor". Side by side, two labels and two runs of tiles six
+                // pixels apart read as one unsorted row of boxes — 5 6 9 1 2 3 8
+                // 10 — and he could not see the laptop and the external screen
+                // as separate things at all. Each section is the full width of
+                // the map now, and read top to bottom; tick 0qd frames them.
+                //
+                // THE ID OUTLIVED THE SHAPE, deliberately. This was a Row and it
+                // is a Column; `morphOverlay.height: monitorRow.height` measures
+                // whatever holds the sections, and a Column's height is the
+                // whole stack — exactly what the overlay has to span. Renaming
+                // it would be a rename inside the one binding whose whole job is
+                // to be the single place the map's drawn height is stated.
+                Column {
                   id: monitorRow
                   width: parent.width
-                  spacing: root.mapGap
+                  // Between SECTIONS, wider than the gap between tiles and the
+                  // number the layout above solved the scale against. With one
+                  // monitor there is no gap to spend, so a laptop desk pays
+                  // nothing for it.
+                  spacing: root.mapSectionGap
 
                   Repeater {
                     model: root.mapModel.monitors
@@ -4319,11 +4353,12 @@ Item {
                       required property var modelData
                       required property int index
 
-                      // THIS SECTION'S SHARE OF THE MAP, at the map's one scale
-                      // (tick dmm): how wide the section is, how wide a tile in
-                      // it is, and how tall that tile's canvas is. All three
-                      // come from the same pure answer, so a section cannot be
-                      // laid out to a width its own tiles disagree with.
+                      // THIS SECTION'S PLACE ON THE MAP, at the map's one scale
+                      // (ticks dmm, yn6): how wide the section is — the whole
+                      // map, since they stack — how wide a tile in it is, and
+                      // how tall that tile's canvas is. All three come from the
+                      // same pure answer, so a section cannot be laid out to a
+                      // width its own tiles disagree with.
                       readonly property var section: {
                         var sections = mapCanvas.layout.sections
                         return (monitorRect.index >= 0 && monitorRect.index < sections.length)
@@ -4331,37 +4366,32 @@ Item {
                           : { width: mapCanvas.width, tileWidth: 0, canvasHeight: 0, cols: 0, rows: 0 }
                       }
 
-                      readonly property int sectionWidth: Math.max(1, monitorRect.section.width)
-
-                      width: monitorRect.sectionWidth
+                      width: Math.max(1, monitorRect.section.width)
                       // Follows its content: the workspaces decide how many rows
                       // they need, and the map grows rather than shrinking them.
                       height: monitorColumn.implicitHeight
                         + monitorRect.contentTopInset + monitorRect.contentBottomInset
-                      // THE MONITOR BOX IS GONE, AND THE MONITOR SECTION IS NOT
-                      // (tick ep6). What a reader needs from this level is which
-                      // tiles belong to which screen, and on a laptop — one
-                      // monitor, every tile under it — there is no such question
-                      // to answer: the box was a rectangle drawn around
-                      // everything, inside two more. So it draws nothing at all
-                      // now, on every monitor count, and the labels below carry
-                      // the separation when there is more than one screen.
+                      // THE MONITOR BOX IS GONE (tick ep6): on one monitor it
+                      // was a rectangle drawn around everything, inside two
+                      // more, answering a question nobody had. Tick 0qd brings a
+                      // hairline back for the multi-monitor desk, where the
+                      // human could not see two screens as separate things.
                       //
-                      // IT STILL EXISTS, AND THAT IS DELIBERATE RATHER THAN
-                      // LAZY. `morphOverlay.height` binds to `monitorRow.height`
-                      // (below), and the workspace-canvas report path mirrors
-                      // only `workspaceSlot.x/y` (MapWorkspace.qml) — so a
-                      // parent added or removed conditionally moves every box
-                      // under it with no handler firing anywhere, and every
-                      // morph flight then lands on a stale origin, silently.
-                      // Change what these elements DRAW; never whether they are
-                      // there.
+                      // THE SECTION STILL EXISTS EITHER WAY, AND THAT IS
+                      // DELIBERATE RATHER THAN LAZY. `morphOverlay.height` binds
+                      // to `monitorRow.height` (below), and the workspace-canvas
+                      // report path mirrors only `workspaceSlot.x/y`
+                      // (MapWorkspace.qml) — so a parent added or removed
+                      // conditionally moves every box under it with no handler
+                      // firing anywhere, and every morph flight then lands on a
+                      // stale origin, silently. Change what these elements DRAW;
+                      // never whether they are there. The canvas report follows
+                      // the frame for free: the padding moves the item, and it
+                      // is the ITEM that is reported.
                       color: "transparent"
                       borderSpec: Border.none()
                       radius: Style.cornerRadius
-                      // Nothing to hold off a border that is no longer drawn.
-                      // The gap between sections is the Row's `mapGap`, and the
-                      // gap around the whole map is mapSurface's padding.
+                      // Nothing to hold off a border that is not drawn.
                       padding: 0
 
                       Column {

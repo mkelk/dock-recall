@@ -156,16 +156,11 @@ test("the map surface is a spacer: no line, no fill — the card is the frame", 
     + " touches what is above and below it:\n" + padding);
 });
 
-test("the monitor box draws nothing, on every monitor count", () => {
+test("the monitor box draws nothing", () => {
   const border = bindingAfterId("Panel.qml", PANEL, "monitorRect", "borderSpec");
   assert.match(border, /Border\.none\(\)/,
     "the monitor section draws a box again — the third of the five nested"
-    + " rectangles this tick removed:\n" + border);
-  // Unconditional: not `monitors.length > 1 ? … : Border.none()`. A box on some
-  // desks and not others is a second thing for the eye to learn.
-  assert.doesNotMatch(border, /\?/,
-    "the monitor box is back on SOME desks — it draws nothing on every monitor"
-    + " count, and the LABELS are what appear when there is more than one:\n" + border);
+    + " rectangles ep6 removed:\n" + border);
 
   const color = bindingAfterId("Panel.qml", PANEL, "monitorRect", "color");
   assert.match(color, /"transparent"/,
@@ -173,8 +168,45 @@ test("the monitor box draws nothing, on every monitor count", () => {
 
   const padding = bindingAfterId("Panel.qml", PANEL, "monitorRect", "padding");
   assert.match(padding, /padding:\s*0\s*$/,
-    "the monitor section still holds a border's width off content that has no"
+    "the monitor section holds a border's width off content that has no"
     + " border:\n" + padding);
+
+  // THE LAYOUT IS TOLD what the stack costs, and that is the half a screenshot
+  // would not show: a gap widened after the scale was solved is a stack that
+  // overflows what it was measured against.
+  const layout = bindingAfterId("Panel.qml", PANEL, "mapCanvas", "layout");
+  assert.match(layout, /sectionGap:\s*root\.mapSectionGap/,
+    "the map solves for a scale that knows nothing about the gap between its"
+    + " sections:\n" + layout);
+});
+
+test("the monitor sections STACK, and the id that measures them outlived the shape", () => {
+  // "I want two separated sections vertically, one section for laptop and one
+  // (or more) for each external monitor" — the human, answering his own gate
+  // (tick yn6). The sections were a Row; they are a Column.
+  const at = PANEL.indexOf("id: monitorRow\n");
+  assert.ok(at !== -1, "the element that holds the monitor sections lost its id");
+  const opener = PANEL.slice(0, at).split("\n").filter((l) => /^\s*\w+ \{\s*$/.test(l)).pop();
+  assert.match(opener, /Column \{/,
+    "the monitor sections are laid out side by side again, which is the shape"
+    + " the human replaced: " + opener);
+
+  // The id is what morphOverlay measures, and a Column's height is the whole
+  // stack — exactly what the overlay has to span. This is the binding that
+  // makes renaming it a silent defect rather than a rename.
+  const height = bindingAfterId("Panel.qml", PANEL, "morphOverlay", "height");
+  assert.match(height, /^\s*height:\s*monitorRow\.height\s*$/,
+    "the morph overlay no longer measures the stack:\n" + height);
+
+  // Every section is the full width of the map — that is what stacked means.
+  const width = bindingAfterId("Panel.qml", PANEL, "monitorRect", "width");
+  assert.match(width, /monitorRect\.section\.width/,
+    "a section takes a width of its own rather than the one the layout gave"
+    + " it:\n" + width);
+  // And the gap between them is the section gap, not the tile gap.
+  const spacing = bindingAfterId("Panel.qml", PANEL, "monitorRow", "spacing");
+  assert.match(spacing, /root\.mapSectionGap/,
+    "the stack spaces its sections like tiles:\n" + spacing);
 });
 
 test("the workspace is a TILE: a ground, and no outline of its own", () => {
