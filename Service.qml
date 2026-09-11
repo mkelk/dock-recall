@@ -65,6 +65,14 @@ Item {
 
   // The parsed state file. Always a valid State (StateModel.parseState never
   // throws and never yields a half-object), so consumers need no guards.
+  // Is the panel on screen? Set by Panel.qml when the shell's loader hands it
+  // this service (open) and cleared when the loader destroys it (close). The
+  // bar widget reads it for its `opened` contract, because the 2026-09-08 shell
+  // hands third-party widgets a SCOPED shell API with no notifying open-state
+  // (`isPluginOpen` is a plain function) — this service is the one object both
+  // halves of the plugin can see on every shell contract (tick erk).
+  property bool panelOpen: false
+
   property var state: StateModel.defaultState()
   property bool stateLoaded: false
   property string lastWrittenText: ""

@@ -138,20 +138,54 @@ BarWidget {
   // first is an infinite loop the moment the panel entry point is missing or
   // the manifest has not been rescanned. Asking the shell which way it will
   // route means a click is simply inert until the panel is really there.
-  readonly property bool panelRouted: root.hostShell
-    && typeof root.hostShell.isBarWidgetPanelPlugin === "function"
-    && root.hostShell.isBarWidgetPanelPlugin(root.moduleName) === false
+  //
+  // TWO HOST CONTRACTS (tick erk). Before the 2026-09-08 shell, `bar.shell` was
+  // the shell root: it carries `isBarWidgetPanelPlugin`, and asking it is the
+  // recursion guard above. Since that upgrade a third-party widget is handed a
+  // SCOPED plugin-shell API (shell.pluginShellForId → PluginShellApi): it
+  // carries summon/hide/toggle/isPluginOpen/serviceFor, routes by ownership
+  // and cannot route a summon back into this widget — so the guard question
+  // cannot be asked of it and does not need to be. Feature-detect: routed when
+  // the handle can toggle and summon, and, ONLY where the old question exists,
+  // when it answers "not the bar". The acceptance VM still runs the old
+  // contract; the human's desk runs the new one; this must be true on both.
+  readonly property bool hostCanRoute: root.hostShell
+    && typeof root.hostShell.toggle === "function"
+    && typeof root.hostShell.summon === "function"
+  readonly property bool panelRouted: root.hostCanRoute
+    && (typeof root.hostShell.isBarWidgetPanelPlugin !== "function"
+      || root.hostShell.isBarWidgetPanelPlugin(root.moduleName) === false)
+
+  // Which half of the guard failed, for the log — "not registered" on its own
+  // hid the 2026-09-08 break for a morning.
+  function routeRefusal() {
+    if (!root.hostShell) return "no host shell handle from the bar"
+    if (!root.hostCanRoute) return "the host handle has no toggle/summon"
+    return "the shell routes this plugin to the bar, not to the panel loader"
+  }
+
+  // This plugin's own service, through whichever handle the bar gave us: the
+  // shell root and the scoped API both answer `serviceFor` (the scoped one
+  // only for the plugin's own id, which is the one asked for).
+  readonly property var pluginService: root.hostShell
+    && typeof root.hostShell.serviceFor === "function"
+    ? root.hostShell.serviceFor(root.moduleName) : null
 
   // The bar-widget contract: Bar.findPanelWidget needs open/close and a
   // readonly `opened` on the widget root, and the popout coordinator prefers
   // closeForPopoutSwitch over close.
-  readonly property bool opened: root.hostShell && root.hostShell.openPanelIds
-    ? root.hostShell.openPanelIds[root.moduleName] === true
-    : false
+  // Openness is read off the SERVICE (Service.panelOpen, set by the panel on
+  // open and close), which notifies on both host contracts; the shell root's
+  // `openPanelIds` map is the fallback where a service is not loaded.
+  readonly property bool opened: root.pluginService && root.pluginService.panelOpen === true
+    ? true
+    : (root.hostShell && root.hostShell.openPanelIds
+      ? root.hostShell.openPanelIds[root.moduleName] === true
+      : false)
 
   function summonPanel(payloadJson) {
     if (!root.panelRouted) {
-      root.log("panel is not registered with the shell yet — bar click ignored")
+      root.log("bar click ignored — " + root.routeRefusal())
       return
     }
     root.hostShell.summon(root.moduleName, payloadJson || "{}")
@@ -166,7 +200,7 @@ BarWidget {
 
   function togglePanel() {
     if (!root.panelRouted) {
-      root.log("panel is not registered with the shell yet — bar click ignored")
+      root.log("bar click ignored — " + root.routeRefusal())
       return
     }
     root.hostShell.toggle(root.moduleName, "{}")

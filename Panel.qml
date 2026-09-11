@@ -47,6 +47,12 @@ Item {
   // panel reads and writes the same files the service does, so it works on its
   // own — the badge simply stops moving without a service to publish status.
   property var service: null
+  // The loader assigns `service` AFTER creation (shell.qml's onLoaded), so the
+  // open edge is the assignment, not Component.onCompleted; the close edge is
+  // destruction, because a panel without keepLoaded is torn down on hide.
+  // Service.panelOpen is what the bar widget's `opened` reads (tick erk).
+  onServiceChanged: if (root.service) root.service.panelOpen = true
+  Component.onDestruction: if (root.service) root.service.panelOpen = false
 
   readonly property string pluginId: (manifest && manifest.id) ? String(manifest.id) : "mkelk.dock-recall"
   readonly property string logPrefix: "[dock-recall]"
