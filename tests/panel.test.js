@@ -1651,6 +1651,8 @@ const OPTS = {
   tileGap: 6, sectionGap: 12,
   tileMinWidth: 96, tileMaxWidth: 220, tilePadding: 8, sectionPadding: 0
 };
+// And the same map with a frame around each section (tick 0qd).
+const FRAMED = Object.assign({}, OPTS, { sectionPadding: 12 });
 
 test("the sections stack: every one of them is the whole width of the map", () => {
   // "I want two separated sections vertically, one section for laptop and one
@@ -1699,12 +1701,16 @@ test("one scale means every tile is its own monitor at that scale", () => {
 });
 
 test("no section's row of tiles is wider than the section it is in", () => {
-  // The one outcome this function exists to prevent.
-  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
-  for (const s of layout.sections) {
-    const row = s.cols * s.tileWidth + OPTS.tileGap * (s.cols - 1);
-    assert.ok(row <= s.width,
-      `a row of ${row} px inside a ${s.width} px section: ${JSON.stringify(s)}`);
+  // The one outcome this function exists to prevent. Checked on both shapes,
+  // because the frame takes width away from exactly the row that has to fit.
+  for (const opts of [OPTS, FRAMED]) {
+    const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, opts);
+    for (const s of layout.sections) {
+      const row = s.cols * s.tileWidth + opts.tileGap * (s.cols - 1);
+      assert.ok(row <= s.width - opts.sectionPadding,
+        `a row of ${row} px inside a ${s.width} px section with`
+        + ` ${opts.sectionPadding} px of frame: ${JSON.stringify(s)}`);
+    }
   }
 });
 
@@ -1802,8 +1808,10 @@ test("one monitor is what it has always been, to the pixel", () => {
     const mons = [{ logicalWidth: lw, logicalHeight: lh, workspaceCount: count }];
     const before = panel.workspaceGridLayout(count, lw / lh, width, 6, 96, 220);
 
-    {
-      const layout = panel.mapSectionLayout(mons, width, OPTS);
+    // And it must be unable to notice the frame or the section gap either —
+    // both are charged only where they are drawn.
+    for (const opts of [OPTS, FRAMED]) {
+      const layout = panel.mapSectionLayout(mons, width, opts);
       assert.strictEqual(layout.sections.length, 1);
       const only = layout.sections[0];
       assert.strictEqual(only.tileWidth, before.boxW,
@@ -1817,6 +1825,23 @@ test("one monitor is what it has always been, to the pixel", () => {
         `${lw}x${lh} x${count} in ${width}: the tile's canvas height moved`);
       assert.strictEqual(only.width, width, "a lone section is the whole map");
     }
+  }
+});
+
+test("the frame is paid for out of the scale, not out of the canvas", () => {
+  // HUMAN GATE FINDING 3: each section is framed on a multi-monitor desk (tick
+  // 0qd), and the frame costs width — which is why the layout is TOLD about it
+  // rather than having it drawn on afterwards. A frame added after the scale
+  // was solved is a row that overflows the section it is in.
+  const framed = panel.mapSectionLayout(DESK, DESK_WIDTH, FRAMED);
+  const bare = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
+
+  assert.ok(framed.scale < bare.scale,
+    `a framed map draws smaller tiles, got ${framed.scale} against ${bare.scale}`);
+  assert.strictEqual(framed.sections[0].canvasHeight, framed.sections[1].canvasHeight,
+    "framing must not reintroduce the defect the shared scale fixed");
+  for (const s of framed.sections) {
+    assert.strictEqual(s.width, DESK_WIDTH, "a framed section is still the full width");
   }
 });
 

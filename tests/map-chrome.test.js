@@ -156,25 +156,53 @@ test("the map surface is a spacer: no line, no fill — the card is the frame", 
     + " touches what is above and below it:\n" + padding);
 });
 
-test("the monitor box draws nothing", () => {
+test("the monitor box draws nothing on a laptop and a hairline on a desk", () => {
+  // THE GUARD MOVED WITH THE DESIGN (ep6 pinned Border.none() on every monitor
+  // count; tick 0qd made it conditional). ep6 removed the box everywhere, and
+  // the definition of done had only asked for "no monitor box on a single
+  // monitor" — the human's look on a real two-monitor desk found what that
+  // cost. So what this pins now is the CONDITION, both ways: nothing on a
+  // laptop, a hairline on a desk, and nothing in between.
   const border = bindingAfterId("Panel.qml", PANEL, "monitorRect", "borderSpec");
+  assert.match(border, /monitorRect\.framed/,
+    "the monitor section's frame is unconditional again — on one monitor it was"
+    + " a rectangle drawn around everything, inside two more:\n" + border);
   assert.match(border, /Border\.none\(\)/,
-    "the monitor section draws a box again — the third of the five nested"
-    + " rectangles ep6 removed:\n" + border);
+    "a single-monitor desk draws a frame it does not need:\n" + border);
+  assert.match(border, /Border\.flat\(/,
+    "a multi-monitor desk no longer draws the hairline that separates one"
+    + " screen's tiles from the next's:\n" + border);
+  // The map's ONE line weight, not a second spelling of it.
+  assert.match(border, /root\.mapLineWidth/,
+    "the frame spells its own width instead of spending the map's one line"
+    + " weight, which the chip edge also reads:\n" + border);
+
+  // And the condition is the monitor count, said once and spent three times.
+  const framed = bindingAfterId("Panel.qml", PANEL, "monitorRect", "framed");
+  assert.match(framed, /root\.mapModel\.monitors\.length > 1/,
+    "the frame appears on something other than a multi-monitor desk:\n" + framed);
 
   const color = bindingAfterId("Panel.qml", PANEL, "monitorRect", "color");
   assert.match(color, /"transparent"/,
     "the monitor section is filled:\n" + color);
 
+  // Padding inside the frame where there is one, and none where there is not —
+  // a section that holds a border's width off content with no border.
   const padding = bindingAfterId("Panel.qml", PANEL, "monitorRect", "padding");
-  assert.match(padding, /padding:\s*0\s*$/,
-    "the monitor section holds a border's width off content that has no"
-    + " border:\n" + padding);
+  assert.match(padding, /monitorRect\.framed/, padding);
+  assert.match(padding, /root\.mapSectionPadding/,
+    "the frame's inner padding is spelled here instead of in the one place the"
+    + " layout function is also told about it:\n" + padding);
+  assert.match(padding, /:\s*0\s*$/m,
+    "a single-monitor desk pays for padding it cannot see:\n" + padding);
 
-  // THE LAYOUT IS TOLD what the stack costs, and that is the half a screenshot
-  // would not show: a gap widened after the scale was solved is a stack that
-  // overflows what it was measured against.
+  // THE LAYOUT IS TOLD, and that is the half a screenshot would not show. The
+  // frame and the wider section gap both cost width; a frame drawn after the
+  // scale was solved is a row that overflows the section it is in.
   const layout = bindingAfterId("Panel.qml", PANEL, "mapCanvas", "layout");
+  assert.match(layout, /sectionPadding:\s*\(root\.mapSectionPadding \+ root\.mapLineWidth\) \* 2/,
+    "the map solves for a scale that knows nothing about the frame it will then"
+    + " draw:\n" + layout);
   assert.match(layout, /sectionGap:\s*root\.mapSectionGap/,
     "the map solves for a scale that knows nothing about the gap between its"
     + " sections:\n" + layout);
@@ -258,10 +286,16 @@ test("every drawn chip state carries a real edge, whatever the theme says a stat
   assert.match(border, /chipSlot\.anyGhost[\s\S]*Border\.none\(\)/,
     "a ghost chip draws a solid edge as well as its dash:\n" + border);
 
+  // THE MAP'S ONE LINE WEIGHT, and since tick 0qd it is one NUMBER as well as
+  // one weight: the monitor frame spends it too, and two spellings of the same
+  // number are two numbers.
   const width = bindingAfterId("MapWorkspace.qml", MAP, "chipSlot", "edgeWidth");
-  assert.match(width, /Math\.max\(1,\s*Style\.normalBorderWidth\)/,
-    "the chip's edge width is no longer floored at 1, so a theme that zeroes its"
-    + " border widths takes the map's only line away:\n" + width);
+  assert.match(width, /panel\.mapLineWidth/,
+    "the chip's edge spells its own width instead of reading the map's one line"
+    + " weight, which the monitor frame also draws at:\n" + width);
+  assert.match(PANEL, /readonly property int mapLineWidth: Math\.max\(1, Style\.normalBorderWidth\)/,
+    "the map's line weight is no longer floored at 1, so a theme that zeroes its"
+    + " border widths takes the map's only line away");
   assert.match(border, /chipSlot\.edgeWidth/,
     "the border does not use the floored width the mask holds back for it, so"
     + " the edge and the picture can disagree about how wide the edge is:\n" + border);

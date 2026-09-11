@@ -625,13 +625,18 @@ BorderSurface {
           ? (chipSlot.drawn ? chipSlot.drawn.height : panel.chipFloorHeight)
           : workspaceSlot.stackRowHeight
         radius: Style.cornerRadius
-        // THE ONE LINE WEIGHT THE MAP KEEPS, as a number two bindings read:
-        // the border below draws it, and the picture's mask (chipPictureMask,
-        // in the tab delegate) holds it back so it is not painted over. A
-        // theme that asks for a thicker normal border gets one; a theme that
-        // asks for none still gets this, because a chip with no edge at all is
-        // a photograph floating on a tile.
-        readonly property int edgeWidth: Math.max(1, Style.normalBorderWidth)
+        // THE ONE LINE WEIGHT THE MAP KEEPS, as a number three bindings read:
+        // the border below draws it, the picture's mask (chipPictureMask, in
+        // the tab delegate) holds it back so it is not painted over, and on a
+        // multi-monitor desk the monitor frame spends the same weight. A theme
+        // that asks for a thicker normal border gets one; a theme that asks for
+        // none still gets this, because a chip with no edge at all is a
+        // photograph floating on a tile.
+        //
+        // It is the PANEL's number since tick 0qd. "One line weight carries the
+        // map" is the whole thesis of this redesign, and it stops being one the
+        // moment the chip and the frame spell it separately.
+        readonly property int edgeWidth: panel.mapLineWidth
         // THE STATE FILL. Three states, three fills, all from Style so a
         // theme moves them together:
         //

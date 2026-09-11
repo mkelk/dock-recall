@@ -267,6 +267,14 @@ Item {
   // solves for a scale that FITS, and a gap widened after the fact is a stack
   // that overflows what it was measured against.
   readonly property int mapSectionGap: Style.space(12)
+  // THE MAP'S ONE LINE WEIGHT, stated once. The chip edge spends it
+  // (MapWorkspace's chipSlot.edgeWidth) and, on a multi-monitor desk, so does
+  // the monitor frame. "One line weight carries the map" is the whole thesis of
+  // this redesign, and two spellings of the same number are two numbers.
+  readonly property int mapLineWidth: Math.max(1, Style.normalBorderWidth)
+  // What a monitor SECTION keeps between its frame and its tiles, on one side.
+  // Spent only where the frame is drawn — see monitorRect below.
+  readonly property int mapSectionPadding: Style.space(5)
   // A WORKSPACE TILE'S OWN PADDING, on one side — the space between the tile's
   // edge and the canvas its chips are drawn on. It is MapWorkspace that spends
   // it, and it is stated HERE for the same reason `chipFloorWidth` is: the map's
@@ -4291,9 +4299,12 @@ Item {
                     tileMinWidth: Style.space(96),
                     tileMaxWidth: Style.space(220),
                     tilePadding: root.mapTilePadding * 2,
-                    // A section draws no chrome of its own yet, so it costs the
-                    // stack nothing. Tick 0qd is what puts a frame around one.
-                    sectionPadding: 0
+                    // Both sides of a section's frame and the padding inside it.
+                    // The function charges it only when there is more than one
+                    // monitor, which is exactly when monitorRect draws it — the
+                    // two conditions are the same condition, said once here and
+                    // once where the drawing happens.
+                    sectionPadding: (root.mapSectionPadding + root.mapLineWidth) * 2
                   })
                 }
 
@@ -4328,7 +4339,7 @@ Item {
                 // pixels apart read as one unsorted row of boxes — 5 6 9 1 2 3 8
                 // 10 — and he could not see the laptop and the external screen
                 // as separate things at all. Each section is the full width of
-                // the map now, and read top to bottom; tick 0qd frames them.
+                // the map now, framed (below), and read top to bottom.
                 //
                 // THE ID OUTLIVED THE SHAPE, deliberately. This was a Row and it
                 // is a Column; `morphOverlay.height: monitorRow.height` measures
@@ -4366,16 +4377,32 @@ Item {
                           : { width: mapCanvas.width, tileWidth: 0, canvasHeight: 0, cols: 0, rows: 0 }
                       }
 
+                      // IS THIS SECTION ONE OF SEVERAL? The whole of the
+                      // difference between a laptop and a docked desk, asked
+                      // once and spent three times below.
+                      readonly property bool framed: root.mapModel.monitors.length > 1
+
                       width: Math.max(1, monitorRect.section.width)
                       // Follows its content: the workspaces decide how many rows
                       // they need, and the map grows rather than shrinking them.
                       height: monitorColumn.implicitHeight
                         + monitorRect.contentTopInset + monitorRect.contentBottomInset
-                      // THE MONITOR BOX IS GONE (tick ep6): on one monitor it
-                      // was a rectangle drawn around everything, inside two
-                      // more, answering a question nobody had. Tick 0qd brings a
-                      // hairline back for the multi-monitor desk, where the
-                      // human could not see two screens as separate things.
+                      // THE MONITOR BOX IS GONE ON A LAPTOP, AND BACK ON A DESK
+                      // (ticks ep6, then 0qd). ep6 removed it on every monitor
+                      // count; the definition of done had only asked for "no
+                      // monitor box on a single monitor", and the human's look
+                      // on a real two-monitor desk found what that cost — two
+                      // labels and two runs of tiles with nothing between them,
+                      // so he could not see the laptop and the external screen
+                      // as separate things at all.
+                      //
+                      // So: nothing on one monitor, where the box was a
+                      // rectangle drawn around everything, inside two more, and
+                      // answering a question nobody had. And on two or more, a
+                      // HAIRLINE at the map's one line weight — the same weight
+                      // a chip edge spends, both reading `root.mapLineWidth`, so
+                      // "one line weight carries the map" stays true with the
+                      // line now spent in two places.
                       //
                       // THE SECTION STILL EXISTS EITHER WAY, AND THAT IS
                       // DELIBERATE RATHER THAN LAZY. `morphOverlay.height` binds
@@ -4389,10 +4416,16 @@ Item {
                       // the frame for free: the padding moves the item, and it
                       // is the ITEM that is reported.
                       color: "transparent"
-                      borderSpec: Border.none()
+                      borderSpec: monitorRect.framed
+                        ? Border.flat(Util.alpha(root.faintForeground, Style.normalBorderAlpha),
+                          root.mapLineWidth)
+                        : Border.none()
                       radius: Style.cornerRadius
-                      // Nothing to hold off a border that is not drawn.
-                      padding: 0
+                      // Inside the frame when there is one; nothing to hold off
+                      // a border that is not drawn when there is not. The layout
+                      // above is handed the same two numbers, so the scale it
+                      // solves for is the scale that fits inside these frames.
+                      padding: monitorRect.framed ? root.mapSectionPadding : 0
 
                       Column {
                         id: monitorColumn
