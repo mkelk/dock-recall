@@ -244,20 +244,45 @@ Item {
   //
   // mapWidth/mapHeight only feed mapGeometry's shared-scale computation
   // (scale, geometry.width/height, and each box's x/y/width/height) — the
-  // rendering below (mapCanvas.sectionWidths, workspaceGridLayout) reads only
+  // rendering below (mapCanvas.layout, PanelModel.mapSectionLayout) reads only
   // logicalWidth/logicalHeight/sizeLabel/name/label/workspaces off the model
   // and never touches those scaled fields, a leftover from when the map WAS
   // one scaled picture (see the "why this exists" comment on mapGeometry).
+  // (The map has a shared scale again since tick dmm — but it is the RENDERED
+  // one, solved from the panel's own width in mapSectionLayout, and these
+  // fields are still not what it reads.)
   // Left in rather than trimmed: mapGeometry.label is still what
   // recordedMapModel groups a recorded app onto its monitor by, the sort that
-  // orders sectionWidths left-to-right lives there too, and
+  // orders the sections left-to-right lives there too, and
   // tests/panel.test.js asserts directly on the scaled x/width/height/scale —
   // mapGeometry is still exactly the function those tests describe.
   readonly property int mapHeight: Math.round(root.mapWidth * 0.6)
   // The map's shortest sensible height: enough for the "No monitors" line.
   readonly property int mapMinHeight: Style.space(60)
-  // The gap between monitor sections, and between workspace boxes.
+  // The gap between workspace tiles.
   readonly property int mapGap: Style.space(6)
+  // And between MONITOR SECTIONS, which stack since tick yn6 — so this is the
+  // vertical gap between the laptop's section and each external screen's. Its
+  // own number rather than `mapGap` reused, and that is load-bearing: the map
+  // solves for a scale that FITS, and a gap widened after the fact is a stack
+  // that overflows what it was measured against.
+  readonly property int mapSectionGap: Style.space(12)
+  // THE MAP'S ONE LINE WEIGHT, stated once. The chip edge spends it
+  // (MapWorkspace's chipSlot.edgeWidth) and, on a multi-monitor desk, so does
+  // the monitor frame. "One line weight carries the map" is the whole thesis of
+  // this redesign, and two spellings of the same number are two numbers.
+  readonly property int mapLineWidth: Math.max(1, Style.normalBorderWidth)
+  // What a monitor SECTION keeps between its frame and its tiles, on one side.
+  // Spent only where the frame is drawn — see monitorRect below.
+  readonly property int mapSectionPadding: Style.space(5)
+  // A WORKSPACE TILE'S OWN PADDING, on one side — the space between the tile's
+  // edge and the canvas its chips are drawn on. It is MapWorkspace that spends
+  // it, and it is stated HERE for the same reason `chipFloorWidth` is: the map's
+  // shared scale has to subtract it from the row before it can solve for a scale
+  // (PanelModel.mapSectionLayout, tick dmm), and a tile padded by one number
+  // while the scale was solved for another is a row that does not fit its
+  // canvas. Two readers, one number.
+  readonly property int mapTilePadding: Style.space(4)
 
   // How narrow a FOOTER button's tooltip wraps. The footer row is anchored to
   // the panel's right edge and Ui/Button builds its own ToolTip centred on the
@@ -4237,18 +4262,50 @@ Item {
                 width: Math.max(1, mapSurface.width - mapSurface.contentLeftInset - mapSurface.contentRightInset)
                 height: childrenRect.height
 
-                // How the panel's width is shared out between the monitors —
-                // proportional to their real widths, floored so the narrowest
-                // one can still hold a readable workspace box. The monitors
-                // arrive already ordered left to right (mapGeometry sorts them
-                // by their place on the desk), so the row below IS the desk's
-                // arrangement.
-                readonly property var sectionWidths: {
+                // HOW BIG EVERY TILE ON THE MAP IS, at ONE scale (tick dmm).
+                //
+                // The monitors arrive already ordered left to right (mapGeometry
+                // sorts them by their place on the desk), so the row below IS the
+                // desk's arrangement; this decides what each section is wide and
+                // what one of its tiles measures.
+                //
+                // It used to be `monitorSectionWidths` alone, and each section
+                // then sized its own tiles to its own width — which is how a
+                // 1440x900 laptop and a 2150x900 ultrawide came out with tiles
+                // the same WIDTH and different HEIGHTS, so nothing lined up. The
+                // arithmetic that fixes it is in PanelModel.mapSectionLayout,
+                // which composes the same two functions and then solves for the
+                // one scale that fits: a layout question with a right answer,
+                // argued in node rather than in a screenshot.
+                //
+                // THE COPY IS NOT CEREMONY. `monitors` reaches this binding as a
+                // property var, so its members are QVariant-wrapped on the way
+                // in and a model function that type-checks arrays would reject
+                // them (.tick/learnings.md, the QML/JS boundary). Plain objects
+                // in a plain array is what the pure function is handed.
+                readonly property var layout: {
                   var monitors = root.mapModel.monitors
-                  var widths = []
-                  for (var i = 0; i < monitors.length; i++) widths.push(monitors[i].logicalWidth)
-                  return PanelModel.monitorSectionWidths(widths, mapCanvas.width,
-                    root.mapGap, Style.space(112))
+                  var plain = []
+                  for (var i = 0; i < monitors.length; i++) {
+                    plain.push({
+                      logicalWidth: monitors[i].logicalWidth,
+                      logicalHeight: monitors[i].logicalHeight,
+                      workspaceCount: monitors[i].workspaces.length
+                    })
+                  }
+                  return PanelModel.mapSectionLayout(plain, mapCanvas.width, {
+                    tileGap: root.mapGap,
+                    sectionGap: root.mapSectionGap,
+                    tileMinWidth: Style.space(96),
+                    tileMaxWidth: Style.space(220),
+                    tilePadding: root.mapTilePadding * 2,
+                    // Both sides of a section's frame and the padding inside it.
+                    // The function charges it only when there is more than one
+                    // monitor, which is exactly when monitorRect draws it — the
+                    // two conditions are the same condition, said once here and
+                    // once where the drawing happens.
+                    sectionPadding: (root.mapSectionPadding + root.mapLineWidth) * 2
+                  })
                 }
 
                 Text {
@@ -4265,18 +4322,39 @@ Item {
                   font.pixelSize: Style.font.caption
                 }
 
-                // The desk, left to right. The monitors were drawn at their
-                // scaled positions before, inside a box of fixed height — which
-                // is what made a 7-workspace laptop come out as a strip of
-                // portrait slivers with most of the panel's width unused. A
-                // section keeps the monitor's PLACE in the row and its share of
-                // the width; what it gives up is being a to-scale rectangle,
-                // because a workspace you cannot read is not a truer picture
-                // than a section that is a little too tall.
-                Row {
+                // THE DESK, ONE MONITOR PER ROW — the laptop first, then each
+                // external screen in its own left-to-right order (mapGeometry's
+                // sort). The monitors were drawn at their scaled positions
+                // before, inside a box of fixed height, which is what made a
+                // 7-workspace laptop come out as a strip of portrait slivers
+                // with most of the panel's width unused; then they were sections
+                // sharing one row. What a section gives up is being a to-scale
+                // rectangle, because a workspace you cannot read is not a truer
+                // picture than a section that is a little too tall.
+                //
+                // THEY STACK SINCE TICK yn6, in the human's own words answering
+                // his gate: "I want two separated sections vertically, one
+                // section for laptop and one (or more) for each external
+                // monitor". Side by side, two labels and two runs of tiles six
+                // pixels apart read as one unsorted row of boxes — 5 6 9 1 2 3 8
+                // 10 — and he could not see the laptop and the external screen
+                // as separate things at all. Each section is the full width of
+                // the map now, framed (below), and read top to bottom.
+                //
+                // THE ID OUTLIVED THE SHAPE, deliberately. This was a Row and it
+                // is a Column; `morphOverlay.height: monitorRow.height` measures
+                // whatever holds the sections, and a Column's height is the
+                // whole stack — exactly what the overlay has to span. Renaming
+                // it would be a rename inside the one binding whose whole job is
+                // to be the single place the map's drawn height is stated.
+                Column {
                   id: monitorRow
                   width: parent.width
-                  spacing: root.mapGap
+                  // Between SECTIONS, wider than the gap between tiles and the
+                  // number the layout above solved the scale against. With one
+                  // monitor there is no gap to spend, so a laptop desk pays
+                  // nothing for it.
+                  spacing: root.mapSectionGap
 
                   Repeater {
                     model: root.mapModel.monitors
@@ -4286,50 +4364,68 @@ Item {
                       required property var modelData
                       required property int index
 
-                      readonly property int sectionWidth: {
-                        var widths = mapCanvas.sectionWidths
-                        return (monitorRect.index >= 0 && monitorRect.index < widths.length)
-                          ? widths[monitorRect.index] : mapCanvas.width
+                      // THIS SECTION'S PLACE ON THE MAP, at the map's one scale
+                      // (ticks dmm, yn6): how wide the section is — the whole
+                      // map, since they stack — how wide a tile in it is, and
+                      // how tall that tile's canvas is. All three come from the
+                      // same pure answer, so a section cannot be laid out to a
+                      // width its own tiles disagree with.
+                      readonly property var section: {
+                        var sections = mapCanvas.layout.sections
+                        return (monitorRect.index >= 0 && monitorRect.index < sections.length)
+                          ? sections[monitorRect.index]
+                          : { width: mapCanvas.width, tileWidth: 0, canvasHeight: 0, cols: 0, rows: 0 }
                       }
 
-                      // The monitor's own shape, which is the shape every
-                      // workspace box under it is drawn at — a workspace fills
-                      // its monitor, so any other ratio draws every window
-                      // inside it at the wrong proportions.
-                      readonly property real aspect: monitorRect.modelData.logicalHeight > 0
-                        ? (monitorRect.modelData.logicalWidth / monitorRect.modelData.logicalHeight)
-                        : (16 / 9)
+                      // IS THIS SECTION ONE OF SEVERAL? The whole of the
+                      // difference between a laptop and a docked desk, asked
+                      // once and spent three times below.
+                      readonly property bool framed: root.mapModel.monitors.length > 1
 
-                      width: monitorRect.sectionWidth
+                      width: Math.max(1, monitorRect.section.width)
                       // Follows its content: the workspaces decide how many rows
                       // they need, and the map grows rather than shrinking them.
                       height: monitorColumn.implicitHeight
                         + monitorRect.contentTopInset + monitorRect.contentBottomInset
-                      // THE MONITOR BOX IS GONE, AND THE MONITOR SECTION IS NOT
-                      // (tick ep6). What a reader needs from this level is which
-                      // tiles belong to which screen, and on a laptop — one
-                      // monitor, every tile under it — there is no such question
-                      // to answer: the box was a rectangle drawn around
-                      // everything, inside two more. So it draws nothing at all
-                      // now, on every monitor count, and the labels below carry
-                      // the separation when there is more than one screen.
+                      // THE MONITOR BOX IS GONE ON A LAPTOP, AND BACK ON A DESK
+                      // (ticks ep6, then 0qd). ep6 removed it on every monitor
+                      // count; the definition of done had only asked for "no
+                      // monitor box on a single monitor", and the human's look
+                      // on a real two-monitor desk found what that cost — two
+                      // labels and two runs of tiles with nothing between them,
+                      // so he could not see the laptop and the external screen
+                      // as separate things at all.
                       //
-                      // IT STILL EXISTS, AND THAT IS DELIBERATE RATHER THAN
-                      // LAZY. `morphOverlay.height` binds to `monitorRow.height`
-                      // (below), and the workspace-canvas report path mirrors
-                      // only `workspaceSlot.x/y` (MapWorkspace.qml) — so a
-                      // parent added or removed conditionally moves every box
-                      // under it with no handler firing anywhere, and every
-                      // morph flight then lands on a stale origin, silently.
-                      // Change what these elements DRAW; never whether they are
-                      // there.
+                      // So: nothing on one monitor, where the box was a
+                      // rectangle drawn around everything, inside two more, and
+                      // answering a question nobody had. And on two or more, a
+                      // HAIRLINE at the map's one line weight — the same weight
+                      // a chip edge spends, both reading `root.mapLineWidth`, so
+                      // "one line weight carries the map" stays true with the
+                      // line now spent in two places.
+                      //
+                      // THE SECTION STILL EXISTS EITHER WAY, AND THAT IS
+                      // DELIBERATE RATHER THAN LAZY. `morphOverlay.height` binds
+                      // to `monitorRow.height` (below), and the workspace-canvas
+                      // report path mirrors only `workspaceSlot.x/y`
+                      // (MapWorkspace.qml) — so a parent added or removed
+                      // conditionally moves every box under it with no handler
+                      // firing anywhere, and every morph flight then lands on a
+                      // stale origin, silently. Change what these elements DRAW;
+                      // never whether they are there. The canvas report follows
+                      // the frame for free: the padding moves the item, and it
+                      // is the ITEM that is reported.
                       color: "transparent"
-                      borderSpec: Border.none()
+                      borderSpec: monitorRect.framed
+                        ? Border.flat(Util.alpha(root.faintForeground, Style.normalBorderAlpha),
+                          root.mapLineWidth)
+                        : Border.none()
                       radius: Style.cornerRadius
-                      // Nothing to hold off a border that is no longer drawn.
-                      // The gap between sections is the Row's `mapGap`, and the
-                      // gap around the whole map is mapSurface's padding.
-                      padding: 0
+                      // Inside the frame when there is one; nothing to hold off
+                      // a border that is not drawn when there is not. The layout
+                      // above is handed the same two numbers, so the scale it
+                      // solves for is the scale that fits inside these frames.
+                      padding: monitorRect.framed ? root.mapSectionPadding : 0
 
                       Column {
                         id: monitorColumn
@@ -4385,18 +4481,17 @@ Item {
                           }
                         }
 
-                        // Uniform mini-monitors, wrapped into as many rows as the
-                        // section's width needs. The packing (how many columns,
-                        // how wide a box) is a pure function so it can be argued
-                        // with in a test rather than in a screenshot.
+                        // Mini-monitors at the map's one scale, wrapped into as
+                        // many rows as the section's width needs. The packing
+                        // (how many columns, how big a tile) is a pure function
+                        // so it can be argued with in a test rather than in a
+                        // screenshot — and since tick dmm it is the SAME answer
+                        // for every section, which is what makes two monitors'
+                        // rows line up.
                         Flow {
                           id: workspaceFlow
                           width: parent.width
                           spacing: root.mapGap
-
-                          readonly property var grid: PanelModel.workspaceGridLayout(
-                            monitorRect.modelData.workspaces.length, monitorRect.aspect,
-                            workspaceFlow.width, root.mapGap, Style.space(96), Style.space(220))
 
                           Repeater {
                             model: monitorRect.modelData.workspaces
@@ -4421,7 +4516,13 @@ Item {
                             delegate: MapWorkspace {
                               panel: root
                               monitorName: monitorRect.modelData.name
-                              boxWidth: workspaceFlow.grid.boxW
+                              boxWidth: monitorRect.section.tileWidth
+                              // AND ITS HEIGHT, handed in rather than derived
+                              // (tick dmm). A tile that worked its own height out
+                              // from its own width and its monitor's aspect is
+                              // exactly how two monitors of equal logical height
+                              // ended up with tiles of different heights.
+                              boxHeight: monitorRect.section.canvasHeight
                             }
                           }
                         }
