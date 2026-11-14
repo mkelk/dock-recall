@@ -2378,6 +2378,30 @@ function iconNameFor(index, identityId, className) {
   return "";
 }
 
+// How to turn an icon NAME into something an Image can draw when the shell's
+// app library is not ours to ask (tick 0i5).
+//
+// Omarchy 4.5 hands a third-party plugin a capability-scoped shell facade, and
+// that facade's `appLibrary` is null unless the manifest declares the `menu`
+// kind (shell.qml createScopedPluginShell). Dock Recall is not a menu, so on
+// 4.5 every chip and row asked a null library and reported iconSource "".
+//
+// The QML half resolves the answer the way AppLibrary.iconSource does, minus
+// its contextual app/device index, which is the shell's and stays there:
+//   { kind: "generic" }             no name: application-x-executable
+//   { kind: "url", value: url }     already a file:// or image:// URL
+//   { kind: "path", value: path }   an absolute path, for Util.fileUrl
+//   { kind: "themed", value: name } an icon-theme name, for Quickshell.iconPath
+function iconRequest(name) {
+  var value = trim(name);
+  if (!value) return { kind: "generic" };
+  if (value.indexOf("file://") === 0 || value.indexOf("image://") === 0) {
+    return { kind: "url", value: value };
+  }
+  if (value.charAt(0) === "/") return { kind: "path", value: value };
+  return { kind: "themed", value: value };
+}
+
 // ------------------------------------------------------------- putting it together
 
 // --------------------------------------------------- a launch that cannot run
@@ -7451,6 +7475,7 @@ if (typeof module !== "undefined") {
     iconNameIndex: iconNameIndex,
     clientClassKey: clientClassKey,
     iconNameFor: iconNameFor,
+    iconRequest: iconRequest,
     identitiesNeedingLaunch: identitiesNeedingLaunch,
     shellWords: shellWords,
     launchLooksBroken: launchLooksBroken,

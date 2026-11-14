@@ -31,7 +31,10 @@
 # kept, but they are NOT the evidence that the session was locked. Measured on
 # 2026-09-02: this guest's virtio-vga framebuffer goes on showing the desktop —
 # bar, clock ticking — while `omarchy-shell lock isLocked` says `true` and
-# Hyprland reports a LOCK blocker. So the lock is proven three other ways: the
+# Hyprland reports a LOCK blocker. (On the 4.5 base the framebuffer DOES show the
+# lock surface once the dock is gone — the first 4.5 run's still-locked picture
+# is the password field — so the step-4 pictures are kept as evidence of what
+# the field held, never asserted on.) So the lock is proven three other ways: the
 # decisive query, the compositor's own blocker, and a deliberately WRONG password
 # that leaves the session locked before the right one releases it. That last one
 # is the control: it is what turns "a lock released" into "the emulated keyboard
@@ -128,12 +131,34 @@ is_locked() { [[ $(lock_state) == "true" ]]; }
 is_unlocked() { [[ $(lock_state) == "false" ]]; }
 lock_blocker() { dr_ssh_session "omarchy-hyprland-session-locked; echo exit=\$?" | tr -d '\r' | tail -1; }
 
+# The lock's own account of itself (Omarchy 4.5 `omarchy-shell lock status`):
+# requested, sessionLocked, secure, authenticating, lastEvent. `requested` is
+# what the lock binds its password field's `inputEnabled` to, so a lock that is
+# up with requested=false is a lock that ignores every key — a different failure
+# from keys that never reach it, and one this scenario must be able to tell apart
+# (tick 0i5). The lock's event log ("omarchy lock <time> <event>") is kept beside
+# it for the same reason.
+lock_status() { dr_ssh_session "omarchy-shell lock status" | tr -d '\r\n'; }
+lock_requested() { lock_status | jq -r '.requested // empty' 2>/dev/null; }
+lock_events() { dr_ssh_session "qs log -p /usr/share/omarchy/shell --tail 6000 2>/dev/null | grep -F 'omarchy lock '"; }
+# Appended to the probe file at each named step, so a failed unlock comes back
+# with the lock's state BEFORE and AFTER every keystroke batch, not just at the end.
+lock_snapshot() {
+  {
+    echo "--- [$1] omarchy-shell lock status ---"; lock_status; echo
+    echo "--- [$1] focused monitor ---"
+    dr_ssh_session "hyprctl monitors -j | jq -c '[.[]|{name,focused,dpmsStatus}]'"
+  } >> "$DR_RUN_DIR/dock-recall-undock-locked-lock-probe.txt" 2>&1
+}
+
 dr_log() { dr_ssh_session "qs log -p /usr/share/omarchy/shell --tail 6000 2>/dev/null | grep -F '[dock-recall]'"; }
 
 summarize() {
   note ""
   note "=== undock-while-locked artifacts ==="
   ls -1 "$DR_RUN_DIR"/*dock-recall-locked*.png "$DR_RUN_DIR"/dock-recall-undock-locked-lock-probe.txt 2>/dev/null | sed 's/^/  /'
+  lock_events > "$DR_RUN_DIR/dock-recall-undock-locked-lock-events.log" 2>/dev/null &&
+    note "  $DR_RUN_DIR/dock-recall-undock-locked-lock-events.log"
   dr_log > "$DR_RUN_DIR/dock-recall-undock-locked-service.log" 2>/dev/null &&
     note "  $DR_RUN_DIR/dock-recall-undock-locked-service.log"
 }
@@ -280,13 +305,31 @@ fi
 # session locked, followed by the real one that does not, is a password prompt
 # reading the emulated keyboard and authenticating against PAM — which is the
 # whole claim. (pam_faillock on this image is deny=10, so one miss is free.)
+#
+# THE LOCK MUST BE TAKING INPUT FIRST (tick 0i5). The 4.5 lock binds its field's
+# `inputEnabled` to its own `requested` flag, and a lock that is up with that
+# flag down swallows every key — so the wrong-password control would pass on a
+# lock that never read it. Asked before a single key is typed.
+lock_snapshot "before typing"
+requested=$(lock_requested)
+[[ $requested == "true" ]] ||
+  die "dock-recall undock while locked: the lock is taking keyboard input" \
+    "omarchy-shell lock status says requested='$requested' while isLocked='$(lock_state)' — the 4.5 lock disables its password field unless requested is true, so no typed password can reach it (status: $(lock_status))"
+
 dr_press esc
 sleep 3
 dr_press ctrl-u
 dr_type_text "definitelynotthepassword" ||
   die "dock-recall undock while locked: the wrong password can be typed" "unsupported character"
+# Not asserted: what the field holds, as a picture. Masked dots here mean the
+# keys reached the lock; an empty field means they did not.
+dr_screendump "evidence-dock-recall-locked-03a-wrong-typed"
 dr_press ret
 sleep 10
+# And after the miss the field says "Authentication failed (1)" — a lock that
+# never received the attempt still says "Enter Password".
+dr_screendump "evidence-dock-recall-locked-03b-wrong-answered"
+lock_snapshot "after the wrong password"
 if is_locked; then
   ok "the lock REJECTED a wrong password typed over QMP (still locked)"
 else
@@ -317,8 +360,30 @@ if is_unlocked; then
   ok "unlocked by typing the RIGHT password over QMP (omarchy-shell lock isLocked = false)"
 else
   dr_screendump "failure-dock-recall-locked-03-still-locked"
+  lock_snapshot "after two typed attempts"
+  # THE DISCRIMINATOR (tick 0i5). The first 4.5 run ended here with the field
+  # showing "Enter Password": no failure message, so not one of three typed
+  # submissions — the wrong one included — ever reached the lock. Either the
+  # compositor's keyboard focus is on no lock surface (it was on the removed
+  # output's), or the lock is not reading keys. Touching the surviving output's
+  # lock surface with the pointer gives it focus in the first case and changes
+  # nothing in the second. Either way the scenario FAILS — a user who undocks
+  # while locked and cannot type their password has a broken lock — but the
+  # line it fails with says which.
+  dr_pointer_click
+  sleep 1
+  dr_press ctrl-u
+  dr_type_text "$DR_GUEST_PASSWORD"
+  dr_press ret
+  if poll 30 is_unlocked; then
+    dr_screendump "failure-dock-recall-locked-03-unlocked-only-after-pointer"
+    lock_snapshot "after the pointer touched the lock"
+    die "dock-recall undock while locked: the session unlocks again" \
+      "typed keys reached the lock only after the pointer touched the surviving output: removing the FOCUSED output while locked left the keyboard on no lock surface. The service logged '$(printf '%s\n' "$intact_line$failover_line" | sed 's/.*\[dock-recall\] //')', so its monitor-focus check could not see it"
+  fi
+  lock_snapshot "after the pointer attempt"
   die "dock-recall undock while locked: the session unlocks again" \
-    "omarchy-shell lock isLocked is still '$(lock_state)' after two typed attempts"
+    "omarchy-shell lock isLocked is still '$(lock_state)' after two typed attempts and a third after a pointer click on the lock — keys are not being read by the lock (see dock-recall-undock-locked-lock-probe.txt and -lock-events.log; status now: $(lock_status))"
 fi
 
 # Reporting unlocked is not the same as being usable. The session has to ACT.

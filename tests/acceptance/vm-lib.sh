@@ -21,6 +21,9 @@
 #                         workspace id of a slot on a monitor (block*10+slot), from
 #                         the guest's monitor-workspaces; fails if there is no row
 #   dr_type_text <text>   the same, one character at a time
+#   dr_pointer_click [x y]
+#                         move the emulated usb-tablet to an absolute point
+#                         (0..32767 on each axis, default the centre) and click
 #   dr_ssh_guest <cmd>    SSH into the guest
 #   dr_ssh_session <cmd>  ...with the graphical session's environment recovered
 #   dr_poweroff           shut the VM down, gracefully then not
@@ -161,6 +164,20 @@ dr_press() {
   IFS='-' read -ra parts <<<"$1"
   for part in "${parts[@]}"; do json+="{\"type\":\"qcode\",\"data\":\"$part\"},"; done
   dr_qmp "\"send-key\", \"arguments\": {\"keys\": [${json%,}]}" >/dev/null
+}
+
+# The harness boots the VM with a usb-tablet, so the pointer is ABSOLUTE: QMP
+# input-send-event takes 0..32767 per axis across the whole framebuffer. Used by
+# undock-locked.sh only as a diagnostic (tick 0i5): when typed keys do not reach
+# a session lock, moving the pointer onto a lock surface is what tells "the
+# keyboard focus is on no surface" apart from "the lock is not taking input".
+dr_pointer_click() {
+  local x="${1:-16384}" y="${2:-16384}"
+  dr_qmp "\"input-send-event\", \"arguments\": {\"events\": [{\"type\":\"abs\",\"data\":{\"axis\":\"x\",\"value\":$x}},{\"type\":\"abs\",\"data\":{\"axis\":\"y\",\"value\":$y}}]}" >/dev/null
+  sleep 0.3
+  dr_qmp "\"input-send-event\", \"arguments\": {\"events\": [{\"type\":\"btn\",\"data\":{\"down\":true,\"button\":\"left\"}}]}" >/dev/null
+  sleep 0.1
+  dr_qmp "\"input-send-event\", \"arguments\": {\"events\": [{\"type\":\"btn\",\"data\":{\"down\":false,\"button\":\"left\"}}]}" >/dev/null
 }
 
 # Only what a password of letters and digits needs. Anything else would be a
