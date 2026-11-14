@@ -237,7 +237,7 @@ function shuffled(list, next) {
 // for ever).
 //
 // Op kinds it executes, and how faithfully:
-//   move / workspace-monitor / geometry — through engine.opToCommand verbatim.
+//   move / geometry — through engine.opToCommand verbatim.
 //   floating                            — read-gated toggle, like executeFloating.
 //   launch / group / ungroup            — NOT executed. They need live-state
 //                                         choreography that only the service

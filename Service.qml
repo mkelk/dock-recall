@@ -22,6 +22,7 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import "engine.js" as Engine
 import "StateModel.js" as StateModel
+import "Slots.js" as Slots
 // Only for humanizeTopology: the completion toast names the topology, and the
 // user reads "Laptop + AOC U34G2G", not "Samsung Display Corp. ATNA60HR07-0 |
 // AOC Inc. U34G2G". Nothing else here goes through the panel's model.
@@ -150,7 +151,7 @@ Item {
   // counter only moves the first time an effect is seen.
   //
   // The two halves of "honest" here differ on purpose:
-  //   move / workspace-monitor / group — counted when DISPATCHED. There is no
+  //   move / group — counted when DISPATCHED. There is no
   //     cheap confirmation for them, and a rejected verb is already shouted
   //     about as a VERB-ERROR.
   //   launch — counted when CONFIRMED, in waitForIdentity, because that one has
@@ -167,7 +168,6 @@ Item {
   property int cycleFailures: 0
   property int opsMoved: 0
   property int opsLaunched: 0
-  property int opsWorkspace: 0
   property int opsGrouped: 0
   property int opsUngrouped: 0
   property int opsFloated: 0
@@ -308,7 +308,6 @@ Item {
     root.cycleEffects[key] = true
     if (kind === "move") root.opsMoved += 1
     else if (kind === "launch") root.opsLaunched += 1
-    else if (kind === "workspace-monitor") root.opsWorkspace += 1
     else if (kind === "group") root.opsGrouped += 1
     else if (kind === "ungroup") root.opsUngrouped += 1
     else if (kind === "floating") root.opsFloated += 1
@@ -1005,7 +1004,7 @@ Item {
         return
       }
       var key = Engine.topologyKey(root.liveMonitors)
-      var layout = key ? StateModel.layoutFor(root.state, key) : null
+      var layout = key ? Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors) : null
       var drift = layout
         ? Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state))
         : null
@@ -1060,8 +1059,45 @@ Item {
         if (done) done(false)
         return
       }
-      root.readMonitors(done)
+      root.readMonitors(function (okMon) {
+        if (!okMon) {
+          if (done) done(false)
+          return
+        }
+        // The block files are read last, straight after the two hyprctl reads,
+        // so table and snapshot describe the same instant.
+        root.readBlocks(done)
+      })
     })
+  }
+
+  // Omarchy 4.5's block files (see Slots.js). A missing file is an empty table,
+  // which resolves every live monitor to monitor-unassigned — never a guess.
+  property string blocksText: ""
+  property string mergedText: ""
+  property var blockTable: Slots.parseBlocks("")
+  property var blocksCallback: null
+
+  function readBlocks(done) {
+    root.blocksCallback = done || null
+    blocksProc.running = true
+  }
+
+  Process {
+    id: blocksProc
+    command: ["bash", "-c",
+      "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/omarchy\"; cat \"$d/monitor-workspaces\" 2>/dev/null; "
+      + "printf '\\n@@MERGED@@\\n'; cat \"$d/monitor-workspaces-merged\" 2>/dev/null; true"]
+    stdout: StdioCollector { id: blocksOut; waitForEnd: true }
+    onExited: function (exitCode) {
+      var parts = String(blocksOut.text).split("\n@@MERGED@@\n")
+      root.blocksText = parts[0] || ""
+      root.mergedText = parts.length > 1 ? parts[1] : ""
+      root.blockTable = Slots.parseBlocks(root.blocksText)
+      var done = root.blocksCallback
+      root.blocksCallback = null
+      if (done) done(true)
+    }
   }
 
   Process {
@@ -1436,9 +1472,6 @@ Item {
     }
 
     if (op.kind === "move") root.noteEffect("move", op.address)
-    if (op.kind === "workspace-monitor") {
-      root.noteEffect("workspace-monitor", op.workspaceId + "@" + op.monitorName)
-    }
 
     // A CHOREOGRAPHED move is a move the planner stamped with the window whose
     // tile the arrival has to split; engine.opToCommand puts exactly one focus
@@ -2484,7 +2517,7 @@ Item {
       }
       var home = anchorClient.workspace.id
       root.readMonitors(function (okMon) {
-        var scratch = Engine.pickScratchWorkspace(root.liveClients, okMon ? root.liveMonitors : [])
+        var scratch = Engine.pickScratchWorkspace(root.liveClients, okMon ? root.liveMonitors : [], root.blockTable)
         root.log("scratch join: " + anchor + "+" + address + " via empty ws " + scratch
           + ", home ws " + home)
         root.prependSteps([
@@ -2725,7 +2758,6 @@ Item {
     root.cycleFailures = 0
     root.opsMoved = 0
     root.opsLaunched = 0
-    root.opsWorkspace = 0
     root.opsGrouped = 0
     root.opsUngrouped = 0
     root.opsFloated = 0
@@ -2801,7 +2833,7 @@ Item {
       }
       root.cycleTopologyKey = key
 
-      var layout = StateModel.layoutFor(root.state, key)
+      var layout = Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors)
       if (!layout) {
         // A real topology with nothing recorded for it is a final answer, not a
         // transient one: retrying cannot invent a layout. End the whole cycle.
@@ -3032,6 +3064,18 @@ Item {
 
   function logTilingRefusals(layout, identities) {
     var report = Engine.driftOf(root.liveClients, root.liveMonitors, layout, identities)
+    // Apps the planner will not place because their destination is not
+    // resolvable (yet): once per cycle per app and reason, like the refusals.
+    var apps = report.apps || []
+    for (var a = 0; a < apps.length; a++) {
+      var reason = apps[a].reason
+      if (reason !== "monitor-unassigned" && reason !== "monitor-unknown"
+          && reason !== "slot-unknown" && reason !== "workspace-elsewhere") continue
+      var skipKey = "skip\u0000" + apps[a].identityId + "\u0000" + apps[a].occurrence + "\u0000" + reason
+      if (root.loggedRefusals[skipKey]) continue
+      root.loggedRefusals[skipKey] = true
+      root.log("restore SKIPPED " + apps[a].identityId + " #" + apps[a].occurrence + " (" + reason + ")")
+    }
     var refusals = report.tilingRefusals || []
     for (var i = 0; i < refusals.length; i++) {
       var refusal = refusals[i]
@@ -3099,11 +3143,11 @@ Item {
   }
 
   function finishCycle() {
-    var total = root.opsMoved + root.opsLaunched + root.opsWorkspace + root.opsGrouped
+    var total = root.opsMoved + root.opsLaunched + root.opsGrouped
       + root.opsUngrouped + root.opsFloated + root.opsPlaced + root.opsTiled
     root.log("restore cycle done (" + root.cycleReason + "): " + total + " ops — "
       + root.opsMoved + " moved, " + root.opsLaunched + " launched, "
-      + root.opsWorkspace + " workspace, " + root.opsGrouped + " grouped, "
+      + root.opsGrouped + " grouped, "
       + root.opsUngrouped + " ungrouped, " + root.opsFloated + " floated, "
       + root.opsPlaced + " placed, " + root.opsTiled + " retiled")
 
@@ -3199,7 +3243,7 @@ Item {
   function cycleVerdicts() {
     var key = Engine.topologyKey(root.liveMonitors)
     if (!key) return []
-    var layout = StateModel.layoutFor(root.state, key)
+    var layout = Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors)
     if (!layout) return []
     var drift = Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state))
     return Engine.verdictsFor(drift, root.cycleOutcomes)
@@ -3241,7 +3285,7 @@ Item {
         ok: false,
         failures: root.cycleFailures,
         summary: (summary && summary.text) || "",
-        recording: StateModel.layoutFor(root.state, root.cycleTopologyKey),
+        recording: Slots.toLive(StateModel.layoutFor(root.state, root.cycleTopologyKey), root.blockTable, root.liveMonitors),
         identities: StateModel.identities(root.state),
         // The raw reads, verbatim: a dump that had been through a normalizer
         // could not reproduce a bug in the normalizer.
@@ -3308,7 +3352,6 @@ Item {
     var parts = []
     if (root.opsMoved > 0) parts.push(root.opsMoved + " moved")
     if (root.opsLaunched > 0) parts.push(root.opsLaunched + " launched")
-    if (root.opsWorkspace > 0) parts.push(root.opsWorkspace + " workspace")
     if (root.opsGrouped > 0) parts.push(root.opsGrouped + " grouped")
     if (root.opsUngrouped > 0) parts.push(root.opsUngrouped + " ungrouped")
     if (root.opsFloated > 0) parts.push(root.opsFloated + " floated")
