@@ -902,6 +902,41 @@ function makeSimulator(clients, monitors, identities) {
 // the first occurrence" are not op KINDS, they are the shape a
 // one-entry-per-identity planner would have had, and they are exactly what this
 // file has to be able to notice.
+// THE ARRIVAL AXIS (9i2 §2.5), checked against the RECORDING rather than the
+// simulator, which models no tree. Every choreographed move belongs to a
+// complete program (`sequenced`), and every LEADER arrival names the axis of
+// the recorded cut it makes: the arrival takes the far side, so its recorded
+// rect lies wholly beyond its parent's on that axis. A group member chaining
+// off a tab of its own group carries no axis — the group op folds it away.
+// Without the axis the service cannot tell a wrong split from a right one,
+// every dispatch still answers "ok", and the restore rebuilds whatever shape
+// dwindle's tile-shape rule picked.
+function checkArrivalAxes(plan, clients, monitors, layout, identities, tag) {
+  const choreographed = plan.filter((op) => op.kind === "move" && op.splitParent);
+  if (!choreographed.length) return;
+  const report = engine.driftOf(clients, monitors, layout, identities);
+  const recordedOf = {};
+  report.apps.forEach((entry, i) => {
+    if (entry && entry.current) recordedOf[entry.current.address] = layout.apps[i];
+  });
+  for (const op of choreographed) {
+    assert.strictEqual(op.sequenced, true, `${tag}: a choreographed move is not marked sequenced: ${JSON.stringify(op)}`);
+    const arrival = recordedOf[op.address];
+    const parent = recordedOf[op.splitParent];
+    assert.ok(arrival && parent, `${tag}: a choreographed move names a window the recording does not: ${JSON.stringify(op)}`);
+    const member = arrival.group && parent.group && arrival.group.groupId === parent.group.groupId;
+    if (member) {
+      assert.strictEqual(op.splitAxis, undefined, `${tag}: a tab's chain move carries an axis: ${JSON.stringify(op)}`);
+      continue;
+    }
+    assert.ok(op.splitAxis === 0 || op.splitAxis === 1,
+      `${tag}: a leader arrival carries no split axis: ${JSON.stringify(op)}`);
+    const axis = op.splitAxis;
+    assert.ok(arrival.at[axis] >= parent.at[axis] + parent.size[axis],
+      `${tag}: ${op.address} is not recorded beyond ${op.splitParent} on axis ${axis}`);
+  }
+}
+
 function runCase(caseIndex, caseSeed, suppress) {
   const rng = makeRng(caseSeed);
   const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng);
@@ -939,6 +974,7 @@ function runCase(caseIndex, caseSeed, suppress) {
       assert.ok(!engine.samePlan(plan, previous),
         `${tag}: no progress — the identical plan came back: ${engine.planSignature(plan)}`);
     }
+    checkArrivalAxes(plan, sim.state.clients, liveMonitors, layout, planIdentities, tag);
     for (const op of plan) sim.apply(op);
     previous = plan;
   }
@@ -1168,6 +1204,39 @@ test("dropping the viaMonitor workspace move makes the property fail", () => {
   assert.ok(failed, "dropping every viaMonitor left the property GREEN — the new-workspace path is not being tested");
   assert.ok(!/is not a function|undefined is not|Cannot read/.test(firstError),
     "dropping viaMonitor failed with a harness error rather than a property violation: " + firstError);
+});
+
+// ------------------------------------------------ mutation: the arrival axis
+//
+// A planner that forgot `splitAxis` (or emitted the wrong one) still converges
+// in the simulator, which models no tree — so the axis is checked against the
+// recording in checkArrivalAxes, and dropping it must turn the property red.
+
+test("dropping splitAxis from the arrival program makes the property fail", () => {
+  const seeds = caseSeeds(CASES);
+  const strip = (plan) => plan.map((op) => {
+    if (op.kind !== "move" || op.splitAxis === undefined) return op;
+    const copy = { ...op };
+    delete copy.splitAxis;
+    return copy;
+  });
+  const flip = (plan) => plan.map((op) =>
+    (op.kind === "move" && op.splitAxis !== undefined ? { ...op, splitAxis: 1 - op.splitAxis } : op));
+  for (const [label, mutation] of [["dropping", strip], ["flipping", flip]]) {
+    let failed = false;
+    let firstError = "";
+    for (let i = 0; i < CASES && !failed; i++) {
+      try {
+        runCase(i, seeds[i], mutation);
+      } catch (error) {
+        failed = true;
+        firstError = String(error && error.message);
+      }
+    }
+    assert.ok(failed, label + " every splitAxis left the property GREEN — the arrival axis is not being tested");
+    assert.ok(/split axis|beyond/.test(firstError),
+      label + " splitAxis failed for another reason than the axis: " + firstError);
+  }
 });
 
 // ------------------------------------------------ the flip, through the simulator

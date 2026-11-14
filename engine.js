@@ -3652,7 +3652,10 @@ function placementOrderOf(items) {
   while (queue.length) {
     var node = queue.shift();
     if (node.key !== undefined) continue;
-    order.push({ key: firstKeyOf(node.far), parentKey: firstKeyOf(node.near) });
+    // `axis` is the cut this arrival makes (epic 9i2 §2.5): 0 when it lands
+    // beside its parent, 1 when it lands below. The arrival always takes the
+    // far side, so the axis is the whole of what the service has to check.
+    order.push({ key: firstKeyOf(node.far), parentKey: firstKeyOf(node.near), axis: node.axis });
     // Unshifted, near first, so the traversal stays pre-order rather than
     // becoming a breadth-first sweep — see the argument above.
     queue.unshift(node.far);
@@ -4116,10 +4119,18 @@ function modeRefusalBlocksFloating(refusal, recorded) {
 // windows (nothing to refine), or two sets of different sizes (a workspace
 // mid-restore, which the gate above has already excluded and which will be
 // asked again next pass).
-function tilingRefusalOf(recordedItems, liveItems) {
+//
+// `opts.treeKnown` (§2.5): the live tree is the recorded tree, so the only
+// question left is whether the recording is a tree at all. See
+// planWorkspaceTiling for why that is sound.
+function tilingRefusalOf(recordedItems, liveItems, opts) {
   var recorded = recordedItems || [];
   var live = liveItems || [];
   if (recorded.length < 2 || recorded.length !== live.length) return null;
+
+  if (opts && opts.treeKnown === true) {
+    return splitTreeOf(recorded) ? null : TILING_REFUSAL_NOT_A_TREE;
+  }
 
   var recordedTree = splitTreeOf(recorded);
   var liveTree = splitTreeOf(live);
@@ -4151,26 +4162,63 @@ function tilingRefusalOf(recordedItems, liveItems) {
 // refuses for a reason worth saying out loud — an out-parameter rather than a
 // richer return value because every caller and every test of this function
 // reads "null means nothing to do", and a refusal IS nothing to do.
-function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
+//
+// `opts.treeKnown` (epic 9i2 §2.5): THE KNOWN TREE. Set by the planner only for
+// a workspace whose `context.built[workspaceId]` is true, and then the recorded
+// tree — splitTreeOf(recorded), the very tree placementOrderOf read the arrival
+// program from — IS the live tree. No live reconstruction, no ambiguity
+// refusal, no flip, no swap: only the divider candidates, computed by the
+// recorded tree's sign law against the live rects taken in recorded leaf
+// order, one nudge per plan as without the flag.
+//
+// Why that is sound, and not the guess the eqb law forbids. The ambiguity
+// refusal exists because, on rects that fit two trees, this planner cannot tell
+// which one the COMPOSITOR holds, and a nudge aimed at the wrong one inverts the
+// sign law. With the flag that question has already been answered by the
+// compositor itself: the service sets `built` only when, in one plan, every
+// `sequenced` move to the workspace executed, every focus read-back showed the
+// named split parent focused before its arrival, and every `splitAxis`
+// read-back showed the arrival on the recorded side of it. An arrival splits
+// exactly the focused tile and takes its far side, so a program of pre-order
+// arrivals, each confirmed on its parent and its axis, builds the tree the
+// program was read from, node for node — whatever else those rects would also
+// fit. The flag lives for ONE restore (cleared at cycle start, never
+// persisted, deleted when the shape is abandoned), so a tree the user re-tiles
+// later is asked about from scratch. Without the flag nothing changes: an
+// ambiguous workspace the plugin did not build stays refused.
+//
+// A recording that is not a tree is still `not-a-tree`; with no tree there was
+// no program, and nothing was built from it.
+function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
   var recorded = recordedItems || [];
   var live = liveItems || [];
   if (recorded.length < 2 || recorded.length !== live.length) return null;
+  var treeKnown = !!(opts && opts.treeKnown === true);
+  // Nothing reconstructs the live side when the tree is known, so nothing else
+  // would notice a live rect that is no rect at all.
+  if (treeKnown) {
+    for (var v = 0; v < live.length; v++) {
+      if (!live[v] || !isRectPair(live[v].at) || !isRectPair(live[v].size)) return null;
+    }
+  }
 
-  var refusal = tilingRefusalOf(recorded, live);
+  var refusal = tilingRefusalOf(recorded, live, opts);
   if (refusal) {
     if (refusalOut) refusalOut.reason = refusal;
     return null;
   }
 
   var recordedTree = splitTreeOf(recorded);
-  var liveTree = splitTreeOf(live);
+  // Known: the recorded tree stands for the live one, occupants included — the
+  // program put each window in its recorded slot and the read-backs said so.
+  var liveTree = treeKnown ? recordedTree : splitTreeOf(live);
 
   // ONE FLIP AND NOTHING ELSE THIS PLAN. The flip changes every rect under the
   // flipped node, so any swap or nudge computed here would be computed against
   // a tiling that is about to stop existing. The pass's own re-plan is where
   // occupancy and ratios get their turn — against the shape this op produced,
   // read back from the compositor rather than predicted.
-  var flip = singleFlipOf(recordedTree, liveTree);
+  var flip = treeKnown ? null : singleFlipOf(recordedTree, liveTree);
   if (flip) {
     return { swaps: [], dividers: [], split: { address: flip.address }, meanIou: null };
   }
@@ -4758,10 +4806,25 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups, cont
       ok: true, items: items, live: live,
       workspaceId: group.workspaceId,
       monitorDescription: group.monitorDescription,
-      modeRefusal: group.modeRefusal
+      modeRefusal: group.modeRefusal,
+      // §2.5: this restore built the workspace itself and read every arrival
+      // back, so its recorded tree is the live tree (planWorkspaceTiling).
+      treeKnown: builtByThisCycle(context, group.workspaceId)
     });
   }
   return out;
+}
+
+// Did this restore build this workspace itself, every arrival read back
+// (context.built, §2.5)? Only an own `true` counts — `built` is keyed by
+// workspace id, and an inherited "constructor" is not a workspace.
+function builtByThisCycle(context, workspaceId) {
+  if (!context || !context.built || typeof context.built !== "object") return false;
+  return own(context.built, String(workspaceId)) === true;
+}
+
+function treeOptsOf(group) {
+  return group && group.treeKnown ? { treeKnown: true } : undefined;
 }
 
 // Is this workspace already where the recording puts it?
@@ -4821,7 +4884,7 @@ function tilingRefusalsFrom(groups) {
   var out = [];
   for (var i = 0; i < groups.length; i++) {
     if (tilingSettled(groups[i].items, groups[i].live)) continue;
-    var reason = groups[i].modeRefusal || tilingRefusalOf(groups[i].items, groups[i].live);
+    var reason = groups[i].modeRefusal || tilingRefusalOf(groups[i].items, groups[i].live, treeOptsOf(groups[i]));
     if (!reason) continue;
     out.push({
       workspaceId: groups[i].workspaceId,
@@ -4850,7 +4913,7 @@ function tilingShapesFrom(groups) {
     var reason = groups[i].modeRefusal || null;
     if (!reason) {
       var refusal = {};
-      planWorkspaceTiling(groups[i].items, groups[i].live, refusal);
+      planWorkspaceTiling(groups[i].items, groups[i].live, refusal, treeOptsOf(groups[i]));
       reason = refusal.reason || null;
     }
     out.push({
@@ -4882,7 +4945,7 @@ function planTiledRefinements(recordedApps, report, clients, context) {
     // recorded one drew other rects (§2.4): no split, swap or divider at all.
     // On scrolling a swap and a resize both answer "ok" and rearrange.
     if (group.modeRefusal) continue;
-    var program = planWorkspaceTiling(group.items, group.live);
+    var program = planWorkspaceTiling(group.items, group.live, null, treeOptsOf(group));
     if (!program) continue;
     if (program.split) {
       splits.push({ kind: "split", address: program.split.address, workspaceId: group.workspaceId });
@@ -5117,12 +5180,25 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   // resolve, and a partly-choreographed workspace is worse than an
   // unchoreographed one: it focuses some windows and not others, which is a
   // program nobody designed.
+  //
+  // Each LEADER arrival also carries `splitAxis` (§2.5): the axis of the
+  // recorded cut it makes — 0 beside its parent, 1 below it. Dwindle picks an
+  // arrival's axis from the shape of the tile it splits (wider: side by side,
+  // taller: stacked — §2 amendment), not from the recording, so the service
+  // reads the axis back after the arrival and flips that one node with a
+  // single togglesplit when it came out wrong. A member arrival carries none:
+  // the group op folds it into the leader's tile, and whichever way it split
+  // is gone once it has. Every move of a complete program carries
+  // `sequenced: true`, which is how the service knows the moves to check
+  // before it may declare the workspace built (context.built).
   var out = [];
   var parents = [];
+  var axes = [];
   for (var o = 0; o < order.length; o++) {
     if (!byAddress[order[o].key] || !own(tileByKey, order[o].key)) return group;
     out.push(byAddress[order[o].key]);
     parents.push(order[o].parentKey);
+    axes.push(order[o].parentKey ? order[o].axis : null);
   }
   for (var lo = 0; lo < order.length; lo++) {
     var members = tileByKey[order[lo].key].members;
@@ -5130,11 +5206,14 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
       if (!byAddress[members[mm]]) return group;
       out.push(byAddress[members[mm]]);
       parents.push(members[mm - 1]);
+      axes.push(null);
     }
   }
   if (out.length !== group.length) return group;
   for (var s = 0; s < out.length; s++) {
+    out[s].sequenced = true;
     if (parents[s]) out[s].splitParent = parents[s];
+    if (parents[s] && (axes[s] === 0 || axes[s] === 1)) out[s].splitAxis = axes[s];
   }
   return out;
 }
@@ -5295,6 +5374,9 @@ function opSignature(op) {
     return "move:" + op.address + "->" + op.workspaceId +
       (op.viaMonitor ? "@" + (op.monitorName || "") : "") +
       (op.splitParent ? "^" + op.splitParent : "");
+    // `splitAxis` and `sequenced` are NOT signed: both are read off the same
+    // recorded tree as the split parent, so two plans with one parent order
+    // carry the same axes, and an unsequenced move has neither field at all.
   }
   if (op.kind === "floating") return "floating:" + op.address + "->" + (op.value ? "float" : "tile");
   // The TARGET rect is part of the signature, not the live one: two passes that
@@ -5419,7 +5501,9 @@ function describeOp(op) {
   if (op.kind === "move") {
     return "move " + op.address + " -> ws " + op.workspaceId +
       (op.viaMonitor ? " (new, on " + (op.monitorName || "(no monitor)") + ")" : "") +
-      (op.splitParent ? " (splitting " + op.splitParent + ")" : "");
+      (op.splitParent ? " (splitting " + op.splitParent
+        + (op.splitAxis === 0 ? ", side by side" : (op.splitAxis === 1 ? ", stacked" : ""))
+        + ")" : "");
   }
   if (op.kind === "floating") {
     return (op.value ? "float " : "tile ") + op.address;

@@ -701,10 +701,12 @@ function leavesOf(node, acc) {
   return out;
 }
 
-function applyDividerToTiling(items, op) {
+// `knownTree` (optional): the tree the compositor holds, when the rects alone
+// cannot say (an ambiguous layout the restore built itself, §2.5).
+function applyDividerToTiling(items, op, knownTree) {
   const byKey = {};
   for (const item of items) byKey[item.key] = { key: item.key, at: item.at.slice(), size: item.size.slice() };
-  const tree = engine.splitTreeOf(items);
+  const tree = knownTree || engine.splitTreeOf(items);
   assert.ok(tree, "the fixture stopped being a tiling");
 
   const axis = op.axis;
@@ -1268,4 +1270,141 @@ test("9i2 modes: no context, or a context that reads nothing, is the plan withou
     assert.equal(JSON.stringify(engine.driftOf(clients, MONITORS, layout, ids, { workspaces: [], built: null })),
       JSON.stringify(engine.driftOf(clients, MONITORS, layout, ids)));
   }
+});
+
+// ------------------------------------------- the known tree (9i2 §2.5)
+//
+// A workspace this restore BUILT, every arrival's focus and axis read back
+// (context.built), holds the tree its program was read from — whatever else
+// its rects would also fit. So its ambiguity is no reason to refuse: the
+// recorded tree is the live tree, and only the dividers are left to move.
+// Without the flag nothing changes.
+
+// Probe T (finding-grouping-tiling): three stacked rows on the nested
+// sandbox's 701x850 output, tb on top, the inner divider dragged so ta is
+// short. Recorded is the probe's REC lines; built is what the arrival program
+// leaves with every split 50/50 — the shape the probe scored 0.804.
+const T_RECORDED = [
+  { key: "ta", at: [5, 428], size: [691, 136] },
+  { key: "tb", at: [5, 5], size: [691, 417] },
+  { key: "tc", at: [5, 570], size: [691, 275] }
+];
+const T_BUILT = [
+  { key: "ta", at: [5, 428], size: [691, 205] },
+  { key: "tb", at: [5, 5], size: [691, 417] },
+  { key: "tc", at: [5, 639], size: [691, 206] }
+];
+const KNOWN = { treeKnown: true };
+
+test("9i2 known tree: probe T's three rows get one divider op on ta, the near side of the inner cut", () => {
+  assert.equal(engine.layoutIsAmbiguous(T_RECORDED), true, "the fixture must be the ambiguous case");
+  const program = engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, KNOWN);
+  assert.deepEqual(program.swaps, [], "the program put everyone in their slot: nothing to swap");
+  assert.equal(program.split, undefined, "and nothing to flip");
+  assert.deepEqual(program.dividers, [{ address: "ta", axis: 1, size: [691, 136] }]);
+  assert.equal(engine.tilingRefusalOf(T_RECORDED, T_BUILT, KNOWN), null);
+});
+
+test("9i2 known tree: probe T converges in at most two simulated plans", () => {
+  const tree = engine.splitTreeOf(T_RECORDED);
+  let current = T_BUILT.map((i) => ({ key: i.key, at: i.at.slice(), size: i.size.slice() }));
+  let plans = 0;
+  for (; plans < 5; plans++) {
+    const program = engine.planWorkspaceTiling(T_RECORDED, current, null, KNOWN);
+    if (!program) break;
+    assert.equal(program.dividers.length, 1, "one nudge per plan");
+    current = applyDividerToTiling(current, { kind: "divider", ...program.dividers[0] }, tree);
+  }
+  assert.ok(plans <= 2, "took " + plans + " plans");
+  assert.ok(engine.tilingSettled(T_RECORDED, current), "the rows are back where they were recorded");
+  assert.deepEqual(current.find((i) => i.key === "ta").size, [691, 136]);
+});
+
+test("9i2 known tree: the same rects WITHOUT the flag stay refused as ambiguous, with no op", () => {
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, refusal), null);
+  assert.equal(refusal.reason, "ambiguous-tree");
+  assert.equal(engine.tilingRefusalOf(T_RECORDED, T_BUILT), "ambiguous-tree");
+  // A false or absent flag is no flag.
+  assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, { treeKnown: false }), null);
+  assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, {}), null);
+});
+
+test("9i2 known tree: a 2x2 grid recorded horizontal-first nudges the recorded tree's divider", () => {
+  // The two rows were recorded with their dividers at different x — only a
+  // horizontal root fits that. Built 50/50 it is a perfect grid, which fits
+  // both trees, so the rects alone cannot say which column divider is a's.
+  const recorded = [
+    { key: "a", at: [0, 0], size: [600, 400] },
+    { key: "b", at: [600, 0], size: [800, 400] },
+    { key: "c", at: [0, 400], size: [700, 400] },
+    { key: "d", at: [700, 400], size: [700, 400] }
+  ];
+  const built = [
+    { key: "a", at: [0, 0], size: [700, 400] },
+    { key: "b", at: [700, 0], size: [700, 400] },
+    { key: "c", at: [0, 400], size: [700, 400] },
+    { key: "d", at: [700, 400], size: [700, 400] }
+  ];
+  assert.equal(engine.layoutIsAmbiguous(recorded), false);
+  assert.equal(engine.layoutIsAmbiguous(built), true);
+  assert.equal(engine.splitTreeOf(recorded).axis, 1, "the recording is horizontal-first");
+
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(recorded, built, refusal), null);
+  assert.equal(refusal.reason, "ambiguous-tree");
+
+  const program = engine.planWorkspaceTiling(recorded, built, null, KNOWN);
+  // No swap and no flip: a live reconstruction would read the grid column-first
+  // and "fix" occupancy into a tree nobody holds (b and c trading places).
+  assert.deepEqual(program.swaps, []);
+  assert.equal(program.split, undefined);
+  // a is the near side of the TOP row's own divider in the recorded tree; the
+  // bottom row's divider is already where it was recorded and must not move.
+  assert.deepEqual(program.dividers, [{ address: "a", axis: 0, size: [600, 400] }]);
+  const tree = engine.splitTreeOf(recorded);
+  const after = applyDividerToTiling(built, { kind: "divider", ...program.dividers[0] }, tree);
+  assert.deepEqual(after.find((i) => i.key === "c").size, [700, 400], "the bottom row did not move");
+  assert.equal(engine.planWorkspaceTiling(recorded, after, null, KNOWN), null, "converged in one nudge");
+});
+
+test("9i2 known tree: a recording that is not a tree is still not-a-tree", () => {
+  const pinwheel = [
+    { key: "a", at: [0, 0], size: [60, 40] },
+    { key: "b", at: [60, 0], size: [40, 60] },
+    { key: "c", at: [40, 60], size: [60, 40] },
+    { key: "d", at: [0, 40], size: [40, 60] },
+    { key: "e", at: [40, 40], size: [20, 20] }
+  ];
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(pinwheel, pinwheel.map((i) => ({ ...i })), refusal, KNOWN), null);
+  assert.equal(refusal.reason, "not-a-tree");
+  assert.equal(engine.tilingRefusalOf(pinwheel, pinwheel, KNOWN), "not-a-tree");
+});
+
+test("9i2 known tree: through the planner, context.built for the workspace lifts the refusal and nothing else", () => {
+  const ids = ["one", "two", "three"];
+  const classes = ["app-one", "app-two", "app-three"];
+  const layout = layoutN(T_RECORDED, ids);
+  const live = clientsN(T_BUILT, classes);
+  const built = { workspaces: DWINDLE5.workspaces, built: { "5": true } };
+
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [], "not built: refused");
+  assert.deepEqual(engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5).tilingRefusals.map((r) => r.reason),
+    ["ambiguous-tree"]);
+
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, built),
+    [{ kind: "divider", address: "0x1", axis: 1, size: [691, 136] }]);
+  const report = engine.driftOf(live, MONITORS, layout, IDS, built);
+  assert.deepEqual(report.tilingRefusals, []);
+  assert.deepEqual(report.shapes.map((s) => s.reason), [null], "a shape a restore will act on has no reason");
+
+  // Another workspace's flag, or an inherited key, is not this workspace's.
+  for (const other of [{ "6": true }, { "5": "yes" }, Object.create({ "5": true })]) {
+    assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS,
+      { workspaces: DWINDLE5.workspaces, built: other }), [], JSON.stringify(other));
+  }
+  // A mode refusal still outranks the known tree.
+  const scrolled = { workspaces: [{ id: 5, tiledLayout: "scrolling" }], built: { "5": true } };
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, scrolled), []);
 });
