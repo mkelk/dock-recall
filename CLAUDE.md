@@ -32,7 +32,10 @@ keep current. Which ones apply:
   `FileView` never fire.
 - Engine or service touched: `./tests/sandbox-dock.sh` — the nested-compositor
   gate. It runs alongside the live session without disturbing it, so it needs
-  no permission and no quiet moment. `./tests/sim-dock.sh` is the same cases
+  no permission and no quiet moment. The nested compositor loads Omarchy 4.5's
+  own `monitor-workspaces.lua`, so workspace ids follow 4.5's blocks of ten
+  (monitor block * 10 + slot); `./tests/sandbox-slots.sh` is the dock/undock/dock
+  case on top of it. The plugin targets Omarchy 4.5 and newer. `./tests/sim-dock.sh` is the same cases
   against the real desktop and is **on request only**: ask the human first.
 - Before any shell restart: `omarchy-shell lock isLocked` must be `false`. A
   restart kills the lock screen, because `omarchy.lock` runs inside the same
