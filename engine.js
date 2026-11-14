@@ -2223,7 +2223,10 @@ function liveWorkspaceIsElsewhere(liveWorkspaces, recorded) {
 // Per-identity comparison of the recorded layout against the live desktop.
 // This is what powers the UI badge, and planRestore() is derived from it — so
 // what the badge says and what a restore would do can never disagree.
-// `context` (schema v9): the planning context; accepted and threaded, not yet read.
+// `context` (schema v9): the planning context. It supplies each workspace's live
+// layout mode, and through it the §2.4 refusals: no float drift where the mode
+// owns the float state, the mode word on report.tilingRefusals and on
+// report.shapes. Absent, the report is what it was without it.
 function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
@@ -2239,6 +2242,16 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   var appClients = [];
   var summary = { ok: 0, drifted: 0, missing: 0, skipped: 0 };
   var liveWorkspaces = liveWorkspaceMonitors(clients, monitors);
+  // The layout-mode refusal of each recorded workspace (schema v9), asked once
+  // per workspace. Always null without a context.
+  var modeRefusals = {};
+  function modeRefusalFor(rec) {
+    var key = String(rec.monitorDescription || "") + "\u0000" + String(rec.workspaceId);
+    if (!Object.prototype.hasOwnProperty.call(modeRefusals, key)) {
+      modeRefusals[key] = workspaceModeRefusalOf(recordedApps, context, clients, rec.workspaceId, rec.monitorDescription);
+    }
+    return modeRefusals[key];
+  }
 
   // Pass 1: everything except the group verdict, which cannot be reached one
   // app at a time — whether a group is right depends on which of its OTHER
@@ -2339,6 +2352,11 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
         entry.drift.monitor = entry.current.monitorDescription !== recorded.monitorDescription;
         entry.drift.workspace = entry.current.workspaceId !== recorded.workspaceId;
         entry.drift.floating = !!entry.current.floating !== !!recorded.floating;
+        // A layout mode that floats and tiles windows itself (§2.4): the float
+        // state is the mode's, so it is no drift and no `floating` op.
+        if (entry.drift.floating && modeRefusalBlocksFloating(modeRefusalFor(recorded), recorded)) {
+          entry.drift.floating = false;
+        }
         // Recorded ungrouped: being in a WATCHED group now IS drift, and since
         // tick 8t4 the plan fixes it with an "ungroup" op — the recording is
         // the statement "these windows stand alone", and a restore that cannot
@@ -2390,6 +2408,14 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
     // reads this field and emits nothing when it is set.
     if (entry.drift.geometry) {
       entry.geometry.skip = geometryPlanSkip(entry.recorded, monitors);
+      // A recorded float whose float toggle the layout mode took away (§2.4),
+      // and whose window is TILED now: the geometry op would run against a
+      // tiled window, where `resize` silently moves the split (tick y29). The
+      // mode's refusal word is the reason the planner leaves it.
+      if (!entry.geometry.skip && entry.current && !entry.current.floating
+        && modeRefusalBlocksFloating(modeRefusalFor(recorded), recorded)) {
+        entry.geometry.skip = modeRefusalFor(recorded);
+      }
     }
 
     apps.push(entry);
@@ -2411,7 +2437,8 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   // ceiling the person looking at the amber number cannot find.
   // Handed the group verdicts from pass 2 (epic 9i2): a tab group is one tile
   // only while its group is intact, and only `groups` can say that.
-  var tilingRefusals = tilingRefusalsOf(recordedApps, apps, clients, groups);
+  var tiledWorkspaces = tiledWorkspacesOf(recordedApps, apps, clients, groups, context);
+  var tilingRefusals = tilingRefusalsFrom(tiledWorkspaces);
   var refusalByWorkspace = {};
   for (var t = 0; t < tilingRefusals.length; t++) {
     refusalByWorkspace[String(tilingRefusals[t].monitorDescription || "")
@@ -2443,7 +2470,10 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
     geometry: geometrySummaryOf(apps, refusalByWorkspace),
     // The refusals as a list, for a caller that wants them without walking the
     // workspace rows — the service logs from this one.
-    tilingRefusals: tilingRefusals
+    tilingRefusals: tilingRefusals,
+    // The unmet tiled shapes (§2.7), refused or not: what a person looking at
+    // drift=0 beside a wrong tiling needs to see.
+    shapes: tilingShapesFrom(tiledWorkspaces)
   };
 }
 
@@ -2768,8 +2798,11 @@ function rectIou(recorded, current) {
 //                                    // nothing and a float's IoU is a useful
 //                                    // second opinion), aggregated for tiled.
 //     skip:      null | string       // why the PLANNER declined to act on a
-//                                    // `geometry-off` float: "off-region" or
-//                                    // "non-positive-size". null on every
+//                                    // `geometry-off` float: "off-region",
+//                                    // "non-positive-size", or a layout-mode
+//                                    // refusal word that took the float's
+//                                    // toggle away while it is tiled (§2.4,
+//                                    // driftOf). null on every
 //                                    // other score, including every one that
 //                                    // was never a candidate for an op. See
 //                                    // geometryPlanSkip.
@@ -3142,6 +3175,9 @@ var GEOMETRY_SKIP_PHRASES = {
 function geometrySkipPhrase(skip) {
   if (!skip) return "";
   var phrase = own(GEOMETRY_SKIP_PHRASES, skip);
+  // A layout-mode refusal can veto a float's geometry op too (driftOf); its
+  // sentence is the tiling one.
+  if (phrase === undefined) phrase = own(TILING_REFUSAL_PHRASES, skip);
   return phrase === undefined ? String(skip) : phrase;
 }
 
@@ -4002,6 +4038,74 @@ function tilingRefusalPhrase(reason) {
   return phrase === undefined ? String(reason) : phrase;
 }
 
+// The layout-mode refusal for ONE workspace, or null (schema v9, §2.4).
+//
+//   recordedMode  the `layoutMode` every recorded app of the workspace shares,
+//                 or null (not recorded, or the apps disagree)
+//   liveMode      workspaceModeOf for the workspace now, or null (unknown)
+//
+// The live word comes first because it is the one the desktop can act on: a
+// scrolling or floating workspace has no split tree, whatever it was recorded
+// in. A recorded mode that differs from a known live one is refused next — the
+// recorded rects were drawn by another layout and are no shape to aim at here.
+// Either side null and the question is not asked: no context, no refusal.
+function layoutModeRefusalOf(recordedMode, liveMode) {
+  if (liveMode === "scrolling") return TILING_REFUSAL_LAYOUT_SCROLLING;
+  if (liveMode === "floating") return TILING_REFUSAL_LAYOUT_FLOATING;
+  if (recordedMode && liveMode && recordedMode !== liveMode) return TILING_REFUSAL_LAYOUT_MODE_DIFFERS;
+  return null;
+}
+
+// The `layoutMode` the recording gives one workspace: the value every recorded
+// app on it carries, when it is the same non-null value on all of them; else
+// null. Every recorded app counts, floats and skipped ones included — the mode
+// is a fact about the workspace, and an app the plan will not touch was still
+// recorded in it.
+function recordedLayoutModeOf(recordedApps, workspaceId, monitorDescription) {
+  var list = recordedApps || [];
+  var mode = null;
+  for (var i = 0; i < list.length; i++) {
+    var recorded = list[i];
+    if (!recorded) continue;
+    if (String(recorded.workspaceId) !== String(workspaceId)) continue;
+    if (String(recorded.monitorDescription) !== String(monitorDescription)) continue;
+    var m = recorded.layoutMode;
+    if (m !== "dwindle" && m !== "scrolling" && m !== "floating") return null;
+    if (mode === null) mode = m;
+    else if (mode !== m) return null;
+  }
+  return mode;
+}
+
+// The layout-mode refusal for a recorded workspace on this desktop: what
+// layoutModeRefusalOf answers for its recorded and live modes. Null without a
+// context, so every caller is unchanged when there is none.
+//
+// A STALE TAG reads as floating, and that is the safe way round. 4.5 strips
+// FLOATING_WORKSPACE_TAG from a window carried off a floating workspace one
+// timer tick after the move lands (workspace-modes.lua, window.move_to_workspace),
+// so a read in between sees the tag on the destination. workspaceModeOf then
+// answers "floating" for a tiled workspace, and the plan does LESS — no tiled
+// op, no float toggle there — for one pass; the next read has lost the tag and
+// plans the rest. The opposite rule (every window must carry the tag) would
+// misread a floating workspace whose newest window is not tagged yet as tiled,
+// and plan splits and a float toggle against the mode.
+function workspaceModeRefusalOf(recordedApps, context, clientsJson, workspaceId, monitorDescription) {
+  if (!context) return null;
+  var liveMode = workspaceModeOf(context, clientsJson, workspaceId);
+  if (liveMode === null) return null;
+  return layoutModeRefusalOf(recordedLayoutModeOf(recordedApps, workspaceId, monitorDescription), liveMode);
+}
+
+// Does this mode refusal take the `floating` op away from this recorded app?
+// On a floating workspace the mode floats and tiles windows itself, so a float
+// toggle would fight it; on a workspace recorded floating and now in another
+// mode, the recorded float was the mode's doing, not the app's.
+function modeRefusalBlocksFloating(refusal, recorded) {
+  if (refusal === TILING_REFUSAL_LAYOUT_FLOATING) return true;
+  return refusal === TILING_REFUSAL_LAYOUT_MODE_DIFFERS && !!recorded && recorded.layoutMode === "floating";
+}
+
 // Why this workspace cannot be refined, or null when it can.
 //
 // Asked of the two rect sets and of nothing else, so the planner and the report
@@ -4218,11 +4322,10 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 //            //   move this planner ever dispatches: the new workspace onto its
 //            //   owner. See opToCommand.
 //      | { kind: "floating", address, value }
-//            // value: the recorded floating state. Executed by the service as
-//            //   a READ-GATED targeted toggle — see the floating verb evidence
-//            //   above opToCommand: on Hyprland 0.56 the float dispatcher only
-//            //   ever toggles, so a blind dispatch can invert a window that is
-//            //   already right.
+//            // value: the recorded floating state. Dispatched as an ABSOLUTE
+//            //   `action = "on"|"off"` (nested-notes 9i2 (g)); the service
+//            //   still reads the window first — see the floating verb
+//            //   evidence above opToCommand.
 //      | { kind: "split",  address, workspaceId }
 //            // address: a window whose PARENT node in the live split tree has
 //            //   the wrong orientation — the one node the live tiling differs
@@ -4258,7 +4361,9 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 // after the launches settle the service simply plans again, and the second plan
 // contains the moves and groups the first could not express.
 
-// `context` (schema v9): the planning context, handed to driftOf; not yet read here.
+// `context` (schema v9): the planning context, handed to driftOf and read for the
+// §2.4 layout-mode refusals (no tiled op, no splitParent on a refused
+// workspace). Absent, the plan is byte-identical to the plan without it.
 function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   var clients = clientsJson || [];
   var report = driftOf(clients, monitorsJson, layout, identities, context);
@@ -4412,9 +4517,9 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   // the re-plan that follows is where it does its work. Which is also why it
   // costs nothing on a converged desktop: it plans, finds the slots right and
   // the ratios inside 0.95, and returns empty.
-  var refinements = planTiledRefinements(recordedApps, report, clients);
+  var refinements = planTiledRefinements(recordedApps, report, clients, context);
 
-  var orderedMoves = applyPlacementOrder(moves, moveRects, recordedApps, report, clients);
+  var orderedMoves = applyPlacementOrder(moves, moveRects, recordedApps, report, clients, context);
   stampViaMonitor(orderedMoves, clients, monitorsJson);
 
   return launches
@@ -4546,7 +4651,7 @@ function stampViaMonitor(moves, clientsJson, monitorsJson) {
 // The stranger rule counts a client only if it is not a TAB of one of the
 // workspace's tiles: an unwatched window tabbed into a group shares the group's
 // rect and takes no tile of its own.
-function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups) {
+function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups, context) {
   var apps = appEntries || [];
   var byWorkspace = {};
   var order = [];
@@ -4569,7 +4674,10 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups) {
       byWorkspace[key] = {
         ok: true, entries: [], liveEntries: [],
         workspaceId: recorded.workspaceId,
-        monitorDescription: recorded.monitorDescription
+        monitorDescription: recorded.monitorDescription,
+        // §2.4: null without a context, and then nothing below changes.
+        modeRefusal: workspaceModeRefusalOf(recordedApps, context, clients,
+          recorded.workspaceId, recorded.monitorDescription)
       };
       order.push(key);
     }
@@ -4577,7 +4685,10 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups) {
 
     // Any one of these and the workspace is not finished, so it is not ours.
     if (entry.status === "missing" || !entry.current) { bucket.ok = false; continue; }
-    if (recorded.floating || entry.current.floating) { bucket.ok = false; continue; }
+    // A window the FLOATING layout floated is still a tile of the recording:
+    // the workspace is finished, and its refusal is what gets said about it.
+    if (recorded.floating) { bucket.ok = false; continue; }
+    if (entry.current.floating && bucket.modeRefusal !== TILING_REFUSAL_LAYOUT_FLOATING) { bucket.ok = false; continue; }
     if (entry.drift.workspace || entry.drift.monitor) { bucket.ok = false; continue; }
     // Pending: a group still to be built, rebuilt or dissolved.
     if (entry.drift.group) { bucket.ok = false; continue; }
@@ -4646,7 +4757,8 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups) {
     out.push({
       ok: true, items: items, live: live,
       workspaceId: group.workspaceId,
-      monitorDescription: group.monitorDescription
+      monitorDescription: group.monitorDescription,
+      modeRefusal: group.modeRefusal
     });
   }
   return out;
@@ -4661,20 +4773,27 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups) {
 // two windows in each other's slots share few pixels with their own recorded
 // rects.
 function tilingSettled(recordedItems, liveItems) {
+  var mean = tilingMeanIouOf(recordedItems, liveItems);
+  return mean !== null && mean >= TILED_REFINEMENT_TARGET_IOU;
+}
+
+// The mean IoU of each tile against its own recorded rect, or null when the two
+// sides are not the same tiles (or a rect cannot be scored).
+function tilingMeanIouOf(recordedItems, liveItems) {
   var recorded = recordedItems || [];
   var live = liveItems || [];
-  if (!recorded.length || recorded.length !== live.length) return false;
+  if (!recorded.length || recorded.length !== live.length) return null;
   var byKey = {};
   for (var i = 0; i < live.length; i++) byKey[live[i].key] = live[i];
   var total = 0;
   for (var r = 0; r < recorded.length; r++) {
     var mine = own(byKey, recorded[r].key);
-    if (!mine) return false;
+    if (!mine) return null;
     var score = rectIou(recorded[r], mine);
-    if (score === null) return false;
+    if (score === null) return null;
     total += score;
   }
-  return (total / recorded.length) >= TILED_REFINEMENT_TARGET_IOU;
+  return total / recorded.length;
 }
 
 // The refusals, for the report: every gate-passing workspace whose tiling this
@@ -4692,16 +4811,52 @@ function tilingSettled(recordedItems, liveItems) {
 // ceiling stops being read at all. So a SETTLED workspace reports nothing. The
 // planner's refusal is unchanged, and the sentence comes back the moment the
 // workspace drifts — which is the only moment a reader needs it.
-function tilingRefusalsOf(recordedApps, appEntries, clients, reportGroups) {
-  var groups = tiledWorkspacesOf(recordedApps || [], appEntries, clients, reportGroups);
+//
+// A layout-mode refusal (§2.4) outranks the tree words, under the same gate.
+function tilingRefusalsOf(recordedApps, appEntries, clients, reportGroups, context) {
+  return tilingRefusalsFrom(tiledWorkspacesOf(recordedApps || [], appEntries, clients, reportGroups, context));
+}
+
+function tilingRefusalsFrom(groups) {
   var out = [];
   for (var i = 0; i < groups.length; i++) {
     if (tilingSettled(groups[i].items, groups[i].live)) continue;
-    var reason = tilingRefusalOf(groups[i].items, groups[i].live);
+    var reason = groups[i].modeRefusal || tilingRefusalOf(groups[i].items, groups[i].live);
     if (!reason) continue;
     out.push({
       workspaceId: groups[i].workspaceId,
       monitorDescription: groups[i].monitorDescription,
+      reason: reason
+    });
+  }
+  return out;
+}
+
+// The unmet shapes (§2.7): one row per finished tiled workspace whose TILE mean
+// IoU is below TILED_REFINEMENT_TARGET_IOU, settled or not by any refinement —
+// the fact drift=0 alone hides, because a tiled rect is never drift.
+//
+//   { workspaceId, monitorDescription, meanIou, reason }
+//
+// `reason` is the refusal word that keeps a restore from acting on it (the mode
+// word first, as in tilingRefusalsFrom), or null when planWorkspaceTiling has a
+// program for it. A PENDING workspace — a move, a launch or a group op still to
+// run — is not finished, is not in `groups`, and is not a shape.
+function tilingShapesFrom(groups) {
+  var out = [];
+  for (var i = 0; i < groups.length; i++) {
+    var mean = tilingMeanIouOf(groups[i].items, groups[i].live);
+    if (mean === null || mean >= TILED_REFINEMENT_TARGET_IOU) continue;
+    var reason = groups[i].modeRefusal || null;
+    if (!reason) {
+      var refusal = {};
+      planWorkspaceTiling(groups[i].items, groups[i].live, refusal);
+      reason = refusal.reason || null;
+    }
+    out.push({
+      workspaceId: groups[i].workspaceId,
+      monitorDescription: groups[i].monitorDescription,
+      meanIou: round4(mean),
       reason: reason
     });
   }
@@ -4713,16 +4868,20 @@ function tilingRefusalsOf(recordedApps, appEntries, clients, reportGroups) {
 // swap in front of every nudge across the whole plan, not just within a
 // workspace: a swap moves no divider, so nothing about that interleaving can go
 // wrong, and one rule is easier to keep true than one rule per workspace.
-function planTiledRefinements(recordedApps, report, clients) {
+function planTiledRefinements(recordedApps, report, clients, context) {
   var splits = [];
   var swaps = [];
   var dividers = [];
   // Ops name TILE keys: a swap or a divider at a group's leader moves the whole
   // group (nested-notes 9i2 (c), (d)), so the leader stands for the tile.
-  var groups = tiledWorkspacesOf(recordedApps, report.apps, clients, report.groups);
+  var groups = tiledWorkspacesOf(recordedApps, report.apps, clients, report.groups, context);
 
   for (var k = 0; k < groups.length; k++) {
     var group = groups[k];
+    // Scrolling and floating have no split tree, and a mode other than the
+    // recorded one drew other rects (§2.4): no split, swap or divider at all.
+    // On scrolling a swap and a resize both answer "ok" and rearrange.
+    if (group.modeRefusal) continue;
     var program = planWorkspaceTiling(group.items, group.live);
     if (!program) continue;
     if (program.split) {
@@ -4805,7 +4964,7 @@ function planTiledRefinements(recordedApps, report, clients) {
 //   5. the recorded rects reconstruct a guillotine tree (placementOrderOf).
 //      Rects from a monitor arrangement these coordinates no longer describe
 //      do not, and that is the case where guessing would be worst.
-function applyPlacementOrder(moves, moveRects, recordedApps, report, clients) {
+function applyPlacementOrder(moves, moveRects, recordedApps, report, clients, context) {
   if (moves.length < 2) return moves;
 
   var rectByAddress = {};
@@ -4827,17 +4986,24 @@ function applyPlacementOrder(moves, moveRects, recordedApps, report, clients) {
   var ordered = [];
   for (var k = 0; k < keyOrder.length; k++) {
     var group = groupsByKey[keyOrder[k]];
-    var sequenced = sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients);
+    var sequenced = sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients, context);
     ordered = ordered.concat(sequenced);
   }
   return ordered;
 }
 
-function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients) {
+function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients, context) {
   if (group.length < 2) return group;                                   // (1)
 
   var workspaceId = group[0].workspaceId;
   var monitorDescription = group[0].monitorDescription;
+
+  // (0) the destination has a split tree to build, in the recorded mode (§2.4).
+  // A splitParent on a scrolling or floating workspace focuses windows for an
+  // arrival order nothing reads; the moves go in recorded order, unfocused.
+  // A destination that does not exist yet has no readable mode (null) and is
+  // not refused here.
+  if (workspaceModeRefusalOf(recordedApps, context, clients, workspaceId, monitorDescription)) return group;
 
   var moving = {};
   for (var g = 0; g < group.length; g++) moving[group[g].address] = true;
@@ -5374,14 +5540,20 @@ function failOutcome(record, reason, identityIds) {
 //                                                    asymmetry that proves the
 //                                                    selector key is right.
 //
-// So on Hyprland 0.56.2 the float dispatcher is a TOGGLE whatever the action
-// says (the binary carries an eTogglableAction for it, but every spelling
-// toggles; each observation above was made with a `hyprctl clients -j` read
-// between dispatches, because two back-to-back toggles read once look exactly
-// like an idempotent set). The consequence for the restore executor: a
-// floating op may NEVER be dispatched blind — the service reads the window's
-// live state first and toggles only when it differs from the recorded value,
-// then confirms with a re-read (Service.qml executeFloating).
+// So on Hyprland 0.56.2 the float dispatcher was a TOGGLE for every spelling
+// tried then ("set"/"unset"; each observation above was made with a
+// `hyprctl clients -j` read between dispatches, because two back-to-back
+// toggles read once look exactly like an idempotent set).
+//
+// SUPERSEDED for the spelling opToCommand emits (epic 9i2, tests/nested-notes.md
+// 9i2 (g), the sandbox's Hyprland under Omarchy 4.5): `action = "on"` and
+// `action = "off"` are ABSOLUTE and idempotent — "on","on","off","off" read
+// back floating true,true,false,false — and 4.5's own workspace-modes.lua
+// floats and tiles with exactly that spelling. So the floating op now names
+// the state it wants and a re-dispatch cannot invert a window that is already
+// right. The service keeps its read-first, confirm-after gate
+// (Service.qml executeFloating): a read costs nothing and says why an op that
+// did not land did not.
 //
 // So the join half of a group rebuild still has to focus first — see the group
 // branch below. Two live facts make that acceptable and make VERIFYING this
@@ -5586,16 +5758,12 @@ function opToCommand(op) {
   }
 
   if (op.kind === "floating") {
-    // ONE dispatch, naming the window — but it is a TOGGLE (see the evidence
-    // block above: on Hyprland 0.56 every `action` spelling toggles), so this
-    // command is only correct against the desktop the plan was built from.
-    // The service therefore does NOT run this string blind: executeFloating
-    // re-reads the window first, dispatches only on a live mismatch, and
-    // confirms after. The string is produced here anyway so the spelling
-    // lives in one place and the tests can pin it.
+    // ONE dispatch, naming the window and the state it should be in:
+    // `action = "on"` / `"off"` is absolute (see the evidence block above), so
+    // the command is right against any desktop, converged or not.
     return [
       dispatchCommand(
-        "hl.dsp.window.float({ " + windowSelector(op.address) + ', action = "toggle" })'
+        "hl.dsp.window.float({ " + windowSelector(op.address) + ', action = "' + (op.value ? "on" : "off") + '" })'
       )
     ];
   }

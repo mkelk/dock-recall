@@ -1281,3 +1281,43 @@ test("a group swapped with its neighbour converges through the simulator, every 
     assert.deepStrictEqual([c.at, c.size], [want.at, want.size], c.class + " is back on its recorded rect");
   }
 });
+
+// ------------------------------------------------ the planning context (9i2)
+//
+// §2.2: without a context, or with one that reads every workspace as dwindle
+// and every recording as dwindle (or unrecorded), every plan is the plan this
+// file has always proven. Asked at every step of every generated restore, not
+// only of the first plan, so a context-only branch cannot hide mid-restore.
+test(`plans without a context are unchanged by a dwindle context, at every step of ${CASES} restores`, () => {
+  const seeds = caseSeeds(CASES);
+  let compared = 0;
+  for (let i = 0; i < CASES; i++) {
+    const rng = makeRng(seeds[i]);
+    const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng);
+    const dwindleLayout = Object.assign({}, layout, {
+      apps: layout.apps.map((a) => Object.assign({}, a, { layoutMode: "dwindle" }))
+    });
+    const sim = makeSimulator(liveClients, liveMonitors, planIdentities);
+    for (let step = 0; step < MAX_ITERATIONS; step++) {
+      const ids = {};
+      for (const c of sim.state.clients) if (c.workspace) ids[c.workspace.id] = true;
+      for (const app of layout.apps) ids[app.workspaceId] = true;
+      const context = {
+        workspaces: Object.keys(ids).map((id) => ({ id: Number(id), tiledLayout: "dwindle" })),
+        built: null
+      };
+      const bare = engine.planRestore(sim.state.clients, liveMonitors, layout, planIdentities);
+      const signature = JSON.stringify(bare);
+      assert.strictEqual(JSON.stringify(engine.planRestore(sim.state.clients, liveMonitors, layout, planIdentities, context)),
+        signature, `case ${i} step ${step}: a dwindle context changed the plan`);
+      assert.strictEqual(JSON.stringify(engine.planRestore(sim.state.clients, liveMonitors, dwindleLayout, planIdentities, context)),
+        signature, `case ${i} step ${step}: a dwindle recording in a dwindle context changed the plan`);
+      assert.strictEqual(JSON.stringify(engine.planRestore(sim.state.clients, liveMonitors, dwindleLayout, planIdentities)),
+        signature, `case ${i} step ${step}: a recorded mode without a context changed the plan`);
+      compared += 1;
+      if (bare.length === 0) break;
+      for (const op of bare) sim.apply(op);
+    }
+  }
+  assert.ok(compared > CASES, `only ${compared} plans compared`);
+});
