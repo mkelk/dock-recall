@@ -1408,3 +1408,76 @@ test("9i2 known tree: through the planner, context.built for the workspace lifts
   const scrolled = { workspaces: [{ id: 5, tiledLayout: "scrolling" }], built: { "5": true } };
   assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, scrolled), []);
 });
+
+// Tick 5wo — sandbox-fidelity Q and G2 went red at the wave-5 gate with no code
+// change behind it: the same two cases fail the same way on the W2 commit that
+// passed them, once the nested output is wide. The nested output is as big as
+// the parked window the live desk gave it (701x850 on the W2 day, 2126x850 on
+// the W5 day), and on a wide one the scenarios built shapes that fit two trees.
+// These pin the engine's side of that diagnosis with the measured rects: the
+// wide shapes ARE ambiguous (the refusal was right, and only a tree this restore
+// built may lift it), and the shapes the cases now build are not.
+const Q_WIDE_SPINE = [            // qa | qb | (qc / qd): three columns
+  { key: "qa", at: [5, 5], size: [1055, 840] },
+  { key: "qb", at: [1066, 5], size: [524, 840] },
+  { key: "qc", at: [1596, 5], size: [525, 417] },
+  { key: "qd", at: [1596, 428], size: [525, 417] }
+];
+const Q_TOP_ROW = [               // qa over (qb | (qc / qd)), the W2 gate's rects
+  { key: "qa", at: [5, 5], size: [691, 312] },
+  { key: "qb", at: [5, 323], size: [343, 522] },
+  { key: "qc", at: [354, 323], size: [342, 257] },
+  { key: "qd", at: [354, 586], size: [342, 259] }
+];
+const G2_WIDE_RECORDED = [        // group | gd | gc — gc never joined
+  { key: "group", at: [5, 5], size: [526, 840] },
+  { key: "gd", at: [537, 5], size: [523, 840] },
+  { key: "gc", at: [1066, 5], size: [1055, 840] }
+];
+const G2_WIDE_SWAPPED = [
+  { key: "gd", at: [5, 5], size: [526, 840] },
+  { key: "group", at: [537, 5], size: [523, 840] },
+  { key: "gc", at: [1066, 5], size: [1055, 840] }
+];
+
+test("5wo: Q's spine on a wide output is three columns — ambiguous, so its in-place half cannot run there", () => {
+  assert.equal(engine.layoutIsAmbiguous(Q_WIDE_SPINE), true);
+  assert.equal(engine.layoutIsAmbiguous(Q_TOP_ROW), false, "qa over the rest is one tree");
+  // The in-place drag of the root divider the case makes on the top-row shape
+  // is one divider nudge, not a refusal.
+  const dragged = [
+    { key: "qa", at: [5, 5], size: [691, 500] },
+    { key: "qb", at: [5, 511], size: [343, 334] },
+    { key: "qc", at: [354, 511], size: [342, 165] },
+    { key: "qd", at: [354, 682], size: [342, 163] }
+  ];
+  const refusal = {};
+  const program = engine.planWorkspaceTiling(Q_TOP_ROW, dragged, refusal);
+  assert.equal(refusal.reason, undefined);
+  assert.ok(program && program.dividers.length === 1, JSON.stringify(program));
+  assert.deepEqual(program.swaps, []);
+});
+
+test("5wo: G2's wide build (group | gd | gc) is refused in place as ambiguous-tree, and only the known tree lifts it", () => {
+  assert.equal(engine.tilingRefusalOf(G2_WIDE_RECORDED, G2_WIDE_SWAPPED), "ambiguous-tree");
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(G2_WIDE_RECORDED, G2_WIDE_SWAPPED, refusal), null);
+  assert.equal(refusal.reason, "ambiguous-tree");
+  assert.equal(engine.tilingRefusalOf(G2_WIDE_RECORDED, G2_WIDE_SWAPPED, KNOWN), null,
+    "the cycle that built the workspace may refine it");
+});
+
+test("5wo: G2's intended shape — a group of three as one tile beside gd — swaps back in one op on any aspect", () => {
+  const recorded = [
+    { key: "group", at: [5, 5], size: [1480, 840] },
+    { key: "gd", at: [1491, 5], size: [630, 840] }
+  ];
+  const swapped = [
+    { key: "gd", at: [5, 5], size: [630, 840] },
+    { key: "group", at: [641, 5], size: [1480, 840] }
+  ];
+  assert.equal(engine.layoutIsAmbiguous(recorded), false);
+  assert.equal(engine.tilingRefusalOf(recorded, swapped), null);
+  const program = engine.planWorkspaceTiling(recorded, swapped);
+  assert.equal(program.swaps.length, 1, JSON.stringify(program));
+});

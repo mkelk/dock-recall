@@ -138,6 +138,16 @@ make_shape() {
   shape_ok "$w" "$want"
 }
 
+# spans_top <ws> <class> — the class is the workspace's whole top row: at the
+# top edge, and as wide as every tile of the workspace taken together.
+spans_top() {
+  nested clients -j | jq -e --argjson w "$1" --arg c "$2" '
+    [.[]|select(.workspace.id==$w and (.class|test("^dr-[a-z]{2}$")))] as $t
+    | ($t|map(.at[0])|min) as $l | ($t|map(.at[0]+.size[0])|max) as $r
+    | ($t|map(.at[1])|min) as $top
+    | first($t[]|select(.class==$c)) | .at[0]==$l and .at[0]+.size[0]==$r and .at[1]==$top' >/dev/null
+}
+
 # resize_to <class> <w> <h> — an absolute size, the way dragging a divider ends.
 resize_to() {
   local a; a=$(addr_of "$1")
@@ -193,6 +203,16 @@ case_Q() {
   case_begin "Q: 4-window tree, dragged inner divider"
   local W; W=$(ws 2)
   build_spine "$W" dr-qa dr-qb dr-qc dr-qd
+  # The spine's shape follows the nested output's aspect: on a narrow one it is
+  # qa over (qb | (qc / qd)), on a wide one three columns qa | qb | (qc / qd),
+  # which fit two trees — the in-place half would then be refused as
+  # ambiguous-tree, and qb's height (the whole column) would not even move. The
+  # nested output is whatever size the parked window got on the live desk, so
+  # the case flips the root until qa is the top row: the same tree either way.
+  spans_top "$W" dr-qa || { focus "$(addr_of dr-qa)"; d 'hl.dsp.layout("togglesplit")' >/dev/null; focus "$ANCHOR"; sleep 0.3; }
+  spans_top "$W" dr-qa \
+    && pass "Q: qa spans the top row, over qb | (qc / qd)" \
+    || fail "Q: the scenario did not build qa over qb | (qc / qd)"
   read -r QW QH <<<"$(size_of dr-qb)"
   resize_to dr-qb "$QW" $(( QH * 3 / 4 ))
   rects "$W" | sed 's/^/      /'
@@ -227,13 +247,20 @@ case_F() {
 # A group of three beside a tiled window; the tab order, the visible tab and the
 # group's place are what the cases read. build_group <ws> <a> <b> <c> — the
 # classes join in that order; sets GA GB GC.
+#
+# The member chain (tests/nested-notes.md, 9i2 (e)): each member arrives on the
+# workspace with its predecessor focused, so it splits exactly that tile, and the
+# joins run in tab order — every joiner is then next to the group whatever the
+# nested output's aspect. Three silent launches tile by the output's shape, and
+# on a wide output the second member landed beside the third, not the group: it
+# never joined, and G2 recorded a group of two beside two tiles (tick 5wo).
 build_group() {
   local w=$1
-  launch "$2" "$w"; launch "$3" "$w"; launch "$4" "$w"
+  build_spine "$w" "$2" "$3" "$4"
   GA=$(addr_of "$2"); GB=$(addr_of "$3"); GC=$(addr_of "$4")
   d "hl.dsp.group.toggle({ window = \"address:$GA\" })" >/dev/null
-  join "$GB" "$GA" "$GA" || note "WARN $3 did not join"
-  join "$GC" "$GB" "$GA" || note "WARN $4 did not join"
+  join "$GB" "$GA" "$GA" || fail "build_group: $3 did not join the group — the scenario did not build what it says"
+  join "$GC" "$GB" "$GA" || fail "build_group: $4 did not join the group — the scenario did not build what it says"
 }
 
 case_G2() {
@@ -244,10 +271,15 @@ case_G2() {
   launch dr-gd "$SCRATCH"; local GD; GD=$(addr_of dr-gd)
   mv_ws "$GD" "$W"; sleep 0.4
   # unequal tiles, so that swapping them is something the rects can show: shrink
-  # gd along the axis that separates it from the group (the nested monitor is
-  # narrow, so that is usually the vertical one)
+  # gd along the axis that separates it from the group — side by side when the
+  # two tiles start at different x, stacked otherwise. Read off the rects, not
+  # guessed from gd's size: the nested output is as wide as the live desk made
+  # the parked window, and a shrink along the shared axis moves nothing.
   read -r DW DH <<<"$(size_of dr-gd)"
-  if (( DW < 500 )); then resize_to dr-gd $(( DW * 3 / 10 )) "$DH"; else resize_to dr-gd "$DW" $(( DH * 3 / 10 )); fi
+  local gx dx
+  gx=$(nested clients -j | jq -r --arg a "$GA" 'first(.[]|select(.address==$a)|.at[0])')
+  dx=$(nested clients -j | jq -r --arg a "$GD" 'first(.[]|select(.address==$a)|.at[0])')
+  if [[ $gx != "$dx" ]]; then resize_to dr-gd $(( DW * 3 / 10 )) "$DH"; else resize_to dr-gd "$DW" $(( DH * 3 / 10 )); fi
   focus "$ANCHOR"; sleep 0.4
   rects "$W" | sed 's/^/      /'
   local order; order=$(group_order "$GA")
