@@ -24,7 +24,17 @@
 // minus a twin's " #N" suffix, is the monitor's description (or its name, when
 // the description is empty). No valid row means the monitor is not placed yet
 // — 4.5 re-sorts asynchronously after a hotplug — and the answer is
-// `unplaceable`, never a guess.
+// `unplaceable`, never a guess. Two monitor reasons, kept apart on purpose:
+//
+//   monitor-unassigned  the monitor IS plugged in (listed, enabled, not a
+//                       mirror) but its connector has no valid row yet.
+//                       Transient: the reconcile gate waits it out.
+//   monitor-unknown     the monitor is NOT plugged in and its identity is not
+//                       in the blocks file at all. Nothing will change by
+//                       waiting.
+//
+// A monitor that is not plugged in but whose identity the file knows resolves
+// through that identity's last block, for display only.
 //
 // Dual-runtime like engine.js: ES5, plain top-level functions, no require, no
 // `.pragma`, and `module.exports` behind a guard. QML imports it as
@@ -72,17 +82,22 @@ function monitorIdentityLabel(monitor) {
   return (monitor.name || "").trim();
 }
 
-// Lines of a file read by FileView or cat. Split on "\n" only, as the lua's
-// file:lines() does.
+// Lines of a file read by FileView or cat. Split on "\n", as the lua's
+// file:lines() does, with a trailing "\r" stripped so a file that went through
+// a CRLF editor does not turn every identity stale.
 function linesOf(text) {
   if (text === null || text === undefined || text === "") return [];
-  return String(text).split("\n");
+  var lines = String(text).split("\n");
+  for (var i = 0; i < lines.length; i++) lines[i] = lines[i].replace(/\r$/, "");
+  return lines;
 }
 
 // The blocks file (lua load_blocks). A line that does not match the grammar is
-// dropped. A later row for the same identity or connector wins, as it does in
-// the lua's tables. An empty connector means "known, not plugged in": the row
-// keeps its block in byIdentity but is not in byConnector.
+// dropped. `rows` is RAW: every matching line in file order, superseded
+// duplicates included. `byConnector` and `byIdentity` are last-wins, as the
+// lua's tables are, and they are what resolution reads. An empty connector
+// means "known, not plugged in": the row keeps its block in byIdentity but is
+// not in byConnector.
 function parseBlocks(text) {
   var table = { rows: [], byConnector: {}, byIdentity: {} };
   var lines = linesOf(text);
@@ -121,11 +136,15 @@ function parseMerged(text) {
 // the row names (lua identities_of, line 189): until 4.5 rewrites the file the
 // row says nothing about this monitor. A twin's row carries "D #2"; the suffix
 // is dropped before comparing, so each twin is accepted for its own connector.
+// The lua compares against the UNTRIMMED description (its described()), so a
+// row is accepted against either that raw form or the trimmed label.
 function blockForMonitor(table, monitor) {
   if (!table || !monitor) return null;
   var row = own(table.byConnector, monitor.name);
   if (!row) return null;
-  if (row.identity.replace(/ #\d+$/, "") !== monitorIdentityLabel(monitor)) return null;
+  var stripped = row.identity.replace(/ #\d+$/, "");
+  var raw = monitor.description ? monitor.description : monitor.name;
+  if (stripped !== monitorIdentityLabel(monitor) && stripped !== raw) return null;
   return { block: row.block, identity: row.identity };
 }
 
@@ -137,28 +156,47 @@ function blockForIdentity(table, identity) {
   return block === undefined ? null : block;
 }
 
-// The first live monitor recorded under this label (engine.monitorByDescription
-// — twins resolve to the first, the documented refusal).
-function liveMonitorFor(monitors, description) {
+// A monitor that shows its own workspaces: listed, not disabled (a clamshell
+// panel stays in `monitors all` with disabled: true) and not mirroring another
+// output. Anything else counts as not plugged in.
+function isLiveMonitor(monitor) {
+  if (!monitor || monitor.disabled === true) return false;
+  var mirror = monitor.mirrorOf;
+  return mirror === undefined || mirror === null || mirror === "" || mirror === "none";
+}
+
+// Every live monitor recorded under this label, in list order. More than one
+// means twins; the first is the one engine.monitorByDescription answers with.
+function liveMonitorsFor(monitors, description) {
   var wanted = (description || "").trim();
-  if (!wanted) return null;
+  var found = [];
+  if (!wanted) return found;
   var list = monitors || [];
   for (var i = 0; i < list.length; i++) {
-    if (list[i] && monitorIdentityLabel(list[i]) === wanted) return list[i];
+    if (isLiveMonitor(list[i]) && monitorIdentityLabel(list[i]) === wanted) found.push(list[i]);
   }
-  return null;
+  return found;
+}
+
+// How a recorded monitor label resolves now:
+//   { live: true,  block }  plugged in; block is the FIRST twin's valid block,
+//                           or null when its row is missing or stale
+//   { live: false, block }  not plugged in; block is its identity's last block,
+//                           or null when the file has never seen it
+function resolveDescription(table, monitors, description) {
+  var live = liveMonitorsFor(monitors, description);
+  if (live.length) {
+    var found = blockForMonitor(table, live[0]);
+    return { live: true, block: found ? found.block : null };
+  }
+  return { live: false, block: blockForIdentity(table, description) };
 }
 
 // The block a recorded monitor maps to now: through its live row when it is
 // plugged in, through its identity's last block when it is not. null when
 // neither is known.
 function blockForDescription(table, monitors, description) {
-  var monitor = liveMonitorFor(monitors, description);
-  if (monitor) {
-    var found = blockForMonitor(table, monitor);
-    return found ? found.block : null;
-  }
-  return blockForIdentity(table, description);
+  return resolveDescription(table, monitors, description).block;
 }
 
 function copyFields(source) {
@@ -176,29 +214,53 @@ function isSlot(slot) {
 // Recorded (v8) layout -> resolved layout, in memory only. Every placement
 // keeps its fields and gains:
 //   workspaceId  the live id its slot maps to, or null
-//   unplaceable  null | "monitor-unassigned" | "slot-unknown"
-// "monitor-unassigned" (the monitor's block is not known — no valid row) is
-// reported ahead of "slot-unknown" (the record carries no usable slot): the
-// first is transient and worth waiting out, and either way nothing is placed.
-// A monitor that is not plugged in resolves through its identity's last block
-// so the panel can show where it would go; restore skips it for being absent.
+//   unplaceable  null | "monitor-unassigned" | "monitor-unknown" | "slot-unknown"
+//     monitor-unassigned  the monitor is plugged in but has no valid row yet.
+//                         TRANSIENT: 4.5 is still re-sorting; the reconcile
+//                         gate waits on it.
+//     monitor-unknown     the monitor is not plugged in and the blocks file
+//                         has never seen its identity. Nothing to wait for.
+//     slot-unknown        the record carries no usable slot.
+// The monitor reasons are reported ahead of slot-unknown; either way nothing
+// is placed. A monitor that is not plugged in but whose identity is known
+// resolves through that identity's last block, for display: restore skips it
+// for being absent. Twins resolve to the first twin (the documented refusal).
+// Falsy app entries are dropped.
 function toLive(layout, table, monitors) {
   if (!layout || typeof layout !== "object") return layout;
   var out = copyFields(layout);
   var apps = [];
   var source = layout.apps || [];
   for (var i = 0; i < source.length; i++) {
+    if (!source[i]) continue;
     var app = copyFields(source[i]);
-    var block = blockForDescription(table, monitors, app.monitorDescription);
+    var where = resolveDescription(table, monitors, app.monitorDescription);
     app.workspaceId = null;
     app.unplaceable = null;
-    if (block === null) app.unplaceable = "monitor-unassigned";
+    if (where.block === null) app.unplaceable = where.live ? "monitor-unassigned" : "monitor-unknown";
     else if (!isSlot(app.slot)) app.unplaceable = "slot-unknown";
-    else app.workspaceId = workspaceIdFor(block, app.slot);
+    else app.workspaceId = workspaceIdFor(where.block, app.slot);
     apps.push(app);
   }
   out.apps = apps;
   return out;
+}
+
+// Every block the recorded monitor label could own now: each live twin's valid
+// block, or the identity's last block when none is plugged in.
+function blocksForDescription(table, monitors, description) {
+  var live = liveMonitorsFor(monitors, description);
+  var blocks = [];
+  if (!live.length) {
+    var known = blockForIdentity(table, description);
+    if (known !== null) blocks.push(known);
+    return blocks;
+  }
+  for (var i = 0; i < live.length; i++) {
+    var found = blockForMonitor(table, live[i]);
+    if (found) blocks.push(found.block);
+  }
+  return blocks;
 }
 
 // Live layout (engine.buildLayout, live workspace ids) -> recorded v8 layout.
@@ -206,7 +268,9 @@ function toLive(layout, table, monitors) {
 // gains `slot`. An app sitting on another block's workspace — a guest, e.g.
 // workspace 13 shown on the monitor that owns block 0 — is excluded rather than
 // recorded: its slot would land it on its own monitor's slot 3 next time, which
-// is not where it was. With its monitor's block unknown there is no guest check.
+// is not where it was. Twins share a label, so a workspace in ANY twin's block
+// is not a guest. With no block known there is no guest check. Falsy app
+// entries are dropped.
 function toRecorded(liveLayout, table, monitors) {
   if (!liveLayout || typeof liveLayout !== "object") return { layout: liveLayout, excluded: [] };
   var out = copyFields(liveLayout);
@@ -215,10 +279,11 @@ function toRecorded(liveLayout, table, monitors) {
   var source = liveLayout.apps || [];
   for (var i = 0; i < source.length; i++) {
     var live = source[i];
+    if (!live) continue;
     var workspaceId = live.workspaceId;
-    var block = blockForDescription(table, monitors, live.monitorDescription);
+    var blocks = blocksForDescription(table, monitors, live.monitorDescription);
     var ownBlock = blockOf(workspaceId);
-    if (block !== null && ownBlock !== null && ownBlock !== block) {
+    if (blocks.length && ownBlock !== null && blocks.indexOf(ownBlock) < 0) {
       excluded.push({
         identityId: live.identityId,
         occurrence: live.occurrence,
@@ -240,7 +305,8 @@ function toRecorded(liveLayout, table, monitors) {
 
 // Live workspace id -> the connector showing it, for every regular workspace
 // that exists: those with windows (from the clients' monitor index) and those
-// a monitor is showing while empty (its activeWorkspace). Keys are strings.
+// a monitor is showing while empty (its activeWorkspace). A monitor's
+// activeWorkspace is applied last and wins a conflict. Keys are strings.
 function workspaceMonitors(clients, monitors) {
   var out = {};
   var monitorList = monitors || [];
@@ -275,6 +341,8 @@ if (typeof module !== "undefined") {
     parseMerged: parseMerged,
     blockForMonitor: blockForMonitor,
     blockForIdentity: blockForIdentity,
+    blockForDescription: blockForDescription,
+    isLiveMonitor: isLiveMonitor,
     toLive: toLive,
     toRecorded: toRecorded,
     workspaceMonitors: workspaceMonitors
