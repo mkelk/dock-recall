@@ -2340,3 +2340,43 @@ test("Service.qml renders the pure diagnosis rather than assembling one", () => 
   assert.strictEqual(source.indexOf('" (saw "'), -1,
     "Service.qml still concatenates the class-only 'saw X instead' reason");
 });
+
+// ------------------------------------------------- the G2 probe desk (epic 9i2)
+//
+// The rects the 0lh probe recorded and then restored to IoU 0.000 with a green
+// bar: a tab group ga,gc,gb (tab order) above a tiled gd, in the nested
+// compositor's 701x850 output. The restore built the tiles the wrong way up,
+// and the planner, seeing three identical member rects, refused the workspace
+// as `not-a-tree` — a refusal about a layout dwindle makes every day. A group
+// is one tile now, so this desk is a tree, and fixing it is one swap.
+
+const G2_MONITORS = [{
+  id: 0, name: "WL-1", description: "Nested Output", make: "N", model: "O", serial: "",
+  x: 0, y: 0, width: 701, height: 850, scale: 1, activeWorkspace: { id: 2, name: "2" }, focused: true
+}];
+const G2_IDS = ["dr-ga", "dr-gb", "dr-gc", "dr-gd"].map((id) => ({ id, patterns: ["^" + id + "$"] }));
+function g2Desk(groupAt, tileAt) {
+  const ring = ["0xa", "0xc", "0xb"];
+  return [["0xa", "dr-ga"], ["0xb", "dr-gb"], ["0xc", "dr-gc"]].map(([address, cls]) => makeClient({
+    address, class: cls, workspace: 2, at: groupAt.slice(), size: [691, 396], grouped: ring.slice()
+  })).concat([makeClient({ address: "0xd", class: "dr-gd", workspace: 2, at: tileAt.slice(), size: [691, 417] })]);
+}
+// Recorded: group 5,26 691x396 (the 21px groupbar above it), gd 5,428 691x417.
+const G2_RECORDED = engine.buildLayout(g2Desk([5, 26], [5, 428]), G2_MONITORS, G2_IDS, AT);
+// What the probe's restore left: gd on top, the group below.
+const G2_LIVE = g2Desk([5, 449], [5, 5]);
+
+test("9i2 G2: a group beside a tile is a tree — no 'not-a-tree', and one swap fixes it", () => {
+  const report = engine.driftOf(G2_LIVE, G2_MONITORS, G2_RECORDED, G2_IDS);
+  assert.deepEqual(report.tilingRefusals, []);
+  for (const app of report.apps) {
+    assert.ok(!app.geometry || !app.geometry.refinement, app.identityId + ": " + JSON.stringify(app.geometry));
+  }
+  const plan = engine.planRestore(G2_LIVE, G2_MONITORS, G2_RECORDED, G2_IDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["swap"], JSON.stringify(plan));
+  assert.deepEqual(engine.opAddressesOf(plan[0]).sort(), ["0xa", "0xd"]);
+});
+
+test("9i2 G2: the recorded desk itself plans nothing", () => {
+  assert.deepEqual(engine.planRestore(g2Desk([5, 26], [5, 428]), G2_MONITORS, G2_RECORDED, G2_IDS), []);
+});

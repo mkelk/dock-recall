@@ -367,3 +367,91 @@ test("a choreographed plan still only ever names addresses the read contained", 
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// A tab group arrives as ONE tile, then its tabs chain off its leader (9i2)
+// ---------------------------------------------------------------------------
+//
+// The group's recorded members share one rect, so they are one tile of the
+// tree (engine.tilesOf), led by tab 0. The program places the LEADERS in tree
+// order, then each group's other tabs in tab order, each splitting the tab
+// before it; the group op that follows the moves folds that chain back into
+// the leader's tile. Measured in the nested compositor: every member arrival
+// lands beside its predecessor and the joined group sits exactly on the
+// leader's rect (tests/nested-notes.md, 9i2 (e)).
+
+const GIDS = [
+  { id: "ga", patterns: ["^app-ga$"] },
+  { id: "gb", patterns: ["^app-gb$"] },
+  { id: "gc", patterns: ["^app-gc$"] },
+  { id: "gd", patterns: ["^app-gd$"] }
+];
+
+// Group ga,gc,gb (tab order) on the left half, gd on the right — or the other
+// way round with `groupRight`. Listed in an order that is neither the tab
+// order nor the tree's, so nothing can pass by reading the list.
+function groupLayout(groupRight) {
+  const groupRect = groupRight ? { at: [727, 59], size: [701, 829] } : { at: [12, 59], size: [701, 829] };
+  const tileRect = groupRight ? TREES.pair[0] : TREES.pair[1];
+  const app = (identityId, group, rect) => ({
+    identityId, workspaceId: 5, monitorDescription: "Test Panel", monitorIndex: 0, floating: false,
+    group, at: rect.at.slice(), size: rect.size.slice()
+  });
+  return {
+    topologyKey: "Test Panel", recordedAt: "2026-11-14T00:00:00Z",
+    apps: [
+      app("gb", { groupId: "g1", index: 2, active: false }, groupRect),
+      app("gd", null, tileRect),
+      app("gc", { groupId: "g1", index: 1, active: true }, groupRect),
+      app("ga", { groupId: "g1", index: 0, active: false }, groupRect)
+    ]
+  };
+}
+function scatteredGroup(extra) {
+  return [
+    makeClient({ address: "0xb", class: "app-gb", workspace: 9 }),
+    makeClient({ address: "0xd", class: "app-gd", workspace: 9 }),
+    makeClient({ address: "0xc", class: "app-gc", workspace: 9 }),
+    makeClient({ address: "0xa", class: "app-ga", workspace: 9 })
+  ].concat(extra || []);
+}
+
+test("9i2: a group beside a tile arrives leader first, then its tabs chain in tab order", () => {
+  const plan = engine.planRestore(scatteredGroup(), MONITORS, groupLayout(false), GIDS);
+  assert.deepEqual(movesOf(plan), ["0xa", "0xd<-0xa", "0xc<-0xa", "0xb<-0xc"]);
+  // …and the group op after the moves joins them in the recorded tab order.
+  const groups = plan.filter((op) => op.kind === "group");
+  assert.deepEqual(groups.map((op) => op.addresses), [["0xa", "0xc", "0xb"]]);
+  assert.ok(plan.indexOf(groups[0]) > plan.map((op) => op.kind).lastIndexOf("move"));
+});
+
+test("9i2: a group on the FAR side arrives after the tile it splits, its tabs after that", () => {
+  const plan = engine.planRestore(scatteredGroup(), MONITORS, groupLayout(true), GIDS);
+  assert.deepEqual(movesOf(plan), ["0xd", "0xa<-0xd", "0xc<-0xa", "0xb<-0xc"]);
+  assert.deepEqual(engine.unknownPlanAddresses(plan, scatteredGroup()), []);
+});
+
+test("9i2: the whole-workspace gate counts windows — one tab still away stands it down", () => {
+  // gb is already home on ws 5 and is not moving, so the workspace is not
+  // being built from empty by this plan.
+  const clients = scatteredGroup();
+  clients[0].workspace = { id: 5, name: "5" };
+  const plan = engine.planRestore(clients, MONITORS, groupLayout(false), GIDS);
+  assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
+});
+
+test("9i2: a group that is still a live group is not chained — its leader's move drags its tabs", () => {
+  const ring = ["0xa", "0xc", "0xb"];
+  const clients = scatteredGroup();
+  for (const c of clients) if (ring.indexOf(c.address) !== -1) c.grouped = ring.slice();
+  const plan = engine.planRestore(clients, MONITORS, groupLayout(false), GIDS);
+  assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
+});
+
+test("9i2: a workspace that is ONE group splits nothing, so it is not choreographed", () => {
+  const layout = groupLayout(false);
+  layout.apps = layout.apps.filter((a) => a.identityId !== "gd");
+  const plan = engine.planRestore(scatteredGroup().filter((c) => c.address !== "0xd"), MONITORS, layout, GIDS);
+  assert.deepEqual(plan.filter((op) => op.kind === "move").length, 3);
+  assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
+});

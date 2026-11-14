@@ -1004,3 +1004,116 @@ test("planHasFocusOps names BOTH ops that need the keyboard, and no others", () 
   assert.equal(plan.length, 4, "the full plan is untouched — the no-progress check reads it");
   assert.deepEqual(engine.planWithoutFocusOps(null), []);
 });
+
+// ------------------------------------------------ a tab group is ONE tile (9i2)
+//
+// A group holds one rect of the split tree, shared by every tab. Before epic
+// 9i2 the planner saw N identical rects — no guillotine tiling — and refused a
+// group beside anything else as `not-a-tree` for ever (finding-grouping-tiling,
+// probe G2: IoU 0.000 with a green bar). Now the group is one tile, keyed by
+// its tab-0 window, and the swap / divider ops name that key: a swap or a
+// resize at any member moves the whole tile (tests/nested-notes.md 9i2 (c),
+// (d)).
+
+const GIDS = [
+  { id: "ga", patterns: ["^app-ga$"] },
+  { id: "gb", patterns: ["^app-gb$"] },
+  { id: "gc", patterns: ["^app-gc$"] },
+  { id: "gd", patterns: ["^app-gd$"] }
+];
+// Recorded: the group (tab order ga, gc, gb) on TOP, gd below it.
+const GROUP_TOP = { at: [12, 59], size: [1416, 397] };   // tile minus the 21px groupbar
+const TILE_BOTTOM = { at: [12, 470], size: [1416, 418] };
+const GROUP_BOTTOM = { at: [12, 491], size: [1416, 397] };
+const TILE_TOP = { at: [12, 38], size: [1416, 418] };
+const GROUP_ORDER = ["0xa", "0xc", "0xb"];
+
+// The desktop with the group at `groupRect` and gd at `tileRect`. `grouped`
+// false: the group has been taken apart, its windows tiled on their own.
+function groupDesk(groupRect, tileRect, opts) {
+  const o = opts || {};
+  const ring = o.ring || GROUP_ORDER;
+  const members = [["0xa", "app-ga"], ["0xb", "app-gb"], ["0xc", "app-gc"]].map(([address, cls]) =>
+    makeClient({
+      address, class: cls, workspace: 5,
+      at: groupRect.at.slice(), size: groupRect.size.slice(),
+      grouped: o.grouped === false ? [] : ring.slice()
+    }));
+  return members.concat([makeClient({
+    address: "0xd", class: "app-gd", workspace: 5, at: tileRect.at.slice(), size: tileRect.size.slice()
+  })]).concat(o.extra || []);
+}
+const GROUP_LAYOUT = engine.buildLayout(groupDesk(GROUP_TOP, TILE_BOTTOM), MONITORS, GIDS, "2026-11-14T00:00:00Z");
+
+function refinementOps(plan) {
+  return plan.filter((op) => op.kind === "swap" || op.kind === "divider" || op.kind === "split");
+}
+
+test("9i2: the recording keeps the group's tab order and one shared rect", () => {
+  const byId = {};
+  for (const app of GROUP_LAYOUT.apps) byId[app.identityId] = app;
+  assert.deepEqual([byId.ga.group.index, byId.gc.group.index, byId.gb.group.index], [0, 1, 2]);
+  assert.equal(byId.gd.group, null);
+});
+
+test("9i2: a group recorded on top and living at the bottom is ONE swap, addressed to its leader", () => {
+  const live = groupDesk(GROUP_BOTTOM, TILE_TOP);
+  const report = engine.driftOf(live, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(report.tilingRefusals, [], "a group beside a tile is a tree, not a refusal");
+  const plan = engine.planRestore(live, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["swap"], JSON.stringify(plan));
+  assert.deepEqual(engine.opAddressesOf(plan[0]).sort(), ["0xa", "0xd"],
+    "the group is named by its tab-0 window and by nothing else");
+});
+
+test("9i2: a dragged divider beside a group is one nudge, on the NEAR side", () => {
+  // Group on top (near side of the one divider), dragged up to 300.
+  const draggedNear = groupDesk({ at: [12, 59], size: [1416, 279] }, { at: [12, 352], size: [1416, 536] });
+  const near = refinementOps(engine.planRestore(draggedNear, MONITORS, GROUP_LAYOUT, GIDS));
+  assert.deepEqual(near.map((op) => [op.kind, op.address, op.axis]), [["divider", "0xa", 1]]);
+  assert.deepEqual(near[0].size, [1416, 397], "asked for the recorded member size, like for like");
+
+  // Recorded the other way round: gd on top is now the near side, and the
+  // group below it is never asked — the sign law, with a group as the tile.
+  const flipped = engine.buildLayout(groupDesk(GROUP_BOTTOM, TILE_TOP), MONITORS, GIDS, "2026-11-14T00:00:00Z");
+  const draggedFar = groupDesk({ at: [12, 373], size: [1416, 515] }, { at: [12, 38], size: [1416, 300] });
+  const far = refinementOps(engine.planRestore(draggedFar, MONITORS, flipped, GIDS));
+  assert.deepEqual(far.map((op) => [op.kind, op.address, op.axis]), [["divider", "0xd", 1]]);
+});
+
+test("9i2: a group still to be built is PENDING — no refinement, and no refusal either", () => {
+  // Taken apart and re-tiled: the group op will change every rect here.
+  const apart = [
+    makeClient({ address: "0xa", class: "app-ga", workspace: 5, at: [12, 38], size: [701, 418] }),
+    makeClient({ address: "0xb", class: "app-gb", workspace: 5, at: [727, 38], size: [701, 418] }),
+    makeClient({ address: "0xc", class: "app-gc", workspace: 5, at: [12, 470], size: [701, 418] }),
+    makeClient({ address: "0xd", class: "app-gd", workspace: 5, at: [727, 470], size: [701, 418] })
+  ];
+  const plan = engine.planRestore(apart, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["group"], JSON.stringify(plan));
+  assert.deepEqual(engine.driftOf(apart, MONITORS, GROUP_LAYOUT, GIDS).tilingRefusals, []);
+
+  // Grouped, but in the wrong tab order: the rebuild is pending too.
+  const wrongOrder = groupDesk(GROUP_BOTTOM, TILE_TOP, { ring: ["0xa", "0xb", "0xc"] });
+  const reordered = engine.planRestore(wrongOrder, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(refinementOps(reordered), [], JSON.stringify(reordered));
+  assert.deepEqual(engine.driftOf(wrongOrder, MONITORS, GROUP_LAYOUT, GIDS).tilingRefusals, []);
+});
+
+test("9i2: an unwatched tab inside the group is not a stranger", () => {
+  const ring = GROUP_ORDER.concat(["0x99"]);
+  const tab = makeClient({ address: "0x99", class: "nobody-watches-this", workspace: 5,
+    at: GROUP_BOTTOM.at.slice(), size: GROUP_BOTTOM.size.slice(), grouped: ring.slice() });
+  const live = groupDesk(GROUP_BOTTOM, TILE_TOP, { ring, extra: [tab] });
+  const plan = engine.planRestore(live, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["swap"], JSON.stringify(plan));
+
+  // …while the same window tiled on its own still holds a tile of its own.
+  const alone = makeClient({ address: "0x99", class: "nobody-watches-this", workspace: 5 });
+  assert.deepEqual(engine.planRestore(groupDesk(GROUP_BOTTOM, TILE_TOP, { extra: [alone] }),
+    MONITORS, GROUP_LAYOUT, GIDS), []);
+});
+
+test("9i2: a settled group-and-tile workspace plans nothing", () => {
+  assert.deepEqual(engine.planRestore(groupDesk(GROUP_TOP, TILE_BOTTOM), MONITORS, GROUP_LAYOUT, GIDS), []);
+});
