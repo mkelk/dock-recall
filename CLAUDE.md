@@ -35,7 +35,9 @@ keep current. Which ones apply:
   no permission and no quiet moment. The nested compositor loads Omarchy 4.5's
   own `monitor-workspaces.lua`, so workspace ids follow 4.5's blocks of ten
   (monitor block * 10 + slot); `./tests/sandbox-slots.sh` is the dock/undock/dock
-  case on top of it. The plugin targets Omarchy 4.5 and newer. `./tests/sim-dock.sh` is the same cases
+  case on top of it, and `./tests/sandbox-fidelity.sh` is the within-workspace
+  gate (tiling tree, tab groups, visible tab, refusals; every case, no argument).
+  The plugin targets Omarchy 4.5 and newer. `./tests/sim-dock.sh` is the same cases
   against the real desktop and is **on request only**: ask the human first.
 - Before any shell restart: `omarchy-shell lock isLocked` must be `false`. A
   restart kills the lock screen, because `omarchy.lock` runs inside the same
@@ -57,7 +59,8 @@ originals stay in the dev repository.
 
 Where the desktop cannot be read unambiguously — twin identical monitors, a
 terminal hosting two candidate children, a tiling tree that differs by more than
-one split flip, a special workspace, a locked session — the plugin refuses out
+one split flip, a workspace in scrolling or floating mode, a special
+workspace, a locked session — the plugin refuses out
 loud and says why, in the panel. Do not replace a refusal with a guess; if a new
 state has no certain answer, add a refusal with its reason and a test that pins
 it.

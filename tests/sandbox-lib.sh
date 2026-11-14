@@ -80,6 +80,12 @@ mtime_of() {
 # here ever does. `[workspace <name> silent]` on the exec keeps the launch from
 # taking focus as well (learnings § QML/JS boundary).
 SPECIAL_WS="special:dr-sandbox"
+# The nested output size every case runs on (tick 5wo); override only to probe.
+# Narrow on purpose: sandbox-fidelity's Q case builds its designed tree (qa over
+# qb | (qc / qd)) here, and on 1000 or 1400 wide it builds three stacked rows,
+# which fit two trees and are refused as ambiguous-tree.
+NESTED_OUTPUT_W="${NESTED_OUTPUT_W:-700}"
+NESTED_OUTPUT_H="${NESTED_OUTPUT_H:-850}"
 
 # Defaults a scenario may override BEFORE sandbox_up. APP_ID is the class the
 # seeded identity matches and the class `foot --app-id=…` produces, so the two
@@ -711,6 +717,28 @@ LAUNCH
     pass "nested compositor window is parked on $SPECIAL_WS, which no monitor is showing"
   else
     fail "nested compositor window is on '$nested_window_ws' (special open: $special_open)"
+  fi
+
+  # A FIXED OUTPUT SIZE (tick 5wo). The nested output is the size of the nested
+  # compositor's window, and a parked window takes the size the live desk gives a
+  # tiled client: 701x850 undocked, 2126x850 docked. Dwindle builds a different
+  # tree on each, so the same case ran on different scenarios by desk. Float the
+  # window and size it absolutely, so every case sees the same aspect. (The
+  # float action is ignored by this Hyprland: it toggles, hence the read first.)
+  # (`pid:` is not a selector this dispatcher honours — measured; the address is.)
+  local _wf _wa
+  _wf=$(live clients -j | jq -r --argjson p "$NESTED_PID" 'first(.[]|select(.pid==$p)|"\(.floating) \(.address)")//"none"')
+  _wa=${_wf#* }
+  if [[ $_wf == false\ * ]]; then
+    live dispatch "hl.dsp.window.float({ window = \"address:$_wa\", action = \"toggle\" })" >/dev/null
+    sleep 0.3
+  fi
+  live dispatch "hl.dsp.window.resize({ window = \"address:$_wa\", x = $NESTED_OUTPUT_W, y = $NESTED_OUTPUT_H })" >/dev/null
+  _nested_output_pinned() { [[ $(nested monitors all -j | jq -r 'first(.[]|select(.id==0)|"\(.width)x\(.height)")') == "${NESTED_OUTPUT_W}x${NESTED_OUTPUT_H}" ]]; }
+  if poll 10 _nested_output_pinned; then
+    pass "nested output pinned at ${NESTED_OUTPUT_W}x${NESTED_OUTPUT_H}, whatever the live desk is"
+  else
+    fail "nested output is $(nested monitors all -j | jq -r 'first(.[]|select(.id==0)|"\(.width)x\(.height)")'), wanted ${NESTED_OUTPUT_W}x${NESTED_OUTPUT_H}"
   fi
 
   # NO persistent workspace rules (tick zf6). Up to 4.0 this loop pinned 1..10
