@@ -2654,3 +2654,62 @@ test("9i2 tab: the tab op sits after the groups and before the geometry, and ref
   assert.match(engine.opToCommand({ kind: "tab", address: "0xa", anchor: "0xa", index: 0 })[0], /index = 1,/,
     "index 0 would select the LAST tab");
 });
+
+// --- placeable entries pick their live window first (4wf) --------------------
+// Two entries of one identity: #0 cannot be placed (slot-unknown), #1 can. An
+// unplaceable entry must only take a window a placeable one has left over.
+{
+  const Slots = require("../Slots.js");
+  const mons = [
+    { id: 0, name: "eDP-1", description: "Lap", x: 0, y: 0, width: 1920, height: 1080, scale: 1, focused: true, activeWorkspace: { id: 1 }, disabled: false },
+    { id: 1, name: "DP-1", description: "Ext", x: 1920, y: 0, width: 1920, height: 1080, scale: 1, focused: false, activeWorkspace: { id: 11 }, disabled: false }
+  ];
+  const table = Slots.parseBlocks("0\teDP-1\tLap\n1\tDP-1\tExt\n");
+  const ids = [{ id: "term", patterns: ["^term$"], launch: "foot" }];
+  const win = (addr, ws, mon, x) => ({
+    address: addr, class: "term", initialClass: "term", title: "t", initialTitle: "t", pid: 1,
+    mapped: true, hidden: false, workspace: { id: ws, name: String(ws) }, monitor: mon,
+    floating: false, at: [x, 0], size: [900, 1000], grouped: [], focusHistoryID: 0
+  });
+  const layout = { topologyKey: "k", apps: [
+    { identityId: "term", occurrence: 0, monitorDescription: "Ext", slot: null, floating: false, group: null, at: [1920, 0], size: [900, 1000] },
+    { identityId: "term", occurrence: 1, monitorDescription: "Lap", slot: 2, floating: false, group: null, at: [0, 0], size: [900, 1000] }
+  ] };
+  const live = Slots.toLive(layout, table, mons);
+  const run = (clients) => ({
+    drift: engine.driftOf(clients, mons, live, ids).apps,
+    plan: engine.planRestore(clients, mons, live, ids).map(engine.describeOp)
+  });
+
+  test("an unplaceable entry leaves the only window to the placeable one", () => {
+    const r = run([win("0xz", 11, 1, 1920)]);
+    assert.strictEqual(r.drift[0].status, "skipped");
+    assert.strictEqual(r.drift[0].reason, "slot-unknown");
+    assert.strictEqual(r.drift[0].current, null);
+    assert.strictEqual(r.drift[1].status, "drifted");
+    assert.strictEqual(r.drift[1].current.address, "0xz");
+    assert.deepStrictEqual(r.plan.filter((p) => /launch/.test(p)), []);
+    assert.match(r.plan[0], /move 0xz -> ws 2/);
+  });
+
+  test("with no live window the placeable entry launches, the unplaceable one is skipped", () => {
+    const r = run([]);
+    assert.strictEqual(r.drift[0].status, "skipped");
+    assert.strictEqual(r.drift[1].status, "missing");
+    assert.deepStrictEqual(r.plan, ["launch term"]);
+  });
+
+  test("a window already elsewhere than the unplaceable entry still goes to the placeable one", () => {
+    const r = run([win("0xa", 1, 0, 0)]);
+    assert.strictEqual(r.drift[0].current, null);
+    assert.strictEqual(r.drift[1].current.address, "0xa");
+    assert.ok(!r.plan.some((p) => /launch/.test(p)));
+  });
+
+  test("a surplus window goes to the unplaceable entry once the placeable one is served", () => {
+    const r = run([win("0xa", 1, 0, 0), win("0xb", 1, 0, 900)]);
+    assert.strictEqual(r.drift[1].current.address, "0xa");
+    assert.strictEqual(r.drift[0].current.address, "0xb");
+    assert.ok(!r.plan.some((p) => /launch/.test(p)));
+  });
+}
