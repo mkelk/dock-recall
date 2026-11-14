@@ -23,6 +23,7 @@ import Quickshell.Io
 import "engine.js" as Engine
 import "StateModel.js" as StateModel
 import "Slots.js" as Slots
+import "ReconcileGate.js" as ReconcileGate
 // Only for humanizeTopology: the completion toast names the topology, and the
 // user reads "Laptop + AOC U34G2G", not "Samsung Display Corp. ATNA60HR07-0 |
 // AOC Inc. U34G2G". Nothing else here goes through the panel's model.
@@ -337,7 +338,11 @@ Item {
     "monitoraddedv2": true,
     "monitoradded": true,
     "monitorremovedv2": true,
-    "monitorremoved": true
+    "monitorremoved": true,
+    // 4.5 re-sorts its blocks on a config reload too (merge() renumbers), so a
+    // reload is restore-relevant: same debounce, and the reconcile gate holds
+    // the plan until the re-sort has settled.
+    "configreloaded": true
   })
 
   // The events that can change DRIFT without changing the topology — a window
@@ -400,6 +405,9 @@ Item {
   function handleHyprlandEvent(event) {
     var name = String(event && event.name ? event.name : "")
     var data = String(event && event.data ? event.data : "")
+
+    // Every raw event reaches the gate; it ignores the ones it has no use for.
+    root.reconcileGate = ReconcileGate.onEvent(root.reconcileGate, name, Date.now())
 
     if (name === "focusedmon" || name === "focusedmonv2") {
       root.lastFocusedMonitor = data.split(",")[0]
@@ -2503,6 +2511,24 @@ Item {
   // churn the user watches. `home` is the anchor's CURRENT workspace, read
   // now — the moves phase has already put the anchor on its recorded one.
   function scratchJoin(address, predecessor, anchor, outcome, done) {
+    // A join must never straddle a 4.5 reconcile (a scratch workspace is
+    // renumbered by merge() on a reload): gate it on a full snapshot first.
+    root.gateThen("scratch join",
+      function () { root.scratchJoinReady(address, predecessor, anchor, outcome, done) },
+      function () {
+        root.warn("scratch join: the snapshot failed — leaving " + address + " unjoined")
+        root.failOp(outcome, "the live read failed before the scratch-workspace join",
+          root.identitiesForAddresses([address]))
+        done()
+      },
+      function (reason) {
+        root.failOp(outcome, "reconcile-unsettled: " + reason + " — the scratch-workspace join was not attempted",
+          root.identitiesForAddresses([address]))
+        done()
+      })
+  }
+
+  function scratchJoinReady(address, predecessor, anchor, outcome, done) {
     root.readClients(function (ok) {
       var anchorClient = ok ? root.clientByAddress(anchor) : null
       var candidate = ok ? root.clientByAddress(address) : null
@@ -2764,6 +2790,14 @@ Item {
     root.opsPlaced = 0
     root.opsTiled = 0
     root.cycleTopologyKey = ""
+    root.cycleUnsettled = ""
+    gateTimer.stop()
+    root.gateArgs = null
+    // A new cycle is a new wait: keep the hold an event set, drop the clock of
+    // an episode no check ever closed.
+    var carried = ReconcileGate.create()
+    carried.holdUntil = root.reconcileGate.holdUntil
+    root.reconcileGate = carried
     // Whose keyboard this is. Cleared at cycle start and filled in from the
     // first successful read of the cycle, so the placement choreography has
     // somewhere to put the focus back. See noteFocusHome.
@@ -2802,7 +2836,75 @@ Item {
     // A fresh pass may try the shape again — see shapeAbandoned.
     root.shapeAbandoned = ({})
     root.lastPlan = null
-    root.planAndExecute()
+    // No plan, and so no dispatch, until 4.5's re-sort has settled. A wait here
+    // does not consume a settle pass: the pass simply starts later.
+    root.gateThen("pass " + (root.passIndex + 1),
+      function () { root.planAndExecute() },
+      function () {
+        root.warn("pass " + (root.passIndex + 1) + " abandoned: the live read failed"
+          + " — the next settle pass will retry")
+        root.finishPass()
+      },
+      function (reason) {
+        root.cycleUnsettled = reason
+        root.cycleFailures += 1
+        root.finishCycle()
+      })
+  }
+
+  // ------------------------------------------------------- the reconcile gate
+  //
+  // Omarchy 4.5 re-sorts workspaces asynchronously after a hotplug or a config
+  // reload (see ReconcileGate.js). Planning against the desktop mid-sort moves
+  // windows into blocks that are about to be renumbered. gateThen takes a FULL
+  // snapshot (clients, monitors, block files: one instant), asks the gate, and
+  // calls proceed() only when it says ready; otherwise it re-snapshots after
+  // the gate's waitMs. `abandon` runs when the read failed, `timedOut(reason)`
+  // when the gate gave up. The gate object returned by every check is kept: it
+  // resets itself on ready and on timeout.
+  property var reconcileGate: ReconcileGate.create()
+  property string cycleUnsettled: ""
+  property var gateArgs: null
+
+  function gateThen(label, proceed, abandon, timedOut) {
+    root.gateArgs = null
+    root.snapshot(function (ok) {
+      if (!ok) {
+        abandon()
+        return
+      }
+      var merged = Slots.parseMerged(root.mergedText)
+      var pend = ReconcileGate.pending(root.blockTable, merged, root.liveClients, root.liveMonitors)
+      var sig = ReconcileGate.signature(root.liveClients, root.liveMonitors, root.blocksText, root.mergedText)
+      var answer = ReconcileGate.check(root.reconcileGate,
+        { nowMs: Date.now(), signature: sig, pendingReason: pend })
+      root.reconcileGate = answer.gate
+      if (answer.timedOut) {
+        var why = pend || "unstable"
+        root.log("reconcile-unsettled: " + why + " (" + label + ")")
+        timedOut(why)
+        return
+      }
+      if (answer.ready) {
+        root.log("reconcile gate: ready (" + label + ")")
+        proceed()
+        return
+      }
+      root.log("reconcile gate: waiting " + answer.waitMs + " (" + answer.reason + ")")
+      root.gateArgs = { label: label, proceed: proceed, abandon: abandon, timedOut: timedOut }
+      gateTimer.interval = Math.max(50, answer.waitMs)
+      gateTimer.restart()
+    })
+  }
+
+  Timer {
+    id: gateTimer
+    repeat: false
+    onTriggered: {
+      var args = root.gateArgs
+      if (!args) return
+      root.gateThen(args.label, args.proceed, args.abandon, args.timedOut)
+    }
   }
 
   function planAndExecute() {
@@ -3143,6 +3245,8 @@ Item {
   }
 
   function finishCycle() {
+    gateTimer.stop()
+    root.gateArgs = null
     var total = root.opsMoved + root.opsLaunched + root.opsGrouped
       + root.opsUngrouped + root.opsFloated + root.opsPlaced + root.opsTiled
     root.log("restore cycle done (" + root.cycleReason + "): " + total + " ops — "
@@ -3178,6 +3282,7 @@ Item {
     // (no layout, or the last read failed) — the tally is what this said
     // before verdicts existed, and it is still better than an empty string.
     var sentence = verdicts.length ? summary.text : root.cycleSummary(total)
+    if (root.cycleUnsettled) sentence = "reconcile-unsettled: " + root.cycleUnsettled
 
     // Only speak up when something actually happened, OR when something went
     // wrong. A dock that needed no work must not produce a toast; a dock that
