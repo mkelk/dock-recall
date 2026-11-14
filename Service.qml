@@ -1072,9 +1072,19 @@ Item {
   // failed): modes unknown is the pre-9i2 behaviour, not an abandoned pass.
   property var liveWorkspaces: null
   // Workspaces whose live tree is the recorded tree, because this cycle built
-  // it. Keyed by String(workspaceId). Filled by a later tick; cleared with
-  // shapeAbandoned and at cycle start.
+  // it (epic 9i2 §2.5). Keyed by String(workspaceId). Set by settleBuilt only
+  // when, in ONE plan, every `sequenced` move to the workspace executed, every
+  // focus read-back landed and every axis read-back ended right. Cleared at
+  // cycle start — never per pass: the known tree lives for one restore, and a
+  // later settle pass refining the tree this cycle built is exactly what it is
+  // for. Deleted when shapeAbandoned is set for the workspace, and when a later
+  // plan moves any window into it (that move changes the tree it vouches for).
   property var builtWorkspaces: ({})
+
+  // The per-workspace bookkeeping of the plan being executed, from which
+  // settleBuilt decides `builtWorkspaces`. Replaced by every executePlan.
+  //   { "<ws>": { workspaceId, expected, landed, partial, broken } }
+  property var planBuild: ({})
 
   // The trailing argument of every Engine.driftOf / Engine.planRestore call.
   function planContext() {
@@ -1254,6 +1264,25 @@ Item {
   // both allowed to have worked by the time the next settle pass runs.
   property var shapeAbandoned: ({})
 
+  // Give the shape of one workspace up for this pass. The one writer of
+  // shapeAbandoned, so the known tree (builtWorkspaces) can never outlive it.
+  function abandonShape(workspaceId) {
+    var ws = String(workspaceId)
+    root.shapeAbandoned[ws] = true
+    if (root.builtWorkspaces[ws] === true) {
+      delete root.builtWorkspaces[ws]
+      root.log("built: workspace " + ws + " is no longer a known tree — its shape was abandoned")
+    }
+    root.noteBuildBroken(workspaceId)
+  }
+
+  // Something this plan did to the workspace could not be confirmed, so this
+  // plan may not declare it built.
+  function noteBuildBroken(workspaceId) {
+    var track = root.planBuild ? root.planBuild[String(workspaceId)] : null
+    if (track) track.broken = true
+  }
+
   // Did the focus land where the choreography aimed it?
   //
   // The choreography's ONLY input is this: dwindle splits the tile of the
@@ -1332,9 +1361,11 @@ Item {
   function verifyFocusStep(op, outcome) {
     return { kind: "fn", fn: function (done) {
       root.readActiveWindow(function (ok, address) {
-        if (!ok) { done(); return }
+        // An unreadable focus is not a missed one — but it is not a confirmed
+        // one either, and only confirmed arrivals make a known tree.
+        if (!ok) { root.noteBuildBroken(op.workspaceId); done(); return }
         if (address && address === op.splitParent) { done(); return }
-        root.shapeAbandoned[String(op.workspaceId)] = true
+        root.abandonShape(op.workspaceId)
         root.warn("placement choreography: focus at the split parent " + op.splitParent
           + " did not land (activewindow reads " + (address || "no window — a layer surface has the keyboard")
           + ") — standing the shape down for workspace " + op.workspaceId
@@ -1556,6 +1587,7 @@ Item {
     }
 
     var steps = []
+    var moveQueued = false
     for (var i = 0; i < commands.length; i++) {
       var isFocus = choreographed && i === 0
       // The shape is already gone for this workspace: sending the focus anyway
@@ -1565,6 +1597,14 @@ Item {
       if (!step) continue
       steps.push(step)
       if (isFocus) steps.push(root.verifyFocusStep(op, outcome))
+      else moveQueued = true
+    }
+
+    // A move of a complete arrival program: confirm it, and set its axis.
+    // Before the refocus below, so a correction's own focus is handed back by
+    // the same step that hands back the choreography's.
+    if (op.kind === "move" && op.sequenced === true) {
+      steps.push(root.arrivalCheckStep(op, outcome, moveQueued))
     }
 
     // A move that names a split parent borrowed the keyboard to do it. Give it
@@ -1588,6 +1628,211 @@ Item {
     if (choreographed && !abandoned) steps = steps.concat(root.refocusHomeSteps())
 
     return steps
+  }
+
+  // ARRIVAL ORIENTATION (epic 9i2 §2.5) and the bookkeeping of a built tree.
+  //
+  // Dwindle does not take an arrival's axis from anything this plugin says: it
+  // splits the focused tile along its LONGER side (wider: side by side,
+  // taller: stacked) and puts the arrival on the far side — tests/nested-notes.md
+  // 9i2 (f). The recording's cut may be the other one. So after every leader
+  // arrival that carries `splitAxis` the clients are read, and an arrival that
+  // sits on the other axis from its split parent gets exactly ONE togglesplit,
+  // aimed by focusing the arrival right after it arrived — which flips only the
+  // node the arrival created (same probe). The focus is read back before the
+  // toggle goes out, as stepsForSplit does, because `togglesplit` names no
+  // window and a focus that missed would flip a node nobody named.
+  //
+  // A second toggle is never sent. A read-back still wrong after the one toggle
+  // abandons the workspace's shape for the pass and fails the op by name.
+  //
+  // While the session is locked the correction is skipped (it is a focus op;
+  // the lock gate's deferral covers it): the workspace is then simply not
+  // built, and the next pass asks again.
+  //
+  // Every sequenced move ends here, axis or not, because this is also where a
+  // move counts towards `builtWorkspaces`: an arrival is "landed" only when its
+  // move dispatched, its focus read-back (if any) landed and its axis (if any)
+  // reads right.
+  function arrivalCheckStep(op, outcome, moveQueued) {
+    var ws = String(op.workspaceId)
+    var track = root.planBuild ? root.planBuild[ws] : null
+    function landed() { if (track) track.landed += 1 }
+    function broken() { if (track) track.broken = true }
+    return { kind: "fn", fn: function (done) {
+      if (!moveQueued || !outcome.ok || root.shapeAbandoned[ws] === true) { broken(); done(); return }
+      if (!op.splitParent || (op.splitAxis !== 0 && op.splitAxis !== 1)) { landed(); done(); return }
+      root.readClients(function (ok) {
+        if (!ok) {
+          root.warn("axis: clients read failed after " + op.address + " arrived — its axis is"
+            + " unconfirmed, so workspace " + ws + " is not a known tree this plan")
+          broken()
+          done()
+          return
+        }
+        var observed = root.arrivalAxisOf(op)
+        if (observed === op.splitAxis) { landed(); done(); return }
+        if (observed === null) {
+          root.warn("axis: " + op.address + " does not read as split beside or below its parent "
+            + op.splitParent + " on workspace " + ws + " — no togglesplit; not a known tree")
+          root.failOp(outcome, "the arrival did not land beside its split parent")
+          broken()
+          done()
+          return
+        }
+        root.queryLocked(function (locked) {
+          if (locked) {
+            root.log("axis: " + op.address + " arrived " + root.axisWord(observed)
+              + " (recorded " + root.axisWord(op.splitAxis) + ") — the session is locked,"
+              + " so the togglesplit that fixes it waits; workspace " + ws + " is not built this pass")
+            broken()
+            done()
+            return
+          }
+          var correction = root.axisCorrectionSteps(op, outcome, observed, landed, broken)
+          if (!correction.length) { broken(); done(); return }
+          root.prependSteps(correction)
+          done()
+        })
+      })
+    } }
+  }
+
+  // [focus the arrival, read the focus back -> togglesplit + read the axis
+  // back]. The dispatch spelling is engine.opToCommand's `split` op, which is
+  // the same focus-then-toggle pair; only the bracketing differs.
+  function axisCorrectionSteps(op, outcome, observed, landed, broken) {
+    var ws = String(op.workspaceId)
+    var commands = Engine.opToCommand({ kind: "split", address: op.address })
+    var focusFirst = commands.length === 2
+      ? root.stepFromEngineCommand(commands[0], "axis focus " + op.address, outcome) : null
+    var toggle = commands.length === 2
+      ? root.stepFromEngineCommand(commands[1], "axis togglesplit " + op.address, outcome) : null
+    if (!focusFirst || !toggle) {
+      root.warn("axis: the engine produced no togglesplit for " + op.address)
+      root.failOp(outcome, "the axis correction could not be turned into dispatches")
+      return []
+    }
+
+    var readBack = { kind: "fn", fn: function (done) {
+      root.readClients(function (ok) {
+        var after = ok ? root.arrivalAxisOf(op) : null
+        if (ok && after === op.splitAxis) {
+          root.log("axis: corrected " + op.address + " on workspace " + ws + " — arrived "
+            + root.axisWord(observed) + ", one togglesplit made it " + root.axisWord(after)
+            + " as recorded")
+          landed()
+          done()
+          return
+        }
+        if (!ok) {
+          root.warn("axis: clients read failed after the togglesplit on " + op.address
+            + " — unconfirmed; workspace " + ws + " is not a known tree this plan")
+          broken()
+          done()
+          return
+        }
+        root.abandonShape(ws)
+        root.warn("axis: " + op.address + " still reads " + root.axisWord(after)
+          + " after one togglesplit (recorded " + root.axisWord(op.splitAxis) + ") — NOT toggling"
+          + " again; standing the shape down for workspace " + ws + " this pass")
+        root.failOp(outcome, "arrival still split " + root.axisWord(after)
+          + " after one togglesplit (recorded " + root.axisWord(op.splitAxis) + ")")
+        done()
+      })
+    } }
+
+    var verify = { kind: "fn", fn: function (done) {
+      root.readActiveWindow(function (ok, address) {
+        if (ok && address && address === op.address) {
+          root.prependSteps([toggle, readBack])
+          done()
+          return
+        }
+        if (!ok) {
+          // Unreadable: not a miss, but a toggle aimed blind is the one thing
+          // this step must never send.
+          root.warn("axis: activewindow unreadable before the togglesplit on " + op.address
+            + " — not toggling; workspace " + ws + " is not a known tree this plan")
+          broken()
+          done()
+          return
+        }
+        root.abandonShape(ws)
+        root.warn("axis: the focus at " + op.address + " did not land (activewindow reads "
+          + (address || "no window — a layer surface has the keyboard")
+          + ") — NOT dispatching togglesplit; standing the shape down for workspace " + ws)
+        root.failOp(outcome, "the focus the axis correction needs did not land")
+        done()
+      })
+    } }
+
+    return [focusFirst, verify]
+  }
+
+  // 0 (side by side) or 1 (stacked): how the arrival and its split parent are
+  // separated in the current read, by tile box — or null when they cannot be
+  // compared (gone, floating, apart, not one cut). The cut itself is the
+  // engine's: a two-tile splitTreeOf.
+  function arrivalAxisOf(op) {
+    var arrival = root.clientByAddress(op.address)
+    var parent = root.clientByAddress(op.splitParent)
+    if (!arrival || !parent || arrival.floating || parent.floating) return null
+    if (!arrival.workspace || !parent.workspace) return null
+    if (String(arrival.workspace.id) !== String(op.workspaceId)
+      || String(parent.workspace.id) !== String(op.workspaceId)) return null
+    var a = root.tileRect(arrival)
+    var p = root.tileRect(parent)
+    var tree = Engine.splitTreeOf([
+      { key: "parent", at: p.at, size: p.size },
+      { key: "arrival", at: a.at, size: a.size }
+    ])
+    return tree && (tree.axis === 0 || tree.axis === 1) ? tree.axis : null
+  }
+
+  function axisWord(axis) {
+    return axis === 0 ? "side by side" : (axis === 1 ? "stacked" : "unknown")
+  }
+
+  // Before a plan runs: what it moves where. A workspace receiving a move that
+  // is not part of a complete program can never be built by this plan, and one
+  // that was built loses that the moment anything is moved into it.
+  function beginBuildTracking(plan) {
+    var track = {}
+    for (var i = 0; i < plan.length; i++) {
+      var op = plan[i]
+      if (!op || op.kind !== "move" || op.workspaceId === undefined || op.workspaceId === null) continue
+      var ws = String(op.workspaceId)
+      if (root.builtWorkspaces[ws] === true) {
+        delete root.builtWorkspaces[ws]
+        root.log("built: workspace " + ws + " is no longer a known tree — this plan moves "
+          + op.address + " into it")
+      }
+      if (!track[ws]) track[ws] = { workspaceId: ws, expected: 0, landed: 0, partial: false, broken: false }
+      if (op.sequenced === true) track[ws].expected += 1
+      else track[ws].partial = true
+    }
+    root.planBuild = track
+  }
+
+  // After a plan ran: the workspaces whose every sequenced arrival landed.
+  function settleBuilt() {
+    var track = root.planBuild || {}
+    for (var ws in track) {
+      if (!Object.prototype.hasOwnProperty.call(track, ws)) continue
+      var t = track[ws]
+      if (t.expected === 0) continue
+      if (!t.partial && !t.broken && t.landed === t.expected && root.shapeAbandoned[ws] !== true) {
+        root.builtWorkspaces[ws] = true
+        root.log("built: workspace " + ws + " — all " + t.expected + " sequenced arrival(s) landed on"
+          + " their split parents and axes; later plans this cycle refine it as the known tree")
+      } else {
+        root.log("built: workspace " + ws + " NOT marked — " + t.landed + "/" + t.expected
+          + " sequenced arrival(s) confirmed" + (t.partial ? ", the plan moved only part of it" : "")
+          + (root.shapeAbandoned[ws] === true ? ", its shape was abandoned" : ""))
+      }
+    }
+    root.planBuild = ({})
   }
 
   // ONE FLIP of one dwindle node (tick uk5).
@@ -2163,13 +2408,19 @@ Item {
   // a plain window's rect is its tile.
   readonly property int groupbarPx: 21
   function tileBox(client) {
+    var rect = root.tileRect(client)
+    return root.geometryText(rect.at, rect.size)
+  }
+
+  // The tile a window occupies: its rect, plus the groupbar for a group member.
+  function tileRect(client) {
     var at = (client.at || []).slice()
     var size = (client.size || []).slice()
     if ((client.grouped || []).length > 0 && at.length === 2 && size.length === 2) {
       at[1] -= root.groupbarPx
       size[1] += root.groupbarPx
     }
-    return root.geometryText(at, size)
+    return { at: at, size: size }
   }
 
   function geometryText(at, size) {
@@ -2922,7 +3173,6 @@ Item {
     root.refinementIterations = 0
     // A fresh pass may try the shape again — see shapeAbandoned.
     root.shapeAbandoned = ({})
-    root.builtWorkspaces = ({})
     root.lastPlan = null
     // No plan, and so no dispatch, until 4.5's re-sort has settled. A wait here
     // does not consume a settle pass: the pass simply starts later.
@@ -3315,15 +3565,18 @@ Item {
         + " more windows of \"" + deficits[d].identityId + "\" — launching them one at a time")
     }
 
+    root.beginBuildTracking(plan)
     var steps = []
     for (var i = 0; i < plan.length; i++) steps = steps.concat(root.stepsForOp(plan[i]))
     if (steps.length === 0) {
+      root.planBuild = ({})
       // Every op in the plan was unexecutable (launch-less identities, say).
       // Re-planning would produce the same plan forever, so stop the pass here.
       root.log("nothing executable in this plan — ending the pass")
       root.finishPass()
       return
     }
+    steps.push({ kind: "fn", fn: function (next) { root.settleBuilt(); next() } })
     root.runSteps(steps, done)
   }
 

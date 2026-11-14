@@ -256,5 +256,55 @@ test("Service.qml reads hyprctl workspaces in snapshot and clears builtWorkspace
   assert.match(source, /READ-FAILED hyprctl workspaces/);
   assert.match(source, /function planContext\(\) \{\s*return \{ workspaces: root\.liveWorkspaces, built: root\.builtWorkspaces \}/);
   const clears = source.match(/root\.builtWorkspaces = \(\{\}\)/g) || [];
-  assert.ok(clears.length >= 2, "builtWorkspaces must be cleared at cycle start and with shapeAbandoned");
+  assert.ok(clears.length >= 1, "builtWorkspaces must be cleared at cycle start");
+});
+
+// Epic 9i2 §2.5 — the known tree lives for one restore. Cleared at cycle start
+// only (a settle pass refining the tree this cycle built is what it is for),
+// deleted per workspace when its shape is abandoned, and set only by the
+// post-plan bookkeeping.
+function functionBody(source, name) {
+  const start = source.indexOf("function " + name + "(");
+  assert.ok(start !== -1, name + " exists");
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}" && --depth === 0) return source.slice(open, i + 1);
+  }
+  throw new Error("unbalanced " + name);
+}
+
+test("Service.qml keeps builtWorkspaces for the cycle and drops it with an abandoned shape", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  assert.doesNotMatch(functionBody(source, "runPass"), /builtWorkspaces/,
+    "a settle pass must not forget the tree this cycle built");
+  assert.match(functionBody(source, "requestRestore"), /root\.builtWorkspaces = \(\{\}\)/);
+  const abandon = functionBody(source, "abandonShape");
+  assert.match(abandon, /root\.shapeAbandoned\[ws\] = true/);
+  assert.match(abandon, /delete root\.builtWorkspaces\[ws\]/);
+  // abandonShape is the one writer of shapeAbandoned entries.
+  const writes = source.match(/root\.shapeAbandoned\[[^\]]+\] = true/g) || [];
+  assert.strictEqual(writes.length, 1, "every abandon goes through abandonShape");
+  // Set only from settleBuilt, which runs as the plan's last step.
+  const sets = source.match(/root\.builtWorkspaces\[[^\]]+\] = true/g) || [];
+  assert.strictEqual(sets.length, 1);
+  assert.match(functionBody(source, "settleBuilt"), /root\.builtWorkspaces\[ws\] = true/);
+  assert.match(functionBody(source, "settleBuilt"), /!t\.partial && !t\.broken && t\.landed === t\.expected/);
+  assert.match(functionBody(source, "executePlan"), /beginBuildTracking\(plan\)[\s\S]*settleBuilt\(\)/);
+});
+
+test("Service.qml corrects an arrival's axis with ONE togglesplit, read back, never a second", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  const correction = functionBody(source, "axisCorrectionSteps");
+  // The toggle goes out only behind a focus read-back on the arrival…
+  assert.match(correction, /address === op\.address\) \{\s*root\.prependSteps\(\[toggle, readBack\]\)/);
+  assert.strictEqual((correction.match(/prependSteps/g) || []).length, 1, "one toggle, never a second");
+  // …and a read-back still wrong abandons the shape and fails the op by name.
+  assert.match(correction, /root\.abandonShape\(ws\)[\s\S]*root\.failOp\(outcome, "arrival still split /);
+  // Skipped while locked.
+  assert.match(functionBody(source, "arrivalCheckStep"), /queryLocked\(function \(locked\) \{\s*if \(locked\)/);
+  // Every sequenced move is checked before the keyboard goes home.
+  assert.match(functionBody(source, "stepsForOp"),
+    /op\.sequenced === true\) \{\s*steps\.push\(root\.arrivalCheckStep[\s\S]*refocusHomeSteps/);
 });
