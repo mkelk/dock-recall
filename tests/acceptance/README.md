@@ -33,8 +33,12 @@ why.
 ## Running it
 
 ```bash
-OMARCHY_ISO_HOST=<the host holding ~/git/omarchy> ./tests/acceptance/run.sh
+./tests/acceptance/run.sh
 ```
+
+**Ask first.** This boots a VM on the laptop, which is the human's desk; do not
+start a run unasked. Prerequisites (ISO, base image, `~/git/omarchy`) are checked
+up front, and a missing one fails with one line naming it.
 
 That is the whole gate. **Exit 0 means every scenario passed inside the VM**;
 exit 1 says which of the required lines was missing and prints every
@@ -42,7 +46,7 @@ exit 1 says which of the required lines was missing and prints every
 `--reuse-base --no-preview`, so none of those can be forgotten. About 5 minutes,
 entirely headless.
 
-Results land in `~/git/omarchy-iso/test-runs/omarchy-4.0.1/runs/<timestamp>/`:
+Results land in `~/git/omarchy-iso/test-runs/omarchy-4.5.0/runs/<timestamp>/`:
 `serial.log`, the harness's own console captures, and `omarchy-acceptance/` with
 the tests' screenshots, the state files each scenario seeded and migrated, and
 `dock-recall-*-service.log` — the `[dock-recall]` lines the service itself
@@ -53,10 +57,10 @@ The underlying invocation, for when something needs to be run by hand:
 
 ```bash
 stage=$(mktemp -d)
-OMARCHY_ISO_HOST=<the host holding ~/git/omarchy> tests/acceptance/stage.sh "$stage"
+tests/acceptance/stage.sh "$stage"
 
 cd ~/git/omarchy-iso
-PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.0.1.iso \
+PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.5.0.iso \
   --reuse-base --no-preview --sync-omarchy "$stage"
 ```
 

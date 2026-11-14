@@ -45,8 +45,6 @@
 # here; the acceptance VM is headless for the same reason.
 #
 # Environment:
-#   OMARCHY_ISO_HOST    host holding ~/git/omarchy — needed by step 7 only.
-#                       See tests/acceptance/PROVISIONING.md.
 #   OMARCHY_PATH        omarchy checkout for qmllint's import path
 #                       (default /usr/share/omarchy)
 #   DR_RUN_ALL_LOG_DIR  where per-step logs land (default a mktemp dir)

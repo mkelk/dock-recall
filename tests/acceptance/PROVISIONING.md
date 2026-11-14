@@ -12,16 +12,15 @@ Cloned from the machine that built it, outside any git worktree:
 | | |
 |---|---|
 | Path | `~/git/omarchy-iso` |
-| Origin | the build host (`$OMARCHY_ISO_HOST`, see below) |
+| Origin | built on this laptop from upstream omacom/omarchy v4.5.0 (see *Local build*) |
 | Branch / commit | `quattro` @ `268bac16d351a21d867e37565738f458b11cb06c` |
 | Size | 2.8 MB (scripts only) |
 
 The `archiso` submodule is deliberately left uninitialized: it is only needed to
 *build* an ISO, and we copy a released one instead.
 
-`$OMARCHY_ISO_HOST` throughout this note means the machine that built the ISO
-and the base image — the box with `~/git/omarchy-iso` and the omarchy fork on
-it, reachable over SSH. It is named in the operator's SSH config, not here.
+Everything runs on this laptop: the ISO and base image are built here, and the
+acceptance suite is read from `~/git/omarchy`. No remote host is involved.
 
 Entry point is `bin/omarchy-iso-test`. Relevant flags: `--reuse-base`,
 `--sync-omarchy DIR`, `--sync-all DIR`, `--no-preview`, `--keep-running`,
@@ -41,7 +40,7 @@ unattended agent run hits an interactive sudo prompt unless the packages are
 already present. **Pre-install them:**
 
 ```
-sudo pacman -S --needed qemu-full edk2-ovmf
+omarchy pkg add qemu-full edk2-ovmf
 ```
 
 Only those two were missing on this machine; `socat`, `imagemagick`,
@@ -91,19 +90,33 @@ which runs `imv` on the collected PNGs when `WAYLAND_DISPLAY`/`DISPLAY` is set.
 **Always pass `--no-preview`.** That is the only desktop-visible surface in the
 whole harness.
 
-## Artifacts copied from the build host
+## Local build (ask first)
 
-Both were rsync'd (`--partial`) rather than rebuilt.
+The 4.5.0 ISO and its base image are built on this laptop. Building is slow and
+writes large files, so ask the human before starting it.
 
-| Artifact | Path | Size |
-|---|---|---|
-| ISO | `~/git/omarchy-iso/release/omarchy-4.0.1.iso` | 5.9 GiB (6227752960 B) |
-| ISO checksum | `~/git/omarchy-iso/release/omarchy-4.0.1.iso.sha256` | verified with `sha256sum -c` |
-| Base disk | `~/git/omarchy-iso/test-runs/omarchy-4.0.1/base.qcow2` | 5.9 GiB (6231293952 B) |
-| OVMF vars | `~/git/omarchy-iso/test-runs/omarchy-4.0.1/OVMF_VARS.4m.fd` | 528 KiB |
-| Guest SSH key | `~/git/omarchy-iso/test-runs/omarchy-4.0.1/id_ed25519{,.pub}` | harness-generated, guest-only |
+1. The ISO. Always pass `--keep-pkg-cache`: without it the build purges the host
+   package cache, which needs interactive sudo and breaks unattended runs.
+   ```bash
+   cd ~/git/omarchy-iso
+   bin/omarchy-iso-make --keep-pkg-cache --no-boot-offer
+   ```
+   `omarchy-iso-make` is not on `PATH`; call it from `bin/`. The gate expects the
+   result at `release/omarchy-4.5.0.iso`. Check the file name it writes and
+   rename it to that if it differs.
+2. The base image. The first harness run without `--reuse-base` performs the full
+   unattended install and leaves `test-runs/omarchy-4.5.0/base.qcow2`. That run is
+   a Tier C VM, so it is also ask-first. Until the base image exists,
+   `run.sh` fails at preflight, by design.
 
-ISO sha256: `69cbb4e10d98ad831c3c9f245b5757a9d1fedfd0c9592780e977d6f950dea8c3`
+## Artifacts built locally
+
+| Artifact | Path |
+|---|---|
+| ISO | `~/git/omarchy-iso/release/omarchy-4.5.0.iso` |
+| Base disk | `~/git/omarchy-iso/test-runs/omarchy-4.5.0/base.qcow2` |
+| OVMF vars | `~/git/omarchy-iso/test-runs/omarchy-4.5.0/OVMF_VARS.4m.fd` |
+| Guest SSH key | `~/git/omarchy-iso/test-runs/omarchy-4.5.0/id_ed25519{,.pub}` |
 
 ### What `--reuse-base` reuses
 
@@ -135,7 +148,7 @@ whole reading mechanism on this machine:
 
 ## Run layout
 
-Each invocation writes `test-runs/omarchy-4.0.1/runs/<YYYYmmdd-HHMMSS>/`
+Each invocation writes `test-runs/omarchy-4.5.0/runs/<YYYYmmdd-HHMMSS>/`
 containing `run.qcow2`, `serial.log`, `qemu.pid`, the harness's own
 `success-*.png` / `failure-*.png` console captures, and `omarchy-acceptance/`
 — the in-guest artifacts (per-test screenshots) tarred back out of `/tmp`.
@@ -177,7 +190,7 @@ underneath is:
 
 ```
 cd ~/git/omarchy-iso
-PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.0.1.iso \
+PATH=/usr/bin:$PATH ./bin/omarchy-iso-test release/omarchy-4.5.0.iso \
   --reuse-base --no-preview --sync-omarchy <stage>
 ```
 

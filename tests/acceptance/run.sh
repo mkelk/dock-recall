@@ -39,22 +39,28 @@
 # is this script's EXIT trap, on every path out.
 #
 # Environment:
-#   OMARCHY_ISO_HOST      host holding ~/git/omarchy (the fork carrying the
-#                         acceptance suite) — see stage.sh. Not needed if a
-#                         local omarchy checkout is passed as $1.
 #   OMARCHY_ISO_DIR       harness checkout            (default ~/git/omarchy-iso)
-#   OMARCHY_ISO_IMAGE     ISO, relative to that dir   (default release/omarchy-4.0.1.iso)
+#   OMARCHY_ISO_IMAGE     ISO, relative to that dir   (default release/omarchy-4.5.0.iso)
 #   DR_ACCEPTANCE_KEEP=1  keep the staging directory
 #
+# Everything runs on THIS machine: the 4.5.0 ISO and its base image are built
+# locally (PROVISIONING.md), and omarchy's acceptance suite is read from
+# ~/git/omarchy. Nothing here reaches a remote host.
+#
 # Usage: tests/acceptance/run.sh [omarchy-source]
-#        ($1 is passed straight through to stage.sh — a local omarchy checkout
-#         or an scp-style host:path.)
+#        ($1 is passed straight through to stage.sh — a local omarchy checkout,
+#         default ~/git/omarchy, or an scp-style host:path.)
 
 set -uo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 ISO_DIR="${OMARCHY_ISO_DIR:-$HOME/git/omarchy-iso}"
-ISO_IMAGE="${OMARCHY_ISO_IMAGE:-release/omarchy-4.0.1.iso}"
+ISO_IMAGE="${OMARCHY_ISO_IMAGE:-release/omarchy-4.5.0.iso}"
+# vm-lib.sh reads this to find the base image and the run directory: export it so
+# the host-driven locked scenario looks at the same image the harness booted.
+export OMARCHY_ISO_IMAGE="$ISO_IMAGE"
+OMARCHY_SRC="${1:-$HOME/git/omarchy}"
+BASE_IMAGE="$ISO_DIR/test-runs/$(basename "$ISO_IMAGE" .iso)/base.qcow2"
 
 # The lines that constitute a pass. Kept as literals and matched as a line
 # PREFIX (see found_line): a fuzzy match here would be a gate that goes green on
@@ -101,6 +107,13 @@ trap cleanup EXIT
 [[ -d $ISO_DIR ]] || { echo "FAIL: no omarchy-iso harness at $ISO_DIR (see PROVISIONING.md)"; exit 1; }
 [[ -x $ISO_DIR/bin/omarchy-iso-test ]] || { echo "FAIL: $ISO_DIR/bin/omarchy-iso-test is missing or not executable"; exit 1; }
 [[ -f $ISO_DIR/$ISO_IMAGE ]] || { echo "FAIL: no ISO at $ISO_DIR/$ISO_IMAGE (see PROVISIONING.md)"; exit 1; }
+[[ -f $BASE_IMAGE ]] || { echo "FAIL: no base image at $BASE_IMAGE (see PROVISIONING.md; without it the run is a ~40 min install)"; exit 1; }
+if [[ -d $OMARCHY_SRC ]]; then
+  [[ -f $OMARCHY_SRC/test/acceptance && -f $OMARCHY_SRC/test/acceptance.d/base-test.sh ]] ||
+    { echo "FAIL: no omarchy acceptance suite at $OMARCHY_SRC/test/acceptance (need the fork with test/acceptance; see PROVISIONING.md)"; exit 1; }
+elif [[ $OMARCHY_SRC != *:* ]]; then
+  echo "FAIL: no omarchy checkout at $OMARCHY_SRC (see PROVISIONING.md)"; exit 1
+fi
 # Checked here rather than discovered six minutes in: the locked scenario's every
 # QMP call goes through socat, and without it those calls no-op instead of
 # failing — which turns the wrong-password control into a vacuous pass.
