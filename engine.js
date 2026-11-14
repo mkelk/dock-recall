@@ -4246,6 +4246,18 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
 // error is one way — a workspace can look emptier than it will be (one
 // redundant workspace move, onto the monitor it is already on), never fuller.
 // Launches land wherever the compositor puts them and are not counted on.
+//
+// "Shown" is modelled per monitor, and it does not outlast a move that changes
+// what that monitor shows (tick fz5). Two kinds of move do: a viaMonitor move,
+// whose workspace move makes the new workspace the one its monitor shows; and
+// a choreographed move (splitParent), whose focus dispatch pulls the
+// destination onto its monitor. After either, the monitor's previous workspace
+// is protected by its windows alone. Found by tests/sandbox-slots.sh on a dock:
+// the external came back showing an EMPTY ws 14, the plan's first move created
+// ws 19 there, 14 went hidden and was destroyed, and the later move into 14
+// recreated it on the focused primary — stranding the window off its owner.
+// The service's refocus after a choreographed move can only bring back what a
+// monitor showed at plan time, so it errs the same safe way.
 function stampViaMonitor(moves, clientsJson, monitorsJson) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
@@ -4257,13 +4269,18 @@ function stampViaMonitor(moves, clientsJson, monitorsJson) {
     byAddress[client.address] = client;
     where[client.address] = client.workspace ? client.workspace.id : null;
   }
-  var shown = {};
+  // monitor name -> the workspace id it shows (null: nothing protected).
+  var shownBy = {};
   for (var m = 0; m < monitors.length; m++) {
-    var active = monitors[m] && monitors[m].activeWorkspace ? monitors[m].activeWorkspace.id : null;
-    if (isRegularWorkspaceId(active)) shown[String(active)] = true;
+    var monitor = monitors[m];
+    if (!monitor) continue;
+    var active = monitor.activeWorkspace ? monitor.activeWorkspace.id : null;
+    shownBy[typeof monitor.name === "string" ? monitor.name : "#" + m] = isRegularWorkspaceId(active) ? active : null;
   }
   function exists(ws) {
-    if (own(shown, String(ws))) return true;
+    for (var name in shownBy) {
+      if (Object.prototype.hasOwnProperty.call(shownBy, name) && shownBy[name] === ws) return true;
+    }
     for (var address in where) {
       if (Object.prototype.hasOwnProperty.call(where, address) && where[address] === ws) return true;
     }
@@ -4277,6 +4294,18 @@ function stampViaMonitor(moves, clientsJson, monitorsJson) {
       ? mover.grouped : [op.address];
     for (var d = 0; d < dragged.length; d++) {
       if (own(where, dragged[d]) !== undefined) where[dragged[d]] = op.workspaceId;
+    }
+    var reshows = op.viaMonitor || (typeof op.splitParent === "string" && op.splitParent !== "");
+    if (reshows) {
+      if (op.monitorName && own(shownBy, op.monitorName) !== undefined) {
+        // It now shows the destination, which this move has just occupied.
+        shownBy[op.monitorName] = op.workspaceId;
+      } else {
+        // Which monitor changed is unknown: protect nothing by being shown.
+        for (var key in shownBy) {
+          if (Object.prototype.hasOwnProperty.call(shownBy, key)) shownBy[key] = null;
+        }
+      }
     }
   }
 }
