@@ -515,3 +515,18 @@ test("no Behavior animates a property its own file declares readonly", () => {
     "a Behavior on a readonly property makes the whole component unavailable "
     + "at load, and qmllint will not tell you:\n  " + offenders.join("\n  "));
 });
+
+// ---------------------------------------------------------------------------
+// Service.qml dispatch and log wording (tick jvk)
+// ---------------------------------------------------------------------------
+test("Service.qml: float is absolute on/off, never toggle; swap read-back compares tile boxes; status line carries shapes", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  assert.ok(!/action = .toggle./.test(source), "the float dispatch must not toggle");
+  assert.ok(source.indexOf("function floatSetStep(") !== -1);
+  assert.ok(/\(wantFloating \? "on" : "off"\)/.test(source), "floatSetStep must dispatch action on/off");
+  assert.ok(source.indexOf("can only oscillate") === -1, "the toggle-oscillation wording is gone");
+  assert.ok(source.indexOf("function tileBox(") !== -1 && source.indexOf("var wantedA = root.tileBox(b)") !== -1,
+    "the swap read-back must compare tile boxes (a group member is its tile minus the groupbar)");
+  assert.ok(/status published \([\s\S]{0,300}" shapes=" \+ \(next\.shapeCount \|\| 0\)/.test(source),
+    "the status published log line carries shapes=N");
+});
