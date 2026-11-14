@@ -52,7 +52,7 @@ source "$LIB_DIR/sandbox-lib.sh"
 APP_ID="Constructor"
 STRAY_ID="strayclass"
 STRAY_CLASS="toString"
-STRAY_WS=8
+STRAY_SLOT=8
 
 # Not assumed — asked. If deriveIdentityId ever stopped producing `constructor`
 # from `Constructor` this scenario would be seeding a hand edit and quietly
@@ -100,7 +100,7 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var appId = process.argv[4], ws = Number(process.argv[5]);
+  var appId = process.argv[4], slot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var headless = null;
@@ -114,16 +114,16 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
     apps: [{
       identityId: appId,
       monitorDescription: engine.monitorLabel(headless),
-      workspaceId: ws,
+      slot: slot,
       floating: false,
       group: null
     }]
   };
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
-  console.log("  · seeded layout for \"" + layout.topologyKey + "\": " + appId + " on ws " + ws
+  console.log("  · seeded layout for \"" + layout.topologyKey + "\": " + appId + " on slot " + slot
     + " @ " + layout.apps[0].monitorDescription);
-' "$REPO_ROOT" "$STATE" "$OUTPUT" "$DERIVED_ID" "$TARGET_WS" || { echo "FAIL: seeding failed"; exit 1; }
+' "$REPO_ROOT" "$STATE" "$OUTPUT" "$DERIVED_ID" "$TARGET_SLOT" || { echo "FAIL: seeding failed"; exit 1; }
 
 # The identity survived the round trip through the reader, which is the 8hp half
 # and the precondition for everything below.
@@ -150,9 +150,9 @@ cycles_before=$(sb_count "restore cycle done")
 nested output create headless "$OUTPUT" >/dev/null
 
 if poll 60 sim_placed; then
-  pass "case 1 — \"$DERIVED_ID\" launched onto ws $TARGET_WS on $OUTPUT"
+  pass "case 1 — \"$DERIVED_ID\" launched onto ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
 else
-  fail "case 1 — \"$DERIVED_ID\" is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $TARGET_WS on monitor $(monitor_id "$OUTPUT"))"
+  fail "case 1 — \"$DERIVED_ID\" is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $(target_ws) on monitor $(monitor_id "$OUTPUT"))"
   diagnostics
 fi
 
@@ -176,14 +176,15 @@ if [[ -z $addr ]]; then
   fail "case 2 — no \"$APP_ID\" window to scatter"
 else
   nested dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null
-  nested dispatch "hl.dsp.window.move({ workspace = \"$SCATTER_WS\", follow = false })" >/dev/null
-  poll 10 bash -c "[[ \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl clients -j | jq -r --arg c '$APP_ID' 'first(.[]|select(.class==\$c)|.workspace.id)//empty') == $SCATTER_WS ]]" \
+  SCATTER_LIVE=$(scatter_ws)   # the primary's block*10+slot, from the block file
+  nested dispatch "hl.dsp.window.move({ workspace = \"$SCATTER_LIVE\", follow = false })" >/dev/null
+  poll 10 bash -c "[[ \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl clients -j | jq -r --arg c '$APP_ID' 'first(.[]|select(.class==\$c)|.workspace.id)//empty') == $SCATTER_LIVE ]]" \
     && note "scattered to ws $(sim_ws)" || note "warning: the scatter dispatch left $APP_ID on ws $(sim_ws)"
 
   cycles_before=$(sb_count "restore cycle done")
   trigger
   if poll 60 sim_placed; then
-    pass "case 2 — \"$DERIVED_ID\" moved back to ws $TARGET_WS on $OUTPUT"
+    pass "case 2 — \"$DERIVED_ID\" moved back to ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
   else
     fail "case 2 — \"$DERIVED_ID\" is on ws '$(sim_ws)' monitor '$(sim_field monitor)'"
     diagnostics
@@ -204,7 +205,7 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var strayId = process.argv[4], strayWs = Number(process.argv[5]);
+  var strayId = process.argv[4], straySlot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var headless = null;
@@ -217,14 +218,14 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
   layout.apps = layout.apps.concat([{
     identityId: strayId,
     monitorDescription: engine.monitorLabel(headless),
-    workspaceId: strayWs,
+    slot: straySlot,
     floating: false,
     group: null
   }]);
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
   console.log("  · added \"" + strayId + "\" to the layout; its launch opens a window classed toString");
-' "$REPO_ROOT" "$STATE" "$OUTPUT" "$STRAY_ID" "$STRAY_WS" || { echo "FAIL: phase-2 seeding failed"; exit 1; }
+' "$REPO_ROOT" "$STATE" "$OUTPUT" "$STRAY_ID" "$STRAY_SLOT" || { echo "FAIL: phase-2 seeding failed"; exit 1; }
 
 sleep 2
 trigger

@@ -26,8 +26,11 @@ SHELL_PATH="${OMARCHY_PATH:-/usr/share/omarchy}/shell"
 
 APP_ID="dr-sim"
 OUTPUT="hw-test"
-TARGET_WS=9
-SCATTER_WS=1
+# SLOTS (Omarchy 4.5 per-monitor workspaces): the live id is block*10+slot, the
+# block read from the desk's own block file at the moment it is needed.
+TARGET_SLOT=9      # on $OUTPUT
+SCATTER_SLOT=1     # on the primary monitor (monitor id 0)
+MW_BLOCKS="$STATE_DIR/monitor-workspaces"
 
 BACKUP="$(mktemp "${TMPDIR:-/tmp}/dr-sim-state.XXXXXX")"
 FAILURES=0
@@ -61,10 +64,19 @@ poll() {
   return 1
 }
 
-sim_placed() {   # the window exists, on the target workspace, on the headless output
-  local ws mon want
-  ws=$(sim_ws); mon=$(sim_field monitor); want=$(monitor_id "$OUTPUT")
-  [[ -n $ws && $ws == "$TARGET_WS" && -n $want && $mon == "$want" ]]
+# expected_ws <connector> <slot> — block*10+slot from the block file; empty
+# until the monitor has a block.
+expected_ws() {
+  local b; b=$(awk -F'\t' -v c="$1" '$2==c{print $1; exit}' "$MW_BLOCKS" 2>/dev/null)
+  [[ $b =~ ^[0-9]+$ ]] && echo $((b * 10 + $2))
+}
+target_ws()  { expected_ws "$OUTPUT" "$TARGET_SLOT"; }
+scatter_ws() { expected_ws "$(hyprctl monitors all -j | jq -r 'first(.[]|select(.id==0)|.name)//empty')" "$SCATTER_SLOT"; }
+
+sim_placed() {   # the window exists, on the target slot's workspace, on the headless output
+  local ws mon want want_ws
+  ws=$(sim_ws); mon=$(sim_field monitor); want=$(monitor_id "$OUTPUT"); want_ws=$(target_ws)
+  [[ -n $ws && -n $want_ws && $ws == "$want_ws" && -n $want && $mon == "$want" ]]
 }
 
 sim_gone() { [[ -z $(sim_field address) ]]; }
@@ -155,7 +167,7 @@ node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var appId = process.argv[4], ws = Number(process.argv[5]);
+  var appId = process.argv[4], slot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var headless = null;
@@ -169,7 +181,7 @@ node -e '
     apps: [{
       identityId: appId,
       monitorDescription: engine.monitorLabel(headless),
-      workspaceId: ws,
+      slot: slot,
       floating: false,
       group: null
     }]
@@ -177,9 +189,9 @@ node -e '
   // Atomic, for the reason spelled out above the identity seed.
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
-  console.log("seeded layout for \"" + layout.topologyKey + "\": " + appId + " on ws " + ws
+  console.log("seeded layout for \"" + layout.topologyKey + "\": " + appId + " on slot " + slot
     + " @ " + layout.apps[0].monitorDescription);
-' "$REPO_ROOT" "$STATE" "$OUTPUT" "$APP_ID" "$TARGET_WS"
+' "$REPO_ROOT" "$STATE" "$OUTPUT" "$APP_ID" "$TARGET_SLOT"
 
 sleep 1
 remove_output
@@ -193,9 +205,9 @@ echo "=== case 1: LAUNCH ==="
 kill_sim
 hyprctl output create headless "$OUTPUT" >/dev/null
 if poll 20 sim_placed; then
-  pass "case 1 LAUNCH — $APP_ID launched onto ws $TARGET_WS on $OUTPUT"
+  pass "case 1 LAUNCH — $APP_ID launched onto ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
 else
-  fail "case 1 LAUNCH — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $TARGET_WS on monitor $(monitor_id "$OUTPUT"))"
+  fail "case 1 LAUNCH — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $(target_ws) on monitor $(monitor_id "$OUTPUT"))"
   diagnostics
 fi
 
@@ -211,12 +223,12 @@ if [[ -z $addr ]]; then
   fail "case 2 SCATTER — no $APP_ID window to scatter"
 else
   hyprctl dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null
-  hyprctl dispatch "hl.dsp.window.move({ workspace = \"$SCATTER_WS\", follow = false })" >/dev/null
+  hyprctl dispatch "hl.dsp.window.move({ workspace = \"$(scatter_ws)\", follow = false })" >/dev/null
   sleep 1
   echo "scattered to ws $(sim_ws)"
   trigger
   if poll 25 sim_placed; then
-    pass "case 2 SCATTER — $APP_ID back on ws $TARGET_WS on $OUTPUT"
+    pass "case 2 SCATTER — $APP_ID back on ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
   else
     fail "case 2 SCATTER — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)'"
     diagnostics
