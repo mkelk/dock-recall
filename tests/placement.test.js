@@ -455,3 +455,38 @@ test("9i2: a workspace that is ONE group splits nothing, so it is not choreograp
   assert.deepEqual(plan.filter((op) => op.kind === "move").length, 3);
   assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
 });
+
+// ------------------------------------------- the destination's layout mode (9i2)
+//
+// A splitParent is a focus dispatch for an arrival order only dwindle reads.
+// Into a scrolling or floating workspace, or one recorded in another mode, the
+// moves keep their recorded order and lose the focus (§2.4).
+
+test("GATE 9i2: a destination in the SCROLLING layout gets its moves and no splitParent", () => {
+  const scrolling = { workspaces: [{ id: 5, tiledLayout: "scrolling" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+  const plan = engine.planRestore(scattered(), MONITORS, layoutOn(5), IDS, scrolling);
+  assert.deepEqual(movesOf(plan), ["0x1", "0x2", "0x3"]);
+});
+
+test("GATE 9i2: a destination the FLOATING layout tagged gets no splitParent", () => {
+  const tagged = makeClient({ address: "0x9", class: "some-app-nobody-watches", workspace: 5, floating: true,
+    tags: ["omarchy-floating-workspace"] });
+  const dwindle = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+  assert.deepEqual(movesOf(engine.planRestore(scattered([tagged]), MONITORS, layoutOn(5), IDS)),
+    ["0x1", "0x2<-0x1", "0x3<-0x2"], "the context-free control is choreographed");
+  assert.deepEqual(movesOf(engine.planRestore(scattered([tagged]), MONITORS, layoutOn(5), IDS, dwindle)),
+    ["0x1", "0x2", "0x3"]);
+});
+
+test("GATE 9i2: a destination recorded in another mode gets no splitParent; the same mode keeps it", () => {
+  const dwindle = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+  const mode = (m) => ({ one: { layoutMode: m }, two: { layoutMode: m }, three: { layoutMode: m } });
+  assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, dwindle)),
+    ["0x1", "0x2", "0x3"]);
+  assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("dwindle")), IDS, dwindle)),
+    ["0x1", "0x2<-0x1", "0x3<-0x2"]);
+  // A destination with no readable mode (it does not exist yet) is not refused.
+  const unknown = { workspaces: [{ id: 9, tiledLayout: "dwindle" }], built: null };
+  assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, unknown)),
+    ["0x1", "0x2<-0x1", "0x3<-0x2"]);
+});

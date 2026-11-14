@@ -1138,10 +1138,15 @@ test("a window recorded floating but live tiled plans a floating op, and back", 
   assert.deepStrictEqual(engine.planRestore(floatedRecord, monitorsLaptop, layout, IDENTITIES), []);
 });
 
-test("the floating op is one targeted toggle, and the signature says the direction", () => {
+test("the floating op is one absolute dispatch, and the signature says the direction", () => {
   const op = { kind: "floating", address: "0xaaa", value: true };
+  // Absolute on/off (nested-notes 9i2 (g)): the command names the state wanted,
+  // so a re-dispatch cannot invert a window that is already right.
   assert.deepStrictEqual(engine.opToCommand(op), [
-    "hyprctl dispatch 'hl.dsp.window.float({ window = \"address:0xaaa\", action = \"toggle\" })'"
+    "hyprctl dispatch 'hl.dsp.window.float({ window = \"address:0xaaa\", action = \"on\" })'"
+  ]);
+  assert.deepStrictEqual(engine.opToCommand({ kind: "floating", address: "0xaaa", value: false }), [
+    "hyprctl dispatch 'hl.dsp.window.float({ window = \"address:0xaaa\", action = \"off\" })'"
   ]);
   assert.strictEqual(engine.describeOp(op), "float 0xaaa");
   assert.strictEqual(engine.describeOp({ kind: "floating", address: "0xaaa", value: false }), "tile 0xaaa");
@@ -2379,4 +2384,80 @@ test("9i2 G2: a group beside a tile is a tree — no 'not-a-tree', and one swap 
 
 test("9i2 G2: the recorded desk itself plans nothing", () => {
   assert.deepEqual(engine.planRestore(g2Desk([5, 26], [5, 428]), G2_MONITORS, G2_RECORDED, G2_IDS), []);
+});
+
+// ------------------------------------------------ unmet shapes (9i2, §2.7)
+//
+// A tiled rect is never drift, so a workspace whose tiles are wrong read
+// drift=0 and a green bar (finding-grouping-tiling, probe G2). report.shapes is
+// the row that says so: every FINISHED tiled workspace under the 0.95 target,
+// with the refusal word, or null when a restore would act on it.
+
+const SHAPE_MONITORS = [{
+  id: 0, name: "eDP-1", description: "Test Panel", make: "T", model: "P", serial: "",
+  x: 0, y: 0, width: 1440, height: 900, scale: 1,
+  activeWorkspace: { id: 1, name: "1" }, focused: true
+}];
+const SHAPE_IDS = [
+  { id: "one", patterns: ["^app-one$"] },
+  { id: "two", patterns: ["^app-two$"] },
+  { id: "three", patterns: ["^app-three$"] }
+];
+function shapeLayout(rects) {
+  return {
+    topologyKey: "Test Panel", recordedAt: AT,
+    apps: ["one", "two", "three"].slice(0, rects.length).map((id, i) => ({
+      identityId: id, workspaceId: 5, monitorDescription: "Test Panel", monitorIndex: 0,
+      floating: false, group: null, at: rects[i].at.slice(), size: rects[i].size.slice()
+    }))
+  };
+}
+function shapeClients(rects, workspaceId) {
+  return ["app-one", "app-two", "app-three"].slice(0, rects.length).map((cls, i) => makeClient({
+    address: "0x" + (i + 1), class: cls, workspace: workspaceId || 5,
+    at: rects[i].at.slice(), size: rects[i].size.slice()
+  }));
+}
+const TWO_SIDE_BY_SIDE = [{ at: [12, 38], size: [701, 850] }, { at: [727, 38], size: [701, 850] }];
+const COLUMNS3 = [
+  { at: [12, 38], size: [467, 850] }, { at: [485, 38], size: [467, 850] }, { at: [958, 38], size: [470, 850] }
+];
+
+test("9i2 shapes: a dragged divider is a shape a restore would fix — reason null", () => {
+  const dragged = [{ at: [12, 38], size: [400, 850] }, { at: [426, 38], size: [1002, 850] }];
+  const report = engine.driftOf(shapeClients(dragged), SHAPE_MONITORS, shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS);
+  assert.equal(report.summary.drifted, 0, "a tiled rect is never drift — which is why this row exists");
+  assert.equal(report.shapes.length, 1, JSON.stringify(report.shapes));
+  const row = report.shapes[0];
+  assert.deepEqual([row.workspaceId, row.monitorDescription, row.reason], [5, "Test Panel", null]);
+  assert.ok(row.meanIou > 0 && row.meanIou < engine.TILED_REFINEMENT_TARGET_IOU, String(row.meanIou));
+  assert.ok(engine.planRestore(shapeClients(dragged), SHAPE_MONITORS, shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS)
+    .some((op) => op.kind === "divider"), "null means a restore acts");
+});
+
+test("9i2 shapes: three columns are a shape a restore refuses — reason ambiguous-tree", () => {
+  const scrambled = [
+    { at: [12, 38], size: [300, 850] }, { at: [318, 38], size: [628, 850] }, { at: [952, 38], size: [476, 850] }
+  ];
+  const report = engine.driftOf(shapeClients(scrambled), SHAPE_MONITORS, shapeLayout(COLUMNS3), SHAPE_IDS);
+  assert.deepEqual(report.shapes.map((r) => [r.workspaceId, r.reason]), [[5, "ambiguous-tree"]]);
+  assert.ok(report.shapes[0].meanIou < engine.TILED_REFINEMENT_TARGET_IOU);
+  // A layout-mode word outranks the tree word here too.
+  const scrolling = engine.driftOf(shapeClients(scrambled), SHAPE_MONITORS, shapeLayout(COLUMNS3), SHAPE_IDS,
+    { workspaces: [{ id: 5, tiledLayout: "scrolling" }], built: null });
+  assert.deepEqual(scrolling.shapes.map((r) => r.reason), ["layout-scrolling"]);
+});
+
+test("9i2 shapes: a settled workspace and a pending one are not shapes", () => {
+  const settled = engine.driftOf(shapeClients(TWO_SIDE_BY_SIDE), SHAPE_MONITORS, shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS);
+  assert.deepEqual(settled.shapes, []);
+  // Settled and ambiguous: the tree word is never said about a settled shape.
+  assert.deepEqual(engine.driftOf(shapeClients(COLUMNS3), SHAPE_MONITORS, shapeLayout(COLUMNS3), SHAPE_IDS).shapes, []);
+  // A move still to run: pending, whatever its rects score.
+  const dragged = shapeClients([{ at: [12, 38], size: [400, 850] }, { at: [426, 38], size: [1002, 850] }]);
+  dragged[1].workspace = { id: 9, name: "9" };
+  assert.deepEqual(engine.driftOf(dragged, SHAPE_MONITORS, shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS).shapes, []);
+  // A closed app: the workspace is not finished either.
+  assert.deepEqual(engine.driftOf(shapeClients(TWO_SIDE_BY_SIDE).slice(0, 1), SHAPE_MONITORS,
+    shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS).shapes, []);
 });

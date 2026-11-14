@@ -767,3 +767,61 @@ test("the panel's instance label is the engine's, word for word", () => {
     );
   }
 });
+
+// ------------------------------------------ layout-mode words (9i2, §2.4)
+
+const MODE_MONITORS = [{
+  id: 0, name: "eDP-1", description: "Test Panel", make: "T", model: "P", serial: "",
+  x: 0, y: 0, width: 1440, height: 900, scale: 1,
+  activeWorkspace: { id: 1, name: "1" }, focused: true
+}];
+const MODE_IDS = [{ id: "one", patterns: ["^app-one$"] }, { id: "two", patterns: ["^app-two$"] }];
+function modeLayout(floating, layoutMode, rects) {
+  return {
+    topologyKey: "Test Panel", recordedAt: AT,
+    apps: ["one", "two"].map((id, i) => ({
+      identityId: id, workspaceId: 5, monitorDescription: "Test Panel", monitorIndex: 0,
+      floating, group: null, layoutMode, at: rects[i].at.slice(), size: rects[i].size.slice()
+    }))
+  };
+}
+const MODE_TILES = [{ at: [12, 38], size: [701, 850] }, { at: [727, 38], size: [701, 850] }];
+const MODE_FLOATS = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }];
+function modeClients(rects, extra) {
+  return ["app-one", "app-two"].map((cls, i) => makeClient(Object.assign({
+    address: "0x" + (i + 1), class: cls, workspace: 5, at: rects[i].at.slice(), size: rects[i].size.slice()
+  }, extra || {})));
+}
+const DWINDLE = { workspaces: [{ id: 5, tiledLayout: "dwindle" }], built: null };
+
+test("each layout-mode refusal is a sentence, and says which layout", () => {
+  assert.ok(engine.tilingRefusalPhrase("layout-scrolling").indexOf("scrolling layout") >= 0);
+  assert.ok(engine.tilingRefusalPhrase("layout-floating").indexOf("floating layout") >= 0);
+  assert.ok(engine.tilingRefusalPhrase("layout-mode-differs").indexOf("different layout mode") >= 0);
+  for (const word of ["layout-scrolling", "layout-floating", "layout-mode-differs"]) {
+    assert.notStrictEqual(engine.tilingRefusalPhrase(word), word, word);
+  }
+});
+
+test("a window the FLOATING layout floated reads ok on the floating dimension, not should-tile", () => {
+  const live = modeClients(MODE_FLOATS, { floating: true, tags: ["omarchy-floating-workspace"] });
+  const layout = modeLayout(false, "dwindle", MODE_TILES);
+  const bare = engine.verdictsFor(engine.driftOf(live, MODE_MONITORS, layout, MODE_IDS), []);
+  assert.strictEqual(verdictFor(bare, "one").floating, "should-tile", "the context-free control");
+
+  const verdicts = engine.verdictsFor(engine.driftOf(live, MODE_MONITORS, layout, MODE_IDS, DWINDLE), []);
+  for (const v of verdicts) {
+    assert.strictEqual(v.floating, "ok", v.identityId);
+    assert.strictEqual(v.geometryDetail.refinement, "layout-floating", v.identityId);
+  }
+});
+
+test("a float the mode change left tiled says why nothing moves it, in the geometry phrase", () => {
+  const live = modeClients(MODE_TILES);
+  const layout = modeLayout(true, "floating", MODE_FLOATS);
+  const verdicts = engine.verdictsFor(engine.driftOf(live, MODE_MONITORS, layout, MODE_IDS, DWINDLE), []);
+  const one = verdictFor(verdicts, "one");
+  assert.strictEqual(one.floating, "ok");
+  assert.strictEqual(one.geometry, "geometry-off");
+  assert.ok(one.text.indexOf("different layout mode") >= 0, one.text);
+});

@@ -1117,3 +1117,155 @@ test("9i2: an unwatched tab inside the group is not a stranger", () => {
 test("9i2: a settled group-and-tile workspace plans nothing", () => {
   assert.deepEqual(engine.planRestore(groupDesk(GROUP_TOP, TILE_BOTTOM), MONITORS, GROUP_LAYOUT, GIDS), []);
 });
+
+// ------------------------------------------- layout-mode refusals (9i2, §2.4)
+//
+// Omarchy 4.5 gives every workspace a mode: dwindle, scrolling, or floating (a
+// floating workspace is a dwindle one whose windows 4.5 floated and tagged).
+// On scrolling, `swap` and `resize` answer "ok" and really do rearrange — only
+// togglesplit errors (tests/nested-notes.md 9i2 (g)) — so no error will ever
+// catch a split-tree op aimed at one. The refusal is named instead.
+
+const DWINDLE5 = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+const SCROLLING5 = { workspaces: [{ id: 5, tiledLayout: "scrolling" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+const SCRAMBLED_RECTS = SCRAMBLED3.map((i) => ({ at: i.at, size: i.size }));
+
+function withMode(layout, mode) {
+  return Object.assign({}, layout, { apps: layout.apps.map((a) => Object.assign({}, a, { layoutMode: mode })) });
+}
+function tagged(clients, tag) {
+  return clients.map((c) => Object.assign({}, c, { floating: true, tags: [tag] }));
+}
+
+test("9i2 modes: moves into a SCROLLING workspace keep their moves and lose every splitParent", () => {
+  const away = clients3(RECORDED_RECTS).map((c) => Object.assign({}, c, { workspace: { id: 9, name: "9" } }));
+  const layout = layout3(RECORDED_RECTS);
+  const dwindle = engine.planRestore(away, MONITORS, layout, IDS, DWINDLE5);
+  assert.equal(dwindle.filter((op) => op.splitParent).length, 2, "the dwindle control is choreographed");
+
+  const plan = engine.planRestore(away, MONITORS, layout, IDS, SCROLLING5);
+  assert.deepEqual(plan.map((op) => op.kind), ["move", "move", "move"], JSON.stringify(plan));
+  assert.deepEqual(plan.filter((op) => op.splitParent), [], "no focus, no split, on a layout with no tree");
+  // Pending (the moves are outstanding), so nothing is refused yet.
+  assert.deepEqual(engine.driftOf(away, MONITORS, layout, IDS, SCROLLING5).tilingRefusals, []);
+});
+
+test("9i2 modes: a finished SCROLLING workspace plans no swap, divider or split, and says why", () => {
+  const live = clients3(SCRAMBLED_RECTS);
+  const layout = layout3(RECORDED_RECTS);
+  assert.ok(refinementOps(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5)).length > 0,
+    "the dwindle control refines");
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, SCROLLING5), []);
+  const swapped = clients3([RECORDED3[1], RECORDED3[0], RECORDED3[2]].map((i) => ({ at: i.at, size: i.size })));
+  assert.deepEqual(engine.planRestore(swapped, MONITORS, layout, IDS, SCROLLING5), [], "no swap either");
+
+  const report = engine.driftOf(live, MONITORS, layout, IDS, SCROLLING5);
+  assert.deepEqual(report.tilingRefusals, [
+    { workspaceId: 5, monitorDescription: "Test Panel", reason: "layout-scrolling" }
+  ]);
+  for (const app of report.apps) assert.equal(app.geometry.refinement, "layout-scrolling");
+  // Recorded dwindle, live scrolling: the live word outranks layout-mode-differs.
+  const recordedDwindle = engine.driftOf(live, MONITORS, withMode(layout, "dwindle"), IDS, SCROLLING5);
+  assert.equal(recordedDwindle.tilingRefusals[0].reason, "layout-scrolling");
+  // The mode word outranks a tree word on the same workspace.
+  const columns = THREE_COLUMNS.map((i) => ({ at: i.at, size: i.size }));
+  const ambiguous = engine.driftOf(clientsN([
+    { at: [12, 38], size: [300, 850] }, { at: [318, 38], size: [628, 850] }, { at: [952, 38], size: [476, 850] }
+  ], ["app-one", "app-two", "app-three"]), MONITORS, layoutN(columns, ["one", "two", "three"]), IDS, SCROLLING5);
+  assert.equal(ambiguous.tilingRefusals[0].reason, "layout-scrolling");
+});
+
+test("9i2 modes: a FLOATING workspace is read off the tag, and gets no float toggle and no tiled op", () => {
+  const layout = layout3(RECORDED_RECTS);
+  // 4.5 floated every window and placed it itself.
+  const placed = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }, { at: [218, 131], size: [1100, 612] }];
+  for (const tag of ["omarchy-floating-workspace", "omarchy-floating-workspace*"]) {
+    const live = tagged(clients3(placed), tag);
+    assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS).map((op) => op.kind),
+      ["floating", "floating", "floating"], "without a context the floats are toggled back, as before");
+
+    const report = engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5);
+    assert.deepEqual(report.apps.map((a) => a.drift.floating), [false, false, false], tag);
+    assert.deepEqual(report.apps.map((a) => a.status), ["ok", "ok", "ok"], tag);
+    assert.deepEqual(report.tilingRefusals, [
+      { workspaceId: 5, monitorDescription: "Test Panel", reason: "layout-floating" }
+    ], tag);
+    assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [], tag);
+  }
+});
+
+test("9i2 modes: a float's GEOMETRY op on a floating workspace is unaffected", () => {
+  const layout = layout3(RECORDED_RECTS);
+  layout.apps[0] = Object.assign({}, layout.apps[0], { floating: true, at: [300, 200], size: [800, 500] });
+  const live = tagged(clients3([{ at: [310, 200], size: [800, 500] }, RECORDED_RECTS[1], RECORDED_RECTS[2]]),
+    "omarchy-floating-workspace");
+  const plan = engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5);
+  assert.deepEqual(plan.map((op) => op.kind), ["geometry"], JSON.stringify(plan));
+});
+
+test("9i2 modes: a STALE floating tag reads as floating, and the plan does less for one pass", () => {
+  // 4.5 drops the tag one timer tick after a window leaves a floating
+  // workspace. A read in between sees it on the (dwindle) destination: the
+  // safe misreading — no float toggle and no tiled op — and the next read,
+  // tag gone, plans the toggle.
+  const layout = layout3(RECORDED_RECTS);
+  const live = clients3(RECORDED_RECTS);
+  live[2] = Object.assign({}, live[2], { floating: true, tags: ["omarchy-floating-workspace"], at: [300, 200], size: [800, 500] });
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), []);
+  live[2] = Object.assign({}, live[2], { tags: [] });
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5),
+    [{ kind: "floating", address: "0x3", value: false }]);
+});
+
+test("9i2 modes: a workspace recorded in another mode gets no tiled op, and says so", () => {
+  const live = clients3(SCRAMBLED_RECTS);
+  const scrolled = withMode(layout3(RECORDED_RECTS), "scrolling");
+  assert.deepEqual(engine.planRestore(live, MONITORS, scrolled, IDS, DWINDLE5), []);
+  assert.deepEqual(engine.driftOf(live, MONITORS, scrolled, IDS, DWINDLE5).tilingRefusals, [
+    { workspaceId: 5, monitorDescription: "Test Panel", reason: "layout-mode-differs" }
+  ]);
+  // The same recording in the same mode refines; one app with no recorded mode
+  // means the workspace has none, and nothing is refused.
+  assert.ok(refinementOps(engine.planRestore(live, MONITORS, withMode(layout3(RECORDED_RECTS), "dwindle"), IDS, DWINDLE5)).length > 0);
+  scrolled.apps[1] = Object.assign({}, scrolled.apps[1], { layoutMode: null });
+  assert.ok(refinementOps(engine.planRestore(live, MONITORS, scrolled, IDS, DWINDLE5)).length > 0);
+});
+
+test("9i2 modes: recorded FLOATING, live dwindle: no float toggle, and no geometry op at a tiled window", () => {
+  const floats = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }, { at: [218, 131], size: [1100, 612] }];
+  const layout = layout3(floats);
+  layout.apps = layout.apps.map((a) => Object.assign({}, a, { floating: true, layoutMode: "floating" }));
+  const live = clients3(RECORDED_RECTS);
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS).map((op) => op.kind).sort(),
+    ["floating", "floating", "floating", "geometry", "geometry", "geometry"], "the context-free control");
+
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [],
+    "a resize at a tiled window moves the split (tick y29) — so nothing at all");
+  const report = engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5);
+  for (const app of report.apps) {
+    assert.equal(app.drift.floating, false);
+    assert.equal(app.geometry.skip, "layout-mode-differs", "the reason rides on the float's own detail");
+  }
+  assert.ok(engine.geometrySkipPhrase("layout-mode-differs").indexOf("different layout mode") >= 0);
+});
+
+test("9i2 modes: no context, or a context that reads nothing, is the plan without one, byte for byte", () => {
+  const away = clients3(RECORDED_RECTS).map((c) => Object.assign({}, c, { workspace: { id: 9, name: "9" } }));
+  const desks = [
+    [clients3(SCRAMBLED_RECTS), layout3(RECORDED_RECTS), IDS],
+    [away, layout3(RECORDED_RECTS), IDS],
+    [clients3(RECORDED_RECTS), layout3(RECORDED_RECTS), IDS],
+    [groupDesk({ at: [12, 59], size: [1416, 279] }, { at: [12, 352], size: [1416, 536] }), GROUP_LAYOUT, GIDS],
+    [clients3(SCRAMBLED_RECTS), withMode(layout3(RECORDED_RECTS), "scrolling"), IDS]
+  ];
+  // A tagged desk is left out on purpose: with ANY context the tag is read
+  // (§2.2), and the floating-workspace tests above pin what that does.
+  for (const [clients, layout, ids] of desks) {
+    const bare = JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids));
+    assert.equal(JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids, undefined)), bare);
+    assert.equal(JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids, null)), bare);
+    assert.equal(JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids, { workspaces: null, built: null })), bare);
+    assert.equal(JSON.stringify(engine.driftOf(clients, MONITORS, layout, ids, { workspaces: [], built: null })),
+      JSON.stringify(engine.driftOf(clients, MONITORS, layout, ids)));
+  }
+});

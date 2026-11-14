@@ -23,8 +23,9 @@
 #       after restore
 #   T   three stacked rows, a dragged divider: >= 0.95 after a scatter
 #   S   workspace rule layout=scrolling: the windows are on the workspace after a
-#       scatter, the log names the refusal 'layout-scrolling', and the cycle's
-#       plan lines carry no split / swap / divider op for it
+#       scatter with no split / swap / divider op planned; then a column resized
+#       in place: the log names the refusal 'layout-scrolling', no tiled op is
+#       planned, and the disturbed rects are left exactly as they are
 #   V   three columns built by hand, a divider dragged in place, a triggered
 #       restore that dispatches nothing for the workspace; the status file then
 #       carries shapeCount >= 1 with reason ambiguous-tree
@@ -368,6 +369,7 @@ case_S() {
   note "workspace $W tiledLayout=$(layout_of "$W")"
   rects "$W" | sed 's/^/      /'
   record_current; restore
+  save_rects "$W" "$TMPD/s"
   scatter "$W" dr-sc dr-sa dr-sb
   restore
   rects "$W" | sed 's/^/      /'
@@ -375,13 +377,35 @@ case_S() {
   [[ $n == 3 ]] \
     && pass "S: all three windows are back on workspace $W" \
     || fail "S: $n of 3 windows are on workspace $W after the restore"
-  echo "$RESTORE_LOG" | grep -qE "REFUSED workspace $W .*layout-scrolling" \
-    && pass "S: the log names the refusal layout-scrolling for workspace $W" \
-    || fail "S: no 'layout-scrolling' refusal for workspace $W in the cycle's log"
   local plan; plan=$(echo "$RESTORE_LOG" | grep -E "pass [0-9]+ iteration [0-9]+: [0-9]+ ops — " | grep -E "split|swap|divider")
   [[ -z $plan ]] \
     && pass "S: the cycle's plan lines carry no split / swap / divider op" \
     || { fail "S: the cycle planned a tiling op for a scrolling workspace"; echo "$plan" | sed 's/^/        /'; }
+
+  # In place: a column resized by hand. Scrolling puts the windows back exactly
+  # after a scatter, so the workspace is SETTLED there and a refusal is not news
+  # (the settled gate). Disturbed, it is finished and unsettled: the refusal is
+  # named, and the restore leaves the disturbed rects exactly as they are.
+  read -r SW SH <<<"$(size_of dr-sb)"
+  resize_to dr-sb $(( SW * 3 / 2 )) "$SH"
+  rects "$W" | sed 's/^/      /'
+  assert_moved "S resize" "$W" "$TMPD/s" 0.95
+  save_rects "$W" "$TMPD/s2"
+  restore
+  rects "$W" | sed 's/^/      /'
+  echo "$RESTORE_LOG" | grep -qE "REFUSED workspace $W .*layout-scrolling" \
+    && pass "S: the log names the refusal layout-scrolling for workspace $W" \
+    || fail "S: no 'layout-scrolling' refusal for workspace $W in the cycle's log"
+  plan=$(echo "$RESTORE_LOG" | grep -E "pass [0-9]+ iteration [0-9]+: [0-9]+ ops — " | grep -E "split|swap|divider")
+  [[ -z $plan ]] \
+    && pass "S: the in-place cycle's plan lines carry no split / swap / divider op" \
+    || { fail "S: the in-place cycle planned a tiling op for a scrolling workspace"; echo "$plan" | sed 's/^/        /'; }
+  iou_report "S after the in-place restore" "$W" "$TMPD/s2"
+  if awk -v v="$IOU_LAST" 'BEGIN { exit !(v >= 0.99) }'; then
+    pass "S: the in-place restore left the disturbed rects unchanged (IoU $IOU_LAST)"
+  else
+    fail "S: the in-place restore moved windows on a scrolling workspace (IoU $IOU_LAST)"
+  fi
 }
 
 case_V() {
