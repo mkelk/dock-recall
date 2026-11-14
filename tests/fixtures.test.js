@@ -136,9 +136,18 @@ test("forensics dump: the verdict layer reproduces the dump's own verdicts from 
     ["calendar-google", "chromium", "herdr", "mail-google", "obsidian", "rememberthemilk", "telegram"]);
 });
 
-test("pickScratchWorkspace: on the forensics desktop it picks 31 — empty and invisible", () => {
+// Scratch ids live OUTSIDE every Omarchy 4.5 block (tick vp0): monitor-
+// workspaces.lua assigns blocks lowest-free from 0, so block 90 and up is owned
+// by nobody, and place() leaves an unowned workspace alone. See the comment on
+// engine.pickScratchWorkspace.
+const slots = require("../Slots.js");
+const blocksDocked = slots.parseBlocks(fs.readFileSync(fixturePath("monitor-workspaces-docked.txt"), "utf8"));
+
+test("pickScratchWorkspace: on the forensics desktop it picks 901 — empty, invisible, in no block", () => {
   const pick = engine.pickScratchWorkspace(forensics.clients, forensics.monitors);
-  assert.strictEqual(pick, 31);
+  assert.strictEqual(pick, 901);
+  // The docked fixture's table (blocks 0 and 1) changes nothing: 90 is higher.
+  assert.strictEqual(engine.pickScratchWorkspace(forensics.clients, forensics.monitors, blocksDocked), 901);
 
   for (const c of forensics.clients) {
     assert.notStrictEqual(c.workspace.id, pick, "picked a workspace with windows on it");
@@ -150,19 +159,54 @@ test("pickScratchWorkspace: on the forensics desktop it picks 31 — empty and i
 
 test("pickScratchWorkspace: skips occupied ids, visible ids, special ids, and never throws on junk", () => {
   // Empty desktop: the base.
-  assert.strictEqual(engine.pickScratchWorkspace([], []), 31);
-  assert.strictEqual(engine.pickScratchWorkspace(null, null), 31);
+  assert.strictEqual(engine.pickScratchWorkspace([], []), 901);
+  assert.strictEqual(engine.pickScratchWorkspace(null, null), 901);
 
   // Windows sitting on the base ids push the pick upward.
-  const squatters = [31, 32, 33].map((ws) => makeClient({ workspace: ws }));
-  assert.strictEqual(engine.pickScratchWorkspace(squatters, []), 34);
+  const squatters = [901, 902, 903].map((ws) => makeClient({ workspace: ws }));
+  assert.strictEqual(engine.pickScratchWorkspace(squatters, []), 904);
 
   // A monitor SHOWING an empty candidate disqualifies it — the assembly must
   // not be churn the user watches. So does its special workspace.
-  const showing = [{ activeWorkspace: { id: 31 }, specialWorkspace: { id: 32 } }];
-  assert.strictEqual(engine.pickScratchWorkspace([], showing), 33);
+  const showing = [{ activeWorkspace: { id: 901 }, specialWorkspace: { id: 902 } }];
+  assert.strictEqual(engine.pickScratchWorkspace([], showing), 903);
 
   // Junk shapes must not throw: clients without workspace, monitors without
-  // the workspace objects.
-  assert.strictEqual(engine.pickScratchWorkspace([{ address: "0x1" }], [{}]), 31);
+  // the workspace objects, tables that are not tables.
+  assert.strictEqual(engine.pickScratchWorkspace([{ address: "0x1" }], [{}]), 901);
+  for (const junk of [undefined, null, 0, "x", {}, { rows: null }, { rows: "0\teDP-1\tX" },
+    { rows: [null, {}, { block: "95" }, { block: 1.5 }, { block: NaN }, { block: Infinity }] }]) {
+    assert.strictEqual(engine.pickScratchWorkspace([], [], junk), 901, JSON.stringify(junk));
+  }
+});
+
+test("pickScratchWorkspace: a table with block 95 assigned moves the base to 971", () => {
+  // Blocks are assigned lowest-free, so 95 means a desk that has seen ninety-
+  // six monitors — absurd, and exactly the case the base has to survive: two
+  // blocks above the highest one, so the next monitor's block is skipped too.
+  const table = slots.parseBlocks("0\teDP-1\tLaptop\n95\t\tSomething Old\n");
+  assert.strictEqual(engine.pickScratchWorkspace([], [], table), 971);
+  assert.strictEqual(engine.pickScratchWorkspace([makeClient({ workspace: 971 })], [], table), 972);
+});
+
+test("pickScratchWorkspace: never answers an id inside an assigned block", () => {
+  const tables = [
+    undefined,
+    blocksDocked,
+    slots.parseBlocks("0\teDP-1\tA\n1\tDP-1\tB\n89\t\tC\n"),
+    slots.parseBlocks("95\tDP-3\tD\n"),
+    slots.parseBlocks("120\t\tE\n3\tDP-2\tF\n")
+  ];
+  for (const table of tables) {
+    const assigned = new Set(((table && table.rows) || []).map((row) => row.block));
+    // Fill the whole scan window, and one more, so the fallback is checked too.
+    const base = engine.pickScratchWorkspace([], [], table);
+    for (let taken = 0; taken <= 99; taken++) {
+      const clients = [];
+      for (let k = 0; k < taken; k++) clients.push(makeClient({ workspace: base + k }));
+      const pick = engine.pickScratchWorkspace(clients, [], table);
+      assert.ok(!assigned.has(slots.blockOf(pick)), "picked " + pick + ", inside an assigned block");
+      assert.ok(slots.blockOf(pick) >= 90, "picked " + pick + ", below block 90");
+    }
+  }
 });
