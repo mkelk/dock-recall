@@ -124,7 +124,7 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var appId = process.argv[4], ws = Number(process.argv[5]);
+  var appId = process.argv[4], slot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var headless = null;
@@ -142,16 +142,16 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
     apps: [{
       identityId: appId,
       monitorDescription: engine.monitorLabel(headless),
-      workspaceId: ws,
+      slot: slot,
       floating: false,
       group: null
     }]
   };
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
-  console.log("  · seeded layout for \"" + layout.topologyKey + "\": " + appId + " on ws " + ws
+  console.log("  · seeded layout for \"" + layout.topologyKey + "\": " + appId + " on slot " + slot
     + " @ " + layout.apps[0].monitorDescription);
-' "$REPO_ROOT" "$STATE" "$OUTPUT" "$APP_ID" "$TARGET_WS" || { echo "FAIL: seeding failed"; exit 1; }
+' "$REPO_ROOT" "$STATE" "$OUTPUT" "$APP_ID" "$TARGET_SLOT" || { echo "FAIL: seeding failed"; exit 1; }
 
 seeded_version=$(jq -r .version "$STATE")
 if [[ $seeded_version == "$SEED_VERSION" ]]; then
@@ -228,7 +228,7 @@ if (( FROM_THE_FUTURE )); then
   fi
 else
   if poll 40 sim_placed; then
-    pass "case DOCK (control) — a v$SEED_VERSION file restored normally: $APP_ID on ws $TARGET_WS on $OUTPUT"
+    pass "case DOCK (control) — a v$SEED_VERSION file restored normally: $APP_ID on ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
   else
     fail "case DOCK (control) — the control arm did not restore ($APP_ID on ws '$(sim_ws)'). The subject arm's silence proves nothing."
     diagnostics

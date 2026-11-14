@@ -19,6 +19,9 @@
 #   4. tests/sandbox-dock.sh              Tier B: the plugin's own service and
 #                                         panel, live in a nested compositor you
 #                                         never see. Launch / scatter / no-op.
+#      tests/sandbox-slots.sh             Tier B, Omarchy 4.5: three apps on two
+#                                         slots, dock -> undock -> dock, each
+#                                         window on its recorded (monitor, slot).
 #   5. tests/sandbox-future-version.sh --both   a schema-v99 file is INERT, with
 #                                         the same-seed control arm that makes
 #                                         "nothing happened" mean something.
@@ -140,6 +143,9 @@ step "qmllint (syntax) on all ${#qml_files[@]} QML files" \
 
 step "tests/sandbox-dock.sh" \
   ./tests/sandbox-dock.sh
+
+step "tests/sandbox-slots.sh" \
+  ./tests/sandbox-slots.sh
 
 step "tests/sandbox-future-version.sh --both" \
   ./tests/sandbox-future-version.sh --both

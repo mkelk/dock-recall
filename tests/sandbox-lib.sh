@@ -94,14 +94,19 @@ SPECIAL_WS="special:dr-sandbox"
 # name; anything a scenario sets in the script itself still wins, because it
 # assigns after this file is sourced.
 SANDBOX_IGNORED_ENV=""
-for _sbx_var in APP_ID OUTPUT TARGET_WS SCATTER_WS; do
+for _sbx_var in APP_ID OUTPUT TARGET_SLOT SCATTER_SLOT; do
   [[ -n ${!_sbx_var:-} ]] && SANDBOX_IGNORED_ENV="$SANDBOX_IGNORED_ENV $_sbx_var"
 done
 unset _sbx_var
 APP_ID="${DR_SANDBOX_APP_ID:-dr-sim}"
 OUTPUT="${DR_SANDBOX_OUTPUT:-sbx-test}"
-TARGET_WS="${DR_SANDBOX_TARGET_WS:-9}"
-SCATTER_WS="${DR_SANDBOX_SCATTER_WS:-1}"
+# SLOTS, not workspace ids (Omarchy 4.5 per-monitor workspaces): a live id is
+# block*10+slot and the block is whatever the nested monitor-workspaces.lua gave
+# the monitor, so a scenario never writes a literal id. TARGET_SLOT is where the
+# seeded layout puts the app on $OUTPUT; SCATTER_SLOT is the slot on the PRIMARY
+# monitor a scatter case throws it to. expected_ws turns either into a live id.
+TARGET_SLOT="${DR_SANDBOX_TARGET_SLOT:-9}"
+SCATTER_SLOT="${DR_SANDBOX_SCATTER_SLOT:-1}"
 
 SBOX=""
 STATE=""
@@ -170,10 +175,28 @@ sim_field() { nested clients -j | jq -r --arg c "$APP_ID" --arg f "$1" 'first(.[
 monitor_id() { nested monitors all -j | jq -r --arg n "$1" 'first(.[]|select(.name==$n)|.id)//empty'; }
 monitor_present() { [[ -n $(monitor_id "$1") ]]; }
 
+# The nested compositor's block table (written by monitor-workspaces.lua into the
+# sandbox HOME): "<block>\t<connector>\t<identity>", one row per monitor ever seen,
+# the connector empty while it is unplugged.
+sb_blocks() { echo "$SBOX/home/.local/state/omarchy/monitor-workspaces"; }
+# block_of <connector> — the block of a monitor that is plugged in right now.
+block_of() { awk -F'\t' -v c="$1" '$2==c{print $1; exit}' "$(sb_blocks)" 2>/dev/null; }
+# expected_ws <connector> <slot> — the live workspace id, block*10+slot, read from
+# the block file and never typed. Empty (so a comparison fails) with no block yet.
+expected_ws() {
+  local b; b=$(block_of "$1")
+  [[ $b =~ ^[0-9]+$ ]] && echo $((b * 10 + $2))
+}
+# primary_monitor — the nested compositor's own output (monitor id 0), which a
+# dock and an undock never remove.
+primary_monitor() { nested monitors all -j | jq -r 'first(.[]|select(.id==0)|.name)//empty'; }
+target_ws()  { expected_ws "$OUTPUT" "$TARGET_SLOT"; }
+scatter_ws() { expected_ws "$(primary_monitor)" "$SCATTER_SLOT"; }
+
 sim_placed() {
-  local ws mon want
-  ws=$(sim_ws); mon=$(sim_field monitor); want=$(monitor_id "$OUTPUT")
-  [[ -n $ws && $ws == "$TARGET_WS" && -n $want && $mon == "$want" ]]
+  local ws mon want want_ws
+  ws=$(sim_ws); mon=$(sim_field monitor); want=$(monitor_id "$OUTPUT"); want_ws=$(target_ws)
+  [[ -n $ws && -n $want_ws && $ws == "$want_ws" && -n $want && $mon == "$want" ]]
 }
 
 trigger() { date +%s.%N > "$SBOX/home/.local/state/omarchy/dock-recall.trigger"; }
@@ -305,23 +328,18 @@ sandbox_check_config() {
     fi
   done
 
-  for name in TARGET_WS SCATTER_WS; do
+  for name in TARGET_SLOT SCATTER_SLOT; do
     value="${!name}"
-    if [[ ! $value =~ ^[0-9]+$ ]]; then
-      echo "FAIL: $name is '$value' — a workspace id here must be digits only."
-      echo "      It is pasted into a Lua dispatch string and into a numeric [[ ]]"
-      echo "      comparison; anything else is a broken dispatch or a syntax error."
-      echo "      Set DR_SANDBOX_$name to a workspace number."
+    if [[ ! $value =~ ^[0-9]+$ ]] || (( value < 1 || value > 10 )); then
+      echo "FAIL: $name is '$value' — a slot must be a number from 1 to 10."
+      echo "      It becomes block*10+slot in a Lua dispatch string and a numeric"
+      echo "      [[ ]] comparison; anything else is a broken dispatch."
+      echo "      Set DR_SANDBOX_$name to a slot."
       bad=1
     fi
   done
-
-  if [[ -n $TARGET_WS && $TARGET_WS == "$SCATTER_WS" ]]; then
-    echo "FAIL: TARGET_WS and SCATTER_WS are both '$TARGET_WS' — the scatter case"
-    echo "      moves a window OFF its target and back, and cannot do that to the"
-    echo "      workspace it is already on. It would pass without proving anything."
-    bad=1
-  fi
+  # No TARGET != SCATTER rule any more: the target is on the dock output and the
+  # scatter on the primary, two different blocks, so the ids cannot collide.
 
   (( bad == 0 )) || exit 1
 
@@ -332,7 +350,7 @@ sandbox_check_config() {
     note "ignoring ambient$SANDBOX_IGNORED_ENV from the environment — the sandbox"
     note "reads DR_SANDBOX_* only (DR_SANDBOX_APP_ID, …). Effective values:"
   fi
-  note "config        APP_ID=$APP_ID OUTPUT=$OUTPUT TARGET_WS=$TARGET_WS SCATTER_WS=$SCATTER_WS"
+  note "config        APP_ID=$APP_ID OUTPUT=$OUTPUT TARGET_SLOT=$TARGET_SLOT SCATTER_SLOT=$SCATTER_SLOT"
 }
 
 # ------------------------------------------------------------------ sandbox_up
@@ -563,8 +581,14 @@ LAUNCH
   # Invisibility, measured rather than assumed: the nested compositor's window is
   # a live client, and it must be sitting on the special workspace with no monitor
   # showing that workspace.
+  # POLLED: the window maps a moment after the compositor answers hyprctl, and a
+  # single read in that gap sees no client at all ("none"), which is what the
+  # first 4.5 run saw (tick eth). Only a window that is mapped can be misparked.
   local nested_window_ws special_open
-  nested_window_ws=$(live clients -j | jq -r --argjson p "$NESTED_PID" 'first(.[]|select(.pid==$p)|.workspace.name)//"none"')
+  _nested_window_ws() { live clients -j | jq -r --argjson p "$NESTED_PID" 'first(.[]|select(.pid==$p)|.workspace.name)//"none"'; }
+  _nested_window_mapped() { [[ $(_nested_window_ws) != none ]]; }
+  poll 10 _nested_window_mapped || true
+  nested_window_ws=$(_nested_window_ws)
   special_open=$(live monitors -j | jq -r --arg s "$SPECIAL_WS" 'any(.[]; .specialWorkspace.name==$s)')
   if [[ $nested_window_ws == "$SPECIAL_WS" && $special_open == "false" ]]; then
     pass "nested compositor window is parked on $SPECIAL_WS, which no monitor is showing"

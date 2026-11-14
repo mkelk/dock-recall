@@ -33,12 +33,12 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sandbox-lib.sh"
 # a default show up in this file's diff. They are validated by sandbox_up.
 #
 # To vary one for a debugging run, export DR_SANDBOX_APP_ID (or _OUTPUT,
-# _TARGET_WS, _SCATTER_WS) — a plain `APP_ID=…` is deliberately ignored, because
+# _TARGET_SLOT, _SCATTER_SLOT) — a plain `APP_ID=…` is deliberately ignored, because
 # that name belongs to too many other tools to be trusted as an instruction.
 APP_ID="dr-sim"        # the class the seeded identity matches, and what foot is told to be
 OUTPUT="sbx-test"      # the headless monitor the dock/undock is performed on
-TARGET_WS=9            # where the recorded layout puts the window
-SCATTER_WS=1           # where case 2 throws it, to watch the restore bring it back
+TARGET_SLOT=9          # the slot, on $OUTPUT, where the recorded layout puts the window
+SCATTER_SLOT=1         # the PRIMARY monitor's slot case 2 throws it to, to watch the restore bring it back
 
 sandbox_up
 
@@ -79,7 +79,7 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var appId = process.argv[4], ws = Number(process.argv[5]);
+  var appId = process.argv[4], slot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var headless = null;
@@ -93,16 +93,16 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
     apps: [{
       identityId: appId,
       monitorDescription: engine.monitorLabel(headless),
-      workspaceId: ws,
+      slot: slot,
       floating: false,
       group: null
     }]
   };
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
-  console.log("  · seeded layout for \"" + layout.topologyKey + "\": " + appId + " on ws " + ws
+  console.log("  · seeded layout for \"" + layout.topologyKey + "\": " + appId + " on slot " + slot
     + " @ " + layout.apps[0].monitorDescription);
-' "$REPO_ROOT" "$STATE" "$OUTPUT" "$APP_ID" "$TARGET_WS" || { echo "FAIL: seeding failed"; exit 1; }
+' "$REPO_ROOT" "$STATE" "$OUTPUT" "$APP_ID" "$TARGET_SLOT" || { echo "FAIL: seeding failed"; exit 1; }
 
 sleep 1
 nested output remove "$OUTPUT" >/dev/null
@@ -130,9 +130,9 @@ cycles_before=$(sb_count "restore cycle done")
 nested output create headless "$OUTPUT" >/dev/null
 
 if poll 40 sim_placed; then
-  pass "case 1 LAUNCH — $APP_ID launched onto ws $TARGET_WS on $OUTPUT"
+  pass "case 1 LAUNCH — $APP_ID launched onto ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
 else
-  fail "case 1 LAUNCH — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $TARGET_WS on monitor $(monitor_id "$OUTPUT"))"
+  fail "case 1 LAUNCH — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)' (want ws $(target_ws) on monitor $(monitor_id "$OUTPUT"))"
   diagnostics
 fi
 wait_for_cycle 40 "$cycles_before" || note "warning: the dock cycle never logged its completion"
@@ -148,8 +148,9 @@ else
   # Both dispatches go to the NESTED instance: the focus this takes is the
   # nested compositor's, not the user's.
   nested dispatch "hl.dsp.focus({ window = \"address:$addr\" })" >/dev/null
-  nested dispatch "hl.dsp.window.move({ workspace = \"$SCATTER_WS\", follow = false })" >/dev/null
-  if poll 10 bash -c "[[ \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl clients -j | jq -r --arg c '$APP_ID' 'first(.[]|select(.class==\$c)|.workspace.id)//empty') == $SCATTER_WS ]]"; then
+  SCATTER_LIVE=$(scatter_ws)   # the primary's block*10+slot, from the block file
+  nested dispatch "hl.dsp.window.move({ workspace = \"$SCATTER_LIVE\", follow = false })" >/dev/null
+  if poll 10 bash -c "[[ \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl clients -j | jq -r --arg c '$APP_ID' 'first(.[]|select(.class==\$c)|.workspace.id)//empty') == $SCATTER_LIVE ]]"; then
     note "scattered to ws $(sim_ws)"
   else
     note "warning: the scatter dispatch left $APP_ID on ws $(sim_ws)"
@@ -158,7 +159,7 @@ else
   cycles_before=$(sb_count "restore cycle done")
   trigger
   if poll 40 sim_placed; then
-    pass "case 2 SCATTER — $APP_ID back on ws $TARGET_WS on $OUTPUT"
+    pass "case 2 SCATTER — $APP_ID back on ws $(target_ws) (slot $TARGET_SLOT) on $OUTPUT"
   else
     fail "case 2 SCATTER — $APP_ID is on ws '$(sim_ws)' monitor '$(sim_field monitor)'"
     diagnostics
