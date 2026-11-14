@@ -994,7 +994,7 @@ node -e '
     recordedAt: layout.recordedAt,
     apps: layout.apps.map(function (app) {
       return { identityId: app.identityId, occurrence: app.occurrence,
-               monitorDescription: app.monitorDescription, workspaceId: app.workspaceId,
+               monitorDescription: app.monitorDescription, slot: app.slot,
                floating: app.floating, group: app.group };
     })
   };

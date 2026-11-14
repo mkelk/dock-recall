@@ -658,7 +658,8 @@ APP_WS=$(clients | jq -r --arg t "$APP_TITLE" 'first(.[]|select(.initialTitle==$
 # Anywhere the window is not. Section 5 rewrites the recording to put the app
 # HERE, which is what makes it DRIFTED — and drift is the state the outline has
 # to be able to wear while the fill under it goes on saying watched.
-DRIFTED_WS=$((APP_WS + 1))
+# Same block as the app, so the move is a slot change: at slot 10 go down instead.
+if (( (APP_WS - 1) % 10 + 1 == 10 )); then DRIFTED_WS=$((APP_WS - 1)); else DRIFTED_WS=$((APP_WS + 1)); fi
 
 APP_ADDRESS=$(client_field "$APP_TITLE" address)
 [[ -n $APP_ADDRESS ]] || fail "the watched app has an address (motion)"
@@ -803,6 +804,7 @@ recorded_apps=$(jq -r --arg k "$TOPOLOGY_KEY" '[.layouts[$k].apps[]|.identityId]
 node -e '
   var fs = require("fs");
   var StateModel = require(process.argv[1] + "/StateModel.js");
+  var Slots = require(process.argv[1] + "/Slots.js");
   var statePath = process.argv[2], key = process.argv[3];
   var identityId = process.argv[4], ghostId = process.argv[5];
   var driftedWs = Number(process.argv[6]), homeWs = Number(process.argv[7]);
@@ -825,7 +827,7 @@ node -e '
   var apps = [{
     identityId: identityId,
     monitorDescription: recorded.monitorDescription,
-    workspaceId: driftedWs,
+    slot: Slots.slotOf(driftedWs),
     floating: recorded.floating,
     group: recorded.group,
     at: recorded.at,
@@ -833,7 +835,7 @@ node -e '
   }, {
     identityId: ghostId,
     monitorDescription: recorded.monitorDescription,
-    workspaceId: homeWs,
+    slot: Slots.slotOf(homeWs),
     floating: recorded.floating,
     group: null,
     at: recorded.at,
@@ -1152,7 +1154,7 @@ node -e '
     recordedAt: layout.recordedAt,
     apps: layout.apps.map(function (app) {
       return { identityId: app.identityId, occurrence: app.occurrence,
-               monitorDescription: app.monitorDescription, workspaceId: app.workspaceId,
+               monitorDescription: app.monitorDescription, slot: app.slot,
                floating: app.floating, group: app.group };
     })
   };
