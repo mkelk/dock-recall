@@ -245,6 +245,36 @@ test("the same members in the wrong tab order read wrong-order, not not-joined",
   );
 });
 
+// Schema v9: the group stands, but another tab is in front. The fixture's group
+// was recorded with obsidian showing.
+function showing(clients, address) {
+  const ring = clients.find((c) => c.address === address).grouped;
+  return clients.map((c) => (ring.indexOf(c.address) === -1 ? c
+    : Object.assign({}, c, { visible: c.address === address })));
+}
+
+test("the recorded tab behind another reads wrong-tab on that member only", () => {
+  const verdicts = verdictsOf(showing(clientsLaptop, addressOf(clientsLaptop, "slack")));
+  const obsidian = verdictFor(verdicts, "obsidian");
+  assert.strictEqual(obsidian.group, "wrong-tab");
+  assert.strictEqual(obsidian.ok, false);
+  assert.strictEqual(obsidian.text, "wrong tab in front");
+  for (const id of ["telegram", "slack", "whatsapp"]) {
+    assert.strictEqual(verdictFor(verdicts, id).group, "ok", id);
+    assert.strictEqual(verdictFor(verdicts, id).ok, true, id);
+  }
+  // Back on the recorded tab, clean again.
+  const back = verdictsOf(showing(clientsLaptop, addressOf(clientsLaptop, "obsidian")));
+  assert.ok(back.every((v) => v.ok), "the recorded tab in front is clean");
+});
+
+test("a group in the wrong order says so, not wrong-tab, whatever tab is in front", () => {
+  const addresses = GROUP.map((id) => addressOf(clientsLaptop, id));
+  const reversed = showing(withGroup(clientsLaptop, addresses.slice().reverse()), addresses[1]);
+  const verdicts = verdictsOf(reversed);
+  for (const id of GROUP) assert.strictEqual(verdictFor(verdicts, id).group, "wrong-order", id);
+});
+
 test("a window recorded alone but live tabbed in reads unexpected-group", () => {
   // The user's post-wake ws-10 finding, in verdict form: recorded ungrouped,
   // live grouped. Recorded from a desktop where nothing is grouped.

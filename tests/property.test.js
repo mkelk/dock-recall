@@ -235,7 +235,30 @@ function wsMonitorMapOf(clients) {
   return map;
 }
 
-function generateCase(rng) {
+// The visible tab of every tab group (schema v9): one random member of each
+// ring shows, the rest do not; a window outside any group reads `visible: true`
+// as hyprctl reports it. Drawn from `side`, a second stream, so the seeded
+// sequence every other dimension of a case is generated from is unchanged.
+function assignVisibleTabs(clients, side) {
+  const seen = {};
+  for (const c of clients) {
+    if (c.grouped.length < 2) { c.visible = true; continue; }
+    const key = c.grouped.join("+");
+    if (seen[key]) continue;
+    seen[key] = true;
+    const shown = side.pick(c.grouped);
+    for (const m of clients) {
+      if (c.grouped.indexOf(m.address) !== -1) m.visible = m.address === shown;
+    }
+  }
+}
+
+// The side stream for a case: derived from its seed, never from the main one.
+function sideRngFor(caseSeed) {
+  return makeRng((caseSeed ^ 0x5bd1e995) >>> 0);
+}
+
+function generateCase(rng, side) {
   // Monitors present at record time: 1-3 of the pool.
   const monitorCount = rng.int(1, 3);
   const recordMonitors = rng.shuffle(MONITOR_POOL).slice(0, monitorCount)
@@ -296,6 +319,7 @@ function generateCase(rng) {
     // tabbed into the same group now, and an id no longer names a window.
     recordedGroupAddresses = members.map((m) => m.client.address);
   }
+  assignVisibleTabs(recordClients, side);
 
   const layout = engine.buildLayout(recordClients, recordMonitors, identities, AT);
 
@@ -442,6 +466,9 @@ function generateCase(rng) {
     if (head && head !== c) { c.at = head.at.slice(); c.size = head.size.slice(); }
   }
 
+  // Which tab each live group shows — often not the recorded one.
+  assignVisibleTabs(liveClients, side);
+
   // Split-brain: one member of a live group under-reports its own array.
   const groupedLive = liveClients.filter((c) => c.grouped.length > 1);
   if (groupedLive.length > 0 && rng.chance(0.4)) {
@@ -491,6 +518,18 @@ function makeSimulator(clients, monitors, identities) {
     if (members.length < 2) { setRect(members, box.at, box.size); return; }
     setRect(members, [box.at[0], box.at[1] + GROUPBAR_PX], [box.size[0], box.size[1] - GROUPBAR_PX]);
   }
+  // `address` becomes its group's visible tab. Focusing a member does this too
+  // (nested-notes 9i2 (b)/(d)), which is why a focus on a group tile — a split
+  // parent, a togglesplit — is followed here by the tab it leaves in front.
+  function showTab(address) {
+    const c = byAddress(address);
+    if (!c) return;
+    const ring = engine.groupOrderFor(c, state.clients);
+    if (ring.length < 2) return;
+    for (const m of state.clients) {
+      if (ring.indexOf(m.address) !== -1) m.visible = m.address === address;
+    }
+  }
 
   // The monitor a workspace lives on, creating it on the "focused" (first)
   // monitor when it does not exist yet — the Hyprland behavior a viaMonitor
@@ -527,7 +566,7 @@ function makeSimulator(clients, monitors, identities) {
     if (!engine.isGroupClaimed(state.clients, address)) return;
     for (const a of claimSetOf(address)) {
       const c = byAddress(a);
-      if (c) c.grouped = [];
+      if (c) { c.grouped = []; c.visible = true; }
     }
   }
 
@@ -556,7 +595,9 @@ function makeSimulator(clients, monitors, identities) {
       const identity = identities.find((i) => i.id === op.identityId);
       const cls = identity ? identityClass(identity.id) : "cls-unknown";
       const ws = 1;
-      state.clients.push(makeClient(cls, ws, monitorOfWs(ws), false));
+      const launched = makeClient(cls, ws, monitorOfWs(ws), false);
+      launched.visible = true;
+      state.clients.push(launched);
       return;
     }
     if (op.kind === "ungroup") {
@@ -596,6 +637,8 @@ function makeSimulator(clients, monitors, identities) {
             + " is on ws " + parent.workspace.id + ", not " + op.workspaceId);
         assert.ok(!parent.floating,
           "a move named a FLOATING split parent, which holds no tile: " + op.splitParent);
+        // The focus in front of the move: a grouped parent shows that tab now.
+        showTab(op.splitParent);
       }
       moveClient(op.address, op.workspaceId);
       // The destination did not exist when the plan was made, so the move
@@ -680,6 +723,9 @@ function makeSimulator(clients, monitors, identities) {
       // groupbar.
       const tabs = ring.map(byAddress).filter(Boolean);
       if (tabs.length > 1) placeInBox(tabs, box);
+      // The last join leaves the last joiner in front; the service then brings
+      // the recorded tab forward when the op names one (schema v9).
+      showTab(op.active && ring.indexOf(op.active) !== -1 ? op.active : focusedTab);
       return;
     }
     if (op.kind === "split") {
@@ -789,6 +835,8 @@ function makeSimulator(clients, monitors, identities) {
       };
       relayout(nearKeys, nearBox, targetOf("near"));
       relayout(farKeys, farBox, targetOf("far"));
+      // togglesplit needed the subject focused, and a focused tab is in front.
+      showTab(op.address);
       return;
     }
     if (op.kind === "swap") {
@@ -883,6 +931,21 @@ function makeSimulator(clients, monitors, identities) {
       setRect(tileOf(neighbour), shiftedAt, shrunk);
       return;
     }
+    if (op.kind === "tab") {
+      // group.active({ index + 1, window }): the selector picks the group, the
+      // index picks the tab — so the index must name the op's own window in
+      // the LIVE ring, or the dispatch brings a neighbour forward and answers
+      // "ok". Asserted, then modelled.
+      const c = byAddress(op.address);
+      assert.ok(c, "the simulator was handed a tab op naming a window that is not here");
+      const ring = engine.groupOrderFor(c, state.clients);
+      assert.ok(ring.length > 1, "a tab op for a window in no group: " + op.address);
+      assert.strictEqual(ring[op.index], op.address,
+        "a tab op's index names another tab: " + JSON.stringify(op) + " in " + ring.join("+"));
+      assert.ok(ring.indexOf(op.anchor) !== -1, "a tab op's anchor is not in the group: " + JSON.stringify(op));
+      showTab(op.address);
+      return;
+    }
     throw new Error("simulator: unknown op kind " + op.kind);
   }
 
@@ -939,7 +1002,7 @@ function checkArrivalAxes(plan, clients, monitors, layout, identities, tag) {
 
 function runCase(caseIndex, caseSeed, suppress) {
   const rng = makeRng(caseSeed);
-  const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng);
+  const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng, sideRngFor(caseSeed));
   const tag = `case ${caseIndex} (seed 0x${caseSeed.toString(16)})`;
 
   const sim = makeSimulator(liveClients, liveMonitors, planIdentities);
@@ -1059,6 +1122,19 @@ function runCase(caseIndex, caseSeed, suppress) {
       assert.strictEqual(live.join("+"), wanted,
         `${tag}: group ${groupId} reads ${live.join("+")} at ${app.identityId}, recorded ${wanted}`);
     }
+    // The visible tab (schema v9): the one present member recorded in front is
+    // the ONLY tab in front of its live ring. Read straight off `visible`.
+    const front = present.filter((a) => a.group.active === true);
+    if (front.length === 1) {
+      const shown = windowFor(front[0]);
+      const ring = engine.groupOrderFor(shown, sim.state.clients);
+      const visible = ring.filter((a) => {
+        const m = sim.state.clients.find((c) => c.address === a);
+        return m && m.visible === true;
+      });
+      assert.deepStrictEqual(visible, [shown.address],
+        `${tag}: group ${groupId} shows ${visible.join("+") || "no tab"}, recorded ${front[0].identityId} in front`);
+    }
   }
   for (const app of layout.apps) {
     if (app.group || !restorable(app)) continue;
@@ -1111,7 +1187,7 @@ test("suppressing an op kind makes the property fail — for every kind that pla
   // tick 7ph; the one workspace move left rides on a viaMonitor move and has
   // its own mutation below.)
   for (const kind of [
-    "geometry", "floating", "ungroup", "move", "group", "launch"
+    "geometry", "floating", "ungroup", "move", "group", "launch", "tab"
   ]) {
     let failed = false;
     let firstError = "";
@@ -1362,7 +1438,7 @@ test(`plans without a context are unchanged by a dwindle context, at every step 
   let compared = 0;
   for (let i = 0; i < CASES; i++) {
     const rng = makeRng(seeds[i]);
-    const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng);
+    const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng, sideRngFor(seeds[i]));
     const dwindleLayout = Object.assign({}, layout, {
       apps: layout.apps.map((a) => Object.assign({}, a, { layoutMode: "dwindle" }))
     });
