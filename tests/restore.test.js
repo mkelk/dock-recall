@@ -77,7 +77,11 @@ test("one window on the wrong workspace plans exactly one move", () => {
       kind: "move",
       address: addressOf(clientsLaptop, "code"),
       workspaceId: 3,
-      monitorDescription: LAPTOP_DESC
+      monitorDescription: LAPTOP_DESC,
+      monitorName: "eDP-1",
+      // Nothing else is on ws 3 once the editor has left it, so the move
+      // recreates it — and that needs the owner named (see opToCommand).
+      viaMonitor: true
     }
   ]);
 });
@@ -148,7 +152,7 @@ test("a launched app gets its move on the next plan, not this one", () => {
   ]);
   const secondPass = engine.planRestore(relaunched, monitorsLaptop, recorded, IDENTITIES);
   assert.deepStrictEqual(secondPass, [
-    { kind: "move", address: "0xnew", workspaceId: 3, monitorDescription: LAPTOP_DESC }
+    { kind: "move", address: "0xnew", workspaceId: 3, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1", viaMonitor: true }
   ]);
 
   // Third pass, now conforming.
@@ -207,7 +211,7 @@ test("a LEGACY entry recorded on a special workspace is skipped, and never plann
   const ops = engine.planRestore(clientsLaptop, monitorsLaptop, legacy, IDENTITIES);
   assert.ok(JSON.stringify(ops).indexOf("-98") === -1, "no op may carry a negative workspace id");
   assert.deepStrictEqual(
-    ops.filter((op) => op.kind === "move" || op.kind === "workspace-monitor"),
+    ops.filter((op) => op.kind === "move"),
     [],
     "a scratchpad recording plans no placement op at all"
   );
@@ -254,69 +258,49 @@ test("an app whose identity is no longer watched is skipped", () => {
 });
 
 // --- monitor drift ----------------------------------------------------------
+//
+// Under Omarchy 4.5 a workspace id belongs to one monitor's block, and which
+// monitor shows a workspace is 4.5's decision: its config reconciles them on
+// every monitor event and reload. The planner therefore never moves an EXISTING
+// workspace between monitors (the old `workspace-monitor` op is gone, tick 7ph).
+// A recorded workspace that lives on another monitor is refused out loud.
 
-// Apply a workspace-monitor op to a client list the way Hyprland would: every
-// window on that workspace comes along, because the workspace is what moves.
-function applyWorkspaceMonitor(clients, monitors, op) {
-  const target = monitors.find((m) => (m.description || m.name) === op.monitorDescription);
-  assert.ok(target, "the op names a monitor that is not in this topology");
-  return clients.map((c) =>
-    c.workspace.id === op.workspaceId ? Object.assign({}, c, { monitor: target.id }) : c
-  );
-}
-
-test("a window on the right workspace but the wrong monitor moves the WORKSPACE", () => {
+test("a window on its recorded workspace but another monitor is refused as workspace-elsewhere", () => {
   // Docked, and workspace 3 — the editor's — has ended up on the headless
-  // output instead of the laptop panel it was recorded on. The window is on the
-  // workspace it belongs to, so moving the window can achieve nothing.
+  // output instead of the laptop panel it was recorded on. Moving the window
+  // can achieve nothing (it is already on ws 3), and moving the workspace is
+  // 4.5's job: the next reconcile would undo or renumber it.
   const drifted = clientsLaptop.map((c) => (c.class === "code" ? Object.assign({}, c, { monitor: 1 }) : c));
 
   const report = engine.driftOf(drifted, monitorsDocked, recorded, IDENTITIES);
-  assert.deepStrictEqual(driftFor(report, "editor").drift, { monitor: true, workspace: false, group: false, floating: false, geometry: false });
+  const editor = driftFor(report, "editor");
+  assert.strictEqual(editor.status, "skipped");
+  assert.strictEqual(editor.reason, "workspace-elsewhere");
+  assert.strictEqual(editor.current.monitorDescription, "hw-test", "the UI still shows where it is now");
 
+  // Zero ops — not a window move, and never a workspace move.
   const ops = engine.planRestore(drifted, monitorsDocked, recorded, IDENTITIES);
-  assert.deepStrictEqual(ops, [
-    {
-      kind: "workspace-monitor",
-      workspaceId: 3,
-      monitorDescription: LAPTOP_DESC,
-      monitorName: "eDP-1"
-    },
-    {
-      kind: "move",
-      address: addressOf(clientsLaptop, "code"),
-      workspaceId: 3,
-      monitorDescription: LAPTOP_DESC
-    }
-  ]);
-
-  // Convergence: run the workspace move for real and the next plan is empty.
-  // Without the workspace-monitor op the plan would repeat forever.
-  const applied = applyWorkspaceMonitor(drifted, monitorsDocked, ops[0]);
-  assert.deepStrictEqual(engine.planRestore(applied, monitorsDocked, recorded, IDENTITIES), []);
+  assert.deepStrictEqual(ops, []);
+  const commands = ops.reduce((all, op) => all.concat(engine.opToCommand(op)), []);
+  assert.ok(!commands.some((c) => c.includes("workspace.move")));
 });
 
-test("one workspace-monitor op covers every app recorded on that workspace", () => {
-  // Both Gmail windows and the calendar sit on workspaces 9 and 8; drag the
-  // whole lot onto the headless output and the plan must not repeat itself.
-  const drifted = clientsLaptop.map((c) =>
-    c.workspace.id === 8 || c.workspace.id === 9 ? Object.assign({}, c, { monitor: 1 }) : c
-  );
+test("workspace-elsewhere also holds back an app whose window is not running", () => {
+  // The workspace is what is wrong, not the window: a launch would put the app
+  // on whatever the compositor chose, and its move would then land on the
+  // wrong screen. Same refusal, no launch.
+  const drifted = clientsLaptop
+    .filter((c) => c.class !== "code")
+    .concat([makeClient({ address: "0xstranger", class: "unwatched", workspace: 3, monitor: 1 })]);
 
-  const ops = engine.planRestore(drifted, monitorsDocked, recorded, IDENTITIES);
-  const workspaceOps = ops.filter((o) => o.kind === "workspace-monitor");
-
-  // gmail(9), gcal(8) and rtm(8) drifted — but only two workspaces moved.
-  assert.deepStrictEqual(workspaceOps.map((o) => o.workspaceId), [9, 8]);
-  for (const op of workspaceOps) assert.strictEqual(op.monitorName, "eDP-1");
-
-  let applied = drifted;
-  for (const op of workspaceOps) applied = applyWorkspaceMonitor(applied, monitorsDocked, op);
-  assert.deepStrictEqual(engine.planRestore(applied, monitorsDocked, recorded, IDENTITIES), []);
+  const editor = driftFor(engine.driftOf(drifted, monitorsDocked, recorded, IDENTITIES), "editor");
+  assert.strictEqual(editor.status, "skipped");
+  assert.strictEqual(editor.reason, "workspace-elsewhere");
+  assert.deepStrictEqual(engine.planRestore(drifted, monitorsDocked, recorded, IDENTITIES), []);
 });
 
-test("the workspace dedupe key still uses a NUL separator, byte for byte", () => {
-  // The key that deduplicates workspace-monitor ops joins a workspace id and a
+test("the workspace grouping key still uses a NUL separator, byte for byte", () => {
+  // applyPlacementOrder groups moves by a key joining a workspace id and a
   // monitor description with a NUL. It used to be a LITERAL NUL byte in the
   // source, which made engine.js "binary" to grep — every plain search over the
   // file returned nothing, for every line in it. It is now written "\u0000".
@@ -328,33 +312,11 @@ test("the workspace dedupe key still uses a NUL separator, byte for byte", () =>
   // And the property the separator was chosen for: no pair of parts can be
   // re-cut into another pair, because neither part can contain a NUL.
   assert.notStrictEqual("1\u0000" + "2 Laptop", "1 2" + "\u0000Laptop");
-
-  // The behaviour it guards, end to end: two apps recorded on the SAME
-  // workspace produce one move, two apps on different workspaces produce two.
-  const monitors = [
-    { id: 0, name: "eDP-1", description: "Laptop", x: 0, y: 0, width: 1920, height: 1080, scale: 1 },
-    { id: 1, name: "DP-2", description: "Ultrawide", x: 1920, y: 0, width: 1920, height: 1080, scale: 1 }
-  ];
-  const recordedOnUltrawide = engine.buildLayout([
-    makeClient({ address: "0xaaa", class: "foot", workspace: 4, monitor: 1 }),
-    makeClient({ address: "0xbbb", class: "code", workspace: 4, monitor: 1 }),
-    makeClient({ address: "0xccc", class: "chromium", workspace: 5, monitor: 1 })
-  ], monitors, IDENTITIES, AT);
-
-  const live = [
-    makeClient({ address: "0xaaa", class: "foot", workspace: 4, monitor: 0 }),
-    makeClient({ address: "0xbbb", class: "code", workspace: 4, monitor: 0 }),
-    makeClient({ address: "0xccc", class: "chromium", workspace: 5, monitor: 0 })
-  ];
-  const workspaceOps = engine.planRestore(live, monitors, recordedOnUltrawide, IDENTITIES)
-    .filter((o) => o.kind === "workspace-monitor");
-  // Two ops, not three: the two apps sharing workspace 4 ask for the same move
-  // and the dedupe key collapses them. (The ORDER is the recorded apps' order,
-  // which is identity priority order, and is not what this test is about.)
-  assert.deepStrictEqual(workspaceOps.map((o) => o.workspaceId).slice().sort(), [4, 5]);
+  assert.ok(!require("node:fs").readFileSync(require.resolve("../engine.js"), "latin1").includes("\u0000"),
+    "engine.js must not contain a literal NUL byte");
 });
 
-test("workspace-monitor comes before the moves, which come before the groups", () => {
+test("launches come first, then the moves, then the groups — and no workspace op at all", () => {
   const tabs = ["0xaaa", "0xbbb"];
   const asRecorded = [
     makeClient({ address: "0xbbb", class: "chromium", workspace: 2, monitor: 1, grouped: tabs }),
@@ -363,29 +325,218 @@ test("workspace-monitor comes before the moves, which come before the groups", (
   ];
   const layout = engine.buildLayout(asRecorded, monitorsDocked, IDENTITIES, AT);
 
-  // foot is on its recorded workspace but the wrong monitor; chromium is on the
-  // wrong workspace AND ungrouped; the editor is not running at all.
+  // chromium and foot are on the wrong workspaces (and monitors) and
+  // ungrouped; the editor is not running at all. ws 2 exists nowhere.
   const live = [
     makeClient({ address: "0xbbb", class: "chromium", workspace: 5, monitor: 0 }),
-    makeClient({ address: "0xaaa", class: "foot", workspace: 2, monitor: 0 })
+    makeClient({ address: "0xaaa", class: "foot", workspace: 6, monitor: 1 })
   ];
 
   const ops = engine.planRestore(live, monitorsDocked, layout, IDENTITIES);
-  assert.deepStrictEqual(ops.map((o) => o.kind), [
-    "launch",
-    "workspace-monitor",
-    "move",
-    "move",
-    "group"
-  ]);
+  assert.deepStrictEqual(ops.map((o) => o.kind), ["launch", "move", "move", "group"]);
   assert.strictEqual(ops[0].identityId, "editor");
+  // ws 2 does not exist yet, so the first move into it names the monitor that
+  // owns it; the second finds it there.
   assert.deepStrictEqual(ops[1], {
-    kind: "workspace-monitor",
+    kind: "move",
+    address: "0xbbb",
     workspaceId: 2,
     monitorDescription: "hw-test",
-    monitorName: "hw-test"
+    monitorName: "hw-test",
+    viaMonitor: true
   });
-  assert.deepStrictEqual(ops[4], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [] });
+  assert.strictEqual(ops[2].viaMonitor, false);
+  assert.strictEqual(ops[2].monitorName, "hw-test");
+  assert.deepStrictEqual(ops[3], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [] });
+});
+
+test("a move to a workspace that already exists is a plain move, with no workspace dispatch", () => {
+  // ws 9 is live (eDP-1 is showing it), so the window just goes there.
+  const drifted = clientsLaptop.map((c) =>
+    c.class === "code" ? Object.assign({}, c, { workspace: { id: 7, name: "7" } }) : c
+  );
+  const layout = Object.assign({}, recorded, {
+    apps: recorded.apps.map((a) => (a.identityId === "editor" ? Object.assign({}, a, { workspaceId: 9 }) : a))
+  });
+  const ops = engine.planRestore(drifted, monitorsLaptop, layout, IDENTITIES);
+  assert.deepStrictEqual(ops, [{
+    kind: "move",
+    address: addressOf(clientsLaptop, "code"),
+    workspaceId: 9,
+    monitorDescription: LAPTOP_DESC,
+    monitorName: "eDP-1",
+    viaMonitor: false
+  }]);
+  assert.deepStrictEqual(engine.opToCommand(ops[0]), [
+    "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:" + ops[0].address + "\", workspace = \"9\", follow = false })'"
+  ]);
+});
+
+test("a destination an earlier move in the same plan empties is created again — viaMonitor", () => {
+  // Hyprland destroys a workspace the moment its last window leaves (unless a
+  // monitor is showing it). ws 7 is live when the plan is made, but the two
+  // moves ahead of the third take both its windows away, so the third move
+  // recreates it — on the FOCUSED monitor — and needs the workspace move. The
+  // property test found this: judged at plan time, it said "exists".
+  const monitors = [{ id: 0, name: "eDP-1", description: LAPTOP_DESC, activeWorkspace: { id: 1, name: "1" } }];
+  // Moves run in identity priority order — browser, editor, terminal — so the
+  // terminal, the one arriving on 7, moves last.
+  const asRecorded = [
+    makeClient({ address: "0xaaa", class: "code", workspace: 4 }),
+    makeClient({ address: "0xbbb", class: "chromium", workspace: 5 }),
+    makeClient({ address: "0xccc", class: "foot", workspace: 7 })
+  ];
+  const layout = engine.buildLayout(asRecorded, monitors, IDENTITIES, AT);
+  const live = [
+    makeClient({ address: "0xaaa", class: "code", workspace: 7 }),
+    makeClient({ address: "0xbbb", class: "chromium", workspace: 7 }),
+    makeClient({ address: "0xccc", class: "foot", workspace: 2 })
+  ];
+  const ops = engine.planRestore(live, monitors, layout, IDENTITIES);
+  const byAddress = {};
+  for (const op of ops) byAddress[op.address] = op;
+  // The move into 7 comes after both moves out of it.
+  assert.ok(ops.indexOf(byAddress["0xccc"]) > ops.indexOf(byAddress["0xaaa"]));
+  assert.ok(ops.indexOf(byAddress["0xccc"]) > ops.indexOf(byAddress["0xbbb"]));
+  assert.strictEqual(byAddress["0xccc"].viaMonitor, true, "ws 7 is gone by the time this move runs");
+  assert.strictEqual(byAddress["0xaaa"].viaMonitor, true);
+  assert.strictEqual(byAddress["0xbbb"].viaMonitor, true);
+
+  // A workspace a monitor is SHOWING survives being emptied: no workspace move.
+  const showing = [Object.assign({}, monitors[0], { activeWorkspace: { id: 7, name: "7" } })];
+  const kept = engine.planRestore(live, showing, layout, IDENTITIES).find((op) => op.address === "0xccc");
+  assert.strictEqual(kept.viaMonitor, false);
+});
+
+// --- resolved v8 layouts (Slots.toLive) --------------------------------------
+//
+// engine.js plans over RESOLVED layouts: Slots.toLive turns each recorded
+// (monitor, slot) into a live workspace id, or marks it unplaceable. The
+// fixture desk is the docked one: laptop owns block 0 (1..10), the AOC block 1
+// (11..20).
+
+const slots = require("../Slots.js");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const AOC_DESC = "AOC CU34V5C XXXXXXXXXXXXX";
+const blocksDocked = slots.parseBlocks(
+  fs.readFileSync(path.join(__dirname, "fixtures", "monitor-workspaces-docked.txt"), "utf8"));
+const blocksUndocked = slots.parseBlocks(
+  fs.readFileSync(path.join(__dirname, "fixtures", "monitor-workspaces-undocked.txt"), "utf8"));
+const deskLaptop = { id: 0, name: "eDP-1", description: LAPTOP_DESC, activeWorkspace: { id: 1, name: "1" } };
+const deskAoc = { id: 1, name: "DP-1", description: AOC_DESC, activeWorkspace: { id: 11, name: "11" } };
+const deskMonitors = [deskLaptop, deskAoc];
+
+function v8Layout(apps) {
+  return {
+    topologyKey: AOC_DESC + "|" + LAPTOP_DESC,
+    recordedAt: AT,
+    apps: apps.map((fields) => Object.assign({
+      identityId: "slack", occurrence: 0, monitorDescription: AOC_DESC, slot: 3,
+      floating: false, group: null, at: null, size: null
+    }, fields))
+  };
+}
+
+function commandsOf(ops) {
+  return ops.reduce((all, op) => all.concat(engine.opToCommand(op)), []);
+}
+
+test("Slots.toLive over the docked fixture: AOC slot 3 plans one move to 13, and nothing else", () => {
+  const layout = slots.toLive(v8Layout([{}]), blocksDocked, deskMonitors);
+  assert.strictEqual(layout.apps[0].workspaceId, 13);
+
+  // Slack is on the laptop's ws 1. ws 13 does not exist yet.
+  const live = [makeClient({ address: "0xslack", class: SLACK_CLASS, workspace: 1, monitor: 0 })];
+  const ops = engine.planRestore(live, deskMonitors, layout, IDENTITIES);
+  assert.deepStrictEqual(ops, [{
+    kind: "move",
+    address: "0xslack",
+    workspaceId: 13,
+    monitorDescription: AOC_DESC,
+    monitorName: "DP-1",
+    viaMonitor: true
+  }]);
+
+  // The window move creates 13 on whichever monitor holds the focus, so the
+  // one permitted workspace move follows it: 13 onto its owner, the AOC.
+  assert.deepStrictEqual(commandsOf(ops), [
+    "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:0xslack\", workspace = \"13\", follow = false })'",
+    "hyprctl dispatch 'hl.dsp.workspace.move({ workspace = \"13\", monitor = \"DP-1\" })'"
+  ]);
+});
+
+test("a move to a resolved workspace that already exists never moves the workspace", () => {
+  // Something else already holds ws 13 on the AOC: 4.5 has put it where it
+  // belongs, and a plain window move is all there is to do.
+  const layout = slots.toLive(v8Layout([{}]), blocksDocked, deskMonitors);
+  const live = [
+    makeClient({ address: "0xslack", class: SLACK_CLASS, workspace: 1, monitor: 0 }),
+    makeClient({ address: "0xother", class: "unwatched", workspace: 13, monitor: 1 })
+  ];
+  const ops = engine.planRestore(live, deskMonitors, layout, IDENTITIES);
+  assert.deepStrictEqual(ops.map((o) => [o.kind, o.workspaceId, o.viaMonitor]), [["move", 13, false]]);
+  assert.ok(!commandsOf(ops).some((c) => c.includes("workspace.move")), "never a workspace move for a live id");
+});
+
+test("an unplaceable app is skipped with its reason, and plans zero ops", () => {
+  const live = [makeClient({ address: "0xslack", class: SLACK_CLASS, workspace: 1, monitor: 0 })];
+  const cases = [
+    // The AOC is plugged in but the blocks file has no valid row for DP-1 yet:
+    // 4.5 is still re-sorting. Transient — the reconcile gate waits it out.
+    ["monitor-unassigned", slots.toLive(v8Layout([{}]), blocksUndocked, deskMonitors)],
+    // The record carries no usable slot.
+    ["slot-unknown", slots.toLive(v8Layout([{ slot: null }]), blocksDocked, deskMonitors)]
+  ];
+  for (const [reason, layout] of cases) {
+    assert.strictEqual(layout.apps[0].unplaceable, reason);
+    const entry = driftFor(engine.driftOf(live, deskMonitors, layout, IDENTITIES), "slack");
+    assert.strictEqual(entry.status, "skipped", reason);
+    assert.strictEqual(entry.reason, reason);
+    assert.strictEqual(entry.current.address, "0xslack", "the UI still shows where it is now");
+    assert.deepStrictEqual(engine.planRestore(live, deskMonitors, layout, IDENTITIES), [], reason);
+    // Not running is no different: no destination, so no launch either.
+    assert.deepStrictEqual(engine.planRestore([], deskMonitors, layout, IDENTITIES), [], reason + " (missing)");
+  }
+});
+
+test("a resolved workspace living on another monitor is workspace-elsewhere, zero ops", () => {
+  // ws 13 belongs to the AOC's block but sits on the laptop — a workspace
+  // 4.5 has adopted, or one a stray move created on the focused monitor.
+  const layout = slots.toLive(v8Layout([{}]), blocksDocked, deskMonitors);
+  const live = [makeClient({ address: "0xslack", class: SLACK_CLASS, workspace: 13, monitor: 0 })];
+  const entry = driftFor(engine.driftOf(live, deskMonitors, layout, IDENTITIES), "slack");
+  assert.strictEqual(entry.status, "skipped");
+  assert.strictEqual(entry.reason, "workspace-elsewhere");
+  assert.deepStrictEqual(engine.planRestore(live, deskMonitors, layout, IDENTITIES), []);
+
+  // An EMPTY workspace counts too: the laptop is showing 13 with nothing on it.
+  const showing = [Object.assign({}, deskLaptop, { activeWorkspace: { id: 13, name: "13" } }), deskAoc];
+  const away = [makeClient({ address: "0xslack", class: SLACK_CLASS, workspace: 2, monitor: 0 })];
+  assert.strictEqual(
+    driftFor(engine.driftOf(away, showing, layout, IDENTITIES), "slack").reason, "workspace-elsewhere");
+  assert.deepStrictEqual(engine.planRestore(away, showing, layout, IDENTITIES), []);
+});
+
+test("a conforming two-block desk plans nothing, and keeps planning nothing", () => {
+  const desk = [
+    makeClient({ address: "0xfoot", class: "foot", workspace: 1, monitor: 0 }),
+    makeClient({ address: "0xcode", class: "code", workspace: 2, monitor: 0 }),
+    makeClient({ address: "0xslack", class: SLACK_CLASS, workspace: 13, monitor: 1 }),
+    makeClient({ address: "0xchrome", class: "chromium", workspace: 11, monitor: 1 })
+  ];
+  const recordedLive = engine.buildLayout(desk, deskMonitors, IDENTITIES, AT);
+  const v8 = slots.toRecorded(recordedLive, blocksDocked, deskMonitors);
+  assert.deepStrictEqual(v8.excluded, []);
+  const layout = slots.toLive(v8.layout, blocksDocked, deskMonitors);
+  assert.deepStrictEqual(layout.apps.map((a) => a.workspaceId), recordedLive.apps.map((a) => a.workspaceId));
+
+  const report = engine.driftOf(desk, deskMonitors, layout, IDENTITIES);
+  assert.deepStrictEqual(report.summary, { ok: 4, drifted: 0, missing: 0, skipped: 0 });
+  const once = engine.planRestore(desk, deskMonitors, layout, IDENTITIES);
+  assert.deepStrictEqual(once, []);
+  assert.deepStrictEqual(engine.planRestore(desk, deskMonitors, layout, IDENTITIES), once);
 });
 
 // --- groups -----------------------------------------------------------------
@@ -415,13 +566,19 @@ test("an ungrouped pair plans the moves first, then the group in tab order", () 
     kind: "move",
     address: "0xbbb",
     workspaceId: 2,
-    monitorDescription: LAPTOP_DESC
+    monitorDescription: LAPTOP_DESC,
+    monitorName: "eDP-1",
+    viaMonitor: true
   });
+  // ws 2 does not exist, so the first move creates it and sends it to its
+  // owner; by the time the second runs it exists, and it is a plain move.
   assert.deepStrictEqual(ops[1], {
     kind: "move",
     address: "0xaaa",
     workspaceId: 2,
-    monitorDescription: LAPTOP_DESC
+    monitorDescription: LAPTOP_DESC,
+    monitorName: "eDP-1",
+    viaMonitor: false
   });
 
   // The group op is last and lists addresses in RECORDED TAB ORDER
@@ -657,7 +814,7 @@ test("record and restore agree on WHICH window of a duplicated identity they mea
     c.address === "0xslackalone" ? Object.assign({}, c, { workspace: { id: 6, name: "6" } }) : c
   );
   assert.deepStrictEqual(engine.planRestore(nudged, monitorsLaptop, layout, IDENTITIES), [
-    { kind: "move", address: "0xslackalone", workspaceId: 9, monitorDescription: LAPTOP_DESC }
+    { kind: "move", address: "0xslackalone", workspaceId: 9, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1", viaMonitor: false }
   ]);
 });
 
@@ -1427,7 +1584,9 @@ test("a future op kind that names a window is resolved by SHAPE, not by a list o
 test("opAddressesOf agrees with every op the planner actually emits", () => {
   const table = [
     [{ kind: "launch", identityId: "slack" }, [], "slack"],
-    [{ kind: "workspace-monitor", workspaceId: 9, monitorDescription: "Laptop", monitorName: "eDP-1" },
+    // A synthetic op that names a workspace and no window — no kind does
+    // today, but the shape rule still has to give it a subject.
+    [{ kind: "future-workspace-op", workspaceId: 9, monitorDescription: "Laptop", monitorName: "eDP-1" },
       [], "9@eDP-1"],
     [{ kind: "move", address: "0xa", workspaceId: 3 }, ["0xa"], "0xa"],
     [{ kind: "floating", address: "0xb", value: true }, ["0xb"], "0xb"],
@@ -1552,28 +1711,48 @@ test("a move op does not touch the focus at all", () => {
   }
 });
 
-test("a workspace-monitor op becomes hl.dsp.workspace.move, naming the live output", () => {
-  // The Quattro spelling of the legacy `moveworkspacetomonitor 3 eDP-1`.
-  // Verb evidence: Omarchy's own hypr/bindings/tiling.lua uses
-  // hl.dsp.workspace.move({ monitor = ... }) for the arrow-key bindings.
+test("a move to a workspace that does not exist yet: window.move, then the workspace onto its owner", () => {
+  // tests/nested-notes.md 2026-11-14 (zf6): a window.move to a missing id
+  // creates the workspace on the FOCUSED monitor, window.move ignores
+  // `monitor`, and a workspace rule would outlive the move. So: the window
+  // moves without the focus, then the new workspace goes to the monitor whose
+  // block owns it — the only hl.dsp.workspace.move the engine ever emits.
   const op = {
-    kind: "workspace-monitor",
-    workspaceId: 3,
-    monitorDescription: LAPTOP_DESC,
-    monitorName: "eDP-1"
+    kind: "move",
+    address: "0xaaa",
+    workspaceId: 13,
+    monitorDescription: "AOC CU34V5C XXXXXXXXXXXXX",
+    monitorName: "DP-1",
+    viaMonitor: true
   };
-
   assert.deepStrictEqual(engine.opToCommand(op), [
-    "hyprctl dispatch 'hl.dsp.workspace.move({ workspace = \"3\", monitor = \"eDP-1\" })'"
+    "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:0xaaa\", workspace = \"13\", follow = false })'",
+    "hyprctl dispatch 'hl.dsp.workspace.move({ workspace = \"13\", monitor = \"DP-1\" })'"
+  ]);
+  // The output NAME is what goes on the wire — a bare description is not a
+  // monitor selector.
+  assert.ok(!engine.opToCommand(op)[1].includes(op.monitorDescription));
+
+  // A split parent's focus still goes FIRST, ahead of both.
+  assert.deepStrictEqual(engine.opToCommand(Object.assign({}, op, { splitParent: "0xbbb" })), [
+    "hyprctl dispatch 'hl.dsp.focus({ window = \"address:0xbbb\" })'",
+    "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:0xaaa\", workspace = \"13\", follow = false })'",
+    "hyprctl dispatch 'hl.dsp.workspace.move({ workspace = \"13\", monitor = \"DP-1\" })'"
   ]);
 
-  // The output NAME is what goes on the wire — a bare description is not a
-  // monitor selector, and monitorLabel() only sometimes yields one.
-  assert.ok(!engine.opToCommand(op)[0].includes(LAPTOP_DESC));
+  // Without a resolved owner there is nothing safe to dispatch: the move alone
+  // would leave a workspace 4.5 renumbers into the focused monitor's block.
+  assert.deepStrictEqual(engine.opToCommand(Object.assign({}, op, { monitorName: "" })), []);
 
-  // Without a resolved live monitor there is nothing safe to dispatch.
+  // And an existing destination never gets the workspace dispatch.
+  assert.deepStrictEqual(engine.opToCommand(Object.assign({}, op, { viaMonitor: false })), [
+    "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:0xaaa\", workspace = \"13\", follow = false })'"
+  ]);
+});
+
+test("there is no workspace-monitor op any more: opToCommand has nothing for it", () => {
   assert.deepStrictEqual(
-    engine.opToCommand({ kind: "workspace-monitor", workspaceId: 3, monitorDescription: "gone", monitorName: "" }),
+    engine.opToCommand({ kind: "workspace-monitor", workspaceId: 3, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1" }),
     []
   );
 });
@@ -1623,7 +1802,7 @@ test("no dispatch that can name its window is left to act on the focus", () => {
 
 test("the commands never use a legacy dispatcher or the wrong group verb", () => {
   const plan = [
-    { kind: "workspace-monitor", workspaceId: 2, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1" },
+    { kind: "move", address: "0xaaa", workspaceId: 2, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1", viaMonitor: true },
     { kind: "move", address: "0xaaa", workspaceId: 2, monitorDescription: LAPTOP_DESC },
     { kind: "group", addresses: ["0xaaa", "0xbbb"] }
   ];
@@ -1664,7 +1843,10 @@ test("a full plan maps to a runnable command sequence", () => {
     .reduce((all, op) => all.concat(engine.opToCommand(op)), []);
 
   assert.deepStrictEqual(commands, [
+    // ws 2 does not exist: the first move creates it and sends it to its
+    // owner, the second finds it there.
     "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:0xbbb\", workspace = \"2\", follow = false })'",
+    "hyprctl dispatch 'hl.dsp.workspace.move({ workspace = \"2\", monitor = \"eDP-1\" })'",
     "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:0xaaa\", workspace = \"2\", follow = false })'",
     "hyprctl dispatch 'hl.dsp.group.toggle({ window = \"address:0xaaa\" })'",
     "hyprctl dispatch 'hl.dsp.focus({ window = \"address:0xaaa\" })'",
@@ -1757,8 +1939,8 @@ test("describeOp names the subject of every op kind", () => {
     "move 0xaaa -> ws 8"
   );
   assert.strictEqual(
-    engine.describeOp({ kind: "workspace-monitor", workspaceId: 3, monitorName: "eDP-1" }),
-    "workspace-monitor ws 3 -> eDP-1"
+    engine.describeOp({ kind: "move", address: "0xaaa", workspaceId: 13, monitorName: "DP-1", viaMonitor: true }),
+    "move 0xaaa -> ws 13 (new, on DP-1)"
   );
   assert.strictEqual(
     engine.describeOp({ kind: "group", addresses: ["0xaaa", "0xbbb"] }),
@@ -1824,7 +2006,7 @@ test("an already-in-place window keeps its occurrence while its twin is moved", 
   const layout = engine.buildLayout(THREE_TERMINALS.slice(0, 2), monitorsLaptop, TERMINALS, AT);
 
   assert.deepStrictEqual(engine.planRestore(moved, monitorsLaptop, layout, TERMINALS), [
-    { kind: "move", address: "0xt2", workspaceId: 4, monitorDescription: LAPTOP_DESC }
+    { kind: "move", address: "0xt2", workspaceId: 4, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1", viaMonitor: true }
   ]);
 });
 
@@ -1844,8 +2026,8 @@ test("geometry overlap pairs a window that moved with the entry it came from", (
   ]);
 
   assert.deepStrictEqual(engine.planRestore(shuffled, monitorsLaptop, layout, TERMINALS), [
-    { kind: "move", address: "0xt1", workspaceId: 1, monitorDescription: LAPTOP_DESC },
-    { kind: "move", address: "0xt2", workspaceId: 4, monitorDescription: LAPTOP_DESC }
+    { kind: "move", address: "0xt1", workspaceId: 1, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1", viaMonitor: true },
+    { kind: "move", address: "0xt2", workspaceId: 4, monitorDescription: LAPTOP_DESC, monitorName: "eDP-1", viaMonitor: true }
   ]);
 });
 

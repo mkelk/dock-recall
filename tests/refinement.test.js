@@ -985,10 +985,14 @@ test("IDEMPOTENT: once the flip has landed, the same desktop plans nothing", () 
 test("planHasFocusOps names BOTH ops that need the keyboard, and no others", () => {
   assert.equal(engine.planHasFocusOps([{ kind: "group" }]), true);
   assert.equal(engine.planHasFocusOps([{ kind: "split" }]), true);
-  for (const kind of ["move", "workspace-monitor", "ungroup", "floating", "geometry",
+  for (const kind of ["move", "ungroup", "floating", "geometry",
     "swap", "divider", "launch"]) {
     assert.equal(engine.planHasFocusOps([{ kind: kind }]), false, kind + " must not defer");
   }
+  // A move that creates its destination adds a workspace move, which names its
+  // workspace and its monitor — focus-independent too, so it runs locked.
+  assert.equal(engine.planHasFocusOps(
+    [{ kind: "move", address: "0xa", workspaceId: 13, monitorName: "DP-1", viaMonitor: true }]), false);
   assert.equal(engine.planHasFocusOps([]), false);
   assert.equal(engine.planHasFocusOps(null), false);
   assert.equal(engine.planHasFocusOps([null]), false);

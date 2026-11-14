@@ -20,16 +20,20 @@
 //      membership and tab order, plus a recorded FLOAT's rect to within
 //      engine.GEOMETRY_TOLERANCE_PX per axis — for every app the plan could
 //      legitimately act on (identity still watched, recorded monitor known and
-//      present).
+//      present, and its recorded workspace not living on another monitor in
+//      the desktop the restore STARTED from — the workspace-elsewhere refusal,
+//      judged here off the simulated state, never off driftOf).
 //      The comparisons are made DIRECTLY on the simulated state, not through
 //      driftOf, so the check is independent of the machinery it is checking.
 //
 // The simulator models op semantics as live-verified on this machine:
 //   - move: Hyprland moves a grouped window's WHOLE group with it; a window
-//     moved to a workspace that does not exist yet creates that workspace on
-//     the focused monitor (modeled as the first live monitor) — which is
-//     exactly why the workspace-monitor op exists.
-//   - workspace-monitor: the workspace moves, every window on it follows.
+//     moved to a workspace that does not exist yet (no window on it) creates
+//     that workspace on the focused monitor (modeled as the first live
+//     monitor) — measured nested under Omarchy 4.5 (tests/nested-notes.md,
+//     2026-11-14). A move stamped `viaMonitor` carries the second dispatch
+//     opToCommand emits for it: the workspace goes to `monitorName`, and every
+//     window on it follows. There is no other workspace move (tick 7ph).
 //   - group: the service's rebuild choreography, mechanically: dissolve every
 //     claim-tangled window (engine.dissolveTargets), create the group around
 //     the anchor, then join member i by focusing member i-1 (nominating the
@@ -240,6 +244,12 @@ function generateCase(rng) {
   // desktop so it is consistent by construction.
   const recordWsMon = {};
   for (let ws = 1; ws <= 8; ws++) recordWsMon[ws] = rng.pick(recordMonitors).id;
+  // Launches land on ws 1, created on the first monitor when it does not exist
+  // (see the simulator). Under Omarchy 4.5 that is the first monitor's own
+  // block, so the recording says the same — otherwise every launch would
+  // manufacture a workspace-elsewhere refusal the generator never meant.
+  // Assigned AFTER the loop so the seeded sequence is unchanged.
+  recordWsMon[1] = recordMonitors[0].id;
 
   // Record-time desktop: 0-3 windows per identity, scattered. Schema v3 records
   // EVERY one of them, so an identity is no longer a row — it is a family of
@@ -310,8 +320,19 @@ function generateCase(rng) {
   // Live desktop: start from the record-time one, then drift it.
   const liveWsMon = {};
   const pickLiveMonitor = () => rng.pick(liveMonitors).id;
+  // Under Omarchy 4.5 a workspace id belongs to its monitor's block, so a
+  // recorded workspace whose monitor is still here is live on THAT monitor —
+  // windows drift between workspaces, workspaces do not drift between
+  // monitors (that would be workspace-elsewhere: a refusal, pinned by directed
+  // tests in restore.test.js, and not something a random desk should be made
+  // of). Only workspaces the recording never placed on a live monitor go
+  // anywhere. The pick is drawn either way so the seeded sequence is the same.
   const wsOf = (ws) => {
-    if (liveWsMon[ws] === undefined) liveWsMon[ws] = pickLiveMonitor();
+    if (liveWsMon[ws] === undefined) {
+      const picked = pickLiveMonitor();
+      const owner = recordWsMon[ws];
+      liveWsMon[ws] = liveMonitors.some((m) => m.id === owner) ? owner : picked;
+    }
     return liveWsMon[ws];
   };
 
@@ -427,18 +448,18 @@ function makeSimulator(clients, monitors, identities) {
       at: c.at.slice(),
       size: c.size.slice()
     })),
-    monitors,
-    wsMon: wsMonitorMapOf(clients)
+    monitors
   };
 
   const byAddress = (address) => state.clients.find((c) => c.address === address) || null;
 
   // The monitor a workspace lives on, creating it on the "focused" (first)
-  // monitor when it does not exist yet — the Hyprland behavior the
-  // workspace-monitor op exists to correct.
+  // monitor when it does not exist yet — the Hyprland behavior a viaMonitor
+  // move exists to correct. A workspace exists while a window is on it: an
+  // emptied one is destroyed, exactly as the engine's live set assumes.
   function monitorOfWs(ws) {
-    if (state.wsMon[ws] === undefined) state.wsMon[ws] = state.monitors[0].id;
-    return state.wsMon[ws];
+    const holder = state.clients.find((c) => c.workspace.id === ws);
+    return holder ? holder.monitor : state.monitors[0].id;
   }
 
   // Everybody tangled into `address`'s group, by claims from either side —
@@ -503,23 +524,6 @@ function makeSimulator(clients, monitors, identities) {
       for (const address of op.addresses) dissolveWhole(address);
       return;
     }
-    if (op.kind === "workspace-monitor") {
-      const target = state.monitors.find((m) => m.name === op.monitorName);
-      if (!target) return;
-      state.wsMon[op.workspaceId] = target.id;
-      for (const c of state.clients) {
-        if (c.workspace.id !== op.workspaceId) continue;
-        const moved = c.monitor !== target.id;
-        c.monitor = target.id;
-        // A float's rect is in GLOBAL layout coordinates, so a workspace that
-        // changes monitor relocates every float on it — the same re-clamp a
-        // per-window workspace move causes (tick y29), for the same reason.
-        // Modeled here too, so "geometry runs last" is held against BOTH ops
-        // that can displace a float and not just one of them.
-        if (moved) displace(c, 5);
-      }
-      return;
-    }
     if (op.kind === "move") {
       // TILED PLACEMENT IS FICTION HERE, AND IT IS SPELLED OUT (tick 35n).
       //
@@ -555,6 +559,23 @@ function makeSimulator(clients, monitors, identities) {
           "a move named a FLOATING split parent, which holds no tile: " + op.splitParent);
       }
       moveClient(op.address, op.workspaceId);
+      // The destination did not exist when the plan was made, so the move
+      // above may have created it on the focused monitor; opToCommand's second
+      // dispatch puts it on its owner, and every window on it follows.
+      if (op.viaMonitor) {
+        const target = state.monitors.find((m) => m.name === op.monitorName);
+        assert.ok(target, "a viaMonitor move named no live monitor: " + JSON.stringify(op));
+        for (const c of state.clients) {
+          if (c.workspace.id !== op.workspaceId) continue;
+          const moved = c.monitor !== target.id;
+          c.monitor = target.id;
+          // A float's rect is in GLOBAL layout coordinates, so a workspace that
+          // changes monitor relocates every float on it — the same re-clamp a
+          // per-window workspace move causes (tick y29). Modeled here too, so
+          // "geometry runs last" is held against both.
+          if (moved) displace(c, 5);
+        }
+      }
       return;
     }
     if (op.kind === "floating") {
@@ -818,6 +839,18 @@ function runCase(caseIndex, caseSeed, suppress) {
 
   const sim = makeSimulator(liveClients, liveMonitors, planIdentities);
 
+  // The workspace-elsewhere refusal, judged ONCE, on the desktop the restore
+  // starts from: a recorded workspace that already lives on another monitor
+  // is 4.5's arrangement and is not the planner's to move. Judged before any
+  // op runs on purpose — a workspace the PLAN put on the wrong monitor is a
+  // planner bug, and excusing it afterwards would hide exactly that.
+  const startWsMon = wsMonitorMapOf(liveClients);
+  const elsewhereAtStart = (app) => {
+    const holder = startWsMon[app.workspaceId];
+    if (holder === undefined) return false;
+    return engine.monitorLabel(engine.monitorByIndex(liveMonitors, holder)) !== app.monitorDescription;
+  };
+
   let plan = [];
   let previous = null;
   let iterations = 0;
@@ -871,6 +904,7 @@ function runCase(caseIndex, caseSeed, suppress) {
     if (!planIdentities.some((i) => i.id === app.identityId)) return false;   // identity-unknown
     if (!(app.monitorDescription || "").trim()) return false;                 // monitor-unknown
     if (!engine.monitorByDescription(liveMonitors, app.monitorDescription)) return false; // monitor-absent
+    if (elsewhereAtStart(app)) return false;                                  // workspace-elsewhere
     return true;
   };
 
@@ -967,13 +1001,11 @@ test(`restore converges onto the recording across ${CASES} generated desktops (s
 test("suppressing an op kind makes the property fail — for every kind that plans", () => {
   const seeds = caseSeeds(CASES);
 
-  // Every kind planRestore can emit. Measured failure rates over the 300 cases
-  // at the committed seed, as a record of how much of the generator each op
-  // actually reaches: move 281, launch 187, floating 161, workspace-monitor
-  // 150, geometry 136, group 130, ungroup 99. None of them is rare, and none
-  // of the 1143 failures is a harness error.
+  // Every kind planRestore can emit. (The workspace-monitor op is gone since
+  // tick 7ph; the one workspace move left rides on a viaMonitor move and has
+  // its own mutation below.)
   for (const kind of [
-    "geometry", "floating", "ungroup", "move", "group", "workspace-monitor", "launch"
+    "geometry", "floating", "ungroup", "move", "group", "launch"
   ]) {
     let failed = false;
     let firstError = "";
@@ -1040,6 +1072,32 @@ test("suppressing a per-occurrence op makes the property fail — launch and mov
       `dropping ${label} failed with a harness error rather than a property `
       + `violation: ${firstError}`);
   }
+});
+
+// ------------------------------------------------ mutation: the viaMonitor dispatch
+//
+// The one workspace move left (tick 7ph) rides on a move whose destination does
+// not exist when it runs: the window move creates the workspace on the FOCUSED
+// monitor, and the workspace move sends it to its owner. Strip the flag — the
+// planner that forgot the second dispatch — and new workspaces must land on
+// the wrong monitor somewhere in the 300 cases.
+
+test("dropping the viaMonitor workspace move makes the property fail", () => {
+  const seeds = caseSeeds(CASES);
+  const strip = (plan) => plan.map((op) => (op.kind === "move" ? { ...op, viaMonitor: false } : op));
+  let failed = false;
+  let firstError = "";
+  for (let i = 0; i < CASES && !failed; i++) {
+    try {
+      runCase(i, seeds[i], strip);
+    } catch (error) {
+      failed = true;
+      firstError = String(error && error.message);
+    }
+  }
+  assert.ok(failed, "dropping every viaMonitor left the property GREEN — the new-workspace path is not being tested");
+  assert.ok(!/is not a function|undefined is not|Cannot read/.test(firstError),
+    "dropping viaMonitor failed with a harness error rather than a property violation: " + firstError);
 });
 
 // ------------------------------------------------ the flip, through the simulator

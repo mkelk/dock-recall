@@ -1944,6 +1944,15 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIn
 //                                     // dispatched (it reads as a RELATIVE
 //                                     // selector and moves the wrong workspace
 //                                     // — see isSpecialWorkspaceId)
+//               | "monitor-unassigned" // resolved layout (Slots.toLive): the
+//                                     // monitor is here but 4.5 has not given
+//                                     // it a workspace block yet
+//               | "slot-unknown"      // resolved layout: no usable slot
+//                                     // (monitor-unknown also arrives this way
+//                                     // from app.unplaceable)
+//               | "workspace-elsewhere" // the recorded workspace exists, on a
+//                                     // monitor other than the recorded one —
+//                                     // 4.5 owns that, so it is refused
 //               | "identity-unknown"
 //     drift:      { monitor, workspace, group, floating }
 //                                     // booleans; all false unless drifted.
@@ -2001,6 +2010,52 @@ function identityById(identities, id) {
   return null;
 }
 
+// Every regular workspace that exists right now, keyed by id (as a string), to
+// the monitor OBJECT showing it: the workspaces with windows (through each
+// client's monitor index) and the ones a monitor is showing while empty (its
+// activeWorkspace, applied last, so it wins a conflict). The same rule as
+// Slots.workspaceMonitors, which this file cannot import — engine.js and
+// Slots.js load side by side in QML and neither may require the other.
+//
+// Under Omarchy 4.5 a workspace id belongs to one monitor's block, so this map
+// answers two planner questions: does a move's destination exist yet (a move to
+// an id that does not is created on the FOCUSED monitor, tests/nested-notes.md
+// 2026-11-14 (a)), and is a recorded workspace living on a monitor that is not
+// the one it was recorded on (`workspace-elsewhere`, a refusal).
+function liveWorkspaceMonitors(clientsJson, monitorsJson) {
+  var out = {};
+  var clients = clientsJson || [];
+  var monitors = monitorsJson || [];
+  for (var c = 0; c < clients.length; c++) {
+    var client = clients[c];
+    var ws = client && client.workspace ? client.workspace.id : null;
+    if (!isRegularWorkspaceId(ws)) continue;
+    var monitor = monitorByIndex(monitors, client.monitor);
+    if (monitor) out[String(ws)] = monitor;
+  }
+  for (var m = 0; m < monitors.length; m++) {
+    var mon = monitors[m];
+    var active = mon && mon.activeWorkspace ? mon.activeWorkspace.id : null;
+    if (isRegularWorkspaceId(active)) out[String(active)] = mon;
+  }
+  return out;
+}
+
+function isRegularWorkspaceId(value) {
+  return typeof value === "number" && isFinite(value) && Math.floor(value) === value && value >= 1;
+}
+
+// Is the recorded workspace live on a monitor OTHER than the recorded one?
+// Compared by label, not connector: twins share a label, and a record cannot
+// say which twin it meant (see monitorByDescription), so a workspace on either
+// twin is not "elsewhere".
+function liveWorkspaceIsElsewhere(liveWorkspaces, recorded) {
+  if (!recorded || !isRegularWorkspaceId(recorded.workspaceId)) return false;
+  var holder = own(liveWorkspaces, String(recorded.workspaceId));
+  if (!holder) return false;
+  return monitorLabel(holder) !== (recorded.monitorDescription || "").trim();
+}
+
 // Per-identity comparison of the recorded layout against the live desktop.
 // This is what powers the UI badge, and planRestore() is derived from it — so
 // what the badge says and what a restore would do can never disagree.
@@ -2018,6 +2073,7 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
   var apps = [];
   var appClients = [];
   var summary = { ok: 0, drifted: 0, missing: 0, skipped: 0 };
+  var liveWorkspaces = liveWorkspaceMonitors(clients, monitors);
 
   // Pass 1: everything except the group verdict, which cannot be reached one
   // app at a time — whether a group is right depends on which of its OTHER
@@ -2087,6 +2143,26 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
       // moved, whatever. Skip the app rather than dumping it somewhere wrong.
       entry.status = "skipped";
       entry.reason = "monitor-absent";
+      entry.current = currentPlacement(matched.clientByEntry[i], clients, monitors, identities, chosen.idByAddress);
+    } else if (recorded.unplaceable) {
+      // A RESOLVED layout (Slots.toLive) could not turn this record into a
+      // live workspace id: the monitor is plugged in but 4.5 has not handed it
+      // a block yet (monitor-unassigned — transient, the reconcile gate waits
+      // it out), the blocks file has never seen its identity (monitor-unknown),
+      // or the record carries no usable slot (slot-unknown). There is no
+      // destination, so nothing is planned for it — not even a launch.
+      entry.status = "skipped";
+      entry.reason = recorded.unplaceable;
+      entry.current = currentPlacement(matched.clientByEntry[i], clients, monitors, identities, chosen.idByAddress);
+    } else if (liveWorkspaceIsElsewhere(liveWorkspaces, recorded)) {
+      // The recorded workspace exists, but on a monitor other than the one it
+      // was recorded on. Under 4.5 an id belongs to its monitor's block, and
+      // which monitor shows a workspace is 4.5's decision, not ours: its next
+      // reconcile renumbers or undoes anything we move. Moving the window onto
+      // that workspace would put it on the wrong screen, so it is refused, out
+      // loud, rather than half-restored.
+      entry.status = "skipped";
+      entry.reason = "workspace-elsewhere";
       entry.current = currentPlacement(matched.clientByEntry[i], clients, monitors, identities, chosen.idByAddress);
     } else {
       var client = matched.clientByEntry[i];
@@ -2319,9 +2395,10 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
 //     identityId: string
 //     status:     "ok" | "drifted" | "missing" | "skipped"   // from driftOf
 //     workspace:  "ok" | "wrong-workspace" | "workspace-special"
+//               | "workspace-elsewhere" | "slot-unknown"
 //               | "not-running" | "identity-unknown" | "not-judged"
 //     monitor:    "ok" | "wrong-monitor" | "monitor-absent" | "monitor-unknown"
-//               | "not-running" | "identity-unknown"
+//               | "monitor-unassigned" | "not-running" | "identity-unknown"
 //     floating:   "ok" | "should-float" | "should-tile" | "not-running"
 //               | "identity-unknown" | "not-judged"
 //     group:      "ok" | "not-joined" | "wrong-order" | "unexpected-group"
@@ -2812,14 +2889,28 @@ function geometrySummaryOf(apps, refusalByWorkspace) {
   };
 }
 
+// driftOf reports `monitor-unknown` for two causes, and only the record can
+// tell them apart: an EMPTY monitorDescription means buildLayout never knew
+// where the window was. Saying "not connected" about that would send the user
+// to check a cable that was never the problem.
+var MONITOR_NEVER_RECORDED_PHRASE = "no monitor was ever recorded for it";
+
 // The phrase a verdict word becomes in a sentence. "not-judged" maps to the
 // empty string on purpose: it contributes nothing to a row's text.
 var VERDICT_PHRASES = {
   "wrong-workspace": "on the wrong workspace",
   "wrong-monitor": "on the wrong monitor",
   "monitor-absent": "its recorded monitor is not connected",
-  "monitor-unknown": "no monitor was ever recorded for it",
+  // From a resolved layout (Slots.toLive): the recorded monitor is not
+  // plugged in, or is disabled or mirrored, and Omarchy's blocks file has no
+  // workspace block for it. The LEGACY cause of the same reason — a record that
+  // never had a monitor at all — keeps its own sentence, see
+  // MONITOR_NEVER_RECORDED_PHRASE.
+  "monitor-unknown": "its monitor is not connected and has no workspace block yet",
   "workspace-special": "recorded on a special workspace — not restorable",
+  "monitor-unassigned": "its monitor has no workspace block yet",
+  "slot-unknown": "no workspace slot was recorded for it",
+  "workspace-elsewhere": "its workspace is on another monitor — not moved",
   "should-float": "should be floating",
   "should-tile": "should be tiled",
   "not-joined": "not in its recorded group",
@@ -2974,18 +3065,20 @@ function verdictForApp(app, groupsById, blocked, instance) {
       verdict.workspace = "identity-unknown";
       verdict.floating = "identity-unknown";
       verdict.group = "identity-unknown";
-    } else if (app.reason === "workspace-special") {
-      // The WORKSPACE dimension carries this one — the monitor may be sitting
-      // right there, and saying "monitor" about a scratchpad recording would
-      // send the user to check a cable that is fine.
-      verdict.workspace = "workspace-special";
+    } else if (app.reason === "workspace-special" || app.reason === "workspace-elsewhere"
+      || app.reason === "slot-unknown") {
+      // The WORKSPACE dimension carries these — the monitor may be sitting
+      // right there, and saying "monitor" about a scratchpad recording, a
+      // workspace 4.5 has put on another screen, or a record with no slot
+      // would send the user to check a cable that is fine.
+      verdict.workspace = app.reason;
       verdict.monitor = "not-judged";
       verdict.floating = "not-judged";
       verdict.group = "not-judged";
     } else {
-      // monitor-absent / monitor-unknown: the monitor dimension carries the
-      // whole story and the other three have no destination to be judged
-      // against.
+      // monitor-absent / monitor-unknown / monitor-unassigned: the monitor
+      // dimension carries the whole story and the other three have no
+      // destination to be judged against.
       verdict.monitor = app.reason || "not-judged";
       verdict.workspace = "not-judged";
       verdict.floating = "not-judged";
@@ -3009,6 +3102,9 @@ function verdictForApp(app, groupsById, blocked, instance) {
     if (word === "ok") continue;
     verdict.ok = false;
     var phrase = verdictPhrase(word);
+    if (word === "monitor-unknown" && !String(recorded.monitorDescription || "").trim()) {
+      phrase = MONITOR_NEVER_RECORDED_PHRASE;
+    }
     if (phrase && phrases.indexOf(phrase) === -1) phrases.push(phrase);
   }
 
@@ -3862,9 +3958,16 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 //            //   split-brain-tolerant and re-reads before every toggle.
 //            //   Groups made purely of unwatched windows never produce one of
 //            //   these: driftOf only sees watched members.
-//      | { kind: "workspace-monitor", workspaceId, monitorDescription,
-//                                     monitorName }
-//      | { kind: "move",   address, workspaceId, monitorDescription }
+//      | { kind: "move",   address, workspaceId, monitorDescription,
+//                          monitorName, viaMonitor }
+//            // monitorName: the recorded monitor's live connector — under
+//            //   Omarchy 4.5 the monitor whose block contains workspaceId.
+//            // viaMonitor: true when workspaceId does not exist yet (no window
+//            //   on it, no monitor showing it). A move to a missing id CREATES
+//            //   it on the FOCUSED monitor (tests/nested-notes.md 2026-11-14
+//            //   (a)), so opToCommand follows the move with the one workspace
+//            //   move this planner ever dispatches: the new workspace onto its
+//            //   owner. See opToCommand.
 //      | { kind: "floating", address, value }
 //            // value: the recorded floating state. Executed by the service as
 //            //   a READ-GATED targeted toggle — see the floating verb evidence
@@ -3882,25 +3985,24 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 //            // missing:   recorded members that could not take part, so the
 //            //   service can log which app the group is short of.
 //
-// Order is launches, then ungroups, then workspace-monitor, then moves, then
-// floatings, then groups:
+// Order is launches, then ungroups, then moves, then floatings, then groups:
 //   - a window that has to be launched has no address to do anything to yet;
 //   - stale groups are dissolved BEFORE any move, because Hyprland moves a
 //     grouped window's whole group with it — moving first would drag windows
 //     that are recorded elsewhere onto the wrong workspace;
-//   - a window has to be on the right workspace before the workspace's monitor
-//     decides which screen it shows up on;
 //   - floating is restored after the moves (a float toggle re-places the window
 //     within its CURRENT workspace) and before the groups (a group member must
 //     be tiled for into_group to find it);
 //   - a group can only be formed once its members are on the right workspace.
 //
-// Why "workspace-monitor" exists at all: in Hyprland a workspace lives on
-// exactly ONE output, so a window's monitor IS its workspace's monitor. A
-// window that is already on its recorded workspace but on the wrong monitor
-// therefore cannot be fixed by moving the window — `window.move({ workspace })`
-// onto the workspace it is already on is a no-op, and the identical plan would
-// be emitted forever. The workspace itself has to move.
+// There is no op that moves an EXISTING workspace to another monitor (the
+// `workspace-monitor` op is gone, tick 7ph). Under Omarchy 4.5 every monitor
+// owns a block of ten workspace ids and its config reconciles them on every
+// monitor event and reload, so a workspace sitting on the "wrong" monitor is
+// 4.5's arrangement, and moving it would be undone or renumbered. driftOf
+// refuses that case as `workspace-elsewhere`; a monitor drift on its own can
+// therefore no longer plan anything — a window on its recorded workspace is on
+// that workspace's monitor.
 //
 // The plan is IDEMPOTENT: run it against a conforming desktop and it is empty.
 // That is what makes the restore safe to re-run, which is the whole strategy —
@@ -3916,8 +4018,6 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
   var ungroups = [];
   var ungroupByLiveGroup = {};
   var ungroupOrder = [];
-  var workspaceMoves = [];
-  var seenWorkspaceMoves = {};
   var moves = [];
   var moveRects = [];
   var floatings = [];
@@ -3952,39 +4052,23 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
       });
     }
 
-    if (entry.drift.monitor) {
-      // Put the recorded workspace back on the recorded monitor. Deduplicated:
-      // several apps recorded on the same workspace ask for the same move, and
-      // it only needs doing once. driftOf has already established that the
-      // recorded monitor exists in this topology, so the lookup resolves.
-      // The separator is a NUL, spelled as an ESCAPE and never as a literal
-      // byte: a literal NUL in the source makes the whole file "binary" to
-      // grep, which then reports nothing at all for every other line in it.
-      // NUL rather than "|" or " " because a monitor description is free text
-      // that can contain both, and a separator that can occur inside the parts
-      // is a key collision waiting for the right pair of monitors.
-      var wsKey = recorded.workspaceId + "\u0000" + recorded.monitorDescription;
-      if (!seenWorkspaceMoves[wsKey]) {
-        seenWorkspaceMoves[wsKey] = true;
-        var target = monitorByDescription(monitorsJson, recorded.monitorDescription);
-        workspaceMoves.push({
-          kind: "workspace-monitor",
-          workspaceId: recorded.workspaceId,
-          monitorDescription: recorded.monitorDescription,
-          // The live output name, resolved here while the monitor list is in
-          // hand, because that is what the dispatch has to name. See
-          // opToCommand.
-          monitorName: (target && target.name) || ""
-        });
-      }
-    }
-
-    if (entry.drift.monitor || entry.drift.workspace) {
+    // A workspace drift only. A monitor drift alone cannot reach here any
+    // more: a window on its recorded workspace but another monitor means the
+    // workspace itself is elsewhere, and driftOf has skipped it.
+    if (entry.drift.workspace) {
+      // driftOf has established that the recorded monitor is live, so the
+      // lookup resolves; it is the connector the workspace move names when
+      // the destination has to be created.
+      var owner = monitorByDescription(monitorsJson, recorded.monitorDescription);
       moves.push({
         kind: "move",
         address: entry.current.address,
         workspaceId: recorded.workspaceId,
-        monitorDescription: recorded.monitorDescription
+        monitorDescription: recorded.monitorDescription,
+        monitorName: (owner && owner.name) || "",
+        // Decided by stampViaMonitor once the moves are in their final order:
+        // whether the destination exists depends on the moves before it.
+        viaMonitor: false
       });
       // The rect each move is aimed at, kept ALONGSIDE the op rather than on
       // it: applyPlacementOrder needs it to reconstruct the tree, and nothing
@@ -4080,16 +4164,73 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
   // the ratios inside 0.95, and returns empty.
   var refinements = planTiledRefinements(recordedApps, report, clients);
 
+  var orderedMoves = applyPlacementOrder(moves, moveRects, recordedApps, report, clients);
+  stampViaMonitor(orderedMoves, clients, monitorsJson);
+
   return launches
     .concat(ungroups)
-    .concat(workspaceMoves)
-    .concat(applyPlacementOrder(moves, moveRects, recordedApps, report, clients))
+    .concat(orderedMoves)
     .concat(floatings)
     .concat(groups)
     .concat(geometries)
     .concat(refinements.splits)
     .concat(refinements.swaps)
     .concat(refinements.dividers);
+}
+
+// Mark each move whose destination will NOT exist when it runs: `viaMonitor`.
+//
+// A move to a workspace that does not exist creates it on the FOCUSED monitor
+// (tests/nested-notes.md 2026-11-14 (a)), and 4.5's next reconcile then adopts
+// it into that monitor's block — so such a move needs its workspace sent to its
+// owner straight after (opToCommand). Whether the destination exists is a
+// question about the moment the move RUNS, not the moment the plan was made:
+// Hyprland destroys a workspace the moment its last window leaves, unless a
+// monitor is showing it, and an earlier move in this same plan can be what
+// empties it. The property test found exactly that — ws 7 live at plan time,
+// emptied by two earlier moves, recreated on the wrong monitor by the third.
+//
+// So the moves are walked in their final order over a model of the occupancy:
+// every window where it is now, a move relocating the window (and its whole
+// live group, which Hyprland drags along), and a monitor's active workspace
+// existing regardless. The ungroups that run before the moves are ignored:
+// they only keep windows BEHIND that this model lets a group drag away, so the
+// error is one way — a workspace can look emptier than it will be (one
+// redundant workspace move, onto the monitor it is already on), never fuller.
+// Launches land wherever the compositor puts them and are not counted on.
+function stampViaMonitor(moves, clientsJson, monitorsJson) {
+  var clients = clientsJson || [];
+  var monitors = monitorsJson || [];
+  var where = {};
+  var byAddress = {};
+  for (var c = 0; c < clients.length; c++) {
+    var client = clients[c];
+    if (!client || !client.address) continue;
+    byAddress[client.address] = client;
+    where[client.address] = client.workspace ? client.workspace.id : null;
+  }
+  var shown = {};
+  for (var m = 0; m < monitors.length; m++) {
+    var active = monitors[m] && monitors[m].activeWorkspace ? monitors[m].activeWorkspace.id : null;
+    if (isRegularWorkspaceId(active)) shown[String(active)] = true;
+  }
+  function exists(ws) {
+    if (own(shown, String(ws))) return true;
+    for (var address in where) {
+      if (Object.prototype.hasOwnProperty.call(where, address) && where[address] === ws) return true;
+    }
+    return false;
+  }
+  for (var i = 0; i < moves.length; i++) {
+    var op = moves[i];
+    op.viaMonitor = !exists(op.workspaceId);
+    var mover = own(byAddress, op.address);
+    var dragged = mover && isAddressList(mover.grouped) && mover.grouped.length > 1
+      ? mover.grouped : [op.address];
+    for (var d = 0; d < dragged.length; d++) {
+      if (own(where, dragged[d]) !== undefined) where[dragged[d]] = op.workspaceId;
+    }
+  }
 }
 
 // Every workspace refinement is allowed to LOOK at, in recorded order, with
@@ -4315,8 +4456,11 @@ function applyPlacementOrder(moves, moveRects, recordedApps, report, clients) {
   var rectByAddress = {};
   for (var r = 0; r < moveRects.length; r++) rectByAddress[moveRects[r].address] = moveRects[r];
 
-  // Group the moves by the workspace they are aimed at. Same NUL-separated key
-  // shape as the workspace-monitor dedupe above, for the same reason.
+  // Group the moves by the workspace they are aimed at. The separator is a
+  // NUL, spelled as an ESCAPE and never as a literal byte (a literal NUL makes
+  // the whole file "binary" to grep): a monitor description is free text that
+  // can contain any printable separator, and one that can occur inside the
+  // parts is a key collision waiting for the right pair of monitors.
   var groupsByKey = {};
   var keyOrder = [];
   for (var i = 0; i < moves.length; i++) {
@@ -4488,7 +4632,7 @@ function opAddressesOf(op) {
 }
 
 // The op's subject as one string, for a ledger entry or a log line: the windows
-// it names, or the identity it launches, or the workspace it moves. Shape
+// it names, or the identity it launches, or the workspace it names. Shape
 // again, in the same order of preference, so the same synthetic op that
 // resolves its addresses also gets a subject and is never a blank row.
 function opSubjectOf(op) {
@@ -4569,17 +4713,17 @@ function unknownPlanAddresses(plan, clientsJson) {
 function opSignature(op) {
   if (!op) return "";
   if (op.kind === "launch") return "launch:" + op.identityId;
-  if (op.kind === "workspace-monitor") {
-    return "workspace-monitor:" + op.workspaceId + "@" + (op.monitorName || op.monitorDescription || "");
-  }
   // The split parent is part of the signature, because it is part of the
   // PROGRAM: two plans that move the same windows to the same workspaces but
   // split different tiles build different desktops, and a no-progress check
   // that could not tell them apart would abandon a pass that was in fact about
   // to do something new. Omitted when there is none, so the signature of an
   // unchoreographed move is byte-identical to what it always was.
+  // A move that has to create its destination also names the monitor it puts
+  // the new workspace on: that second dispatch is part of the program too.
   if (op.kind === "move") {
     return "move:" + op.address + "->" + op.workspaceId +
+      (op.viaMonitor ? "@" + (op.monitorName || "") : "") +
       (op.splitParent ? "^" + op.splitParent : "");
   }
   if (op.kind === "floating") return "floating:" + op.address + "->" + (op.value ? "float" : "tile");
@@ -4618,7 +4762,7 @@ function planSignature(plan) {
 // Would running this plan repeat the work the previous one already asked for?
 //
 // Order matters as well as content: the plan IS an ordered program (launches,
-// then workspace moves, then window moves, then groups), and two plans with the
+// then ungroups, then moves, then groups), and two plans with the
 // same ops in a different order came from different desktops.
 function samePlan(a, b) {
   if (!a || !b) return false;
@@ -4655,7 +4799,7 @@ function isRefinementPlan(plan) {
 // window selector at all — it flips the FOCUSED window's parent node, so a
 // locked session would flip whatever the compositor was left holding, on a
 // workspace the user cannot see. Every other op names its subject and is
-// focus-independent: moves, workspace moves, the whole-group `group.toggle` an
+// focus-independent: moves, the whole-group `group.toggle` an
 // `ungroup` dispatches, the float toggle, resize/move, swaps.
 //
 // The service asks because of the LOCKED SESSION (state-matrix §7, tick 97e):
@@ -4702,12 +4846,9 @@ function planWithoutFocusOps(plan) {
 function describeOp(op) {
   if (!op) return "(no op)";
   if (op.kind === "launch") return "launch " + op.identityId;
-  if (op.kind === "workspace-monitor") {
-    return "workspace-monitor ws " + op.workspaceId + " -> "
-      + (op.monitorName || op.monitorDescription || "(no monitor)");
-  }
   if (op.kind === "move") {
     return "move " + op.address + " -> ws " + op.workspaceId +
+      (op.viaMonitor ? " (new, on " + (op.monitorName || "(no monitor)") + ")" : "") +
       (op.splitParent ? " (splitting " + op.splitParent + ")" : "");
   }
   if (op.kind === "floating") {
@@ -4937,8 +5078,7 @@ function failOutcome(record, reason, identityIds) {
 //   8. BUT A WORKSPACE MOVE DISPLACES A FLOAT. Moving the subject to a fresh
 //      workspace moved it from [1500,400] to [1500,198] — the compositor
 //      re-clamps a float against the new workspace's reserved area. So the
-//      geometry pair has to run AFTER the workspace-monitor ops, after the
-//      moves and after the floating toggle: it is the LAST thing in a plan, or
+//      geometry pair has to run AFTER the moves and after the floating toggle: it is the LAST thing in a plan, or
 //      it is restoring a position something later will move.
 //
 // THE TILED BLAST RADIUS (tick y29 question 3), and it is the reason
@@ -4998,9 +5138,29 @@ function opToCommand(op) {
     // cannot know what it was.
     //
     // follow = false: do not drag the focus onto the destination workspace,
-    // exactly as session-layout's ensure_on does. The window follows its
-    // workspace onto the right monitor, which is why the op's monitorDescription
-    // is context for the caller rather than a second dispatch.
+    // exactly as session-layout's ensure_on does. A window on an EXISTING
+    // workspace is on that workspace's monitor, which under Omarchy 4.5 is the
+    // monitor whose block contains the id — so the op's monitor is context.
+    //
+    // viaMonitor (the destination does not exist yet) adds ONE dispatch after
+    // the move, and it is the only `hl.dsp.workspace.move` this planner ever
+    // emits. Measured nested in tick zf6 (tests/nested-notes.md, 2026-11-14):
+    //   - a window.move to a missing id creates the workspace on the FOCUSED
+    //     monitor — not the window's, not the block owner's — and 4.5's next
+    //     reconcile ADOPTS it into that monitor's block, renumbering it;
+    //   - window.move ignores `monitor` when `workspace` is given, so there is
+    //     no single-dispatch form;
+    //   - a monitor-first window.move steals the focus (or, with follow =
+    //     false, still creates the workspace on the focused monitor);
+    //   - an hl.workspace_rule would do it, but it outlives the move until the
+    //     next config reload.
+    // So: the window moves (creating the workspace wherever the focus is), then
+    // that workspace goes to its owner. No reconcile runs between the two —
+    // only monitor events and reloads trigger one. The owner is named by its
+    // live OUTPUT NAME: a bare selector matches the connector, a description
+    // would need a `desc:` prefix. No owner means nothing safe to dispatch: the
+    // move alone would leave a workspace 4.5 renumbers into the wrong block.
+    if (op.viaMonitor && !op.monitorName) return [];
     var moveCommands = [];
     if (typeof op.splitParent === "string" && op.splitParent) {
       moveCommands.push(focusWindowCommand(op.splitParent));
@@ -5011,36 +5171,14 @@ function opToCommand(op) {
         ', workspace = "' + op.workspaceId + '", follow = false })'
       )
     );
+    if (op.viaMonitor) {
+      moveCommands.push(
+        dispatchCommand(
+          'hl.dsp.workspace.move({ workspace = "' + op.workspaceId + '", monitor = "' + op.monitorName + '" })'
+        )
+      );
+    }
     return moveCommands;
-  }
-
-  if (op.kind === "workspace-monitor") {
-    // Legacy `moveworkspacetomonitor <ws> <monitor>`. The Quattro verb is
-    // hl.dsp.workspace.move, and the evidence is first-party: Omarchy's own
-    // /usr/share/omarchy/default/hypr/bindings/tiling.lua binds
-    // SUPER+SHIFT+ALT+<arrow> to `hl.dsp.workspace.move({ monitor = "l" })`,
-    // and /usr/share/hypr/stubs/hl.meta.lua lists `move` on
-    // HL.DspWorkspaceNamespace plus a "workspace.move_to_monitor" event. The
-    // `workspace` key is the selector spelling the verified session-layout port
-    // uses everywhere else (hl.dsp.focus, hl.dsp.window.move); the stubs type
-    // the dispatchers as `fun(...)`, so the key names are not spelled out
-    // there. Omitting `workspace` would move the ACTIVE one, which is exactly
-    // the bug this op exists to avoid.
-    //
-    // The monitor is named by its live OUTPUT NAME rather than the recorded
-    // label: a bare string selector is matched against the monitor name, while
-    // a description needs a `desc:` prefix — and monitorLabel() yields a
-    // description most of the time but falls back to a name (the headless
-    // output has no description), so the recorded label alone cannot be turned
-    // into a selector without guessing. planRestore resolves it against the
-    // live monitor list instead. No live monitor means nothing safe to
-    // dispatch.
-    if (!op.monitorName) return [];
-    return [
-      dispatchCommand(
-        'hl.dsp.workspace.move({ workspace = "' + op.workspaceId + '", monitor = "' + op.monitorName + '" })'
-      )
-    ];
   }
 
   if (op.kind === "floating") {
