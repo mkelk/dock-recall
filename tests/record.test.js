@@ -756,6 +756,9 @@ test("the visible tab is recorded active, the others false", () => {
   assert.strictEqual(engine.activeTabOf([]), null);
   assert.strictEqual(engine.activeTabOf(null), null);
   assert.strictEqual(engine.activeTabOf(pair(true, true)), null);
+  // Two visible members are two, even when one of them carries no address.
+  assert.strictEqual(engine.activeTabOf([{ visible: true }, { visible: true, address: "0xb" }]), null);
+  assert.strictEqual(engine.activeTabOf([{ visible: true, address: "0xb" }, { visible: true }]), null);
 });
 
 test("no context records layoutMode null", () => {
@@ -797,6 +800,11 @@ test("a scrolling workspace records layoutMode scrolling", () => {
   assert.ok(layout.apps.some((a) => a.layoutMode === "scrolling"), "the group's workspace is in the fixture");
   assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, 10), "scrolling");
   assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, 7), null, "not listed");
+  // context.built is keyed by String(workspaceId), so the string spelling is the same workspace.
+  assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, "10"), "scrolling");
+  assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, "1"), "dwindle");
+  assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, "1.5"), null, "not a whole number");
+  assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, "x"), null);
 
   // And it is a stored field: the state file keeps it.
   const stored = state.parseState(state.serializeState(state.upsertLayout(state.defaultState(), layout))).state;
@@ -823,6 +831,7 @@ test("a window tagged omarchy-floating-workspace records layoutMode floating", (
   // The tag without the trailing "*" is the same tag.
   const bare = [makeClient({ address: "0xaaa", class: "foot", workspace: 4, tags: ["omarchy-floating-workspace"] })];
   assert.strictEqual(engine.workspaceModeOf({ workspaces: null }, bare, 4), "floating");
+  assert.strictEqual(engine.workspaceModeOf({ workspaces: null }, bare, "4"), "floating", "a string id too");
 });
 
 test("tilesOf collapses a group to one tile keyed by tab 0", () => {
@@ -860,6 +869,19 @@ test("tilesOf collapses a group to one tile keyed by tab 0", () => {
   ]);
   assert.strictEqual(proto.length, 1);
   assert.deepStrictEqual(proto[0].members, ["0x1", "0x2"]);
+  const dunder = engine.tilesOf([
+    { address: "0x1", at: [0, 0], size: [1, 1], groupId: "__proto__", index: 0 },
+    { address: "0x2", at: [0, 0], size: [1, 1], groupId: "__proto__", index: 1 }
+  ]);
+  assert.deepStrictEqual(dunder.map((t) => t.members), [["0x1", "0x2"]], "__proto__ collapses too");
+
+  // A missing tab index sorts last; equal indexes keep their input order.
+  assert.deepStrictEqual(engine.tilesOf([
+    { address: "0xnone", groupId: "g" }, { address: "0x1", groupId: "g", index: 1 }
+  ])[0].members, ["0x1", "0xnone"]);
+  assert.deepStrictEqual(engine.tilesOf([
+    { address: "0xfirst", groupId: "g", index: 0 }, { address: "0xsecond", groupId: "g", index: 0 }
+  ])[0].members, ["0xfirst", "0xsecond"]);
   assert.deepStrictEqual(engine.tilesOf(null), []);
 });
 

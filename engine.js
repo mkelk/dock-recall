@@ -1868,8 +1868,12 @@ function hasTag(client, tag) {
 // the two tiled words this project knows; else null — unknown, which is the
 // answer for an empty workspace, for any other layout name, and for every
 // workspace when there is no context at all.
+//
+// `workspaceId` may be a number or a whole-number string ("4"): context.built
+// is keyed by String(workspaceId), so callers hold both spellings.
 function workspaceModeOf(context, clientsJson, workspaceId) {
   if (!context || typeof context !== "object") return null;
+  if (typeof workspaceId === "string" && /^-?\d+$/.test(workspaceId)) workspaceId = Number(workspaceId);
   if (typeof workspaceId !== "number" || !isFinite(workspaceId)) return null;
   var clients = clientsJson || [];
   for (var i = 0; i < clients.length; i++) {
@@ -1877,6 +1881,7 @@ function workspaceModeOf(context, clientsJson, workspaceId) {
     if (!c || !c.workspace || c.workspace.id !== workspaceId) continue;
     if (hasTag(c, FLOATING_WORKSPACE_TAG)) return "floating";
   }
+  // The first entry with the id wins; hyprctl emits no duplicates.
   var workspaces = isAddressList(context.workspaces) ? context.workspaces : [];
   for (var w = 0; w < workspaces.length; w++) {
     var ws = workspaces[w];
@@ -1893,13 +1898,14 @@ function workspaceModeOf(context, clientsJson, workspaceId) {
 function activeTabOf(memberClients) {
   var list = memberClients || [];
   var found = null;
+  var visible = 0;
   for (var i = 0; i < list.length; i++) {
     var c = list[i];
     if (!c || c.visible !== true) continue;
-    if (found !== null) return null;
+    visible++;
     found = c.address || null;
   }
-  return found;
+  return visible === 1 ? found : null;
 }
 
 // The live clients of a client's group, in tab order — watched or not, because
@@ -3943,10 +3949,11 @@ function tilesOf(entries) {
       tiles.push({ key: e.address, at: e.at, size: e.size, members: [e.address], groupId: null });
       continue;
     }
-    var bucket = own(byGroup, groupId);
+    // Prefixed, so "__proto__" is a key like any other.
+    var bucket = own(byGroup, "g:" + groupId);
     if (bucket === undefined) {
       bucket = { groupId: groupId, entries: [] };
-      byGroup[groupId] = bucket;
+      byGroup["g:" + groupId] = bucket;
       tiles.push(bucket);
     }
     bucket.entries.push(e);

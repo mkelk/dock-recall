@@ -1619,7 +1619,7 @@ test("a hand-edited slot is coerced: '3' is 3, and 0, 11, 1.5 and junk are null"
   const apps = [3, "3", " 10 ", 1, 0, 11, 1.5, "1.5", -1, "x", "", NaN, true, [3], {}, null]
     .map((slot) => ({ identityId: "terminal", slot: slot }));
   const read = state.parseState(JSON.stringify({
-    version: 8, identities: [], layouts: { "Laptop": { topologyKey: "Laptop", apps: apps } }
+    version: 9, identities: [], layouts: { "Laptop": { topologyKey: "Laptop", apps: apps } }
   }));
   assert.deepStrictEqual(state.layoutFor(read.state, "Laptop").apps.map((a) => a.slot),
     [3, 3, 10, 1, null, null, null, null, null, null, null, null, null, null, null, null]);

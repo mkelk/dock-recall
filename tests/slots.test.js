@@ -398,15 +398,21 @@ function codeOf(source) {
     .replace(/'(?:[^'\\\n]|\\.)*'/g, "''");
 }
 
+// The two shorthand-method patterns skip a block that opens with a keyword
+// (`{ for (...) {` is a loop, not a method), and the declaration pattern skips
+// a property name (`client.class`, `{ class: x }`): engine.js reads hyprctl's
+// `class` field throughout.
+const NOT_A_KEYWORD = "(?!if\\b|for\\b|while\\b|switch\\b|catch\\b|function\\b|return\\b)";
+
 function assertEs5(source) {
   const code = codeOf(source);
   const banned = [
-    [/\b(let|const|class|import|export)\b/, "ES6 declaration or module syntax"],
+    [/(?<![.\w$])(let|const|class|import|export)\b(?!\s*:)/, "ES6 declaration or module syntax"],
     [/=>/, "arrow function"],
     [/`/, "template literal"],
     [/\.\.\./, "spread or rest"],
     [/\bvar\s*[[{]/, "destructuring"],
-    [/[{,]\s*[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{/, "shorthand method"],
+    [new RegExp("[{,]\\s*" + NOT_A_KEYWORD + "[A-Za-z_$][\\w$]*\\s*\\([^)]*\\)\\s*\\{"), "shorthand method"],
     [/^\s*(?!if\b|for\b|while\b|switch\b|catch\b|function\b|return\b)[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{/m, "shorthand method"]
   ];
   for (const [pattern, what] of banned) {
@@ -424,4 +430,17 @@ test("the ES5 guard catches what it claims to", () => {
     assert.throws(() => assertEs5(bad), /ES5 only/, bad);
   }
   assertEs5("// let it be => `x`\nvar s = \"const ... =>\";\nif (a) {\n}\nfunction f(a) {\n  return a;\n}\n");
+  // Property names and keyword-led blocks are not ES6.
+  assertEs5("var k = client.class;\nvar o = { class: 1 };\nfunction f(l) {\n  for (var i = 0; i < l.length; i++) {\n  }\n}\n");
 });
+
+// The pure brain loads in Qt's V4 the same way: no `module`, no ES6.
+for (const [file, probe] of [["engine.js", "buildLayout"], ["StateModel.js", "parseState"]]) {
+  test(file + " loads without module and is ES5, as QML imports it", () => {
+    const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8");
+    const context = {};
+    vm.runInNewContext(source, context);
+    assert.strictEqual(typeof context[probe], "function");
+    assertEs5(source);
+  });
+}
