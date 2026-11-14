@@ -157,3 +157,97 @@ test("signature is order-independent and sensitive to the files", () => {
   assert.notStrictEqual(gate.signature([c1], [laptop], "x", ""), gate.signature([c1], [laptop], "y", ""));
   assert.notStrictEqual(gate.signature([c1], [laptop], "x", ""), gate.signature([c1], [laptop], "x", "m"));
 });
+
+test("an event long before the first check does not time it out", () => {
+  let r = run(gate.create(), 400, "S");
+  r = run(r.gate, 800, "S");
+  assert.strictEqual(r.ready, true);
+  const g = gate.onEvent(r.gate, "createworkspacev2>>5,5", 1000);
+  r = run(g, 16500, "S");
+  assert.strictEqual(r.timedOut, false);
+  assert.strictEqual(r.ready, false);
+  r = run(r.gate, 16900, "S");
+  assert.strictEqual(r.ready, true);
+});
+
+test("off-owner alone at timeout allows planning anyway", () => {
+  const stuck = { address: "0x1", workspace: { id: 3 }, monitor: 1 };
+  assert.strictEqual(gate.pending(docked, [], [stuck], [laptop, aoc]), "workspace-off-owner");
+  assert.deepStrictEqual(gate.offOwnerWorkspaces(docked, [stuck, stuck], [laptop, aoc]), [3]);
+  let r = run(gate.create(), 0, "S", "workspace-off-owner");
+  r = run(r.gate, gate.MAX_WAIT_MS, "S", "workspace-off-owner");
+  assert.strictEqual(r.timedOut, true);
+  assert.strictEqual(r.ready, false);
+  assert.strictEqual(r.planAnyway, true);
+  // a stability-only event does not count as a hold
+  let g = gate.onEvent(gate.create(), "moveworkspacev2>>3,3,x", 10);
+  r = run(g, 20, "S", "workspace-off-owner");
+  r = run(r.gate, 20 + gate.MAX_WAIT_MS, "S", "workspace-off-owner");
+  assert.strictEqual(r.planAnyway, true);
+});
+
+test("planning anyway is refused when a hold event hit the episode or another reason remains", () => {
+  for (const ev of ["monitoraddedv2", "monitorremovedv2", "configreloaded"]) {
+    let g = gate.onEvent(gate.create(), ev, 0);
+    let r = run(g, 2000, "S", "workspace-off-owner");
+    r = run(r.gate, gate.MAX_WAIT_MS, "S", "workspace-off-owner");
+    assert.strictEqual(r.timedOut, true, ev);
+    assert.strictEqual(r.planAnyway, false, ev);
+  }
+  for (const why of ["monitor-unassigned", "merged-owner-present", null]) {
+    let r = run(gate.create(), 0, "S", why);
+    r = run(r.gate, gate.MAX_WAIT_MS, "S", why);
+    assert.strictEqual(r.timedOut, true);
+    assert.strictEqual(r.planAnyway, false, String(why));
+  }
+  assert.strictEqual(run(gate.create(), 0, "S", "workspace-off-owner").planAnyway, false);
+});
+
+test("parity: gate.pending agrees with Slots.blockForMonitor on the stale/twin/untrimmed/name cases", () => {
+  const cases = [
+    // [table text, monitor]
+    ["0\teDP-1\t" + LAPTOP + "\n1\tDP-1\t" + AOC + "\n", { id: 1, name: "DP-1", description: "Dell U2720Q ABC" }], // stale row
+    ["0\teDP-1\t" + LAPTOP + "\n1\tDP-1\tDell U2720Q\n2\tDP-2\tDell U2720Q #2\n", { id: 2, name: "DP-2", description: "Dell U2720Q" }],
+    ["0\teDP-1\t" + LAPTOP + "\n1\tDP-1\tDell U2720Q\n2\tDP-2\tDell U2720Q #2\n", { id: 1, name: "DP-1", description: "Dell U2720Q" }],
+    ["3\tDP-3\tDell U2720Q #2x\n", { id: 3, name: "DP-3", description: "Dell U2720Q" }],
+    ["1\tDP-1\tFoo Bar \n2\tDP-2\tFoo Bar #2\n", { id: 1, name: "DP-1", description: "Foo Bar " }],
+    ["1\tDP-1\tFoo Bar \n2\tDP-2\tFoo Bar #2\n", { id: 2, name: "DP-2", description: "Foo Bar " }],
+    ["1\tDP-1\tFoo Bar \n2\tDP-2\tFoo Bar #2\n", { id: 1, name: "DP-1", description: "Foo Baz " }],
+    ["0\teDP-1\t" + LAPTOP + "\n1\tHEADLESS-2\tHEADLESS-2\n", { id: 1, name: "HEADLESS-2", description: "" }],
+    ["0\teDP-1\t" + LAPTOP + "\n", { id: 1, name: "HEADLESS-2", description: "" }]
+  ];
+  for (const [t, m] of cases) {
+    const table = slots.parseBlocks(t);
+    const expectOk = slots.blockForMonitor(table, m) !== null;
+    assert.strictEqual(gate.pending(table, [], [], [m]) === null, expectOk, t + " / " + m.name);
+  }
+  // and a window on the block the owner row names resolves the same owner
+  const table = slots.parseBlocks("1\tDP-1\tFoo Bar \n");
+  const m = { id: 1, name: "DP-1", description: "Foo Bar " };
+  const onOther = { address: "0x1", workspace: { id: 11 }, monitor: 1 };
+  assert.strictEqual(gate.pending(table, [], [onOther], [m, { id: 0, name: "eDP-1", description: "", disabled: true }]), null);
+  assert.strictEqual(gate.pending(table, [], [onOther], [m, { id: 0, name: "eDP-1", description: "" }]), "monitor-unassigned");
+});
+
+test("ReconcileGate.js loads without module, as QML imports it, and is ES5", () => {
+  const vm = require("node:vm");
+  const source = fs.readFileSync(path.join(__dirname, "..", "ReconcileGate.js"), "utf8");
+  const context = {};
+  vm.runInNewContext(source, context);
+  assert.strictEqual(typeof context.check, "function");
+  assert.strictEqual(typeof context.offOwnerWorkspaces, "function");
+  assert.strictEqual(context.create().startMs, null);
+  const banned = [
+    [/\b(let|const|class|import|export)\b/, "ES6 declaration or module syntax"],
+    [/=>/, "arrow function"],
+    [/`/, "template literal"],
+    [/\.\.\./, "spread or rest"],
+    [/\bvar\s*[[{]/, "destructuring"],
+    [/^\s*(?!if\b|for\b|while\b|switch\b|catch\b|function\b|return\b)[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{/m, "shorthand method"]
+  ];
+  const code = source.replace(/\/\/.*$/gm, "").replace(/"(?:[^"\\\n]|\\.)*"/g, '""');
+  for (const [pattern, what] of banned) {
+    const hit = pattern.exec(code);
+    assert.ok(!hit, "ES5 only: " + what + (hit ? " at '" + hit[0] + "'" : ""));
+  }
+});

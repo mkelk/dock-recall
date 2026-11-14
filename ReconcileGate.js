@@ -11,6 +11,13 @@
 // pending reason, and the signature (clients + monitors + both files) equal on
 // two checks at least STABLE_MS apart, counted from the end of the hold.
 // MAX_WAIT_MS after the first touch the gate gives up: timedOut, never ready.
+// The clock starts at a monitor/config event (a hold) or at the first check;
+// a bare workspace event is only a stability reset and never starts it.
+// Exception, decided by the human 2026-11-14 ("restore the rest"): when the
+// timeout is ONLY workspace-off-owner and no hold event (monitor add/remove,
+// config reload) arrived in the episode, the answer carries planAnyway: the
+// planner's per-app workspace-elsewhere refusal skips the affected apps and the
+// rest restore.
 //
 // A gate is a plain object; every function returns a new one. A gate that
 // answered ready or timed out comes back fresh, ready for the next episode.
@@ -52,12 +59,12 @@ function gateBlock(table, monitor) {
 }
 
 function create() {
-  return { startMs: null, holdUntil: 0, sig: null, sigSince: 0, sigChecks: 0 };
+  return { startMs: null, holdUntil: 0, sig: null, sigSince: 0, sigChecks: 0, holdSeen: false };
 }
 
 function copyGate(gate) {
   var g = gate || create();
-  return { startMs: g.startMs, holdUntil: g.holdUntil, sig: g.sig, sigSince: g.sigSince, sigChecks: g.sigChecks };
+  return { startMs: g.startMs, holdUntil: g.holdUntil, sig: g.sig, sigSince: g.sigSince, sigChecks: g.sigChecks, holdSeen: g.holdSeen === true };
 }
 
 // Strip the "v2" suffix and any ">>data" tail: "monitorremovedv2>>1,DP-1".
@@ -75,7 +82,10 @@ function onEvent(gate, rawEventName, nowMs) {
   var stability = kind === "moveworkspace" || kind === "changeworkspaceid" ||
     kind === "createworkspace" || kind === "destroyworkspace";
   if (!hold && !stability) return g;
-  if (g.startMs === null) g.startMs = nowMs;
+  // Only a hold starts the clock: a stray workspace event with no wait in
+  // progress must not age a later wait into an instant timeout.
+  if (hold && g.startMs === null) g.startMs = nowMs;
+  if (hold) g.holdSeen = true;
   if (hold && nowMs + hold > g.holdUntil) g.holdUntil = nowMs + hold;
   g.sig = null;
   g.sigSince = 0;
@@ -122,10 +132,25 @@ function pending(table, merged, clients, monitors) {
     }
   }
 
+  return offOwnerWorkspaces(table, clients, monitors).length ? "workspace-off-owner" : null;
+}
+
+// Workspace ids (sorted, unique) holding a window whose monitor is not the
+// owner of that workspace's block.
+function offOwnerWorkspaces(table, clients, monitors) {
+  var live = [];
+  var ml = monitors || [];
+  var i;
+  for (i = 0; i < ml.length; i++) if (gateIsLive(ml[i])) live.push(ml[i]);
   var ownerOfBlock = {};
-  for (i = 0; i < live.length; i++) ownerOfBlock[String(gateBlock(table, live[i]))] = live[i].name;
+  for (i = 0; i < live.length; i++) {
+    var b = gateBlock(table, live[i]);
+    if (b !== null) ownerOfBlock[String(b)] = live[i].name;
+  }
   var byId = {};
   for (i = 0; i < ml.length; i++) if (ml[i] && ml[i].id !== undefined) byId[String(ml[i].id)] = ml[i];
+  var seen = {};
+  var out = [];
   var cl = clients || [];
   for (i = 0; i < cl.length; i++) {
     var ws = cl[i] && cl[i].workspace ? cl[i].workspace.id : null;
@@ -133,9 +158,13 @@ function pending(table, merged, clients, monitors) {
     var owner = gateOwn(ownerOfBlock, String(Math.floor((ws - 1) / 10)));
     if (owner === undefined) continue;
     var mon = cl[i].monitor === null || cl[i].monitor === undefined ? undefined : gateOwn(byId, String(cl[i].monitor));
-    if (mon && mon.name !== owner) return "workspace-off-owner";
+    if (mon && mon.name !== owner && !seen[String(ws)]) {
+      seen[String(ws)] = true;
+      out.push(ws);
+    }
   }
-  return null;
+  out.sort(function (a, b) { return a - b; });
+  return out;
 }
 
 // input: { nowMs, signature, pendingReason }
@@ -145,10 +174,11 @@ function check(gate, input) {
   if (g.startMs === null) g.startMs = now;
 
   if (now - g.startMs >= MAX_WAIT_MS) {
-    return { gate: create(), ready: false, waitMs: 0, reason: "timeout", timedOut: true };
+    var anyway = input.pendingReason === "workspace-off-owner" && g.holdSeen !== true;
+    return { gate: create(), ready: false, waitMs: 0, reason: "timeout", timedOut: true, planAnyway: anyway };
   }
   if (now < g.holdUntil) {
-    return { gate: g, ready: false, waitMs: g.holdUntil - now, reason: "hold", timedOut: false };
+    return { gate: g, ready: false, waitMs: g.holdUntil - now, reason: "hold", timedOut: false, planAnyway: false };
   }
   if (g.sig === null || g.sig !== input.signature) {
     g.sig = input.signature;
@@ -159,13 +189,13 @@ function check(gate, input) {
   }
   if (input.pendingReason) {
     g.sig = null; // stability is counted only while nothing is pending
-    return { gate: g, ready: false, waitMs: STABLE_MS, reason: input.pendingReason, timedOut: false };
+    return { gate: g, ready: false, waitMs: STABLE_MS, reason: input.pendingReason, timedOut: false, planAnyway: false };
   }
   var held = now - g.sigSince;
   if (g.sigChecks < 2 || held < STABLE_MS) {
-    return { gate: g, ready: false, waitMs: Math.max(1, STABLE_MS - held), reason: "unstable", timedOut: false };
+    return { gate: g, ready: false, waitMs: Math.max(1, STABLE_MS - held), reason: "unstable", timedOut: false, planAnyway: false };
   }
-  return { gate: create(), ready: true, waitMs: 0, reason: null, timedOut: false };
+  return { gate: create(), ready: true, waitMs: 0, reason: null, timedOut: false, planAnyway: false };
 }
 
 if (typeof module !== "undefined") {
@@ -178,6 +208,7 @@ if (typeof module !== "undefined") {
     onEvent: onEvent,
     signature: signature,
     pending: pending,
+    offOwnerWorkspaces: offOwnerWorkspaces,
     check: check
   };
 }
