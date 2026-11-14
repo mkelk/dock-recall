@@ -7569,7 +7569,7 @@ test("the panel builds the window index ONCE, and the comment says what the code
   assert.ok(recBody.indexOf("var chosen = Engine.chosenWindows(") !== -1,
     "recordLayout no longer builds the index:\n" + recBody);
   // The same variable reaches both: the record and the pictures.
-  assert.ok(recBody.indexOf("new Date().toISOString(), chosen)") !== -1,
+  assert.ok(recBody.indexOf("new Date().toISOString(), chosen,") !== -1,
     "the layout is no longer built from the index the capture will be handed:\n" + recBody);
   assert.ok(recBody.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout, chosen) })") !== -1,
     "the capture is no longer handed the index the layout was built from:\n" + recBody);
@@ -8372,4 +8372,41 @@ test("a capture is not written once the pictures have been switched off mid-roun
   assert.strictEqual(st.picturesOn(on), true, "with the switch on, the picture is owed");
   assert.strictEqual(st.picturesOn(off), false,
     "and the instant it is off nothing is — which is the case this gate exists for");
+});
+
+// ---------------------------------------------------------------- tick fe3
+// The workspace context: a manual record stores layoutMode and group.active,
+// which only happens when the panel hands Engine.buildLayout / driftOf the
+// `hyprctl workspaces -j` read. A failed read nulls the context, nothing else.
+test("the panel reads hyprctl workspaces and passes the context to record and drift (tick fe3)", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8");
+  assert.ok(src.indexOf('command: ["hyprctl", "workspaces", "-j"]') !== -1, "no workspaces read");
+  const ctx = "{ workspaces: root.liveWorkspaces, built: null }";
+  const recAt = src.indexOf("function recordLayout() {");
+  const recBody = src.slice(recAt, src.indexOf("\n  }\n", recAt));
+  assert.ok(recBody.indexOf("Engine.buildLayout(") !== -1 && recBody.indexOf(ctx) !== -1,
+    "recordLayout does not pass the workspace context");
+  const driftAt = src.indexOf("Engine.driftOf(");
+  assert.ok(src.slice(driftAt, driftAt + 250).indexOf(ctx) !== -1,
+    "driftReport does not pass the workspace context");
+  // A failed workspaces read must not become a desktop read failure.
+  const procAt = src.indexOf("id: workspacesProc");
+  const procBody = src.slice(procAt, src.indexOf("\n  }\n", procAt));
+  assert.ok(procBody.indexOf("noteReadFailure") === -1, "a workspaces failure must only null the context");
+  assert.ok(procBody.indexOf("root.liveWorkspaces = null") !== -1, "a failed read must null the context");
+});
+
+test("the engine records layoutMode when the context carries the workspaces (tick fe3)", () => {
+  const clients = [{ address: "0x1", class: "kitty", workspace: { id: 1 }, monitor: 0,
+    at: [0, 0], size: [100, 100], floating: false, mapped: true, hidden: false, pid: 1 }];
+  const monitors = [{ id: 0, name: "A", description: "A", x: 0, y: 0, width: 1920, height: 1080, scale: 1,
+    activeWorkspace: { id: 1 } }];
+  const ids = [{ id: "k", name: "k", match: { class: "kitty" } }];
+  const withWs = engine.buildLayout(clients, monitors, ids, AT, undefined,
+    { workspaces: [{ id: 1, tiledLayout: "scrolling" }], built: null });
+  const without = engine.buildLayout(clients, monitors, ids, AT, undefined, { workspaces: null, built: null });
+  if (withWs.apps.length) {
+    assert.strictEqual(withWs.apps[0].layoutMode, "scrolling");
+    assert.strictEqual(without.apps[0].layoutMode, null);
+  }
 });

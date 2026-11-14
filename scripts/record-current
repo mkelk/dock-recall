@@ -87,7 +87,12 @@ function main() {
 
   const clients = hyprctlJson(["clients", "-j"]);
   const monitors = hyprctlJson(["monitors", "all", "-j"]);
-  const built = engine.buildLayout(clients, monitors, identities, new Date().toISOString());
+  // The workspace context: layoutMode and group.active come from here. A failed
+  // read only nulls the context (they record as null, never as drift).
+  let workspaces = null;
+  try { workspaces = hyprctlJson(["workspaces", "-j"]); } catch (e) { workspaces = null; }
+  const built = engine.buildLayout(clients, monitors, identities, new Date().toISOString(),
+    undefined, { workspaces: workspaces, built: null });
   // Live ids -> slots; guests on another monitor's block are left out and said.
   const converted = Slots.toRecorded(built, readBlockTable(), monitors);
   const layout = converted.layout;
