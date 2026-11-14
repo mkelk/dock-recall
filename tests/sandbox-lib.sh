@@ -28,7 +28,9 @@
 #        your own clicking about during the run trips them too, so they fail
 #        loudly but say so);
 #     3. nothing writes live state — ~/.local/state/omarchy/dock-recall.json is
-#        compared byte-for-byte, and the sandbox's HOME is a mktemp dir.
+#        compared byte-for-byte, the desk's monitor-workspaces{,-merged} by
+#        mtime (the nested compositor runs Omarchy 4.5's monitor-workspaces.lua,
+#        tick zf6), and the sandbox's HOME is a mktemp dir.
 #
 # Usage, from a script in tests/:
 #
@@ -57,6 +59,22 @@ SHELL_DIR="${OMARCHY_PATH:-/usr/share/omarchy}/shell"
 # than the ambient variable, which the nested exports would otherwise shadow.
 LIVE_SIG="${HYPRLAND_INSTANCE_SIGNATURE:-}"
 LIVE_STATE="$HOME/.local/state/omarchy/dock-recall.json"
+
+# Omarchy 4.5's per-monitor workspace state on the DESK (tick zf6). The nested
+# compositor now runs default/hypr/monitor-workspaces.lua, which writes these two
+# files under $XDG_STATE_HOME — the sandbox's, because the launch wrapper exports
+# it. Should that redirect ever slip, the module would rewrite the human's block
+# table from a nested world's monitors, and their bar would number every screen
+# wrong. So their mtimes are a footer check, beside the dock-recall state file.
+LIVE_MW_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+LIVE_MW_FILES=("$LIVE_MW_DIR/monitor-workspaces" "$LIVE_MW_DIR/monitor-workspaces-merged")
+
+# mtime_of <file> — full-precision mtime, or "absent". A rewrite with identical
+# content still moves it, which is the point: the module rewrites the merged
+# file unconditionally on every Hyprland start.
+mtime_of() {
+  if [[ -e $1 ]]; then stat -c '%y' "$1"; else echo absent; fi
+}
 
 # A special workspace is hidden unless something toggles it open, and nothing
 # here ever does. `[workspace <name> silent]` on the exec keeps the launch from
@@ -369,6 +387,12 @@ sandbox_up() {
   note "monitors      $LIVE_MONITORS_BEFORE"
   note "visible ws    $LIVE_VISIBLE_BEFORE"
   note "state file    $LIVE_STATE_BEFORE"
+  LIVE_MW_BEFORE=()
+  local _f
+  for _f in "${LIVE_MW_FILES[@]}"; do
+    LIVE_MW_BEFORE+=("$(mtime_of "$_f")")
+    note "desk mtime    ${_f##*/} ${LIVE_MW_BEFORE[-1]}"
+  done
 
   SBOX=$(mktemp -d "${TMPDIR:-/tmp}/dr-sandbox.XXXXXX")
   mkdir -p "$SBOX/home/.local/state/omarchy" "$SBOX/bin" "$SBOX/qs"
@@ -548,18 +572,22 @@ LAUNCH
     fail "nested compositor window is on '$nested_window_ws' (special open: $special_open)"
   fi
 
-  # Workspaces that exist BEFORE a restore runs. A bare nested Hyprland creates
-  # workspaces on demand, so `hl.dsp.workspace.move({ workspace = "9", … })`
-  # answers "Workspace not found" for a workspace whose only window is about to be
-  # launched — a race the real desk does not have, because a used desktop has its
-  # workspaces already. Persistent rules reproduce the real desk, and
-  # `hyprctl keyword` is rejected by the Lua parser, so this goes through eval.
-  local ws
-  for ws in 1 2 3 4 5 6 7 8 9 10; do
-    nested eval "hl.workspace_rule({ workspace = \"$ws\", persistent = true })" >/dev/null
-  done
-  poll 10 bash -c "[[ \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl workspaces -j | jq 'length') -ge 10 ]]" \
-    || note "warning: fewer than 10 workspaces materialised"
+  # NO persistent workspace rules (tick zf6). Up to 4.0 this loop pinned 1..10
+  # as persistent so a `workspace.move` to a not-yet-launched window's workspace
+  # found one. On 4.5 the nested compositor runs monitor-workspaces.lua (see
+  # tests/nested.lua), which gives every monitor its own block of ten and
+  # renumbers anything outside its owner's block on each reconcile — ten
+  # persistent workspaces all minted on the first monitor are exactly what it
+  # fights. The module's own `hyprland.start` reconcile is what a real 4.5 desk
+  # starts from, so that is what the sandbox starts from too. Wait for it: the
+  # block table is written by that reconcile, and a scenario that reads it
+  # before then reads nothing.
+  local mw_block="$SBOX/home/.local/state/omarchy/monitor-workspaces"
+  if poll 15 test -s "$mw_block"; then
+    pass "monitor-workspaces.lua ran in the nested compositor (block table in the sandbox: $(wc -l < "$mw_block") row(s))"
+  else
+    fail "monitor-workspaces.lua wrote no block table to $mw_block — see $SBOX/nested-hyprland.log"
+  fi
 
   # ------------------------------------------- 2. the sandboxed Quickshell
 
@@ -769,6 +797,38 @@ sandbox_verdict() {
     fail_ambiguous "isolation [ambiguous]: live visible workspaces changed
         before: $LIVE_VISIBLE_BEFORE
         after:  $LIVE_VISIBLE_AFTER"
+  fi
+
+  # The desk's own 4.5 workspace state, by mtime. AUTHORITATIVE in practice —
+  # nothing at an idle desk rewrites these — but a monitor plug or a config
+  # reload on the real session during the run does, so the message says so.
+  local i mw_after
+  for i in "${!LIVE_MW_FILES[@]}"; do
+    mw_after=$(mtime_of "${LIVE_MW_FILES[$i]}")
+    if [[ $mw_after == "${LIVE_MW_BEFORE[$i]:-unset}" ]]; then
+      pass "isolation: desk ${LIVE_MW_FILES[$i]##*/} mtime unchanged ($mw_after)"
+    else
+      fail "isolation: desk ${LIVE_MW_FILES[$i]##*/} was rewritten during the run: ${LIVE_MW_BEFORE[$i]:-unset} -> $mw_after
+      (a monitor plug or a Hyprland reload on the REAL session also does this;
+       on an idle desk it is the nested monitor-workspaces.lua writing home)"
+    fi
+  done
+
+  # The other side of the same redirect: the nested module wrote to the SANDBOX,
+  # one row naming each monitor the nested compositor has now. Rows of monitors
+  # that came and went stay in the table with an empty connector, as on a desk.
+  local mw_block="$SBOX/home/.local/state/omarchy/monitor-workspaces" want got
+  if [[ -s $mw_block ]]; then
+    want=$(nested monitors all -j 2>/dev/null | jq -c '[.[]|select((.mirrorOf // "none")=="none")|.name]|sort')
+    got=$(awk -F'\t' '$2!=""{print $2}' "$mw_block" | jq -Rsc 'split("\n")|map(select(.!=""))|sort')
+    if [[ -n $want && $want == "$got" ]]; then
+      pass "sandbox block table has one row per nested monitor $got"
+    else
+      fail "sandbox block table rows $got do not match the nested monitors ${want:-?}"
+      sed 's/^/        /' "$mw_block"
+    fi
+  else
+    fail "no sandbox block table at $mw_block — monitor-workspaces.lua did not run nested"
   fi
 
   # Nothing of ours may be sitting on a workspace the user can see. The only live

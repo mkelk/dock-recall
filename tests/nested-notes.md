@@ -756,3 +756,106 @@ round now recognises its own answers, advances its queue, and reports:
 
 within one step budget, where before it said nothing for 45 s and then
 `timed-out`.
+
+---
+
+# 2026-11-14 — Omarchy 4.5's per-monitor workspaces, measured nested (tick zf6)
+
+Run: `tests/sandbox-45-probe.sh` over `tests/sandbox-lib.sh`, three runs with
+identical answers. Machine: the dev box, Hyprland 0.56.2, the 4.5
+`default/hypr/monitor-workspaces.lua`. Nothing ran against the live session;
+the isolation footer passed, including the new check that the desk's own
+`monitor-workspaces` and `monitor-workspaces-merged` kept their mtimes.
+`ALL PASS`.
+
+## The sandbox now runs the real module
+
+`tests/nested.lua` loads `default/hypr/monitor-workspaces.lua` after the park
+guard, with the smallest shim Omarchy's bootstrap would otherwise supply:
+`$OMARCHY_PATH/?.lua` on `package.path` (not the user's `~/.config` entries) and
+a global `o` with `shell_quote` and `bind_expressions`. It drops cached
+`default.hypr.*` modules first, as `bootstrap.lua` does, because Hyprland keeps
+one Lua state across `hyprctl reload` — without that a reload skips the module
+body. It refuses to load unless `XDG_STATE_HOME` is a `dr-sandbox.*` state home:
+the module writes its block table there, and a nested table written over the
+desk's would renumber the human's bar.
+
+The persistent workspace rules 1..10 that `sandbox_up` used to add are gone.
+They made ten workspaces on the first monitor — exactly what the module's
+reconciles fight — and the module's own `hyprland.start` reconcile is what a
+4.5 desk starts from. `tests/sandbox-dock.sh` leaned on them (a `workspace.move`
+to a not-yet-existing ws 9) and may fail until it is ported.
+
+The stage: the nested `WAYLAND-1` output owns block 0 (1..10), a headless
+`sbx-b1` block 1 (11..20). The sandboxed plugin service ran alongside with no
+seeded layout and made 0 ops throughout.
+
+## The answers
+
+**(a) A move to a workspace that does not exist yet creates it on the FOCUSED
+monitor** — not the window's, and not the monitor whose block the id belongs
+to. `window.move({ workspace = "13", follow = false, window = "address:…" })`
+on a block-0 window put ws 13 on `WAYLAND-1` with the focus there, and on
+`sbx-b1` with the focus on `sbx-b1`. Left on the block-0 monitor, the next
+reconcile (a config reload) does not send 13 to its owner: `place()` ADOPTS it
+into the monitor it is on, keeping the slot, so the window ended on **ws 3 of
+`WAYLAND-1`**. A misplaced new workspace is renumbered, not repaired.
+
+**(b) `window.move({ monitor = NAME })` then a move to 13 lands on the block-1
+monitor only because the first move TAKES THE FOCUS.** The default follows:
+after it the nested focus was on `sbx-b1` (and, once the window moved on to the
+hidden ws 13, on no window at all). With `follow = false` on the monitor move
+the focus stays put — and ws 13 is then created on the focused block-0 monitor
+again. So that pair does not do the job without stealing focus.
+
+There is **no single-dispatch form**: `window.move({ workspace = "13",
+monitor = "sbx-b1", … })` ignores `monitor` and creates 13 on the focused
+monitor. Two forms DO land the window on ws 13 of `sbx-b1` with the focus
+unchanged, each sent as one `hyprctl eval`:
+
+    hl.dispatch(hl.dsp.window.move({ workspace = "13", follow = false, window = "address:…" }))
+    hl.dispatch(hl.dsp.workspace.move({ workspace = "13", monitor = "sbx-b1" }))
+
+    hl.workspace_rule({ workspace = "13", monitor = "sbx-b1" })
+    hl.dispatch(hl.dsp.window.move({ workspace = "13", follow = false, window = "address:…" }))
+
+The first is two dispatches with ws 13 briefly on the wrong monitor (no
+reconcile runs in between — only monitor events and reloads trigger one). The
+second leaves a workspace rule behind until the next config reload.
+
+**(c) Yes — a window on ws 901 is renumbered by a reconcile.** It sat on 901
+untouched until `hyprctl reload`; the `config.reloaded` reconcile's `merge()`
+then treated 901 (block 90, owned by no monitor) as a guest and moved it to
+**ws 2**, the slot after block 0's highest. No merged record was written: block
+90 has no identity to remember. Without a reload or a monitor event, 901 stays.
+
+**(d) The module settles synchronously with the hyprctl call.** Measured from
+just before the call, polling the block file, the merged file and the workspace
+set every ~50 ms until 3 s pass without a change:
+
+| event | hyprctl returned | last change |
+|---|---|---|
+| `output create` (new monitor, block 2) | 9-10 ms | 11-12 ms |
+| `output remove` (one window on its ws 21) | 5-7 ms | 7-8 ms |
+| `output create` again (merged restore) | 10 ms | 12 ms |
+
+The removal reconcile sits behind `hl.timer({ timeout = 1 })`, which is
+evidently milliseconds — it had run before the first poll. On removal ws 21
+merged into block 0 as ws 3 (`3⇥21⇥sbx-b2` in the merged file, ⇥ = tab); re-creating the
+output returned it to ws 21 on `sbx-b2` and emptied the merged file. These are
+headless outputs in a nested compositor; a real DRM hotplug adds its own
+latency before Hyprland reports the monitor, which this does not measure.
+
+**(e) Yes — a headless output's identity is its connector name.** `sbx-b1`
+reports an empty description, and its block-table row is
+`1⇥sbx-b1⇥sbx-b1`. So is the nested `WAYLAND-1` output's
+(`0⇥WAYLAND-1⇥WAYLAND-1`).
+
+## What the engine tick should take from this
+
+- Moving a window to a not-yet-existing workspace of another monitor's block
+  needs either the window-then-workspace pair or a workspace rule; a plain
+  `window.move` puts the new workspace wherever focus is, and the next
+  reconcile renumbers it into that monitor's block.
+- A scratch workspace at 901+ is safe only between reconciles: any monitor
+  event or config reload moves its windows into a real block.
