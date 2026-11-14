@@ -490,3 +490,76 @@ test("GATE 9i2: a destination recorded in another mode gets no splitParent; the 
   assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, unknown)),
     ["0x1", "0x2<-0x1", "0x3<-0x2"]);
 });
+
+// ------------------------------------------- the arrival's split axis (9i2 §2.5)
+//
+// Dwindle picks an arrival's axis from the shape of the tile it splits (wider:
+// side by side, taller: stacked), not from the recording. So each LEADER
+// arrival carries the axis of the recorded cut it makes, for the service to
+// read back and flip once; every move of a complete program carries
+// `sequenced`, so the service knows which moves must all land before it may
+// call the workspace built (context.built).
+
+// Probe T's recording (finding-grouping-tiling, probe T), off the nested
+// sandbox's 701x850 output: three stacked rows, tb on top, the inner divider
+// dragged so ta is short. Rects of the probe's own REC lines.
+const PROBE_T = {
+  one: { at: [5, 428], size: [691, 136] },   // ta
+  two: { at: [5, 5], size: [691, 417] },     // tb
+  three: { at: [5, 570], size: [691, 275] }  // tc
+};
+function probeTLayout() {
+  return layoutOn(5, {
+    one: { at: PROBE_T.one.at, size: PROBE_T.one.size },
+    two: { at: PROBE_T.two.at, size: PROBE_T.two.size },
+    three: { at: PROBE_T.three.at, size: PROBE_T.three.size }
+  });
+}
+function axesOf(plan) {
+  return plan.filter((op) => op.kind === "move")
+    .map((op) => op.address + (op.splitParent ? "<-" + op.splitParent : "")
+      + (op.splitAxis === undefined ? "" : "/" + op.splitAxis));
+}
+
+test("9i2: probe T's program carries the axis of each recorded cut — ta<-tb stacked, tc<-ta stacked", () => {
+  // 0x1 = ta, 0x2 = tb, 0x3 = tc. Both arrivals land BELOW their parent: the
+  // second one is the arrival dwindle put side by side in the probe (0.546),
+  // because ta's tile was wider than tall when tc split it.
+  const plan = engine.planRestore(scattered(), MONITORS, probeTLayout(), IDS);
+  assert.deepEqual(axesOf(plan), ["0x2", "0x1<-0x2/1", "0x3<-0x1/1"]);
+  const moves = plan.filter((op) => op.kind === "move");
+  assert.ok(moves.every((op) => op.sequenced === true), "every move of the program is sequenced");
+  assert.equal(moves[0].splitAxis, undefined, "the first arrival splits nothing, so it has no axis");
+});
+
+test("9i2: the spine's two cuts carry two different axes — beside, then below", () => {
+  const plan = engine.planRestore(scattered(), MONITORS, layoutOn(5), IDS);
+  assert.deepEqual(axesOf(plan), ["0x1", "0x2<-0x1/0", "0x3<-0x2/1"]);
+});
+
+test("9i2: a group's member chain carries no axis — only the leaders do", () => {
+  const plan = engine.planRestore(scatteredGroup(), MONITORS, groupLayout(false), GIDS);
+  assert.deepEqual(axesOf(plan), ["0xa", "0xd<-0xa/0", "0xc<-0xa", "0xb<-0xc"]);
+  assert.ok(plan.filter((op) => op.kind === "move").every((op) => op.sequenced === true));
+});
+
+test("9i2: an unsequenced move carries neither sequenced nor splitAxis", () => {
+  // A recorded app that is not running leaves a hole: the gate stands down.
+  const plan = engine.planRestore(
+    [makeClient({ address: "0x1", class: "app-one", workspace: 9 }),
+      makeClient({ address: "0x2", class: "app-two", workspace: 9 })],
+    MONITORS, probeTLayout(), IDS);
+  for (const op of plan.filter((o) => o.kind === "move")) {
+    assert.ok(!("sequenced" in op) && !("splitAxis" in op) && !("splitParent" in op), JSON.stringify(op));
+  }
+});
+
+test("9i2: the axis and the sequenced mark sign nothing — the parent is the program", () => {
+  const base = { kind: "move", address: "0xB", workspaceId: 5, splitParent: "0xA" };
+  const marked = Object.assign({}, base, { sequenced: true, splitAxis: 1 });
+  assert.equal(engine.opSignature(marked), engine.opSignature(base));
+  assert.ok(engine.samePlan([marked], [base]));
+  assert.equal(engine.describeOp(marked), "move 0xB -> ws 5 (splitting 0xA, stacked)");
+  assert.equal(engine.describeOp(Object.assign({}, marked, { splitAxis: 0 })),
+    "move 0xB -> ws 5 (splitting 0xA, side by side)");
+});
