@@ -6597,7 +6597,7 @@ test("A SCREENSHOT CANNOT FAIL A RECORD: the capture is last, gated, and off the
 
   // 1. THE WRITE GATES IT. The capture kickoff has to come after the guarded
   //    upsertLayout, so every refusal path returns before it.
-  const write = body.indexOf("if (!root.writeState(StateModel.upsertLayout(base, layout))) return false");
+  const write = body.indexOf("if (!root.writeState(StateModel.upsertLayout(base, recorded))) return false");
   const capture = body.indexOf("captureAfterRecord");
   assert.ok(write !== -1, "recordLayout no longer gates on writeState's boolean");
   assert.ok(capture !== -1, "recordLayout no longer starts a capture at all");

@@ -29,6 +29,7 @@ import qs.Commons
 import qs.Ui
 import "engine.js" as Engine
 import "StateModel.js" as StateModel
+import "Slots.js" as Slots
 import "PanelModel.js" as PanelModel
 
 Item {
@@ -156,7 +157,27 @@ Item {
 
   readonly property string topologyKey: Engine.topologyKey(root.liveMonitors)
   readonly property string topologyName: PanelModel.humanizeTopology(root.topologyKey, root.liveMonitors)
-  readonly property var recordedLayout: StateModel.layoutFor(root.stateModel, root.topologyKey)
+  // The file stores SLOTS (schema v8); the engine and PanelModel work on live
+  // workspace ids. Slots.toLive is the one translator, over the block table
+  // Omarchy 4.5 keeps in monitor-workspaces. Every layout read from the state
+  // file and handed to the engine or the model goes through it; every layout
+  // written back goes through Slots.toRecorded first (recordLayout).
+  property var blockTable: Slots.parseBlocks("")
+
+  FileView {
+    path: (Quickshell.env("XDG_STATE_HOME") || root.home + "/.local/state") + "/omarchy/monitor-workspaces"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.blockTable = Slots.parseBlocks(text())
+    onLoadFailed: root.blockTable = Slots.parseBlocks("")
+  }
+
+  function resolvedLayout(layout) {
+    return layout ? Slots.toLive(layout, root.blockTable, root.liveMonitors) : layout
+  }
+
+  readonly property var recordedLayout: root.resolvedLayout(StateModel.layoutFor(root.stateModel, root.topologyKey))
 
   readonly property var driftReport: root.recordedLayout
     ? Engine.driftOf(root.liveClients, root.liveMonitors, root.recordedLayout, root.identities)
@@ -2525,6 +2546,12 @@ Item {
     var chosen = Engine.chosenWindows(root.liveClients, root.identities, root.liveMonitors)
     var layout = Engine.buildLayout(root.liveClients, root.liveMonitors, root.identities,
       new Date().toISOString(), chosen)
+    // The engine speaks live ids; the file stores slots. Windows on another
+    // monitor's block (guests) come back in `guests` and are left out.
+    // `layout` stays the engine's live-id layout (the pictures are indexed from
+    // it); `recorded` is what the file gets.
+    var converted = Slots.toRecorded(layout, root.blockTable, root.liveMonitors)
+    var recorded = converted.layout
     if (!layout.topologyKey) {
       root.warn("record refused: the monitor list resolves to no topology at all")
       return false
@@ -2545,19 +2572,25 @@ Item {
     // the reason Restore does nothing.
     var learned = root.withLearnedLaunches(root.stateModel)
     var base = learned ? learned.state : root.stateModel
-    if (!root.writeState(StateModel.upsertLayout(base, layout))) return false
+    if (!root.writeState(StateModel.upsertLayout(base, recorded))) return false
     root.recordUndo = { topologyKey: layout.topologyKey, previousLayout: replaced }
     if (learned) root.log(learned.line)
-    root.log("recorded " + layout.apps.length + " apps for topology \"" + layout.topologyKey + "\"")
+    root.log("recorded " + recorded.apps.length + " apps for topology \"" + layout.topologyKey + "\"")
     // A short recording says why it is short. `excluded` is the engine's
     // structured note (tick pqv): apps deliberately left out of the layout, not
     // apps that failed to record. Today the only reason is a scratchpad
     // workspace, whose negative id no dispatch can act on.
-    var excluded = layout.excluded || []
+    var excluded = (layout.excluded || []).concat(converted.excluded)
     for (var e = 0; e < excluded.length; e++) {
-      root.warn("not recorded: \"" + excluded[e].identityId + "\" is on special workspace "
-        + (excluded[e].workspaceName || excluded[e].workspaceId)
-        + " — a scratchpad placement cannot be restored, so it is left out of the layout")
+      if (excluded[e].reason === "workspace-guest") {
+        root.warn("not recorded: \"" + excluded[e].identityId + "\" is on workspace "
+          + excluded[e].workspaceId + ", another monitor's block — its slot would land it"
+          + " somewhere else, so it is left out of the layout")
+      } else {
+        root.warn("not recorded: \"" + excluded[e].identityId + "\" is on special workspace "
+          + (excluded[e].workspaceName || excluded[e].workspaceId)
+          + " — a scratchpad placement cannot be restored, so it is left out of the layout")
+      }
     }
 
     // THE PICTURES, LAST AND OFF THIS STACK (tick sz6).
@@ -2643,7 +2676,7 @@ Item {
     var keys = StateModel.topologyKeys(root.stateModel)
     var out = []
     for (var i = 0; i < keys.length; i++) {
-      var layout = StateModel.layoutFor(root.stateModel, keys[i])
+      var layout = root.resolvedLayout(StateModel.layoutFor(root.stateModel, keys[i]))
       if (layout) out.push(layout)
     }
     return out
