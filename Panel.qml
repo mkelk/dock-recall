@@ -807,7 +807,28 @@ Item {
   // it keeps the contextual app/device index that stops a name like "zoom"
   // resolving to an action icon instead of the app. We do not reimplement
   // either half.
+  //
+  // EXCEPT WHERE THE SHELL WILL NOT LEND IT (tick 0i5). Omarchy 4.5 gives a
+  // third-party plugin a capability-scoped facade whose `appLibrary` is null
+  // unless the manifest declares the `menu` kind, and Dock Recall is not a menu.
+  // Asking a null library left every chip and row with iconSource "" — the
+  // first 4.5 VM gate failed the panel and captures tests on it. So with no
+  // library the panel resolves the name itself, the way AppLibrary.iconSource
+  // does (PanelModel.iconRequest picks the branch; Quickshell.iconPath and
+  // Util.fileUrl do the lookups AppLibrary does). What that path lacks is the
+  // shell's contextual index, so a name the theme also uses for an action icon
+  // can draw that one: a worse icon, never an absent one.
   readonly property var appLibrary: root.shell ? root.shell.appLibrary : null
+
+  function iconSourceForName(name) {
+    if (root.appLibrary) return String(root.appLibrary.iconSource(name))
+    var request = PanelModel.iconRequest(name)
+    if (request.kind === "url") return request.value
+    if (request.kind === "path") return Util.fileUrl(request.value)
+    var themed = request.kind === "themed"
+      ? String(Quickshell.iconPath(request.value, true) || "") : ""
+    return themed || String(Quickshell.iconPath("application-x-executable", true) || "")
+  }
 
   // The generic executable icon, resolved through the same call every real icon
   // goes through. iconSource NEVER answers empty — it falls back to
@@ -823,8 +844,7 @@ Item {
   // The honest limit: an app whose desktop entry really does say
   // `Icon=application-x-executable` reports unresolved. It is drawing the
   // generic icon, which is what the flag is about.
-  readonly property string genericIconSource: root.appLibrary
-    ? String(root.appLibrary.iconSource("")) : ""
+  readonly property string genericIconSource: root.iconSourceForName("")
 
   // identity id / window class -> icon NAME, for the whole panel frame. One
   // pass over the desktop dump rather than one per chip; see
@@ -877,8 +897,7 @@ Item {
   // What an Image should draw for this app. Always something: a name that
   // resolves, or the generic executable icon.
   function iconSourceOf(identityId, className) {
-    if (!root.appLibrary) return ""
-    return String(root.appLibrary.iconSource(root.iconNameOf(identityId, className)))
+    return root.iconSourceForName(root.iconNameOf(identityId, className))
   }
 
   // Did the app's own icon resolve, or is this the generic executable fallback?

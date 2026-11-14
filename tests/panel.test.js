@@ -592,7 +592,9 @@ test("parseDesktopEntry keeps Icon=, defaulting to empty and ignoring locale-suf
 // other half — turning a name into a drawable file — is the shell's
 // appLibrary.iconSource, which knows the icon theme and keeps the contextual
 // index that stops "zoom" resolving to an action icon. Nothing here
-// reimplements it.
+// reimplements it; where the shell will not lend it (Omarchy 4.5 gives a
+// non-menu plugin no appLibrary), iconRequest only picks which lookup the
+// panel makes.
 
 test("an icon name is found through the same four passes as a launch command", () => {
   const parsed = panel.parsedDesktopEntries(REAL_DESKTOP_FILES, false);
@@ -778,6 +780,65 @@ test("a chip asks by identity first and by class second", () => {
   assert.strictEqual(panel.iconNameFor(index, "terminal", ""), "");
   assert.strictEqual(panel.iconNameFor(index, "", ""), "");
   assert.strictEqual(panel.iconNameFor(null, "obsidian", "foot"), "");
+});
+
+test("with no app library, an icon name is routed the way AppLibrary.iconSource routes it", () => {
+  // Omarchy 4.5's scoped facade lends appLibrary only to `menu` plugins, so the
+  // panel resolves names itself (tick 0i5). The branch is pure; the two
+  // lookups it names are Quickshell.iconPath and Util.fileUrl, in Panel.qml.
+  // An empty name is the generic executable icon — never an empty source.
+  assert.deepStrictEqual(panel.iconRequest(""), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest("   "), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest(null), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest(undefined), { kind: "generic" });
+  // Already a URL: passed through untouched.
+  assert.deepStrictEqual(panel.iconRequest("file:///usr/share/pixmaps/foot.png"),
+    { kind: "url", value: "file:///usr/share/pixmaps/foot.png" });
+  assert.deepStrictEqual(panel.iconRequest("image://icon/foot"),
+    { kind: "url", value: "image://icon/foot" });
+  // An absolute Icon= path — the acceptance panel test's own preview.png case.
+  assert.deepStrictEqual(
+    panel.iconRequest("/home/u/.config/omarchy/plugins/mkelk.dock-recall/preview.png"),
+    { kind: "path", value: "/home/u/.config/omarchy/plugins/mkelk.dock-recall/preview.png" });
+  // A theme name, trimmed the way desktop-entry values are.
+  assert.deepStrictEqual(panel.iconRequest(" obsidian "), { kind: "themed", value: "obsidian" });
+  // And the index's answer feeds it directly: a ghost with no entry asks for
+  // the generic icon, a watched app for its own name.
+  const index = { "id:obsidian": "obsidian" };
+  assert.deepStrictEqual(panel.iconRequest(panel.iconNameFor(index, "ghost", "")), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest(panel.iconNameFor(index, "obsidian", "")),
+    { kind: "themed", value: "obsidian" });
+});
+
+test("Panel.qml resolves icon names itself when the shell lends no app library", () => {
+  // BY PATH: the wiring half of the test above. Node cannot run the QML, so
+  // this pins the shape that made the 4.5 VM gate's chips and rows report
+  // iconSource "" (tick 0i5): a null appLibrary answered "" instead of falling
+  // through to a lookup of our own.
+  const qml = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8");
+  const body = (name) => {
+    const start = qml.indexOf("function " + name + "(");
+    assert.ok(start >= 0, "Panel.qml declares " + name);
+    const open = qml.indexOf("{", start);
+    let depth = 0;
+    for (let i = open; i < qml.length; i++) {
+      if (qml[i] === "{") depth++;
+      else if (qml[i] === "}" && --depth === 0) return qml.slice(open, i + 1);
+    }
+    throw new Error("unbalanced " + name);
+  };
+  const resolve = body("iconSourceForName");
+  assert.match(resolve, /if \(root\.appLibrary\) return/);
+  assert.match(resolve, /PanelModel\.iconRequest\(name\)/);
+  assert.match(resolve, /Util\.fileUrl\(request\.value\)/);
+  assert.match(resolve, /Quickshell\.iconPath\(request\.value, true\)/);
+  assert.match(resolve, /Quickshell\.iconPath\("application-x-executable", true\)/);
+  // Every chip, row and the generic comparison go through it — none asks the
+  // library directly, which is where a null one turned into "".
+  assert.match(body("iconSourceOf"), /root\.iconSourceForName\(/);
+  assert.match(qml, /readonly property string genericIconSource: root\.iconSourceForName\(""\)/);
+  assert.strictEqual((qml.match(/appLibrary\.iconSource\(/g) || []).length, 1,
+    "appLibrary.iconSource is asked in exactly one place, iconSourceForName");
 });
 
 test("a webapp identity finds its desktop file through StartupWMClass", () => {

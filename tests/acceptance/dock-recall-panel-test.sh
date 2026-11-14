@@ -360,11 +360,14 @@ CHIP_MIN_H=10
 # fallback chip must reach a tier that DRAWS ITS NAME, and a run must exercise
 # more than one tier across its two maps.
 #
-# The empty-source clause is not pedantry: AppLibrary.iconSource cannot answer
-# empty, because it falls back to application-x-executable, so an empty string
-# here means either the panel never asked (no shell, and so no appLibrary) or
-# the guest icon theme has no generic executable icon at all. The second would
-# leave every unrecognised app drawing nothing, which is worth failing on.
+# The empty-source clause is not pedantry: neither icon path can answer empty,
+# because both fall back to application-x-executable, so an empty string here
+# means either the panel never asked or the guest icon theme has no generic
+# executable icon at all. The second would leave every unrecognised app drawing
+# nothing, which is worth failing on. The first is what Omarchy 4.5 did to
+# every chip and row (tick 0i5): its scoped plugin facade lends `appLibrary`
+# only to `menu` plugins, and the panel asked the null one. It now resolves
+# names itself when there is no library (Panel.qml iconSourceForName).
 #
 # THE TWO COLOUR CHANNELS are asserted as two, and that is the point of them.
 # `fillState` is the durable state — watched, ghost, unwatched, one fill each,
