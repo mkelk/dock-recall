@@ -47,13 +47,34 @@ APP_TITLE="dock-recall-locked"
 APP_CLASS="foot"
 IDENTITY="dr-locked"
 OUTPUT="dr-lock-dock"
-TARGET_WS=8
+TARGET_SLOT=8
+TARGET_WS=      # computed from the slot once the dock has its block (dr_ws_id)
 
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
 # ---------------------------------------------------------------- primitives
 
 clients() { hyprctl clients -j; }
+
+# Omarchy 4.5 gives each monitor a block of ten workspaces (block*10+slot) and
+# records the blocks in monitor-workspaces (`block<TAB>connector<TAB>identity`).
+# Same signature and contract as vm-lib.sh's host-side dr_ws_id, which reads the
+# same file over SSH: echo the id, or fail loudly with no row. A workspace id is
+# never typed into this file — it is computed from the slot.
+dr_ws_id() {
+  local connector="${1:-}" slot="${2:-}" block
+  [[ -n $connector && $slot =~ ^([1-9]|10)$ ]] || {
+    echo "dr_ws_id: usage: dr_ws_id <connector> <slot 1..10> (got '$connector' '$slot')" >&2
+    return 2
+  }
+  block=$(awk -F'\t' -v c="$connector" '$2 == c && $1 ~ /^[0-9]+$/ { print $1; exit }' \
+    "$HOME/.local/state/omarchy/monitor-workspaces" 2>/dev/null)
+  [[ $block =~ ^[0-9]+$ ]] || {
+    echo "dr_ws_id: no monitor-workspaces row for '$connector'" >&2
+    return 1
+  }
+  echo $((10#$block * 10 + slot))
+}
 
 app_field() {
   clients | jq -r --arg t "$APP_TITLE" --arg f "$1" \
@@ -137,10 +158,15 @@ wait_until "fake dock monitor appeared (locked scenario)" 20 monitor_present "$O
 addr=$(app_field address)
 [[ -n $addr ]] || fail "app addressable before recording (locked scenario)"
 
+# 4.5 assigns the dock its block of workspaces asynchronously after the output
+# appears: wait for the row, then put the window on the dock's own slot by a
+# plain window move. The workspace belongs to the dock because the block does;
+# nothing moves a workspace between monitors.
+wait_until "dock has a workspace block (locked scenario)" 20 dr_ws_id "$OUTPUT" "$TARGET_SLOT"
+TARGET_WS=$(dr_ws_id "$OUTPUT" "$TARGET_SLOT") ||
+  fail "dock workspace id resolved (locked scenario)" "no monitor-workspaces row for $OUTPUT"
 hyprctl dispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"$TARGET_WS\", follow = false })" >/dev/null 2>&1 ||
   hyprctl dispatch movetoworkspacesilent "$TARGET_WS,address:$addr" >/dev/null 2>&1
-hyprctl dispatch "hl.dsp.workspace.move({ workspace = \"$TARGET_WS\", monitor = \"$OUTPUT\" })" >/dev/null 2>&1 ||
-  hyprctl dispatch moveworkspacetomonitor "$TARGET_WS $OUTPUT" >/dev/null 2>&1
 sleep 2
 
 # Same discipline as the round trip: the seed's `version` comes from StateModel
@@ -173,7 +199,7 @@ node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var identityId = process.argv[4], ws = Number(process.argv[5]);
+  var identityId = process.argv[4], slot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var dock = null;
@@ -187,7 +213,7 @@ node -e '
     apps: [{
       identityId: identityId,
       monitorDescription: engine.monitorLabel(dock),
-      workspaceId: ws,
+      slot: slot,
       floating: false,
       group: null
     }]
@@ -195,8 +221,8 @@ node -e '
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
   console.log("recorded \"" + layout.topologyKey + "\": " + identityId
-    + " on ws " + ws + " @ " + layout.apps[0].monitorDescription);
-' "$PLUGIN_DIR" "$STATE" "$OUTPUT" "$IDENTITY" "$TARGET_WS" ||
+    + " on slot " + slot + " @ " + layout.apps[0].monitorDescription);
+' "$PLUGIN_DIR" "$STATE" "$OUTPUT" "$IDENTITY" "$TARGET_SLOT" ||
   fail "layout recorded for the docked topology (locked scenario)"
 
 on_dock=$(app_ws)
@@ -207,4 +233,4 @@ on_dock=$(app_ws)
 screenshot "success-dock-recall-locked-00-prepared"
 dr_log > "$ARTIFACTS/dock-recall-locked-prepare-service.log" 2>/dev/null || true
 
-pass "dock-recall undock-while-locked: guest prepared ($IDENTITY on ws $TARGET_WS @ $OUTPUT, session UNLOCKED)"
+pass "dock-recall undock-while-locked: guest prepared ($IDENTITY on slot $TARGET_SLOT = ws $TARGET_WS @ $OUTPUT, session UNLOCKED)"

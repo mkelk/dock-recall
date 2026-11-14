@@ -17,6 +17,9 @@
 #   dr_qmp <json>         one QMP command
 #   dr_screendump <name>  a PNG of the emulated framebuffer, into the run dir
 #   dr_press <chord>      QMP send-key, dash-separated ("ret", "ctrl-u")
+#   dr_ws_id <connector> <slot>
+#                         workspace id of a slot on a monitor (block*10+slot), from
+#                         the guest's monitor-workspaces; fails if there is no row
 #   dr_type_text <text>   the same, one character at a time
 #   dr_ssh_guest <cmd>    SSH into the guest
 #   dr_ssh_session <cmd>  ...with the graphical session's environment recovered
@@ -35,8 +38,8 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
   exit 1
 fi
 
-DR_ISO_DIR="${OMARCHY_ISO_DIR:-$HOME/git/omarchy-iso}"
-DR_ISO_IMAGE="${OMARCHY_ISO_IMAGE:-release/omarchy-4.0.1.iso}"
+DR_ISO_DIR="${OMARCHY_ISO_DIR:-$HOME/git/omarchy-iso-upstream}"
+DR_ISO_IMAGE="${OMARCHY_ISO_IMAGE:-release/omarchy-4.5.0.iso}"
 DR_BASE_DIR="$DR_ISO_DIR/test-runs/$(basename "$DR_ISO_IMAGE" .iso)"
 DR_SSH_KEY="$DR_BASE_DIR/id_ed25519"
 DR_SSH_PORT="${DR_GUEST_SSH_PORT:-2222}"     # the harness's own default
@@ -194,6 +197,27 @@ dr_ssh_session() {
     export OMARCHY_PATH=/usr/share/omarchy; \
     export PATH=\$OMARCHY_PATH/bin:\$PATH; \
     $1"
+}
+
+# The workspace id of <slot> (1..10) on <connector>, from the guest's own block
+# table: Omarchy 4.5 gives every monitor a block of ten workspaces and records it
+# in ~/.local/state/omarchy/monitor-workspaces (lines `block<TAB>connector<TAB>
+# identity`); the id is block*10+slot. Echoes the id. No row for the connector
+# (the output is not there, or 4.5 has not assigned its block yet) is a loud
+# failure, never a guess: callers that race the assignment wait on this command.
+dr_ws_id() {
+  local connector="${1:-}" slot="${2:-}" block
+  if [[ -z $connector || ! $slot =~ ^([1-9]|10)$ ]]; then
+    echo "dr_ws_id: usage: dr_ws_id <connector> <slot 1..10> (got '$connector' '$slot')" >&2
+    return 2
+  fi
+  block=$(dr_ssh_guest 'cat ~/.local/state/omarchy/monitor-workspaces' 2>/dev/null |
+    tr -d '\r' | awk -F'\t' -v c="$connector" '$2 == c && $1 ~ /^[0-9]+$/ { print $1; exit }')
+  if [[ ! $block =~ ^[0-9]+$ ]]; then
+    echo "dr_ws_id: no monitor-workspaces row for '$connector' in the guest" >&2
+    return 1
+  fi
+  echo $((10#$block * 10 + slot))
 }
 
 # Graceful first, then ACPI, then the hammer. A VM left running is the one way
