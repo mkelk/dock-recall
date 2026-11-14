@@ -792,7 +792,8 @@ APP_WS=$(clients | jq -r --arg t "$APP_TITLE" 'first(.[]|select(.initialTitle==$
 # what makes it drifted; the ghost stays on $APP_WS so the recorded map also
 # carries the workspace the user is actually standing on, and its badge can be
 # the filled one on the fallback path.
-DRIFTED_WS=$((APP_WS + 1))
+# Same block as the app, so the move is a slot change: at slot 10 go down instead.
+if (( (APP_WS - 1) % 10 + 1 == 10 )); then DRIFTED_WS=$((APP_WS - 1)); else DRIFTED_WS=$((APP_WS + 1)); fi
 
 # The compositor's own name for this window, and the key PanelModel.chipFor
 # gives its live chip. Step 5 asserts the payload contains exactly this key,
@@ -876,6 +877,7 @@ RECORDED_AT=$(node -e '
   var cp = require("child_process");
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
+  var Slots = require(process.argv[1] + "/Slots.js");
   var statePath = process.argv[2], identityId = process.argv[3], ws = Number(process.argv[4]);
   var ghostId = process.argv[5], driftedWs = Number(process.argv[6]);
 
@@ -902,7 +904,7 @@ RECORDED_AT=$(node -e '
       // watched fill stays under it.
       identityId: identityId,
       monitorDescription: engine.monitorLabel(monitor),
-      workspaceId: driftedWs,
+      slot: Slots.slotOf(driftedWs),
       floating: false,
       group: null
     }, {
@@ -912,7 +914,7 @@ RECORDED_AT=$(node -e '
       // fills sit side by side on one canvas.
       identityId: ghostId,
       monitorDescription: engine.monitorLabel(monitor),
-      workspaceId: ws,
+      slot: Slots.slotOf(ws),
       floating: false,
       group: null
     }]
