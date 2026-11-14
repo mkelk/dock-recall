@@ -47,14 +47,37 @@ APP_TITLE="dock-recall-acceptance"
 APP_CLASS="foot"
 IDENTITY="dr-acceptance"
 OUTPUT="dr-acc-dock"
-TARGET_WS=7
-SCATTER_WS=1
+TARGET_SLOT=7
+SCATTER_SLOT=1
+# Workspace ids are computed from these once the monitors exist (dr_ws_id).
+TARGET_WS=
+SCATTER_WS=
 
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
 # ---------------------------------------------------------------- primitives
 
 clients() { hyprctl clients -j; }
+
+# Omarchy 4.5 gives each monitor a block of ten workspaces (block*10+slot) and
+# records the blocks in monitor-workspaces (`block<TAB>connector<TAB>identity`).
+# Same signature and contract as vm-lib.sh's host-side dr_ws_id, which reads the
+# same file over SSH: echo the id, or fail loudly with no row. A workspace id is
+# never typed into this file — it is computed from the slot.
+dr_ws_id() {
+  local connector="${1:-}" slot="${2:-}" block
+  [[ -n $connector && $slot =~ ^([1-9]|10)$ ]] || {
+    echo "dr_ws_id: usage: dr_ws_id <connector> <slot 1..10> (got '$connector' '$slot')" >&2
+    return 2
+  }
+  block=$(awk -F'\t' -v c="$connector" '$2 == c && $1 ~ /^[0-9]+$/ { print $1; exit }' \
+    "$HOME/.local/state/omarchy/monitor-workspaces" 2>/dev/null)
+  [[ $block =~ ^[0-9]+$ ]] || {
+    echo "dr_ws_id: no monitor-workspaces row for '$connector'" >&2
+    return 1
+  }
+  echo $((10#$block * 10 + slot))
+}
 
 app_field() {
   clients | jq -r --arg t "$APP_TITLE" --arg f "$1" \
@@ -74,11 +97,13 @@ monitor_absent() { ! monitor_present "$1"; }
 
 # The window exists, sits on the recorded workspace, and sits on the fake dock.
 app_restored() {
-  local ws mon want
+  local ws mon want want_ws
   ws=$(app_ws)
   mon=$(app_field monitor)
   want=$(monitor_id "$OUTPUT")
-  [[ -n $ws && $ws == "$TARGET_WS" && -n $want && $mon == "$want" ]]
+  # Recomputed: the redocked output may have been given a block afresh.
+  want_ws=$(dr_ws_id "$OUTPUT" "$TARGET_SLOT" 2>/dev/null)
+  [[ -n $ws && -n $want_ws && $ws == "$want_ws" && -n $want && $mon == "$want" ]]
 }
 
 trigger() { date +%s.%N > "$TRIGGER"; }   # content must CHANGE; a bare touch is ignored
@@ -207,10 +232,15 @@ screenshot "success-dock-recall-03-docked"
 addr=$(app_field address)
 [[ -n $addr ]] || fail "app addressable before recording"
 
+# 4.5 assigns the dock its block of workspaces asynchronously after the output
+# appears: wait for the row, then put the window on the dock's own slot by a
+# plain window move. The workspace belongs to the dock because the block does;
+# nothing moves a workspace between monitors.
+wait_until "dock has a workspace block" 20 dr_ws_id "$OUTPUT" "$TARGET_SLOT"
+TARGET_WS=$(dr_ws_id "$OUTPUT" "$TARGET_SLOT") ||
+  fail "dock workspace id resolved" "no monitor-workspaces row for $OUTPUT"
 hyprctl dispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"$TARGET_WS\", follow = false })" >/dev/null 2>&1 ||
   hyprctl dispatch movetoworkspacesilent "$TARGET_WS,address:$addr" >/dev/null 2>&1
-hyprctl dispatch "hl.dsp.workspace.move({ workspace = \"$TARGET_WS\", monitor = \"$OUTPUT\" })" >/dev/null 2>&1 ||
-  hyprctl dispatch moveworkspacetomonitor "$TARGET_WS $OUTPUT" >/dev/null 2>&1
 sleep 2
 
 # Seed the identity, then record the layout through the engine itself. The
@@ -246,7 +276,7 @@ node -e '
   var engine = require(process.argv[1] + "/engine.js");
   var StateModel = require(process.argv[1] + "/StateModel.js");
   var statePath = process.argv[2], output = process.argv[3];
-  var identityId = process.argv[4], ws = Number(process.argv[5]);
+  var identityId = process.argv[4], slot = Number(process.argv[5]);
 
   var monitors = JSON.parse(cp.execFileSync("hyprctl", ["monitors", "all", "-j"], { encoding: "utf8" }));
   var dock = null;
@@ -260,7 +290,7 @@ node -e '
     apps: [{
       identityId: identityId,
       monitorDescription: engine.monitorLabel(dock),
-      workspaceId: ws,
+      slot: slot,
       floating: false,
       group: null
     }]
@@ -268,8 +298,8 @@ node -e '
   fs.writeFileSync(statePath + ".seed", StateModel.serializeState(StateModel.upsertLayout(state, layout)));
   fs.renameSync(statePath + ".seed", statePath);
   console.log("recorded \"" + layout.topologyKey + "\": " + identityId
-    + " on ws " + ws + " @ " + layout.apps[0].monitorDescription);
-' "$PLUGIN_DIR" "$STATE" "$OUTPUT" "$IDENTITY" "$TARGET_WS" ||
+    + " on slot " + slot + " @ " + layout.apps[0].monitorDescription);
+' "$PLUGIN_DIR" "$STATE" "$OUTPUT" "$IDENTITY" "$TARGET_SLOT" ||
   fail "layout recorded for the docked topology"
 
 screenshot "success-dock-recall-04-recorded"
@@ -295,6 +325,11 @@ sleep 4
 # on workspace 7.
 addr=$(app_field address)
 [[ -n $addr ]] || fail "app addressable while undocked"
+# The surviving monitor's own slot 1 (its block is whatever 4.5 gave it).
+PRIMARY=$(hyprctl monitors all -j | jq -r --arg n "$OUTPUT" 'first(.[]|select(.name!=$n)|.name)//empty')
+[[ -n $PRIMARY ]] || fail "a monitor survives the undock" "no monitor other than $OUTPUT"
+SCATTER_WS=$(dr_ws_id "$PRIMARY" "$SCATTER_SLOT") ||
+  fail "scatter workspace id resolved" "no monitor-workspaces row for $PRIMARY"
 hyprctl dispatch "hl.dsp.window.move({ window = \"address:$addr\", workspace = \"$SCATTER_WS\", follow = false })" >/dev/null 2>&1 ||
   hyprctl dispatch movetoworkspacesilent "$SCATTER_WS,address:$addr" >/dev/null 2>&1
 sleep 2
@@ -304,7 +339,7 @@ scattered=$(app_ws)
 [[ -n $scattered && $scattered == "$SCATTER_WS" ]] ||
   fail "window scattered off its recorded workspace" \
     "wanted the window on ws $SCATTER_WS while undocked, it is on ws '$scattered'"
-pass "undocked, and the window scattered to ws $SCATTER_WS (recorded place was ws $TARGET_WS on $OUTPUT)"
+pass "undocked, and the window scattered to ws $SCATTER_WS (recorded place was slot $TARGET_SLOT = ws $TARGET_WS on $OUTPUT)"
 
 # ------------------------------------------------------ 6. redock and restore
 
@@ -318,7 +353,7 @@ if poll 60 app_restored; then
 else
   diagnostics
   fail "window restored to its recorded workspace and monitor" \
-    "window is on ws '$(app_ws)' monitor '$(app_field monitor)' (want ws $TARGET_WS on monitor $(monitor_id "$OUTPUT"))"
+    "window is on ws '$(app_ws)' monitor '$(app_field monitor)' (want slot $TARGET_SLOT = ws $(dr_ws_id "$OUTPUT" "$TARGET_SLOT" 2>/dev/null) on monitor $(monitor_id "$OUTPUT"))"
 fi
 
 capture_service_log

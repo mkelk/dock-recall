@@ -39,7 +39,7 @@
 # is this script's EXIT trap, on every path out.
 #
 # Environment:
-#   OMARCHY_ISO_DIR       harness checkout            (default ~/git/omarchy-iso)
+#   OMARCHY_ISO_DIR       harness checkout            (default ~/git/omarchy-iso-upstream)
 #   OMARCHY_ISO_IMAGE     ISO, relative to that dir   (default release/omarchy-4.5.0.iso)
 #   DR_ACCEPTANCE_KEEP=1  keep the staging directory
 #
@@ -54,7 +54,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-ISO_DIR="${OMARCHY_ISO_DIR:-$HOME/git/omarchy-iso}"
+ISO_DIR="${OMARCHY_ISO_DIR:-$HOME/git/omarchy-iso-upstream}"
 ISO_IMAGE="${OMARCHY_ISO_IMAGE:-release/omarchy-4.5.0.iso}"
 # vm-lib.sh reads this to find the base image and the run directory: export it so
 # the host-driven locked scenario looks at the same image the harness booted.

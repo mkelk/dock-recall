@@ -81,7 +81,8 @@ CONTROL_PATTERN='^scratchpad$'
 CONTROL_LAUNCH='/usr/bin/foot --app-id=scratchpad'
 
 OUTPUT="dr-mig-dock"
-TARGET_WS=7
+TARGET_SLOT=7
+TARGET_WS=      # computed from the slot once the dock has its block (dr_ws_id)
 SEED_VERSION=3
 
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
@@ -94,6 +95,26 @@ CHURN_S=30
 # ---------------------------------------------------------------- primitives
 
 clients() { hyprctl clients -j; }
+
+# Omarchy 4.5 gives each monitor a block of ten workspaces (block*10+slot) and
+# records the blocks in monitor-workspaces (`block<TAB>connector<TAB>identity`).
+# Same signature and contract as vm-lib.sh's host-side dr_ws_id, which reads the
+# same file over SSH: echo the id, or fail loudly with no row. A workspace id is
+# never typed into this file — it is computed from the slot.
+dr_ws_id() {
+  local connector="${1:-}" slot="${2:-}" block
+  [[ -n $connector && $slot =~ ^([1-9]|10)$ ]] || {
+    echo "dr_ws_id: usage: dr_ws_id <connector> <slot 1..10> (got '$connector' '$slot')" >&2
+    return 2
+  }
+  block=$(awk -F'\t' -v c="$connector" '$2 == c && $1 ~ /^[0-9]+$/ { print $1; exit }' \
+    "$HOME/.local/state/omarchy/monitor-workspaces" 2>/dev/null)
+  [[ $block =~ ^[0-9]+$ ]] || {
+    echo "dr_ws_id: no monitor-workspaces row for '$connector'" >&2
+    return 1
+  }
+  echo $((10#$block * 10 + slot))
+}
 
 stray_windows() {
   clients | jq -r --arg c "$STRAY_CLASS" \
@@ -235,6 +256,9 @@ pass "plugin installed, enabled, and its service is live"
 
 hyprctl output create headless "$OUTPUT" >/dev/null 2>&1
 wait_until "fake dock monitor appeared" 20 monitor_present "$OUTPUT"
+wait_until "dock has a workspace block" 20 dr_ws_id "$OUTPUT" "$TARGET_SLOT"
+TARGET_WS=$(dr_ws_id "$OUTPUT" "$TARGET_SLOT") ||
+  fail "dock workspace id resolved" "no monitor-workspaces row for $OUTPUT"
 screenshot "success-dock-recall-appid-01-docked"
 
 # The seed's version is HARDCODED 3 and must be: this file IS a v3 file, and the
@@ -288,7 +312,7 @@ node -e '
     apps: [{
       identityId: subject.id,
       monitorDescription: engine.monitorLabel(dock),
-      workspaceId: ws,
+      workspaceId: ws,   // the old-version seed keeps workspaceId on purpose: reading it is the v7 -> v8 step
       occurrence: 0,
       floating: false,
       group: null,

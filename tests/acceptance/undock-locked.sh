@@ -57,8 +57,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/vm-lib.sh"
 APP_TITLE="dock-recall-locked"
 IDENTITY="dr-locked"
 OUTPUT="dr-lock-dock"
-TARGET_WS=8
-SCATTER_WS=1
+TARGET_SLOT=8
+SCATTER_SLOT=1
+# Workspace ids are computed (dr_ws_id, vm-lib.sh) from these slots and the
+# guest's monitor-workspaces block table; never typed.
 
 failures=0
 note() { printf '%s\n' "$*"; }
@@ -145,15 +147,17 @@ monitor_present "$OUTPUT" ||
   die "dock-recall undock while locked" \
     "the fake dock \"$OUTPUT\" is not present — the in-guest prepare test did not run or did not finish"
 
+TARGET_WS=$(dr_ws_id "$OUTPUT" "$TARGET_SLOT") ||
+  die "dock-recall undock while locked" "no monitor-workspaces row for $OUTPUT in the guest"
 started_ws=$(app_ws)
 [[ $started_ws == "$TARGET_WS" ]] ||
   die "dock-recall undock while locked" \
-    "the watched window is on ws '$started_ws', wanted ws $TARGET_WS on $OUTPUT"
+    "the watched window is on ws '$started_ws', wanted slot $TARGET_SLOT = ws $TARGET_WS on $OUTPUT"
 
 PRIMARY=$(dr_ssh_session "hyprctl monitors all -j | jq -r --arg n '$OUTPUT' 'first(.[]|select(.name!=\$n)|.name)//empty'" | tr -d '\r\n')
 [[ -n $PRIMARY ]] ||
   die "dock-recall undock while locked" "the guest has no monitor other than $OUTPUT to fail over to"
-ok "prepared: $IDENTITY on ws $TARGET_WS @ $OUTPUT, with \"$PRIMARY\" as the survivor"
+ok "prepared: $IDENTITY on slot $TARGET_SLOT = ws $TARGET_WS @ $OUTPUT, with \"$PRIMARY\" as the survivor"
 
 # Focus must be ON the output that is about to disappear. An undock of an
 # UNFOCUSED monitor is the case tests/nested-focus.sh already covered, and it can
@@ -333,6 +337,8 @@ ok "the unlocked session answers a dispatch (hl.dsp.focus -> ok)"
 addr=$(app_addr)
 [[ -n $addr ]] ||
   die "dock-recall undock while locked: the watched window survived the lock" "no window titled $APP_TITLE"
+SCATTER_WS=$(dr_ws_id "$PRIMARY" "$SCATTER_SLOT") ||
+  die "dock-recall undock while locked: the scatter workspace resolves" "no monitor-workspaces row for $PRIMARY"
 dr_ssh_session "hyprctl dispatch 'hl.dsp.window.move({ window = \"address:$addr\", workspace = \"$SCATTER_WS\", follow = false })'" >/dev/null 2>&1
 sleep 2
 scattered=$(app_ws)
@@ -346,18 +352,20 @@ poll 30 monitor_present "$OUTPUT" ||
 dr_ssh_session "date +%s.%N > ~/.local/state/omarchy/dock-recall.trigger" >/dev/null 2>&1
 
 restored() {
-  local ws mon want
+  local ws mon want want_ws
   ws=$(app_ws); mon=$(app_monitor); want=$(monitor_id "$OUTPUT")
-  [[ -n $ws && $ws == "$TARGET_WS" && -n $want && $mon == "$want" ]]
+  # Recomputed: the redocked output may have been given a block afresh.
+  want_ws=$(dr_ws_id "$OUTPUT" "$TARGET_SLOT" 2>/dev/null)
+  [[ -n $ws && -n $want_ws && $ws == "$want_ws" && -n $want && $mon == "$want" ]]
 }
 
 if poll 90 restored; then
   dr_screendump "success-dock-recall-locked-04-post-redock"
-  ok "the recorded layout restored after the redock (ws $TARGET_WS on $OUTPUT)"
+  ok "the recorded layout restored after the redock (slot $TARGET_SLOT, ws $(dr_ws_id "$OUTPUT" "$TARGET_SLOT" 2>/dev/null) on $OUTPUT)"
 else
   dr_screendump "failure-dock-recall-locked-04-not-restored"
   die "dock-recall undock while locked: the layout restores after the redock" \
-    "the window is on ws '$(app_ws)' monitor '$(app_monitor)', wanted ws $TARGET_WS on monitor $(monitor_id "$OUTPUT")"
+    "the window is on ws '$(app_ws)' monitor '$(app_monitor)', wanted slot $TARGET_SLOT = ws $(dr_ws_id "$OUTPUT" "$TARGET_SLOT" 2>/dev/null) on monitor $(monitor_id "$OUTPUT")"
 fi
 
 summarize
