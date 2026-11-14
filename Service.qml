@@ -441,8 +441,113 @@ Item {
     // the restore cycle, and only that.
     if (name === "monitorremoved" || name === "monitorremovedv2") root.checkFocusFailover(data)
 
+    if (name === "configreloaded") {
+      // The reading BEFORE the reload is the last one this service took — the
+      // reload has already happened by the time its event arrives. Taken once
+      // per check: the later reloads of one burst must not overwrite it with a
+      // reading from mid-reload. No reading yet (nothing read since start) is
+      // null, and the decision restores on that, as every reload used to.
+      if (!root.reloadPending) {
+        root.reloadPending = true
+        root.reloadBefore = root.liveMonitors.length
+          ? ReconcileGate.reloadReading(root.liveMonitors, Engine.topologyKey(root.liveMonitors), root.blocksText)
+          : null
+        root.reloadGate = ReconcileGate.create()
+        reloadCheckTimer.stop()
+        root.reloadCheckAfterCycle = false
+      }
+      root.reloadGate = ReconcileGate.onEvent(root.reloadGate, name, Date.now())
+    } else {
+      root.burstHasMonitorEvent = true
+    }
+
     root.cycleReason = name
     eventDebounceTimer.restart()
+  }
+
+  // ------------------------------------------- config reload: restore or not
+  //
+  // Human decision 2026-11-14, "restore only if monitors changed" (epic 9i2).
+  // A burst of topology events made only of configreloaded starts NO restore
+  // cycle by itself: the check below waits out the reload on a gate of its own
+  // (same rules as the cycle's — hold, settle, 4.5 re-sort), reads once, and
+  // starts a cycle only when ReconcileGate.reloadDecision says the monitor set,
+  // the topology key or the block table changed. Otherwise it refreshes the
+  // status and nothing else: no plan, no dispatch, no launch. A burst that also
+  // carries a monitor add or remove is the monitor path, unchanged; so is a
+  // manual restore. The cycle's own gate still hears every reload
+  // (handleHyprlandEvent feeds it first), so a cycle that is running holds too.
+  property bool burstHasMonitorEvent: false
+  property bool reloadPending: false
+  property var reloadBefore: null
+  property var reloadGate: ReconcileGate.create()
+  // A check that found a cycle running waits for its end: the cycle owns the
+  // read machinery, and its last pass may have planned before the reload.
+  property bool reloadCheckAfterCycle: false
+
+  function endReloadCheck() {
+    root.reloadPending = false
+    root.reloadBefore = null
+    root.reloadCheckAfterCycle = false
+    reloadCheckTimer.stop()
+  }
+
+  function runReloadCheck() {
+    reloadCheckTimer.stop()
+    if (!root.reloadPending) return
+    if (root.cycleActive) {
+      root.reloadCheckAfterCycle = true
+      return
+    }
+    if (clientsProc.running || monitorsProc.running || workspacesProc.running || blocksProc.running) {
+      reloadCheckTimer.interval = 200
+      reloadCheckTimer.restart()
+      return
+    }
+    root.snapshot(function (ok) {
+      if (!root.reloadPending) return
+      if (root.cycleActive) {
+        root.reloadCheckAfterCycle = true
+        return
+      }
+      if (!ok) {
+        root.warn("config reload: the live read failed — not restoring")
+        root.endReloadCheck()
+        return
+      }
+      var merged = Slots.parseMerged(root.mergedText)
+      var pend = ReconcileGate.pending(root.blockTable, merged, root.liveClients, root.liveMonitors)
+      var sig = ReconcileGate.signature(root.liveClients, root.liveMonitors, root.blocksText, root.mergedText)
+      var answer = ReconcileGate.check(root.reloadGate, { nowMs: Date.now(), signature: sig, pendingReason: pend })
+      root.reloadGate = answer.gate
+      if (answer.timedOut) {
+        root.log("config reload: unsettled (" + (pend || "unstable") + ") — not restoring")
+        root.endReloadCheck()
+        root.refreshStatus("config reload unsettled")
+        return
+      }
+      if (!answer.ready) {
+        reloadCheckTimer.interval = Math.max(50, answer.waitMs)
+        reloadCheckTimer.restart()
+        return
+      }
+      var after = ReconcileGate.reloadReading(root.liveMonitors, Engine.topologyKey(root.liveMonitors), root.blocksText)
+      var decision = ReconcileGate.reloadDecision(root.reloadBefore, after)
+      root.endReloadCheck()
+      if (decision.restore) {
+        root.log("config reload: " + decision.reason + " — restoring")
+        root.requestRestore("configreloaded")
+        return
+      }
+      root.log("config reload: monitors and blocks unchanged — no restore")
+      root.refreshStatus("config reload settled")
+    })
+  }
+
+  Timer {
+    id: reloadCheckTimer
+    repeat: false
+    onTriggered: root.runReloadCheck()
   }
 
   Connections {
@@ -457,6 +562,18 @@ Item {
     interval: 400
     repeat: false
     onTriggered: {
+      var monitorBurst = root.burstHasMonitorEvent
+      root.burstHasMonitorEvent = false
+      // Only reloads in this burst, and something was read before them: the
+      // reload check decides (see runReloadCheck). Nothing read before them
+      // (reloadBefore null) cannot be shown unchanged, so it takes the old path.
+      if (!monitorBurst && root.reloadPending && root.reloadBefore !== null) {
+        root.runReloadCheck()
+        return
+      }
+      // A monitor event in the burst (or no reading to compare): the restore it
+      // starts covers the reload too.
+      if (root.reloadPending) root.endReloadCheck()
       root.requestRestore(root.cycleReason || "monitor event")
       // Covers the cases requestRestore does NOT start a cycle for (state file
       // not loaded yet, a cycle already running): the topology still changed
@@ -3790,6 +3907,19 @@ Item {
       var wasManual = root.rerunManual
       root.rerunManual = false
       root.requestRestore("queued rerun", wasManual)
+      return
+    }
+    if (root.reloadCheckAfterCycle) {
+      // A config reload landed while this cycle ran: decide it now, on a fresh
+      // gate that keeps only the reload's hold (the 15 s clock of an episode the
+      // cycle spent must not time the check out). Its end refreshes the status,
+      // so the cycle-end refresh below would only stand down behind its read.
+      root.reloadCheckAfterCycle = false
+      var fresh = ReconcileGate.create()
+      fresh.holdUntil = root.reloadGate.holdUntil
+      fresh.holdSeen = root.reloadGate.holdSeen === true
+      root.reloadGate = fresh
+      root.runReloadCheck()
       return
     }
     root.refreshStatus("restore cycle end")

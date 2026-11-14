@@ -338,6 +338,7 @@ omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" *.qml   # every QML file, from a glob — never a list
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
 ./tests/sandbox-fidelity.sh        # within-workspace fidelity: tiling tree, tab groups, refusals
+./tests/sandbox-reload.sh          # a config reload restores only when monitors or blocks changed
 ./scripts/dev-install --restart    # install this working tree and restart the shell
 ```
 

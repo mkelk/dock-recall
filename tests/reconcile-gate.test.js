@@ -251,3 +251,39 @@ test("ReconcileGate.js loads without module, as QML imports it, and is ES5", () 
     assert.ok(!hit, "ES5 only: " + what + (hit ? " at '" + hit[0] + "'" : ""));
   }
 });
+
+// ------------------------------------------- config reload: restore or not
+// Human decision 2026-11-14, "restore only if monitors changed": a reload starts
+// a restore cycle only when the monitor set, the topology key or the block table
+// differs from the reading taken before it.
+
+const engine = require("../engine.js");
+const reading = (monitors, blocksText) => gate.reloadReading(monitors, engine.topologyKey(monitors), blocksText);
+const DOCKED_BLOCKS = text("monitor-workspaces-docked.txt");
+const UNDOCKED_BLOCKS = text("monitor-workspaces-undocked.txt");
+
+test("reload with the same monitors and blocks does not restore", () => {
+  const before = reading([laptop, aoc], DOCKED_BLOCKS);
+  // A reload moves focus and rewrites the blocks file with the same rows: neither is a change.
+  const after = reading([{ ...aoc, activeWorkspace: { id: 14 }, focused: true }, { ...laptop, activeWorkspace: { id: 3 } }],
+    DOCKED_BLOCKS.split("\n").reverse().join("\n") + "\n\n");
+  assert.deepStrictEqual(gate.reloadDecision(before, after), { restore: false, reason: "unchanged" });
+});
+
+test("reload restores when an output appeared, went off, or the blocks changed", () => {
+  const before = reading([laptop], UNDOCKED_BLOCKS);
+  assert.deepStrictEqual(gate.reloadDecision(before, reading([laptop, aoc], UNDOCKED_BLOCKS)),
+    { restore: true, reason: "topology-changed" });
+  // Same topology key (a disabled output still counts towards it), different set.
+  const two = reading([laptop, aoc], DOCKED_BLOCKS);
+  assert.deepStrictEqual(gate.reloadDecision(two, reading([laptop, { ...aoc, disabled: true }], DOCKED_BLOCKS)),
+    { restore: true, reason: "monitors-changed" });
+  assert.deepStrictEqual(gate.reloadDecision(two, reading([laptop, { ...aoc, name: "DP-2" }], DOCKED_BLOCKS)).restore, true);
+  assert.deepStrictEqual(gate.reloadDecision(two, reading([laptop, aoc], UNDOCKED_BLOCKS)),
+    { restore: true, reason: "blocks-changed" });
+});
+
+test("reload with no reading before it restores; a failed reading after it does not", () => {
+  assert.deepStrictEqual(gate.reloadDecision(null, reading([laptop], UNDOCKED_BLOCKS)), { restore: true, reason: "no-baseline" });
+  assert.deepStrictEqual(gate.reloadDecision(reading([laptop], UNDOCKED_BLOCKS), null), { restore: false, reason: "no-reading" });
+});
