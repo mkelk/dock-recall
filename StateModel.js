@@ -1772,8 +1772,13 @@ function planFailover(monitors, lastFocusedName, locked) {
     if (target && typeof target.x === "number" && typeof target.y === "number"
         && typeof target.width === "number" && typeof target.height === "number"
         && target.width > 0 && target.height > 0) {
-      var cx = Math.round(target.x + target.width / scale / 2);
-      var cy = Math.round(target.y + target.height / scale / 2);
+      // hyprctl reports width/height before the transform: a rotated monitor
+      // (transform 1/3, or 5/7 flipped) occupies the layout with them swapped.
+      var odd = typeof target.transform === "number" && target.transform % 2 === 1;
+      var lw = odd ? target.height : target.width;
+      var lh = odd ? target.width : target.height;
+      var cx = Math.round(target.x + lw / scale / 2);
+      var cy = Math.round(target.y + lh / scale / 2);
       plan.dispatches.push("hl.dsp.cursor.move({ x = " + cx + ", y = " + cy + " })");
     }
   }

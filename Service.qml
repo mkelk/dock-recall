@@ -2533,6 +2533,11 @@ Item {
   function scratchJoin(address, predecessor, anchor, outcome, done) {
     // A join must never straddle a 4.5 reconcile (a scratch workspace is
     // renumbered by merge() on a reload): gate it on a full snapshot first.
+    // The detour itself never needs viaMonitor: the scratch workspace is empty
+    // and not visible (pickScratchWorkspace) and both moves name a workspace by
+    // id with follow = false, so no monitor focus or monitor-relative selector
+    // is involved; the move home targets the anchor's current workspace, which
+    // is already on its owner, so it cannot cross monitors either.
     root.gateThen("scratch join",
       function () { root.scratchJoinReady(address, predecessor, anchor, outcome, done) },
       function () {
@@ -2817,6 +2822,7 @@ Item {
     // an episode no check ever closed.
     var carried = ReconcileGate.create()
     carried.holdUntil = root.reconcileGate.holdUntil
+    carried.holdSeen = root.reconcileGate.holdSeen === true
     root.reconcileGate = carried
     // Whose keyboard this is. Cleared at cycle start and filled in from the
     // first successful read of the cycle, so the placement choreography has
@@ -2899,6 +2905,15 @@ Item {
       var answer = ReconcileGate.check(root.reconcileGate,
         { nowMs: Date.now(), signature: sig, pendingReason: pend })
       root.reconcileGate = answer.gate
+      if (answer.timedOut && answer.planAnyway) {
+        // Off-owner persisted, but no monitor event hit this episode: the
+        // planner's per-app workspace-elsewhere refusal skips the affected
+        // apps and the rest restore (human decision 2026-11-14).
+        var offWs = ReconcileGate.offOwnerWorkspaces(root.blockTable, root.liveClients, root.liveMonitors)
+        root.log("reconcile gate: off-owner persisted, planning anyway (" + offWs.length + " workspace(s))")
+        proceed()
+        return
+      }
       if (answer.timedOut) {
         var why = pend || "unstable"
         root.log("reconcile-unsettled: " + why + " (" + label + ")")

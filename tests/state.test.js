@@ -2418,3 +2418,14 @@ test("glyphState is defensive about junk", () => {
   assert.strictEqual(state.glyphState(undefined), "hollow");
   assert.strictEqual(state.glyphState("nonsense"), "hollow");
 });
+
+test("locked cursor centre swaps width and height on an odd transform", () => {
+  for (const transform of [1, 3, 5, 7]) {
+    const plan = state.planFailover([MON("eDP-1", true, { x: 0, y: 0, width: 1080, height: 1920, scale: 1, transform })], "", true);
+    assert.strictEqual(plan.dispatches[1], "hl.dsp.cursor.move({ x = 960, y = 540 })", "transform " + transform);
+  }
+  for (const transform of [0, 2, 4, 6]) {
+    const plan = state.planFailover([MON("eDP-1", true, { width: 1080, height: 1920, transform })], "", true);
+    assert.strictEqual(plan.dispatches[1], "hl.dsp.cursor.move({ x = 540, y = 960 })", "transform " + transform);
+  }
+});
