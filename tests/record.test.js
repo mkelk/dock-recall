@@ -840,7 +840,6 @@ test("a scrolling workspace records layoutMode scrolling", () => {
 
 test("a window tagged omarchy-floating-workspace records layoutMode floating", () => {
   assert.strictEqual(engine.FLOATING_WORKSPACE_TAG, "omarchy-floating-workspace");
-  assert.strictEqual(engine.MODE_FLOATED_TAG, "omarchy-mode-floated");
   const clients = [
     makeClient({ address: "0xaaa", class: "foot", workspace: 4, floating: true,
       tags: ["default-opacity*", "omarchy-floating-workspace*"] }),

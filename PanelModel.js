@@ -6278,11 +6278,14 @@ function badgeTooltip(glyphState, status) {
   }
   if (glyphState === "drifted") {
     var count = Number(current.driftCount) || 0;
-    if (count === 0 && shapeLinesFor(current).lines.length > 0) {
+    var shaped = shapeLinesFor(current).lines.length > 0;
+    if (count === 0 && shaped) {
       return "Every watched app is where the recording puts it, but some workspaces are not in the recorded tile shape. The lines below say which and why.";
     }
     return count + (count === 1 ? " app is" : " apps are")
-      + " not where the recording puts them. Restore now moves them back; Record layout files where they are instead.";
+      + " not where the recording puts them. Restore now moves them back; Record layout files where they are instead."
+      // Both at once (tick v2p): the shapes are said too, not hidden behind the count.
+      + (shaped ? " Some workspaces are also not in the recorded tile shape; the lines below say which and why." : "");
   }
   return "Every watched app is where the recording puts it.";
 }

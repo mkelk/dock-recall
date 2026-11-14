@@ -8464,3 +8464,15 @@ test("shapeLinesFor: a null reason never promises a restore will fix it", () => 
   assert.ok(out.summary.indexOf("restore") === -1, out.summary);
   assert.ok(out.summary.indexOf("12 (shape differs)") !== -1, out.summary);
 });
+
+test("v2p: the badge tooltip says the shapes too when apps have drifted as well", () => {
+  const both = statusOf({ recorded: true, driftCount: 2, shapeCount: 1,
+    shapes: [{ workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: null }] });
+  assert.strictEqual(state.glyphState(both), "drifted");
+  const tip = panel.badgeTooltip("drifted", both);
+  assert.ok(tip.indexOf("2 apps are") === 0, tip);
+  assert.ok(tip.indexOf("tile shape") !== -1, "the shapes are not hidden behind the count: " + tip);
+  // Drift alone keeps today's sentence, word for word.
+  assert.strictEqual(panel.badgeTooltip("drifted", statusOf({ recorded: true, driftCount: 1 })),
+    "1 app is not where the recording puts them. Restore now moves them back; Record layout files where they are instead.");
+});

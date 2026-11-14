@@ -331,3 +331,44 @@ test("Service.qml executes the tab op, reads it back, and clears the known tree 
   // The known tree ends with the cycle, not only starts empty.
   assert.match(functionBody(source, "finishCycle"), /root\.builtWorkspaces = \(\{\}\)/);
 });
+
+// Tick v2p — final-review fixes to the known tree and the reload check.
+test("Service.qml: a scratch-workspace join revokes home's known tree and breaks this plan's build", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  const ready = functionBody(source, "scratchJoinReady");
+  // Before any dispatch of the detour is queued.
+  assert.match(ready,
+    /var home = anchorClient\.workspace\.id\s*[\s\S]*?delete root\.builtWorkspaces\[String\(home\)\][\s\S]*?root\.noteBuildBroken\(home\)[\s\S]*?root\.prependSteps\(/);
+});
+
+test("Service.qml: an arrival's axis is read as the engine's far-side cut", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  const axisOf = functionBody(source, "arrivalAxisOf");
+  assert.match(axisOf, /return Engine\.arrivalAxisBetween\(root\.tileRect\(parent\), root\.tileRect\(arrival\)\)/);
+  assert.doesNotMatch(axisOf, /splitTreeOf/, "no second, side-blind copy of the cut");
+});
+
+test("Service.qml: a workspace not in dwindle after an arrival gets no togglesplit and no failure", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  const check = functionBody(source, "arrivalCheckStep");
+  // The mode is re-read after a mismatch, before the null branch and the correction.
+  assert.match(check,
+    /if \(observed === op\.splitAxis\)[^\n]*\n[\s\S]*?root\.readWorkspaces\(function \(okWs\) \{[\s\S]*?Engine\.workspaceModeOf\(root\.planContext\(\), root\.liveClients, op\.workspaceId\)[\s\S]*?if \(mode !== "dwindle"\) \{([\s\S]*?)return\s*\}[\s\S]*?if \(observed === null\)[\s\S]*?axisCorrectionSteps/);
+  const skip = check.match(/if \(mode !== "dwindle"\) \{([\s\S]*?)return\s*\}/)[1];
+  assert.match(skip, /broken\(\)/, "not a known tree");
+  assert.doesNotMatch(skip, /failOp|failAndCount|abandonShape|axisCorrectionSteps|togglesplit"/, "no failure, no toggle");
+});
+
+test("Service.qml: a config-reload check always resolves — watchdog, stale callbacks, refused rerun", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  const run = functionBody(source, "runReloadCheck");
+  // Every snapshot the check starts is watched by the check's own timer…
+  assert.match(run,
+    /root\.reloadCheckSeq \+= 1\s*var seq = root\.reloadCheckSeq\s*reloadCheckTimer\.interval = root\.reloadWatchdogMs\s*reloadCheckTimer\.restart\(\)\s*root\.snapshot\(function \(ok\) \{\s*if \(seq !== root\.reloadCheckSeq\) return\s*reloadCheckTimer\.stop\(\)/);
+  // …and the timer reruns the check.
+  assert.match(source, /id: reloadCheckTimer[\s\S]*?onTriggered: root\.runReloadCheck\(\)/);
+  // A queued rerun that was refused (paused, inert) does not strand a pending check.
+  const finish = functionBody(source, "finishCycle");
+  assert.match(finish,
+    /requestRestore\("queued rerun", wasManual\)\s*(\/\/[^\n]*\n\s*)*if \(root\.cycleActive \|\| !root\.reloadCheckAfterCycle\) return\s*\}\s*if \(root\.reloadCheckAfterCycle\)/);
+});

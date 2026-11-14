@@ -484,6 +484,14 @@ Item {
   // A check that found a cycle running waits for its end: the cycle owns the
   // read machinery, and its last pass may have planned before the reload.
   property bool reloadCheckAfterCycle: false
+  // Which snapshot the check is waiting on (tick v2p). The check shares the read
+  // machinery's one callback slot per Process, and a cycle or a status refresh
+  // that starts a read in between takes that slot: the check's callback is then
+  // never called, and reloadPending would stay set with no timer for ever. So
+  // every snapshot the check starts arms reloadCheckTimer as a watchdog, and a
+  // callback that is not the latest one is ignored.
+  property int reloadCheckSeq: 0
+  readonly property int reloadWatchdogMs: 5000
 
   function endReloadCheck() {
     root.reloadPending = false
@@ -504,7 +512,13 @@ Item {
       reloadCheckTimer.restart()
       return
     }
+    root.reloadCheckSeq += 1
+    var seq = root.reloadCheckSeq
+    reloadCheckTimer.interval = root.reloadWatchdogMs
+    reloadCheckTimer.restart()
     root.snapshot(function (ok) {
+      if (seq !== root.reloadCheckSeq) return
+      reloadCheckTimer.stop()
       if (!root.reloadPending) return
       if (root.cycleActive) {
         root.reloadCheckAfterCycle = true
@@ -1799,27 +1813,42 @@ Item {
         }
         var observed = root.arrivalAxisOf(op)
         if (observed === op.splitAxis) { landed(); done(); return }
-        if (observed === null) {
-          root.warn("axis: " + op.address + " does not read as split beside or below its parent "
-            + op.splitParent + " on workspace " + ws + " — no togglesplit; not a known tree")
-          root.failOp(outcome, "the arrival did not land beside its split parent")
-          broken()
-          done()
-          return
-        }
-        root.queryLocked(function (locked) {
-          if (locked) {
-            root.log("axis: " + op.address + " arrived " + root.axisWord(observed)
-              + " (recorded " + root.axisWord(op.splitAxis) + ") — the session is locked,"
-              + " so the togglesplit that fixes it waits; workspace " + ws + " is not built this pass")
+        // The mode is read AGAIN before anything is said or toggled (tick v2p):
+        // a destination that did not exist at plan time had no readable mode,
+        // and on one that came up scrolling or floating an arrival has no axis
+        // to correct — togglesplit errors there and swap/resize rearrange. Not
+        // a failure of this op: the workspace is simply not a known tree.
+        root.readWorkspaces(function (okWs) {
+          var mode = okWs ? Engine.workspaceModeOf(root.planContext(), root.liveClients, op.workspaceId) : null
+          if (mode !== "dwindle") {
+            root.log("axis: workspace " + ws + " reads " + (mode || "an unknown mode")
+              + " after " + op.address + " arrived — no togglesplit; not a known tree this plan")
             broken()
             done()
             return
           }
-          var correction = root.axisCorrectionSteps(op, outcome, observed, landed, broken)
-          if (!correction.length) { broken(); done(); return }
-          root.prependSteps(correction)
-          done()
+          if (observed === null) {
+            root.warn("axis: " + op.address + " does not read as split beside or below its parent "
+              + op.splitParent + " on workspace " + ws + " — no togglesplit; not a known tree")
+            root.failOp(outcome, "the arrival did not land beside its split parent")
+            broken()
+            done()
+            return
+          }
+          root.queryLocked(function (locked) {
+            if (locked) {
+              root.log("axis: " + op.address + " arrived " + root.axisWord(observed)
+                + " (recorded " + root.axisWord(op.splitAxis) + ") — the session is locked,"
+                + " so the togglesplit that fixes it waits; workspace " + ws + " is not built this pass")
+              broken()
+              done()
+              return
+            }
+            var correction = root.axisCorrectionSteps(op, outcome, observed, landed, broken)
+            if (!correction.length) { broken(); done(); return }
+            root.prependSteps(correction)
+            done()
+          })
         })
       })
     } }
@@ -1899,8 +1928,9 @@ Item {
 
   // 0 (side by side) or 1 (stacked): how the arrival and its split parent are
   // separated in the current read, by tile box — or null when they cannot be
-  // compared (gone, floating, apart, not one cut). The cut itself is the
-  // engine's: a two-tile splitTreeOf.
+  // compared (gone, floating, apart, not one cut, or the arrival on the NEAR
+  // side, which no togglesplit turns into the recorded tree). The cut itself is
+  // the engine's: Engine.arrivalAxisBetween.
   function arrivalAxisOf(op) {
     var arrival = root.clientByAddress(op.address)
     var parent = root.clientByAddress(op.splitParent)
@@ -1908,13 +1938,7 @@ Item {
     if (!arrival.workspace || !parent.workspace) return null
     if (String(arrival.workspace.id) !== String(op.workspaceId)
       || String(parent.workspace.id) !== String(op.workspaceId)) return null
-    var a = root.tileRect(arrival)
-    var p = root.tileRect(parent)
-    var tree = Engine.splitTreeOf([
-      { key: "parent", at: p.at, size: p.size },
-      { key: "arrival", at: a.at, size: a.size }
-    ])
-    return tree && (tree.axis === 0 || tree.axis === 1) ? tree.axis : null
+    return Engine.arrivalAxisBetween(root.tileRect(parent), root.tileRect(arrival))
   }
 
   function axisWord(axis) {
@@ -3096,6 +3120,15 @@ Item {
         return
       }
       var home = anchorClient.workspace.id
+      // The detour takes the group out of home's tree and puts it back as a
+      // new arrival, wherever dwindle drops it: whatever tree home was built as
+      // is gone (tick v2p), this plan's and any earlier plan's this cycle.
+      if (root.builtWorkspaces[String(home)] === true) {
+        delete root.builtWorkspaces[String(home)]
+        root.log("built: workspace " + home + " is no longer a known tree — a group is being"
+          + " assembled on a scratch workspace and brought back into it")
+      }
+      root.noteBuildBroken(home)
       root.readMonitors(function (okMon) {
         var scratch = Engine.pickScratchWorkspace(root.liveClients, okMon ? root.liveMonitors : [], root.blockTable)
         root.log("scratch join: " + anchor + "+" + address + " via empty ws " + scratch
@@ -3907,7 +3940,10 @@ Item {
       var wasManual = root.rerunManual
       root.rerunManual = false
       root.requestRestore("queued rerun", wasManual)
-      return
+      // A rerun that started owns the reload check: its own end runs it. One
+      // that was refused (paused, inert) ends nothing, so the check runs now
+      // rather than being left pending with no timer (tick v2p).
+      if (root.cycleActive || !root.reloadCheckAfterCycle) return
     }
     if (root.reloadCheckAfterCycle) {
       // A config reload landed while this cycle ran: decide it now, on a fresh
