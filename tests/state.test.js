@@ -2039,6 +2039,8 @@ test("a default status says nothing is known yet", () => {
     topologyName: "",
     recorded: false,
     driftCount: 0,
+    shapes: [],
+    shapeCount: 0,
     restoring: false,
     paused: false,
     // v2 (tick 97e). Nothing is waiting on an unlock until a cycle says so.
@@ -2068,7 +2070,7 @@ test("driftCount of a missing or malformed report is zero, never NaN", () => {
 
 test("a conforming desktop shapes into recorded, zero drift", () => {
   const patch = state.statusPatchFor(LAPTOP_KEY, sampleLayout(), driftAgainst(clientsLaptop));
-  assert.deepStrictEqual(patch, { topologyKey: LAPTOP_KEY, recorded: true, driftCount: 0 });
+  assert.deepStrictEqual(patch, { topologyKey: LAPTOP_KEY, recorded: true, driftCount: 0, shapes: [], shapeCount: 0 });
 });
 
 test("a window moved off its recorded workspace shows up in driftCount", () => {
@@ -2086,7 +2088,7 @@ test("no layout for the topology is recorded=false with no drift to report", () 
   // The verdict table is CLEARED rather than left alone: with nothing recorded
   // there is nothing to have a verdict about, and the previous topology's rows
   // lingering under a hollow badge would describe a desktop that is not here.
-  assert.deepStrictEqual(patch, { topologyKey: LAPTOP_KEY, recorded: false, driftCount: 0, verdicts: [] });
+  assert.deepStrictEqual(patch, { topologyKey: LAPTOP_KEY, recorded: false, driftCount: 0, shapes: [], shapeCount: 0, verdicts: [] });
 });
 
 test("a caller that passes no verdicts leaves the published table alone", () => {
@@ -2117,6 +2119,8 @@ test("mergeStatus leaves untouched fields alone", () => {
     topologyName: "Laptop",
     recorded: true,
     driftCount: 3,
+    shapes: [],
+    shapeCount: 0,
     restoring: false,
     paused: false,
     deferredLocked: false,
@@ -2588,4 +2592,44 @@ test("group.active and layoutMode survive parse -> serialize -> parse and Slots.
     { groupId: "g", index: 1, active: null },
     { groupId: "g", index: 2, active: null }
   ]);
+});
+
+// Epic 9i2 (tick zuz): an unmet tiled shape is the same drifted glyph.
+const SHAPE_ROW = { workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: "ambiguous-tree" };
+const ALL_OK = { summary: { ok: 1, drifted: 0, missing: 0, skipped: 0 } };
+
+test("a refused shape with every app ok counts as a shape and turns the glyph drifted", () => {
+  const patch = state.statusPatchFor(LAPTOP_KEY, sampleLayout(), Object.assign({ shapes: [SHAPE_ROW] }, ALL_OK), []);
+  const status = state.mergeStatus(state.defaultStatus(), patch);
+  assert.strictEqual(status.driftCount, 0, "driftCountOf still counts apps only");
+  assert.strictEqual(status.shapeCount, 1);
+  assert.deepStrictEqual(status.shapes, [SHAPE_ROW]);
+  assert.strictEqual(state.glyphState(status), "drifted");
+  assert.strictEqual(state.shouldSlowPoll(status), state.shouldSlowPoll(Object.assign({}, status, { shapes: [], shapeCount: 0 })));
+});
+
+test("shapes keep their precedence slot: failed and paused still outrank them", () => {
+  const base = state.mergeStatus(state.defaultStatus(), { recorded: true, shapes: [SHAPE_ROW] });
+  assert.strictEqual(state.glyphState(base), "drifted");
+  assert.strictEqual(state.glyphState(state.mergeStatus(base, { lastResult: { ok: false, summary: "x", at: AT } })), "failed");
+  assert.strictEqual(state.glyphState(state.mergeStatus(base, { paused: true })), "paused");
+  assert.strictEqual(state.glyphState(state.mergeStatus(base, { recorded: false })), "hollow");
+});
+
+test("shapes survive parse and serialize; junk rows are dropped", () => {
+  const status = state.mergeStatus(state.defaultStatus(), {
+    recorded: true,
+    shapes: [SHAPE_ROW, null, "x", { workspaceId: "3" }, { workspaceId: 4, monitorDescription: 7, meanIou: NaN, reason: 5 }]
+  });
+  assert.strictEqual(status.shapeCount, 2);
+  const back = state.parseStatus(state.serializeStatus(status)).status;
+  assert.deepStrictEqual(back.shapes, [SHAPE_ROW, { workspaceId: 4, monitorDescription: "", meanIou: 0, reason: null }]);
+  assert.strictEqual(back.shapeCount, 2);
+});
+
+test("a report without shapes, or with no layout, gives zero shapes", () => {
+  assert.strictEqual(state.statusPatchFor(LAPTOP_KEY, sampleLayout(), ALL_OK, []).shapeCount, 0);
+  const hollow = state.statusPatchFor(LAPTOP_KEY, null, { shapes: [SHAPE_ROW] }, []);
+  assert.deepStrictEqual(hollow.shapes, []);
+  assert.strictEqual(state.normalizeStatus({ shapeCount: 9 }).shapeCount, 0, "count is derived from rows, not trusted");
 });

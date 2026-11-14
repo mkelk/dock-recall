@@ -333,6 +333,15 @@
 //     driftCount:  int           // how many recorded apps a restore would act
 //                                // on RIGHT NOW — see driftCountOf. 0 with
 //                                // recorded=true is the "in sync" badge.
+//     shapes:      Shape[]       // v9 (epic 9i2). Finished tiled workspaces whose
+//                                // tile shape a restore did not or could not
+//                                // reproduce: { workspaceId, monitorDescription,
+//                                // meanIou, reason } — reason is a refusal word
+//                                // or null. Junk rows are dropped on read.
+//     shapeCount:  int           // always shapes.length. glyphState answers
+//                                // "drifted" when this is > 0 even if driftCount
+//                                // is 0: the same glyph as window drift, the
+//                                // reason goes to the tooltip and panel.
 //     restoring:   boolean       // a restore cycle is in flight (glyph sweeps)
 //     lastResult:  null | { ok: boolean, summary: string, at: string }
 //                                // the outcome of the last cycle that ran in
@@ -1284,7 +1293,7 @@ function setPictures(state, on) {
 // same rule engine.buildLayout follows.
 
 function defaultStatus() {
-  return { topologyKey: "", topologyName: "", recorded: false, driftCount: 0, restoring: false, paused: false, deferredLocked: false, lastResult: null, verdicts: [] };
+  return { topologyKey: "", topologyName: "", recorded: false, driftCount: 0, shapes: [], shapeCount: 0, restoring: false, paused: false, deferredLocked: false, lastResult: null, verdicts: [] };
 }
 
 // One dimension word. Kept as free text rather than checked against a
@@ -1427,9 +1436,29 @@ function normalizeLastResult(value) {
   };
 }
 
+// One unmet-shape row. Rows without a numeric workspaceId are junk and are
+// dropped; the other fields are repaired rather than trusted.
+function normalizeShapes(value) {
+  var out = [];
+  if (!isArray(value)) return out;
+  for (var i = 0; i < value.length; i++) {
+    var row = value[i];
+    if (!row || typeof row !== "object" || isArray(row)) continue;
+    if (typeof row.workspaceId !== "number" || !isFinite(row.workspaceId)) continue;
+    out.push({
+      workspaceId: row.workspaceId,
+      monitorDescription: typeof row.monitorDescription === "string" ? row.monitorDescription : "",
+      meanIou: typeof row.meanIou === "number" && isFinite(row.meanIou) ? row.meanIou : 0,
+      reason: typeof row.reason === "string" ? row.reason : null
+    });
+  }
+  return out;
+}
+
 function normalizeStatus(value) {
   var src = value && typeof value === "object" && !isArray(value) ? value : {};
   var count = typeof src.driftCount === "number" && isFinite(src.driftCount) ? Math.floor(src.driftCount) : 0;
+  var shapes = normalizeShapes(src.shapes);
   return {
     topologyKey: typeof src.topologyKey === "string" ? src.topologyKey : "",
     // Coerced like every other string in here, and defaulted to "" rather than
@@ -1439,6 +1468,8 @@ function normalizeStatus(value) {
     topologyName: typeof src.topologyName === "string" ? src.topologyName : "",
     recorded: src.recorded === true,
     driftCount: count < 0 ? 0 : count,
+    shapes: shapes,
+    shapeCount: shapes.length,
     restoring: src.restoring === true,
     // Same default direction as State.paused: only an explicit `true` pauses,
     // so a status file written by an older service reads as active.
@@ -1490,10 +1521,13 @@ function driftCountOf(driftReport) {
 function statusPatchFor(topologyKey, layout, driftReport, verdicts) {
   var key = typeof topologyKey === "string" ? topologyKey : "";
   if (!key) return null;
+  var shapes = layout ? normalizeShapes(driftReport && driftReport.shapes) : [];
   var patch = {
     topologyKey: key,
     recorded: !!layout,
-    driftCount: layout ? driftCountOf(driftReport) : 0
+    driftCount: layout ? driftCountOf(driftReport) : 0,
+    shapes: shapes,
+    shapeCount: shapes.length
   };
   if (!layout) patch.verdicts = [];
   else if (verdicts !== undefined) patch.verdicts = normalizeVerdicts(verdicts);
@@ -1518,6 +1552,10 @@ function mergeStatus(previous, patch) {
   if (next.driftCount !== undefined) {
     var count = typeof next.driftCount === "number" && isFinite(next.driftCount) ? Math.floor(next.driftCount) : 0;
     base.driftCount = count < 0 ? 0 : count;
+  }
+  if (next.shapes !== undefined) {
+    base.shapes = normalizeShapes(next.shapes);
+    base.shapeCount = base.shapes.length;
   }
   if (next.restoring !== undefined) base.restoring = next.restoring === true;
   if (next.paused !== undefined) base.paused = next.paused === true;
@@ -1616,7 +1654,7 @@ function glyphState(status) {
   if (current.paused) return "paused";
   if (!current.recorded) return "hollow";
   if (current.lastResult && current.lastResult.ok === false) return "failed";
-  if (current.driftCount > 0) return "drifted";
+  if (current.driftCount > 0 || current.shapeCount > 0) return "drifted";
   return "filled";
 }
 
