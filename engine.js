@@ -1348,6 +1348,10 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //     at:    null | [x, y]        // schema v2. The window's top-left in layout
 //                                 // coordinates, straight off client.at.
 //     size:  null | [w, h]        // schema v2. client.size, same coordinates.
+//     layoutMode: "dwindle" | "scrolling" | "floating" | null
+//                                 // schema v9. workspaceModeOf for the
+//                                 // window's workspace; null when it could not
+//                                 // be read, and always null without a context.
 //   }
 //
 // GEOMETRY (schema v2) — what it is and, just as importantly, what it is not.
@@ -1383,6 +1387,12 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //                       // watched members in tab order, so the same group
 //                       // recorded twice gets the same id.
 //     index:   number   // 0-based position of this app in the tab order.
+//     active:  true | false | null
+//                       // schema v9. true on the one watched member that was
+//                       // the group's visible tab (activeTabOf), false on the
+//                       // others — on all of them when the visible tab is an
+//                       // unwatched window — and null on all of them when the
+//                       // read cannot name one visible tab. null never drifts.
 //   }
 //
 // Recorded membership is (identityId, occurrence)-AWARE as of schema v3. A tab
@@ -1822,6 +1832,100 @@ function isSpecialWorkspaceId(value) {
   return typeof id === "number" && isFinite(id) && id < 0;
 }
 
+// ---------------------------------------------------------------------------
+// Planning context, layout modes and the visible tab (schema v9, epic 9i2)
+// ---------------------------------------------------------------------------
+//
+//   context = { workspaces: Array | null     // `hyprctl workspaces -j`, verbatim
+//             , built: { "<workspaceId>": true } | null }
+//
+// The one optional trailing argument of buildLayout, driftOf and planRestore.
+// Absent, every answer is what it was before the argument existed: a mode that
+// cannot be read is null, and null refuses nothing and records nothing.
+
+// The tag Omarchy 4.5 puts on every window of a floating workspace
+// (workspace-modes.lua: Hyprland has no floating layout, so 4.5 floats the
+// windows and tags them), and the one it puts on a window it floated itself.
+var FLOATING_WORKSPACE_TAG = "omarchy-floating-workspace";
+var MODE_FLOATED_TAG = "omarchy-mode-floated";
+
+// hyprctl prints a dynamic tag with a trailing "*"; the name is the same tag.
+function hasTag(client, tag) {
+  var tags = client && isAddressList(client.tags) ? client.tags : [];
+  for (var i = 0; i < tags.length; i++) {
+    var t = tags[i];
+    if (typeof t !== "string") continue;
+    if (t.charAt(t.length - 1) === "*") t = t.slice(0, -1);
+    if (t === tag) return true;
+  }
+  return false;
+}
+
+// The layout mode of one workspace: "dwindle" | "scrolling" | "floating" | null.
+//
+// "floating" when any client on it carries FLOATING_WORKSPACE_TAG; else the
+// `tiledLayout` of the context.workspaces entry with that id, when it is one of
+// the two tiled words this project knows; else null — unknown, which is the
+// answer for an empty workspace, for any other layout name, and for every
+// workspace when there is no context at all.
+//
+// `workspaceId` may be a number or a whole-number string ("4"): context.built
+// is keyed by String(workspaceId), so callers hold both spellings.
+function workspaceModeOf(context, clientsJson, workspaceId) {
+  if (!context || typeof context !== "object") return null;
+  if (typeof workspaceId === "string" && /^-?\d+$/.test(workspaceId)) workspaceId = Number(workspaceId);
+  if (typeof workspaceId !== "number" || !isFinite(workspaceId)) return null;
+  var clients = clientsJson || [];
+  for (var i = 0; i < clients.length; i++) {
+    var c = clients[i];
+    if (!c || !c.workspace || c.workspace.id !== workspaceId) continue;
+    if (hasTag(c, FLOATING_WORKSPACE_TAG)) return "floating";
+  }
+  // The first entry with the id wins; hyprctl emits no duplicates.
+  var workspaces = isAddressList(context.workspaces) ? context.workspaces : [];
+  for (var w = 0; w < workspaces.length; w++) {
+    var ws = workspaces[w];
+    if (!ws || ws.id !== workspaceId) continue;
+    var mode = ws.tiledLayout;
+    return (mode === "dwindle" || mode === "scrolling") ? mode : null;
+  }
+  return null;
+}
+
+// The group's visible tab: the address of the ONE member reporting
+// `visible === true`, or null when none or several do (a read that cannot
+// tell is not an answer). `memberClients` are the group's live clients.
+function activeTabOf(memberClients) {
+  var list = memberClients || [];
+  var found = null;
+  var visible = 0;
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i];
+    if (!c || c.visible !== true) continue;
+    visible++;
+    found = c.address || null;
+  }
+  return visible === 1 ? found : null;
+}
+
+// The live clients of a client's group, in tab order — watched or not, because
+// the visible tab may be an unwatched window and that has to read as "none of
+// the watched members", not as "unknown".
+function groupMemberClients(client, clientsJson) {
+  var clients = clientsJson || [];
+  var addresses = groupOrderFor(client, clients);
+  var out = [];
+  for (var a = 0; a < addresses.length; a++) {
+    for (var c = 0; c < clients.length; c++) {
+      if (clients[c] && clients[c].address === addresses[a]) {
+        out.push(clients[c]);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 // Snapshot the current placement of every watched app.
 //
 // `recordedAt` is passed in rather than read from a clock, so this function is
@@ -1854,7 +1958,12 @@ function isSpecialWorkspaceId(value) {
 // serialized and compared as one, and an index of raw hyprctl clients hanging
 // off it would put the whole client list into everything that stringifies a
 // recording.
-function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIndex) {
+//
+// `context` (schema v9) is the planning context described above. It supplies
+// the workspace layout mode, recorded as `layoutMode` on every entry; without
+// it `layoutMode` is null. The group's visible tab, `group.active`, needs no
+// context: it is read off the clients.
+function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIndex, context) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
   var list = identities || [];
@@ -1909,9 +2018,14 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIn
       // identity are two members and do make a group — the collapse that used to
       // hide that is gone with the tuple keys.
       if (memberIds.length > 1) {
+        // v9. true on the visible tab, false on the other members (all of
+        // them when the visible tab is an unwatched window), null on all when
+        // the read cannot name one visible tab.
+        var activeAddress = activeTabOf(groupMemberClients(client, clients));
         group = {
           groupId: groupIdFor(memberIds),
-          index: memberIds.indexOf(memberKeyFor(identity.id, occ))
+          index: memberIds.indexOf(memberKeyFor(identity.id, occ)),
+          active: activeAddress === null ? null : activeAddress === client.address
         };
       }
 
@@ -1927,7 +2041,9 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIn
         // geometry read from a different window of the same identity would
         // describe a desktop that never existed.
         at: geometryPair(client.at),
-        size: geometryPair(client.size)
+        size: geometryPair(client.size),
+        // v9. The workspace's layout mode; null without a context.
+        layoutMode: context ? workspaceModeOf(context, clients, client.workspace ? client.workspace.id : null) : null
       });
     }
   }
@@ -2107,7 +2223,8 @@ function liveWorkspaceIsElsewhere(liveWorkspaces, recorded) {
 // Per-identity comparison of the recorded layout against the live desktop.
 // This is what powers the UI badge, and planRestore() is derived from it — so
 // what the badge says and what a restore would do can never disagree.
-function driftOf(clientsJson, monitorsJson, layout, identities) {
+// `context` (schema v9): the planning context; accepted and threaded, not yet read.
+function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
   var recordedApps = (layout && layout.apps) || [];
@@ -3787,13 +3904,95 @@ var TILING_REFUSAL_NOT_A_TREE = "not-a-tree";
 var TILING_REFUSAL_AMBIGUOUS = "ambiguous-tree";
 var TILING_REFUSAL_DIFFERENT_SHAPE = "different-shape";
 
+// The layout-mode words (schema v9). They outrank the tree words above: a
+// workspace whose live mode is not dwindle has no split tree to aim at.
+var TILING_REFUSAL_LAYOUT_SCROLLING = "layout-scrolling";
+var TILING_REFUSAL_LAYOUT_FLOATING = "layout-floating";
+var TILING_REFUSAL_LAYOUT_MODE_DIFFERS = "layout-mode-differs";
+
 var TILING_REFUSAL_PHRASES = {
   "not-a-tree": "these rects are not a guillotine tiling, so there is no divider to aim at",
   "ambiguous-tree": "these rects fit more than one split tree, so which divider a nudge"
     + " would move is a guess — the shape is left exactly as it is",
   "different-shape": "the live split shape differs from the recording by more than one"
-    + " flip, and no sequence of divider moves reaches another shape"
+    + " flip, and no sequence of divider moves reaches another shape",
+  "layout-scrolling": "this workspace is in the scrolling layout, which has no split tree,"
+    + " so its tiles are left exactly as they are",
+  "layout-floating": "this workspace is in the floating layout, so its windows are placed"
+    + " by the workspace mode, not by a split tree",
+  "layout-mode-differs": "this workspace was recorded in a different layout mode than it"
+    + " is in now, so the recorded shape cannot be rebuilt in this one"
 };
+
+// ---------------------------------------------------------------------------
+// Tiles (epic 9i2)
+// ---------------------------------------------------------------------------
+//
+//   Tile = { key, at, size, members, groupId }
+//
+// A tab group occupies ONE rect of the split tree, so it is one tile: its
+// members sorted by tab index, keyed by its tab-0 window, with that window's
+// rect. An ungrouped window is a tile of one, keyed by its own address.
+//
+// `entries`: [{ address, at, size, groupId | null, index | null }]. Tiles come
+// out in the order their first entry appears.
+function tilesOf(entries) {
+  var list = entries || [];
+  var tiles = [];
+  var byGroup = {};
+  var g;
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e) continue;
+    var groupId = (e.groupId === null || e.groupId === undefined) ? null : e.groupId;
+    if (groupId === null) {
+      tiles.push({ key: e.address, at: e.at, size: e.size, members: [e.address], groupId: null });
+      continue;
+    }
+    // Prefixed, so "__proto__" is a key like any other.
+    var bucket = own(byGroup, "g:" + groupId);
+    if (bucket === undefined) {
+      bucket = { groupId: groupId, entries: [] };
+      byGroup["g:" + groupId] = bucket;
+      tiles.push(bucket);
+    }
+    bucket.entries.push(e);
+  }
+  for (g = 0; g < tiles.length; g++) {
+    var tile = tiles[g];
+    if (!tile.entries) continue;
+    // Insertion sort by tab index: stable, and ES5's sort is not guaranteed to be.
+    var sorted = [];
+    for (var k = 0; k < tile.entries.length; k++) {
+      var entry = tile.entries[k];
+      var at = sorted.length;
+      while (at > 0 && tabIndexOf(sorted[at - 1]) > tabIndexOf(entry)) at--;
+      sorted.splice(at, 0, entry);
+    }
+    var members = [];
+    for (var m = 0; m < sorted.length; m++) members.push(sorted[m].address);
+    tiles[g] = { key: members[0], at: sorted[0].at, size: sorted[0].size, members: members, groupId: tile.groupId };
+  }
+  return tiles;
+}
+
+// A missing or junk tab index sorts after every real one.
+function tabIndexOf(entry) {
+  var index = entry ? entry.index : null;
+  return (typeof index === "number" && isFinite(index)) ? index : Infinity;
+}
+
+// The key of the tile holding `address`, or null when no tile does.
+function tileKeyOf(tiles, address) {
+  var list = tiles || [];
+  for (var i = 0; i < list.length; i++) {
+    var members = list[i] && list[i].members ? list[i].members : [];
+    for (var m = 0; m < members.length; m++) {
+      if (members[m] === address) return list[i].key;
+    }
+  }
+  return null;
+}
 
 function tilingRefusalPhrase(reason) {
   if (!reason) return "";
@@ -4057,9 +4256,10 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 // after the launches settle the service simply plans again, and the second plan
 // contains the moves and groups the first could not express.
 
-function planRestore(clientsJson, monitorsJson, layout, identities) {
+// `context` (schema v9): the planning context, handed to driftOf; not yet read here.
+function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   var clients = clientsJson || [];
-  var report = driftOf(clients, monitorsJson, layout, identities);
+  var report = driftOf(clients, monitorsJson, layout, identities, context);
   var recordedApps = (layout && layout.apps) || [];
 
   var launches = [];
@@ -5525,6 +5725,16 @@ if (typeof module !== "undefined") {
     TILING_REFUSAL_NOT_A_TREE: TILING_REFUSAL_NOT_A_TREE,
     TILING_REFUSAL_AMBIGUOUS: TILING_REFUSAL_AMBIGUOUS,
     TILING_REFUSAL_DIFFERENT_SHAPE: TILING_REFUSAL_DIFFERENT_SHAPE,
+    TILING_REFUSAL_LAYOUT_SCROLLING: TILING_REFUSAL_LAYOUT_SCROLLING,
+    TILING_REFUSAL_LAYOUT_FLOATING: TILING_REFUSAL_LAYOUT_FLOATING,
+    TILING_REFUSAL_LAYOUT_MODE_DIFFERS: TILING_REFUSAL_LAYOUT_MODE_DIFFERS,
+    TILING_REFUSAL_PHRASES: TILING_REFUSAL_PHRASES,
+    FLOATING_WORKSPACE_TAG: FLOATING_WORKSPACE_TAG,
+    MODE_FLOATED_TAG: MODE_FLOATED_TAG,
+    workspaceModeOf: workspaceModeOf,
+    activeTabOf: activeTabOf,
+    tilesOf: tilesOf,
+    tileKeyOf: tileKeyOf,
     TILED_REFINEMENT_TARGET_IOU: TILED_REFINEMENT_TARGET_IOU,
     TILED_REFINEMENT_MAX_NUDGES: TILED_REFINEMENT_MAX_NUDGES,
     isRefinementPlan: isRefinementPlan,

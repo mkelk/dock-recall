@@ -2125,8 +2125,8 @@ test("a group op addresses the MATCHED windows, in recorded tuple order", () => 
   ]);
   const layout = engine.buildLayout(grouped, monitorsLaptop, TERMINALS, AT);
   assert.deepStrictEqual(layout.apps.map((a) => a.group), [
-    { groupId: "group:terminal+terminal#1", index: 0 },
-    { groupId: "group:terminal+terminal#1", index: 1 }
+    { groupId: "group:terminal+terminal#1", index: 0, active: null },
+    { groupId: "group:terminal+terminal#1", index: 1, active: null }
   ]);
   assert.deepStrictEqual(engine.planRestore(grouped, monitorsLaptop, layout, TERMINALS), []);
 
