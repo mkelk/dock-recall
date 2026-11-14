@@ -8439,7 +8439,7 @@ test("shapeLinesFor: one line per unmet shape, and nothing when there are none",
   assert.ok(out.lines[0].indexOf("workspace 3 on ") === 0, out.lines[0]);
   assert.ok(out.lines[0].indexOf(": 0.55 of its recorded shape - ") !== -1, out.lines[0]);
   assert.ok(out.lines[0].endsWith(panel.refusalSentenceFor("ambiguous-tree")), out.lines[0]);
-  assert.strictEqual(out.lines[1], "workspace 12: 0.90 of its recorded shape - a restore will fix it");
+  assert.strictEqual(out.lines[1], "workspace 12: 0.90 of its recorded shape - not yet in that shape");
   assert.ok(out.summary.indexOf("2 workspaces") !== -1 && out.summary.indexOf("3 (shape unclear)") !== -1, out.summary);
   assert.strictEqual(out.summary.indexOf("\n"), -1);
 });
@@ -8454,4 +8454,13 @@ test("the bar tooltip and badge tooltip carry the shape summary only when there 
   // today's wording, untouched, with no shapes
   assert.strictEqual(panel.barGlyphTooltip("drifted", statusOf({ recorded: true, driftCount: 2 }), "Desk"),
     "Desk — drifted (2)");
+});
+
+test("shapeLinesFor: a null reason never promises a restore will fix it", () => {
+  const out = panel.shapeLinesFor({ shapeCount: 1, shapes: [
+    { workspaceId: 12, monitorDescription: "", meanIou: 0.9, reason: null }
+  ] });
+  assert.ok(out.lines[0].indexOf("restore") === -1, out.lines[0]);
+  assert.ok(out.summary.indexOf("restore") === -1, out.summary);
+  assert.ok(out.summary.indexOf("12 (shape differs)") !== -1, out.summary);
 });

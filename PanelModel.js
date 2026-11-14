@@ -6679,8 +6679,8 @@ function deferredLockedSuffix(status) {
 // no shapes answers { lines: [], summary: "" } and the callers render nothing.
 //
 // lines:   one per shape — "workspace 3 on Laptop: 0.55 of its recorded shape -
-//          <reason sentence>", or "... - a restore will fix it" when the reason
-//          is null (a restore would act).
+//          <reason sentence>", or "... - not yet in that shape" when the reason
+//          is null (the shape differs and nothing says a restore would act).
 // summary: one line for the bar tooltip, naming each workspace and its short tag.
 function shapeLinesFor(status) {
   var rows = status && Array.isArray(status.shapes) ? status.shapes : [];
@@ -6695,8 +6695,8 @@ function shapeLinesFor(status) {
     var where = desc ? " on " + shortMonitorLabel(desc, null) : "";
     lines.push("workspace " + row.workspaceId + where + ": " + iou.toFixed(2)
       + " of its recorded shape - "
-      + (reason ? refusalSentenceFor(reason) : "a restore will fix it"));
-    tags.push(row.workspaceId + " (" + (reason ? refusalTagFor(reason) : "a restore will fix it") + ")");
+      + (reason ? refusalSentenceFor(reason) : "not yet in that shape"));
+    tags.push(row.workspaceId + " (" + (reason ? refusalTagFor(reason) : "shape differs") + ")");
   }
   if (lines.length === 0) return { lines: [], summary: "" };
   return {

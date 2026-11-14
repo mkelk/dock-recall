@@ -992,7 +992,7 @@ Item {
     root.lastStatusText = text
     statusFile.setText(text)
     root.log("status published (" + reason + "): topology \"" + next.topologyKey + "\" recorded="
-      + next.recorded + " drift=" + next.driftCount + " restoring=" + next.restoring
+      + next.recorded + " drift=" + next.driftCount + " shapes=" + (next.shapeCount || 0) + " restoring=" + next.restoring
       + (next.paused ? " paused=true" : ""))
   }
 
@@ -2078,13 +2078,13 @@ Item {
     done()
   }
 
-  // The targeted float-toggle, spelled once. See the evidence block in
-  // engine.js: `action` is ignored by Hyprland 0.56's float dispatcher — every
-  // spelling toggles — so the TOGGLE spelling is used deliberately, and the
-  // caller owns the read that makes toggling correct.
-  function floatToggleStep(address, label, outcome) {
-    return root.dispatchStep('hl.dsp.window.float({ window = "address:' + address + '", action = "toggle" })',
-      label, outcome)
+  // The targeted absolute float, spelled once: action = "on" floats, "off"
+  // tiles, whatever the window is now (see the evidence block in engine.js).
+  // The caller still reads first, so a window that already matches is left
+  // alone, and reads back after.
+  function floatSetStep(address, label, wantFloating, outcome) {
+    return root.dispatchStep('hl.dsp.window.float({ window = "address:' + address + '", action = "'
+      + (wantFloating ? "on" : "off") + '" })', label, outcome)
   }
 
   // Restore one window's floating state, against a FRESH read.
@@ -2093,10 +2093,9 @@ Item {
   //   - the window already matches the recording: nothing to do. The plan was
   //     built from an older read; toggling here would flip a correct window
   //     wrong, which is the exact hazard of a toggle-only verb.
-  //   - it differs: one targeted toggle, then a confirming re-read. A toggle
-  //     that did not land is warned about and counted as a cycle failure — no
-  //     retry, because re-dispatching a toggle on a state that did not change
-  //     risks oscillation, and the next settle pass re-plans anyway.
+  //   - it differs: one absolute float on/off, then a confirming re-read. A
+  //     dispatch that did not land is warned about and counted as a cycle
+  //     failure — no retry here, the next settle pass re-plans anyway.
   //   - the window is gone from the read: nothing safe to dispatch.
   function executeFloating(op, outcome, done) {
     root.readClients(function (ok) {
@@ -2121,7 +2120,7 @@ Item {
 
       root.noteEffect("floating", op.address)
       root.prependSteps([
-        root.floatToggleStep(op.address, (op.value ? "float " : "tile ") + op.address, outcome),
+        root.floatSetStep(op.address, (op.value ? "float " : "tile ") + op.address, !!op.value, outcome),
         {
           kind: "fn",
           fn: function (next) {
@@ -2132,11 +2131,11 @@ Item {
               }
               var after = root.clientByAddress(op.address)
               if (after && !!after.floating !== !!op.value) {
-                root.failAndCount(outcome, "the float toggle did not land (still reads floating="
+                root.failAndCount(outcome, "the float dispatch did not land (still reads floating="
                   + !!after.floating + ", wanted " + !!op.value + ")")
                 root.warn("floating restore: " + op.address + " still reads floating=" + !!after.floating
-                  + " after a targeted toggle (wanted " + !!op.value + ") — not toggling again,"
-                  + " a second toggle on an unchanged state can only oscillate")
+                  + " after an absolute float " + (op.value ? "on" : "off") + " (wanted " + !!op.value
+                  + ") — not dispatching again, the next settle pass re-plans")
               }
               next()
             })
@@ -2157,6 +2156,20 @@ Item {
       { at: op.at, size: op.size },
       { at: client.at, size: client.size })
     return Engine.withinTolerance(delta, Engine.GEOMETRY_TOLERANCE_PX)
+  }
+
+  // The tile a client occupies, as geometryText. A grouped window's rect is its
+  // tile minus the groupbar on top (groupbarPx), so the box adds it back;
+  // a plain window's rect is its tile.
+  readonly property int groupbarPx: 21
+  function tileBox(client) {
+    var at = (client.at || []).slice()
+    var size = (client.size || []).slice()
+    if ((client.grouped || []).length > 0 && at.length === 2 && size.length === 2) {
+      at[1] -= root.groupbarPx
+      size[1] += root.groupbarPx
+    }
+    return root.geometryText(at, size)
   }
 
   function geometryText(at, size) {
@@ -2325,7 +2338,7 @@ Item {
         return
       }
 
-      var wantedA = root.geometryText(b.at, b.size)
+      var wantedA = root.tileBox(b)
       root.noteEffect("swap", op.address + "+" + op.target)
       var commands = Engine.opToCommand(op)
       if (!commands.length) {
@@ -2347,10 +2360,14 @@ Item {
           root.readClients(function (okAfter) {
             if (!okAfter) { next(); return }
             var after = root.clientByAddress(op.address)
-            if (after && root.geometryText(after.at, after.size) !== wantedA) {
+            // Tile boxes, not raw rects: a group member's rect is its tile
+            // minus the groupbar, so a swap into or out of a group lands on the
+            // right tile and still reads 21px different.
+            var afterBox = after ? root.tileBox(after) : ""
+            if (after && afterBox !== wantedA) {
               root.failAndCount(outcome, "the swap did not land (" + op.address + " reads "
-                + root.geometryText(after.at, after.size) + ", wanted " + wantedA + ")")
-              root.warn("swap: " + op.address + " reads " + root.geometryText(after.at, after.size)
+                + afterBox + ", wanted " + wantedA + ")")
+              root.warn("swap: " + op.address + " reads " + afterBox
                 + " after the swap (wanted " + wantedA + ") — not retrying here,"
                 + " the next re-plan asks again and the no-progress check names it")
             }
