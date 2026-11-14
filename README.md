@@ -296,7 +296,7 @@ Everything Dock Recall does is local, unprivileged and inspectable:
 
 | Path | What it holds |
 |---|---|
-| `~/.local/state/omarchy/dock-recall.json` | your recordings, one per topology |
+| `~/.local/state/omarchy/dock-recall.json` | your recordings, one per topology (schema v9) |
 | `~/.local/state/omarchy/dock-recall.status.json` | what the bar glyph reads |
 | `~/.local/state/omarchy/dock-recall.trigger` | a one-shot restore request |
 | `~/.local/state/omarchy/dock-recall-forensics/` | snapshots of restores that failed |
@@ -333,10 +333,11 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 980 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 1218 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
 qmllint -I "$OMARCHY_PATH/shell" *.qml   # every QML file, from a glob — never a list
 ./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
+./tests/sandbox-fidelity.sh        # within-workspace fidelity: tiling tree, tab groups, refusals
 ./scripts/dev-install --restart    # install this working tree and restart the shell
 ```
 
@@ -381,8 +382,8 @@ which is now a glob.) About eight minutes, all of it headless. Per-step logs lan
 known-unavailable on a machine (a skipped step reports SKIP and never a pass).
 
 What it deliberately does **not** run is `tests/sim-dock.sh`, or anything else
-that drives the live session. Steps 4–6 park a second Hyprland on a special
-workspace and assert your desk is untouched, and step 7 is a VM with
+that drives the live session. The sandbox steps (everything named `tests/sandbox-*`) park a second Hyprland
+on a special workspace and assert your desk is untouched, and the last step is a VM with
 `-display none`; the live session is a venue to ask a human for, never a step in
 an unattended gate.
 
@@ -400,7 +401,9 @@ same visible workspaces, and a byte-identical
 4.5's own `monitor-workspaces.lua` (against a redirected state directory), so
 workspace blocks, the merged-workspace file and the re-sort after a hotplug
 behave as on a real desk; `tests/sandbox-slots.sh` runs dock, undock and dock
-again on top of that. It needs no permission and no quiet
+again on top of that, and `tests/sandbox-fidelity.sh` is the within-workspace
+gate on top of it (the tiling tree, tab groups and the visible tab, in seven
+cases). It needs no permission and no quiet
 moment: run it from any working tree while you work. Exit 0 is the gate; a
 failure keeps the sandbox directory and prints its path. Two caveats come with
 running it alongside your work. **One run at a time** — a second concurrent run

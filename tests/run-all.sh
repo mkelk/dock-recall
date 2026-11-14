@@ -22,6 +22,12 @@
 #      tests/sandbox-slots.sh             Tier B, Omarchy 4.5: three apps on two
 #                                         slots, dock -> undock -> dock, each
 #                                         window on its recorded (monitor, slot).
+#      tests/sandbox-fidelity.sh          Tier B, epic 9i2: within-workspace
+#                                         fidelity, seven cases — the tiling
+#                                         tree, the tab group beside a tiled
+#                                         window, the visible tab, the refusals
+#                                         for a scrolling workspace and an
+#                                         ambiguous tree.
 #   5. tests/sandbox-future-version.sh --both   a schema-v99 file is INERT, with
 #                                         the same-seed control arm that makes
 #                                         "nothing happened" mean something.
@@ -146,6 +152,9 @@ step "tests/sandbox-dock.sh" \
 
 step "tests/sandbox-slots.sh" \
   ./tests/sandbox-slots.sh
+
+step "tests/sandbox-fidelity.sh" \
+  ./tests/sandbox-fidelity.sh
 
 step "tests/sandbox-future-version.sh --both" \
   ./tests/sandbox-future-version.sh --both

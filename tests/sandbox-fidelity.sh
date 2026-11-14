@@ -30,8 +30,13 @@
 #       restore that dispatches nothing for the workspace; the status file then
 #       carries shapeCount >= 1 with reason ambiguous-tree
 #
-# G2 A T S V are RED until the epic's engine and service work lands: they are the
-# pin. Q and F are green today.
+# All seven pass, in one invocation, with no argument: there is no expected-red
+# allowance. The nested output is pinned at a fixed size by sandbox_up
+# (tests/sandbox-lib.sh), so every case runs on the same aspect whatever the live
+# desk is doing. Debt 1 (an unplaceable recorded entry must not claim a window a
+# placeable one could take) is not staged here: it needs a monitor the slot table
+# leaves unassigned, and monitor-workspaces.lua gives every nested output a
+# block. tests/restore.test.js pins it in node.
 #
 # Usage: tests/sandbox-fidelity.sh              every case, in the order above
 #        tests/sandbox-fidelity.sh Q F          just those, one sandbox
@@ -207,8 +212,8 @@ case_Q() {
   # qa over (qb | (qc / qd)), on a wide one three columns qa | qb | (qc / qd),
   # which fit two trees — the in-place half would then be refused as
   # ambiguous-tree, and qb's height (the whole column) would not even move. The
-  # nested output is whatever size the parked window got on the live desk, so
-  # the case flips the root until qa is the top row: the same tree either way.
+  # output is pinned now, but the case still flips the root until qa is the top
+  # row, so it does not depend on which aspect the pin is set to.
   spans_top "$W" dr-qa || { focus "$(addr_of dr-qa)"; d 'hl.dsp.layout("togglesplit")' >/dev/null; focus "$ANCHOR"; sleep 0.3; }
   spans_top "$W" dr-qa \
     && pass "Q: qa spans the top row, over qb | (qc / qd)" \
