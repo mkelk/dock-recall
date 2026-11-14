@@ -170,6 +170,7 @@ Item {
   property int opsMoved: 0
   property int opsLaunched: 0
   property int opsGrouped: 0
+  property int opsTabbed: 0
   property int opsUngrouped: 0
   property int opsFloated: 0
   property int opsPlaced: 0
@@ -310,6 +311,7 @@ Item {
     if (kind === "move") root.opsMoved += 1
     else if (kind === "launch") root.opsLaunched += 1
     else if (kind === "group") root.opsGrouped += 1
+    else if (kind === "tab") root.opsTabbed += 1
     else if (kind === "ungroup") root.opsUngrouped += 1
     else if (kind === "floating") root.opsFloated += 1
     else if (kind === "geometry") root.opsPlaced += 1
@@ -1565,6 +1567,14 @@ Item {
       // a workspace they did not ask to see.
       return root.stepsForSplit(op, outcome)
     }
+    if (op.kind === "tab") {
+      // `group.active` names its window and needs no focus (nested-notes 9i2
+      // (b)), so this is NOT a focus op: it is not deferred while locked and
+      // borrows no keyboard, and there is nothing to hand back. It is decided at
+      // execution time all the same, because the tab ring it indexes into is
+      // whatever the joins of this very plan have just made it.
+      return [{ kind: "fn", fn: function (done) { root.executeTab(op, outcome, done) } }]
+    }
 
     var commands = Engine.opToCommand(op)
     if (!commands.length) {
@@ -1882,6 +1892,86 @@ Item {
     return [focusFirst, verify].concat(root.refocusHomeSteps())
   }
 
+  // Bring ONE window to the front of its tab group, and confirm it did.
+  //
+  // The dispatcher answers "ok" for any index (0 silently picks the LAST tab,
+  // a wrong one picks a neighbour), so the answer is never taken: the clients
+  // are read back and Engine.activeTabOf has to name op.address. A miss is
+  // failAndCount and nothing more — no retry here. The next plan re-sends the
+  // op while the drift stands, and the no-progress check names it if it stays.
+  //
+  // The index is recomputed from this read and not taken from the plan: ops
+  // ahead of this one (a group rebuilt in the same plan) have changed the ring
+  // since the plan was made. A window already in front dispatches nothing.
+  function executeTab(op, outcome, done) {
+    root.readClients(function (ok) {
+      if (!ok) {
+        root.warn("clients read failed before bringing " + op.address + " to the front — leaving it")
+        root.failOp(outcome, "the clients read failed before the tab switch")
+        done()
+        return
+      }
+      var client = root.clientByAddress(op.address)
+      if (!client) {
+        root.warn("tab: " + op.address + " is not in the read any more — leaving it")
+        root.failOp(outcome, "the window was gone before the tab switch")
+        done()
+        return
+      }
+      var ring = Engine.groupOrderFor(client, root.liveClients)
+      var index = ring.indexOf(op.address)
+      if (index < 0) {
+        root.warn("tab: " + op.address + " is not in its own tab ring — leaving it")
+        root.failAndCount(outcome, "the window was not in a tab group when the tab switch came up")
+        done()
+        return
+      }
+      if (root.activeTabIs(op.address)) { done(); return }
+
+      var commands = Engine.opToCommand({ kind: "tab", address: op.address, index: index })
+      if (!commands.length) {
+        root.warn("tab: the engine produced no dispatch for " + JSON.stringify(op))
+        root.failOp(outcome, "the engine produced no dispatch for this tab switch")
+        done()
+        return
+      }
+      root.noteEffect("tab", op.address)
+      var steps = []
+      for (var i = 0; i < commands.length; i++) {
+        var step = root.stepFromEngineCommand(commands[i], "tab " + op.address, outcome)
+        if (step) steps.push(step)
+      }
+      steps.push({
+        kind: "fn",
+        fn: function (next) {
+          root.readClients(function (okAfter) {
+            if (okAfter && !root.activeTabIs(op.address)) {
+              root.failAndCount(outcome, "the tab did not come to the front")
+              root.warn("tab: " + op.address + " is not the visible tab after the dispatch"
+                + " — not retrying here, the next re-plan asks again")
+            }
+            next()
+          })
+        }
+      })
+      root.prependSteps(steps)
+      done()
+    })
+  }
+
+  // Is `address` the one visible tab of its group, on the last read?
+  function activeTabIs(address) {
+    var client = root.clientByAddress(address)
+    if (!client) return false
+    var members = []
+    var ring = Engine.groupOrderFor(client, root.liveClients)
+    for (var i = 0; i < ring.length; i++) {
+      var member = root.clientByAddress(ring[i])
+      if (member) members.push(member)
+    }
+    return Engine.activeTabOf(members) === address
+  }
+
   function stepsForLaunch(op, outcome) {
     var command = StateModel.launchCommandFor(root.state, op.identityId)
     if (!command) {
@@ -2119,7 +2209,18 @@ Item {
       // anyway — possibly through a scratch workspace, whose emptied husk a
       // monitor could otherwise be left showing — so the group is the one
       // honest place to leave it.
-      root.prependSteps([root.focusStep(addresses[0])])
+      //
+      // A recorded front tab comes forward by the same steps a `tab` op uses,
+      // and the view lands on IT: focusing a non-active member makes that
+      // member the shown tab, so landing on addresses[0] would undo it.
+      if (op.active) {
+        root.prependSteps([
+          { kind: "fn", fn: function (next) { root.executeTab({ kind: "tab", address: op.active }, outcome, next) } },
+          root.focusStep(op.active)
+        ])
+      } else {
+        root.prependSteps([root.focusStep(addresses[0])])
+      }
       done()
       return
     }
@@ -3122,6 +3223,7 @@ Item {
     root.opsMoved = 0
     root.opsLaunched = 0
     root.opsGrouped = 0
+    root.opsTabbed = 0
     root.opsUngrouped = 0
     root.opsFloated = 0
     root.opsPlaced = 0
@@ -3598,14 +3700,19 @@ Item {
     gateTimer.stop()
     root.gateArgs = null
     var total = root.opsMoved + root.opsLaunched + root.opsGrouped
-      + root.opsUngrouped + root.opsFloated + root.opsPlaced + root.opsTiled
+      + root.opsUngrouped + root.opsFloated + root.opsPlaced + root.opsTiled + root.opsTabbed
     root.log("restore cycle done (" + root.cycleReason + "): " + total + " ops — "
       + root.opsMoved + " moved, " + root.opsLaunched + " launched, "
       + root.opsGrouped + " grouped, "
+      + root.opsTabbed + " tabbed, "
       + root.opsUngrouped + " ungrouped, " + root.opsFloated + " floated, "
       + root.opsPlaced + " placed, " + root.opsTiled + " retiled")
 
     root.cycleActive = false
+    // A known tree is for the cycle that built it and no longer (human
+    // decision, epic 9i2): a drift refresh between cycles must plan from what
+    // is live, never from a tree somebody may have dragged apart since.
+    root.builtWorkspaces = ({})
 
     // Stale-latch clear (tick co9 nit): pendingJoins/deferredLocked can only be
     // set by noteJoinsDeferred, which also flips lockDeferralLogged — reset to
@@ -3808,6 +3915,7 @@ Item {
     if (root.opsMoved > 0) parts.push(root.opsMoved + " moved")
     if (root.opsLaunched > 0) parts.push(root.opsLaunched + " launched")
     if (root.opsGrouped > 0) parts.push(root.opsGrouped + " grouped")
+    if (root.opsTabbed > 0) parts.push(root.opsTabbed + " tabbed")
     if (root.opsUngrouped > 0) parts.push(root.opsUngrouped + " ungrouped")
     if (root.opsFloated > 0) parts.push(root.opsFloated + " floated")
     if (root.opsPlaced > 0) parts.push(root.opsPlaced + " placed")

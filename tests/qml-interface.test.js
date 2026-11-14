@@ -308,3 +308,26 @@ test("Service.qml corrects an arrival's axis with ONE togglesplit, read back, ne
   assert.match(functionBody(source, "stepsForOp"),
     /op\.sequenced === true\) \{\s*steps\.push\(root\.arrivalCheckStep[\s\S]*refocusHomeSteps/);
 });
+
+test("Service.qml executes the tab op, reads it back, and clears the known tree at cycle end", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  // stepsForOp knows the kind: an op beginOp does not know fails to nobody.
+  assert.match(functionBody(source, "stepsForOp"), /op\.kind === "tab"[\s\S]*executeTab\(op, outcome, done\)/);
+  const exec = functionBody(source, "executeTab");
+  assert.match(exec, /Engine\.opToCommand\(\{ kind: "tab"/);
+  // Read back against the engine's own notion of the visible tab; a miss is
+  // counted once, by name, and never re-queues the op.
+  assert.match(functionBody(source, "activeTabIs"), /Engine\.activeTabOf\(members\) === address/);
+  assert.match(exec, /failAndCount\(outcome, "the tab did not come to the front"\)/);
+  assert.doesNotMatch(exec, /executeTab\(/, "no retry loop");
+  // A group rebuild ends on the recorded tab, and the view lands on it.
+  const join = functionBody(source, "joinFrom");
+  assert.match(join, /if \(op\.active\)[\s\S]*executeTab\([\s\S]*focusStep\(op\.active\)/);
+  // Counted and named in the cycle summary line.
+  assert.match(source, /kind === "tab"\) root\.opsTabbed \+= 1/);
+  assert.match(functionBody(source, "cycleSummary"), /opsTabbed[\s\S]*" tabbed"/);
+  // tab is not a focus op: it must not be deferred while locked.
+  assert.doesNotMatch(functionBody(source, "executeTab"), /noteFocusHome|refocusHomeSteps/);
+  // The known tree ends with the cycle, not only starts empty.
+  assert.match(functionBody(source, "finishCycle"), /root\.builtWorkspaces = \(\{\}\)/);
+});
