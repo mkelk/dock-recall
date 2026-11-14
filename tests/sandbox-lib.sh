@@ -353,6 +353,123 @@ sandbox_check_config() {
   note "config        APP_ID=$APP_ID OUTPUT=$OUTPUT TARGET_SLOT=$TARGET_SLOT SCATTER_SLOT=$SCATTER_SLOT"
 }
 
+# --------------------------------------------- within-workspace fidelity helpers
+#
+# Lifted from the throwaway probes of epic 0lh (probe-grouping-tiling,
+# probe-group-position, probe-active-tab) once they became asserted cases
+# (tests/sandbox-fidelity.sh). They drive the NESTED compositor only — every one
+# goes through `nested`, which is pinned to $NESTED_SIG — so they are usable only
+# after sandbox_up. The nested compositor's Omarchy split settings come from
+# tests/nested.lua now; nothing here sets config at run time.
+#
+# A scenario that sources this file may define a function of the same name AFTER
+# the source line and win (sandbox-slots.sh does that with record_current).
+
+ws()      { expected_ws "$(primary_monitor)" "$1"; }   # ws <slot> on the primary
+addr_of() { nested clients -j | jq -r --arg c "$1" 'first(.[]|select(.class==$c)|.address)//empty'; }
+cls_of()  { nested clients -j | jq -r --arg a "$1" 'first(.[]|select(.address==$a)|.class)//empty'; }
+d()       { local out; out=$(nested dispatch "$1" 2>&1); echo "${out:-<empty>}"; }
+focus()   { d "hl.dsp.focus({ window = \"address:$1\" })" >/dev/null; sleep 0.15; }
+mv_ws()   { d "hl.dsp.window.move({ window = \"address:$1\", workspace = \"$2\", follow = false })" >/dev/null; sleep 0.2; }
+
+# launch <app-id> <workspace> — a foot window with that class, opened silently on
+# the workspace, waited for.
+launch() {
+  nested dispatch "hl.dsp.exec_cmd([[ [workspace $2 silent] foot --app-id=$1 ]])" >/dev/null
+  poll 20 bash -c "[[ -n \$(HYPRLAND_INSTANCE_SIGNATURE=$NESTED_SIG hyprctl clients -j | jq -r --arg c '$1' 'first(.[]|select(.class==\$c)|.address)//empty') ]]"
+  sleep 0.3
+}
+
+# rects <ws> — one line per window of the workspace: class, rect, group, and the
+# visibility fields, sorted by x,y.
+rects() {
+  nested clients -j | jq -r --argjson w "$1" '
+    (map({key:.address, value:.class})|from_entries) as $c
+    | [.[]|select(.workspace.id==$w)] | sort_by(.at[0], .at[1], .class)[]
+    | "\(.class) at=\(.at|join(",")) size=\(.size|join("x")) float=\(.floating) hidden=\(.hidden|tostring) visible=\(.visible|tostring) grouped=[\(.grouped|map($c[.])|join(","))]"'
+}
+layout_of() { nested workspaces -j | jq -r --argjson w "$1" 'first(.[]|select(.id==$w)|.tiledLayout)//"?"'; }
+
+# join <addr> <pred> <leader> — put a window into the group <leader> leads, by
+# trying each side of <pred> (a member of the group) until it lands.
+join() {
+  local dir
+  for dir in left right up down; do
+    focus "$2"; focus "$1"
+    d "hl.dsp.window.move({ into_group = \"$dir\" })" >/dev/null; sleep 0.2
+    nested clients -j | jq -e --arg a "$1" --arg g "$3" 'first(.[]|select(.address==$a)|.grouped|index($g))!=null' >/dev/null && return 0
+  done
+  return 1
+}
+
+# group_order <leader-addr> — the group's classes in tab order, comma-joined.
+group_order() { nested clients -j | jq -r --arg a "$1" 'first(.[]|select(.address==$a)|.grouped)|.[]' | while read -r x; do cls_of "$x"; done | paste -sd,; }
+
+# record_current — record what is on screen NOW the way the panel does: build the
+# live layout with the engine (handed the workspaces context, as the panel hands
+# it), convert to slots with Slots.toRecorded, upsert it under the current
+# topology.
+record_current() {
+  HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
+    var fs = require("fs"), cp = require("child_process");
+    var root = process.argv[1], statePath = process.argv[2], blocksPath = process.argv[3];
+    var engine = require(root + "/engine.js"), SM = require(root + "/StateModel.js"), Slots = require(root + "/Slots.js");
+    function hc(args) { return JSON.parse(cp.execFileSync("hyprctl", args, { encoding: "utf8" })); }
+    var monitors = hc(["monitors", "all", "-j"]), clients = hc(["clients", "-j"]), workspaces = hc(["workspaces", "-j"]);
+    var state = SM.parseState(fs.readFileSync(statePath, "utf8")).state;
+    var live = engine.buildLayout(clients, monitors, state.identities, new Date().toISOString(), undefined,
+      { workspaces: workspaces, built: null });
+    var table = Slots.parseBlocks(fs.readFileSync(blocksPath, "utf8"));
+    var rec = Slots.toRecorded(live, table, monitors);
+    fs.writeFileSync(statePath + ".rec", SM.serializeState(SM.upsertLayout(state, rec.layout)));
+    fs.renameSync(statePath + ".rec", statePath);
+    rec.layout.apps.forEach(function (a) {
+      console.log("  · REC " + a.identityId + " slot " + a.slot + " float=" + a.floating
+        + " group=" + (a.group ? a.group.groupId + "@" + a.group.index : "null")
+        + " at=" + a.at + " size=" + a.size + " keys=" + Object.keys(a).join(","));
+    });
+  ' "$REPO_ROOT" "$STATE" "$(sb_blocks)"
+}
+
+# restore — trigger a restore and wait for the cycle. The cycle's own log lines
+# stay in $RESTORE_LOG for the caller to grep; the interesting ones are echoed.
+RESTORE_LOG=""
+restore() {
+  local before mark
+  before=$(sb_count "restore cycle done")
+  mark=$(sb_log | wc -l)
+  trigger
+  wait_for_cycle 90 "$before" || note "WARN: no 'restore cycle done' within 90 s"
+  sleep 1
+  RESTORE_LOG=$(sb_log | tail -n +"$((mark + 1))")
+  echo "$RESTORE_LOG" | grep -iE "group|refus|split|swap|divider|tiling|placement|order|fail|warn|plan" | head -40 | sed 's/^/      log| /'
+}
+
+# save_rects <ws> <file> — the workspace's windows as [{c,at,size}], to compare
+# against later with iou_report.
+save_rects() { nested clients -j | jq -c --argjson w "$1" '[.[]|select(.workspace.id==$w)|{c:.class,at:.at,size:.size}]' > "$2"; }
+
+# iou_report <label> <ws> <saved-rects-file> — the mean intersection-over-union of
+# the workspace's windows now against the saved rects, by class. Echoes the line
+# and leaves the number in $IOU_LAST (a window that is gone scores 0).
+IOU_LAST=""
+iou_report() {
+  local now out; now=$(mktemp)
+  nested clients -j | jq -c --argjson w "$2" '[.[]|select(.workspace.id==$w)|{c:.class,at:.at,size:.size}]' > "$now"
+  out=$(node -e '
+    var a = JSON.parse(require("fs").readFileSync(process.argv[1])), b = JSON.parse(require("fs").readFileSync(process.argv[2]));
+    function iou(p, q) { var x1=Math.max(p.at[0],q.at[0]), y1=Math.max(p.at[1],q.at[1]), x2=Math.min(p.at[0]+p.size[0],q.at[0]+q.size[0]), y2=Math.min(p.at[1]+p.size[1],q.at[1]+q.size[1]);
+      var i=Math.max(0,x2-x1)*Math.max(0,y2-y1); return i/(p.size[0]*p.size[1]+q.size[0]*q.size[1]-i); }
+    var out = [], tot = 0, n = 0;
+    a.forEach(function (r) { var m = b.filter(function (x) { return x.c === r.c; })[0];
+      var s = m ? iou(r, m) : 0; tot += s; n++; out.push(r.c + "=" + s.toFixed(3)); });
+    console.log(process.argv[3] + ": mean IoU " + (n ? (tot / n).toFixed(3) : "0") + " [" + out.join(" ") + "]");
+  ' "$3" "$now" "$1")
+  rm -f "$now"
+  echo "      $out"
+  IOU_LAST=$(sed -E 's/.*mean IoU ([0-9.]+) .*/\1/' <<<"$out")
+}
+
 # ------------------------------------------------------------------ sandbox_up
 
 sandbox_up() {

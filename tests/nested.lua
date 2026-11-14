@@ -140,6 +140,16 @@ hl.config({
     enabled = false,
   },
 
+  -- Omarchy's own dwindle settings (default/hypr/looknfeel.lua:94-95): every
+  -- window the desktop's user opens splits to the right/bottom (force_split = 2)
+  -- and a split keeps its orientation when a sibling closes (preserve_split).
+  -- Without them the sandbox tiled under Hyprland defaults, which is not the
+  -- tree a real Omarchy desk builds (tick 4qb, epic 9i2).
+  dwindle = {
+    force_split = 2,
+    preserve_split = true,
+  },
+
   misc = {
     -- `disable_logo` used to sit here and is gone (tick n1s). It is not a key
     -- this Hyprland has: `misc:disable_hyprland_logo` just below is the real
