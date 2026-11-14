@@ -403,9 +403,62 @@ test("a destination an earlier move in the same plan empties is created again �
   assert.strictEqual(byAddress["0xbbb"].viaMonitor, true);
 
   // A workspace a monitor is SHOWING survives being emptied: no workspace move.
+  // (ws 4 and 5 exist here, so the two moves ahead are plain window moves that
+  // leave what the monitor shows alone — the next test is the other case.)
   const showing = [Object.assign({}, monitors[0], { activeWorkspace: { id: 7, name: "7" } })];
-  const kept = engine.planRestore(live, showing, layout, IDENTITIES).find((op) => op.address === "0xccc");
-  assert.strictEqual(kept.viaMonitor, false);
+  const occupied = live.concat([
+    makeClient({ address: "0xddd", class: "unwatched", workspace: 4 }),
+    makeClient({ address: "0xeee", class: "unwatched", workspace: 5 })
+  ]);
+  const keptOps = engine.planRestore(occupied, showing, layout, IDENTITIES);
+  assert.deepStrictEqual(keptOps.map((op) => op.viaMonitor), [false, false, false]);
+  assert.strictEqual(keptOps[2].address, "0xccc");
+});
+
+test("a shown, empty destination stops being shown once an earlier move sends a new workspace to its monitor — viaMonitor", () => {
+  // tick fz5, from tests/sandbox-slots.sh step 1 DOCK. The external monitor
+  // has just come back SHOWING an empty ws 14 (4.5's restore() renumbered the
+  // primary's emptied ws 4 back to 14 and moved it home). The plan: two windows
+  // to ws 19, which does not exist (window move + workspace move onto the
+  // external), then one to ws 14. The workspace move makes 19 what the
+  // external shows, so 14 is a hidden empty workspace by then and Hyprland
+  // destroys it; the third window move recreated it on the FOCUSED monitor —
+  // the primary — and the window was stranded there (workspace-elsewhere, then
+  // the gate's workspace-off-owner until it timed out). Measured nested,
+  // 2026-11-14: `14@sbx-test/0`, `sbx-test:14*` before the plan; `sbx-test:19*`
+  // after the first move; 14 gone after the second; `14@WAYLAND-1/1` after the
+  // third.
+  const aoc = "AOC CU34V5C XXXXXXXXXXXXX";
+  const primary = { id: 0, name: "eDP-1", description: LAPTOP_DESC, activeWorkspace: { id: 3, name: "3" } };
+  const external = { id: 1, name: "DP-1", description: aoc, activeWorkspace: { id: 14, name: "14" } };
+  const monitors = [primary, external];
+  const asRecorded = [
+    makeClient({ address: "0xaaa", class: "chromium", workspace: 19, monitor: 1 }),
+    makeClient({ address: "0xbbb", class: "code", workspace: 19, monitor: 1 }),
+    makeClient({ address: "0xccc", class: "foot", workspace: 14, monitor: 1 })
+  ];
+  const layout = engine.buildLayout(asRecorded, monitors, IDENTITIES, AT);
+  const live = [
+    makeClient({ address: "0xaaa", class: "chromium", workspace: 2, monitor: 0 }),
+    makeClient({ address: "0xbbb", class: "code", workspace: 2, monitor: 0 }),
+    makeClient({ address: "0xccc", class: "foot", workspace: 3, monitor: 0 })
+  ];
+  const ops = engine.planRestore(live, monitors, layout, IDENTITIES);
+  const into14 = ops.find((op) => op.address === "0xccc");
+  const into19 = ops.filter((op) => op.kind === "move" && op.workspaceId === 19);
+  assert.strictEqual(into19.length, 2);
+  assert.ok(ops.indexOf(into19[0]) < ops.indexOf(into14), "a move to 19 runs first");
+  assert.strictEqual(into19[0].viaMonitor, true, "19 does not exist yet");
+  assert.strictEqual(into14.viaMonitor, true, "14 is no longer shown, so it is gone by the time this move runs");
+  assert.deepStrictEqual(engine.opToCommand(into14).slice(-1), [
+    "hyprctl dispatch 'hl.dsp.workspace.move({ workspace = \"14\", monitor = \"DP-1\" })'"
+  ]);
+
+  // The same desk with ws 14 the ONLY destination: nothing has changed what
+  // DP-1 shows, so 14 still exists and the move is a plain one.
+  const alone = engine.planRestore(live.filter((c) => c.address === "0xccc"), monitors,
+    Object.assign({}, layout, { apps: layout.apps.filter((a) => a.identityId === "terminal") }), IDENTITIES);
+  assert.deepStrictEqual(alone.map((op) => [op.address, op.workspaceId, op.viaMonitor]), [["0xccc", 14, false]]);
 });
 
 // --- resolved v8 layouts (Slots.toLive) --------------------------------------
