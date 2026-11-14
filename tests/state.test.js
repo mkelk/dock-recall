@@ -1922,6 +1922,58 @@ test("an empty monitor list has nothing to focus", () => {
   assert.deepStrictEqual(state.pickFailoverTarget(null, "eDP-1"), { kind: "none", name: "" });
 });
 
+// ------------------------------------ failover plan: the locked re-assert (s58)
+
+const MON = (name, focused, extra) => Object.assign(
+  { name, focused, x: 0, y: 0, width: 1920, height: 1080, scale: 1 }, extra || {});
+
+test("unlocked + focus intact: nothing to dispatch", () => {
+  const plan = state.planFailover([MON("eDP-1", true)], "", false);
+  assert.deepStrictEqual(plan.dispatches, []);
+  assert.strictEqual(plan.kind, "intact");
+  assert.strictEqual(plan.reassert, false);
+});
+
+test("locked + focus intact: focus is re-asserted anyway, then the cursor goes to the centre", () => {
+  const plan = state.planFailover([MON("eDP-1", true, { x: 100, y: 50, width: 2000, height: 1000, scale: 2 })], "", true);
+  assert.strictEqual(plan.kind, "intact");
+  assert.strictEqual(plan.reassert, true);
+  assert.deepStrictEqual(plan.dispatches, [
+    'hl.dsp.focus({ monitor = "eDP-1" })',
+    "hl.dsp.cursor.move({ x = 600, y = 300 })"
+  ]);
+});
+
+test("locked + focus gone: failover target gets focus and cursor", () => {
+  const plan = state.planFailover([MON("eDP-1", false), MON("DP-2", false, { x: 1920 })], "DP-2", true);
+  assert.strictEqual(plan.kind, "failover");
+  assert.strictEqual(plan.reassert, false);
+  assert.deepStrictEqual(plan.dispatches, [
+    'hl.dsp.focus({ monitor = "DP-2" })',
+    "hl.dsp.cursor.move({ x = 2880, y = 540 })"
+  ]);
+});
+
+test("unlocked + focus gone: focus dispatch only, no cursor move", () => {
+  const plan = state.planFailover([MON("eDP-1", false)], "", false);
+  assert.deepStrictEqual(plan.dispatches, ['hl.dsp.focus({ monitor = "eDP-1" })']);
+});
+
+test("locked re-assert without usable geometry still dispatches the focus", () => {
+  const plan = state.planFailover([{ name: "eDP-1", focused: true }], "", true);
+  assert.deepStrictEqual(plan.dispatches, ['hl.dsp.focus({ monitor = "eDP-1" })']);
+});
+
+test("locked plans never contain a window dispatch", () => {
+  const plan = state.planFailover([MON("eDP-1", true)], "", true);
+  for (const d of plan.dispatches) assert.match(d, /^hl\.dsp\.(focus|cursor\.move)\(/);
+});
+
+test("no monitors left: no plan even when locked", () => {
+  assert.deepStrictEqual(state.planFailover([], "x", true).dispatches, []);
+  assert.strictEqual(state.planFailover([], "x", true).kind, "none");
+});
+
 // ------------------------------------------------------------- status file
 //
 // Source of truth: the status schema block in StateModel.js. These

@@ -539,27 +539,43 @@ Item {
       return
     }
 
-    var choice = StateModel.pickFailoverTarget(read.value, root.lastFocusedMonitor)
+    var monitors = read.value
+    var choice = StateModel.pickFailoverTarget(monitors, root.lastFocusedMonitor)
 
     if (choice.kind === "none") {
       root.warn("monitor \"" + root.removedMonitorName + "\" removed and no monitor is left — nothing to focus")
       return
     }
 
-    if (choice.kind === "intact") {
-      root.lastFocusedMonitor = choice.name
-      root.log("monitor \"" + root.removedMonitorName + "\" removed; focus intact on \"" + choice.name + "\"")
-      return
-    }
+    // Locked or not decides what "intact" is worth (tick s58): under the session
+    // lock hyprctl keeps reporting focus on the survivor while keyboard input
+    // reaches no lock surface, so the plan re-asserts focus and moves the cursor.
+    root.queryLocked(function (locked) {
+      var plan = StateModel.planFailover(monitors, root.lastFocusedMonitor, locked)
+      root.lastFocusedMonitor = plan.name
 
-    // No surviving monitor claims focus: it went with the monitor that left.
-    root.warn("monitor \"" + root.removedMonitorName + "\" removed and took focus with it — failing over to \""
-      + choice.name + "\"")
-    root.lastFocusedMonitor = choice.name
-    failoverProc.command = ["bash", "-c", "hyprctl dispatch \"$1\" 2>&1", "--",
-      'hl.dsp.focus({ monitor = "' + choice.name + '" })']
-    failoverProc.running = true
+      if (plan.kind === "intact" && !plan.reassert) {
+        root.log("monitor \"" + root.removedMonitorName + "\" removed; focus intact on \"" + plan.name + "\"")
+        return
+      }
+
+      if (plan.reassert) {
+        root.warn("monitor \"" + root.removedMonitorName + "\" removed; focus intact on \"" + plan.name
+          + "\" — session LOCKED, re-asserting keyboard focus anyway (Hyprland cannot see the lock surface lose it)")
+        root.failoverOkLabel = "focus re-assert ok"
+      } else {
+        // No surviving monitor claims focus: it went with the monitor that left.
+        root.warn("monitor \"" + root.removedMonitorName + "\" removed and took focus with it — failing over to \""
+          + plan.name + "\"")
+        root.failoverOkLabel = "focus failover ok"
+      }
+      failoverProc.command = ["bash", "-c",
+        'for d in "$@"; do hyprctl dispatch "$d" 2>&1; done', "--"].concat(plan.dispatches)
+      failoverProc.running = true
+    })
   }
+
+  property string failoverOkLabel: "focus failover ok"
 
   Process {
     id: activeMonitorsProc
@@ -578,9 +594,13 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        // One answer per dispatch, one per line; every one must be "ok".
         var output = String(text || "").replace(/^\s+|\s+$/g, "")
-        if (output !== "ok") root.warn("VERB-ERROR focus failover -> " + (output || "(no output)"))
-        else root.log("focus failover ok")
+        var answers = output === "" ? [] : output.split(/\s*\n\s*/)
+        var allOk = answers.length > 0
+        for (var i = 0; i < answers.length; i++) if (answers[i] !== "ok") allOk = false
+        if (!allOk) root.warn("VERB-ERROR focus failover -> " + (output || "(no output)"))
+        else root.log(root.failoverOkLabel)
       }
     }
   }
