@@ -24,6 +24,19 @@ const path = require("node:path");
 
 const engine = require(path.join(__dirname, "..", "engine.js"));
 const StateModel = require(path.join(__dirname, "..", "StateModel.js"));
+const Slots = require(path.join(__dirname, "..", "Slots.js"));
+
+// The 4.5 block table (which monitor owns which block of ten workspaces). The
+// state file stores slots, so recording needs it; an absent file is an empty
+// table, which records slots with no guest check.
+function readBlockTable() {
+  const base = process.env.XDG_STATE_HOME || path.join(process.env.HOME || "", ".local", "state");
+  try {
+    return Slots.parseBlocks(fs.readFileSync(path.join(base, "omarchy", "monitor-workspaces"), "utf8"));
+  } catch (e) {
+    return Slots.parseBlocks("");
+  }
+}
 
 const DEFAULT_STATE = path.join(
   process.env.HOME || "",
@@ -74,7 +87,11 @@ function main() {
 
   const clients = hyprctlJson(["clients", "-j"]);
   const monitors = hyprctlJson(["monitors", "all", "-j"]);
-  const layout = engine.buildLayout(clients, monitors, identities, new Date().toISOString());
+  const built = engine.buildLayout(clients, monitors, identities, new Date().toISOString());
+  // Live ids -> slots; guests on another monitor's block are left out and said.
+  const converted = Slots.toRecorded(built, readBlockTable(), monitors);
+  const layout = converted.layout;
+  layout.excluded = (built.excluded || []).concat(converted.excluded);
 
   if (args.print) {
     process.stdout.write(JSON.stringify(layout, null, 2) + "\n");
@@ -113,9 +130,10 @@ function main() {
     process.stderr.write(
       "not recorded: \"" + skipped.identityId +
       (skipped.occurrence ? "\" (window " + (skipped.occurrence + 1) + ")" : "\"") +
-      " is on special workspace " +
-      (skipped.workspaceName || skipped.workspaceId) +
-      " — a scratchpad placement cannot be restored\n"
+      (skipped.reason === "workspace-guest"
+        ? " is on workspace " + skipped.workspaceId + ", another monitor's block — its slot would land it elsewhere\n"
+        : " is on special workspace " + (skipped.workspaceName || skipped.workspaceId) +
+          " — a scratchpad placement cannot be restored\n")
     );
   }
 }
