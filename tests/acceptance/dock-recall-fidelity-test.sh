@@ -110,7 +110,9 @@ dr_log() {
     sed 's/\x1b\[[0-9;]*m//g' | grep -F "[dock-recall]"
 }
 service_ready() { dr_log | grep -qF "service-ready"; }
-plugin_state() { omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }'; }
+plugin_state() {
+  omarchy plugin list 2>/dev/null | awk -v id="$PLUGIN_ID" '$1 == id { print $2 }'
+}
 plugin_known() { [[ -n $(plugin_state) ]]; }
 cycles_done() { dr_log | grep -cF "restore cycle done" || true; }
 
