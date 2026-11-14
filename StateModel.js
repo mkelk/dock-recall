@@ -1736,6 +1736,50 @@ function pickFailoverTarget(monitors, lastFocusedName) {
   return { kind: "failover", name: (list[0] && list[0].name) || "" };
 }
 
+// What to dispatch after a monitor was removed, given whether the session is
+// locked. Builds on pickFailoverTarget and adds the one case it cannot see:
+//
+//   Under the session lock, "focus intact" is not the same as "keyboard input
+//   has somewhere to go". VM run 2 (tick s58): removing the FOCUSED output
+//   while locked left input on no lock surface until the pointer touched the
+//   survivor, while hyprctl went on reporting focus on the survivor. So when
+//   locked, even an intact focus is re-asserted: a monitor focus dispatch
+//   first, then (when the survivor's geometry is known) the cursor moved to its
+//   centre, which is what actually fixed it. Only focus and cursor dispatches —
+//   never a window move while locked (state-matrix §7).
+//
+//   { kind, name, reassert, dispatches }
+//     kind        pickFailoverTarget's: "intact" | "failover" | "none"
+//     reassert    true when an intact focus is being re-asserted because locked
+//     dispatches  Lua strings for `hyprctl dispatch`, in order; [] = do nothing
+function planFailover(monitors, lastFocusedName, locked) {
+  var choice = pickFailoverTarget(monitors, lastFocusedName);
+  var plan = { kind: choice.kind, name: choice.name, reassert: false, dispatches: [] };
+  if (choice.kind === "none") return plan;
+  if (choice.kind === "intact" && locked !== true) return plan;
+
+  plan.reassert = choice.kind === "intact";
+  plan.dispatches.push('hl.dsp.focus({ monitor = "' + choice.name + '" })');
+
+  if (locked === true) {
+    var target = null;
+    for (var i = 0; i < monitors.length; i++) {
+      if (monitors[i] && monitors[i].name === choice.name) target = monitors[i];
+    }
+    // Logical size: hyprctl reports physical pixels, the cursor lives in layout
+    // coordinates.
+    var scale = target && typeof target.scale === "number" && target.scale > 0 ? target.scale : 1;
+    if (target && typeof target.x === "number" && typeof target.y === "number"
+        && typeof target.width === "number" && typeof target.height === "number"
+        && target.width > 0 && target.height > 0) {
+      var cx = Math.round(target.x + target.width / scale / 2);
+      var cy = Math.round(target.y + target.height / scale / 2);
+      plan.dispatches.push("hl.dsp.cursor.move({ x = " + cx + ", y = " + cy + " })");
+    }
+  }
+  return plan;
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     STATE_VERSION: STATE_VERSION,
@@ -1787,6 +1831,7 @@ if (typeof module !== "undefined") {
     parseHyprctlArray: parseHyprctlArray,
     isGrouped: isGrouped,
     inGroupWith: inGroupWith,
-    pickFailoverTarget: pickFailoverTarget
+    pickFailoverTarget: pickFailoverTarget,
+    planFailover: planFailover
   };
 }

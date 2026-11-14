@@ -285,7 +285,25 @@ if [[ -n $failover_line ]]; then
       "\"failing over\" was logged but \"focus failover ok\" was not"
   fi
 elif [[ -n $intact_line ]]; then
-  ok "focus intact, no repair needed: ${intact_line#*\[dock-recall\] }"
+  if [[ $intact_line == *"session LOCKED, re-asserting"* ]]; then
+    # Tick s58: locked, the service re-asserts focus (and moves the cursor onto
+    # the survivor) even though hyprctl says focus is intact. Pinned by position
+    # like the failover confirmation above.
+    reassert_ok=$(printf '%s\n' "$log_text" |
+      awk -v k="\"$OUTPUT\" removed; focus intact on" '
+        index($0, k) { seen = 1; last = ""; next }
+        seen && index($0, "focus re-assert ok") { last = $0 }
+        END { if (last != "") print last }')
+    if [[ -n $reassert_ok ]]; then
+      ok "locked: focus re-asserted on the survivor, confirmed: ${reassert_ok#*\[dock-recall\] }"
+    else
+      notok "dock-recall undock while locked: the focus re-assert dispatches were confirmed" \
+        "\"re-asserting\" was logged but \"focus re-assert ok\" was not"
+    fi
+  else
+    notok "dock-recall undock while locked: focus was re-asserted on the survivor" \
+      "the session was locked but the service logged only a plain 'focus intact' — the s58 re-assert did not run: ${intact_line#*\[dock-recall\] }"
+  fi
 else
   printf '%s\n' "$log_text" | tail -30 >&2
   die "dock-recall undock while locked: the service reached a focus verdict" \
