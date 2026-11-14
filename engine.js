@@ -2409,7 +2409,9 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   // the report every reader already has — `scripts/verify` never builds a plan
   // — and because a ceiling that is only visible to whoever runs a restore is a
   // ceiling the person looking at the amber number cannot find.
-  var tilingRefusals = tilingRefusalsOf(recordedApps, apps, clients);
+  // Handed the group verdicts from pass 2 (epic 9i2): a tab group is one tile
+  // only while its group is intact, and only `groups` can say that.
+  var tilingRefusals = tilingRefusalsOf(recordedApps, apps, clients, groups);
   var refusalByWorkspace = {};
   for (var t = 0; t < tilingRefusals.length; t++) {
     refusalByWorkspace[String(tilingRefusals[t].monitorDescription || "")
@@ -4525,10 +4527,38 @@ function stampViaMonitor(moves, clientsJson, monitorsJson) {
 // are already in the plan above, and the next iteration asks again. That
 // distinction is why this returns only the workspaces that passed — nothing may
 // report a refusal about a workspace nobody put the question to.
-function tiledWorkspacesOf(recordedApps, appEntries, clients) {
+//
+// TILES, NOT WINDOWS (epic 9i2). A tab group holds ONE rect of the split tree,
+// so `items` and `live` are tiles (tilesOf): the recorded members of one group
+// are one item, keyed by the live address of its lowest-index present member
+// and carrying that member's rect. Before this a group was N identical rects —
+// not a guillotine tiling — and a group beside any other window was refused as
+// `not-a-tree` for ever (finding-grouping-tiling, probe G2).
+//
+// A group is one tile only while it is INTACT: `reportGroups` (driftOf's group
+// verdicts) says `needed === false`. A workspace holding a group whose op is
+// still to run, or any app with `drift.group`, is PENDING — its members are
+// about to be joined, split or reordered, so the rects are about to change —
+// and pending is the gate's "not yet asked", not a refusal. Without
+// `reportGroups` the same question is answered from `drift.group` alone, which
+// groupDriftOf sets on every present member of a group it marks needed.
+//
+// The stranger rule counts a client only if it is not a TAB of one of the
+// workspace's tiles: an unwatched window tabbed into a group shares the group's
+// rect and takes no tile of its own.
+function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups) {
   var apps = appEntries || [];
   var byWorkspace = {};
   var order = [];
+
+  var haveGroups = Object.prototype.toString.call(reportGroups) === "[object Array]";
+  var neededByGroup = {};
+  if (haveGroups) {
+    for (var r = 0; r < reportGroups.length; r++) {
+      if (!reportGroups[r]) continue;
+      neededByGroup["g:" + reportGroups[r].groupId] = !!reportGroups[r].needed;
+    }
+  }
 
   for (var i = 0; i < recordedApps.length; i++) {
     var recorded = recordedApps[i];
@@ -4537,7 +4567,7 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
     var key = recorded.workspaceId + " " + recorded.monitorDescription;
     if (!byWorkspace[key]) {
       byWorkspace[key] = {
-        ok: true, items: [], live: [],
+        ok: true, entries: [], liveEntries: [],
         workspaceId: recorded.workspaceId,
         monitorDescription: recorded.monitorDescription
       };
@@ -4549,6 +4579,13 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
     if (entry.status === "missing" || !entry.current) { bucket.ok = false; continue; }
     if (recorded.floating || entry.current.floating) { bucket.ok = false; continue; }
     if (entry.drift.workspace || entry.drift.monitor) { bucket.ok = false; continue; }
+    // Pending: a group still to be built, rebuilt or dissolved.
+    if (entry.drift.group) { bucket.ok = false; continue; }
+    var recordedGroup = recorded.group && recorded.group.groupId ? recorded.group : null;
+    if (recordedGroup && haveGroups && own(neededByGroup, "g:" + recordedGroup.groupId) !== false) {
+      bucket.ok = false;
+      continue;
+    }
 
     var at = geometryPair(recorded.at);
     var size = geometryPair(recorded.size);
@@ -4556,35 +4593,61 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
     var liveSize = geometryPair(entry.current.size);
     if (!at || !size || !liveAt || !liveSize) { bucket.ok = false; continue; }
 
-    bucket.items.push({ key: entry.current.address, at: at, size: size });
-    bucket.live.push({ key: entry.current.address, at: liveAt, size: liveSize });
+    // The live side uses the RECORDED group id and tab index: the group is
+    // intact, so its live tab order is the recorded one and both sides key the
+    // tile by the same window.
+    var groupId = recordedGroup ? recordedGroup.groupId : null;
+    var index = recordedGroup ? recordedGroup.index : null;
+    bucket.entries.push({ address: entry.current.address, at: at, size: size, groupId: groupId, index: index });
+    bucket.liveEntries.push({ address: entry.current.address, at: liveAt, size: liveSize, groupId: groupId, index: index });
+  }
+
+  var liveClients = clients || [];
+  var liveByAddress = {};
+  for (var l = 0; l < liveClients.length; l++) {
+    if (liveClients[l] && typeof liveClients[l].address === "string") liveByAddress[liveClients[l].address] = liveClients[l];
   }
 
   var out = [];
   for (var k = 0; k < order.length; k++) {
     var group = byWorkspace[order[k]];
-    if (!group.ok || group.items.length < 2) continue;
+    if (!group.ok) continue;
+    var items = tilesOf(group.entries);
+    var live = tilesOf(group.liveEntries);
+    if (items.length < 2) continue;
 
     // A window nobody watches, tiled on this workspace, holds a tile that is
     // not in the recording — so the recorded rects are not reachable and every
     // nudge would be aimed past it. Same rule the placement gate uses, for the
-    // same reason; a FLOAT holds no tile and does not count.
+    // same reason; a FLOAT holds no tile and does not count, and neither does a
+    // tab of one of this workspace's tiles.
     var occupied = {};
-    for (var m = 0; m < group.live.length; m++) occupied[group.live[m].key] = true;
+    for (var m = 0; m < live.length; m++) {
+      for (var n = 0; n < live[m].members.length; n++) {
+        var member = live[m].members[n];
+        occupied[member] = true;
+        var memberClient = own(liveByAddress, member);
+        var tabs = memberClient && isAddressList(memberClient.grouped) ? memberClient.grouped : [];
+        for (var t = 0; t < tabs.length; t++) occupied[tabs[t]] = true;
+      }
+    }
     var stranger = false;
-    var live = clients || [];
-    for (var c = 0; c < live.length; c++) {
-      var client = live[c];
+    for (var c = 0; c < liveClients.length; c++) {
+      var client = liveClients[c];
       if (!client || !client.workspace) continue;
       if (String(client.workspace.id) !== String(group.workspaceId)) continue;
       if (client.floating) continue;
-      if (occupied[client.address]) continue;
+      if (own(occupied, client.address)) continue;
       stranger = true;
       break;
     }
     if (stranger) continue;
 
-    out.push(group);
+    out.push({
+      ok: true, items: items, live: live,
+      workspaceId: group.workspaceId,
+      monitorDescription: group.monitorDescription
+    });
   }
   return out;
 }
@@ -4629,8 +4692,8 @@ function tilingSettled(recordedItems, liveItems) {
 // ceiling stops being read at all. So a SETTLED workspace reports nothing. The
 // planner's refusal is unchanged, and the sentence comes back the moment the
 // workspace drifts — which is the only moment a reader needs it.
-function tilingRefusalsOf(recordedApps, appEntries, clients) {
-  var groups = tiledWorkspacesOf(recordedApps || [], appEntries, clients);
+function tilingRefusalsOf(recordedApps, appEntries, clients, reportGroups) {
+  var groups = tiledWorkspacesOf(recordedApps || [], appEntries, clients, reportGroups);
   var out = [];
   for (var i = 0; i < groups.length; i++) {
     if (tilingSettled(groups[i].items, groups[i].live)) continue;
@@ -4654,7 +4717,9 @@ function planTiledRefinements(recordedApps, report, clients) {
   var splits = [];
   var swaps = [];
   var dividers = [];
-  var groups = tiledWorkspacesOf(recordedApps, report.apps, clients);
+  // Ops name TILE keys: a swap or a divider at a group's leader moves the whole
+  // group (nested-notes 9i2 (c), (d)), so the leader stands for the tile.
+  var groups = tiledWorkspacesOf(recordedApps, report.apps, clients, report.groups);
 
   for (var k = 0; k < groups.length; k++) {
     var group = groups[k];
@@ -4664,9 +4729,22 @@ function planTiledRefinements(recordedApps, report, clients) {
       splits.push({ kind: "split", address: program.split.address, workspaceId: group.workspaceId });
       continue;
     }
+    var groupKeys = {};
+    for (var gk = 0; gk < group.items.length; gk++) {
+      if (group.items[gk].groupId !== null && group.items[gk].groupId !== undefined) groupKeys[group.items[gk].key] = true;
+    }
+    var swapsAGroup = false;
     for (var s = 0; s < program.swaps.length; s++) {
       swaps.push({ kind: "swap", address: program.swaps[s].address, target: program.swaps[s].target });
+      if (own(groupKeys, program.swaps[s].address) || own(groupKeys, program.swaps[s].target)) swapsAGroup = true;
     }
+    // A swap that moves a GROUP takes the ratios to the next plan. A group's
+    // member rect is its tile minus the groupbar (nested-notes 9i2 (c)), and a
+    // plain window's is the whole tile, so the slot a group is about to leave
+    // or enter measures 21px differently once the swap has run — and every
+    // divider below was computed against the slots as they are now. The
+    // re-plan reads the swapped desk back and compares like with like.
+    if (swapsAGroup) continue;
     for (var d = 0; d < program.dividers.length; d++) {
       dividers.push({
         kind: "divider",
@@ -4789,8 +4867,10 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   }
 
   // (2) and (3): everything the recording puts on this workspace is here, and
-  // none of it is recorded as a float.
+  // none of it is recorded as a float. Counted in WINDOWS, not tiles: every
+  // member of a group has to be arriving too.
   var wanted = 0;
+  var recordedGroupOf = {};
   for (var a = 0; a < recordedApps.length; a++) {
     var recorded = recordedApps[a];
     if (String(recorded.workspaceId) !== String(workspaceId)) continue;
@@ -4801,6 +4881,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
     // "ok" and "drifted" both carry a live window; "missing" does not, and a
     // window that is not here cannot take the slot the tree hands it.
     if (!entry || !entry.current || !moving[entry.current.address]) return group;
+    if (recorded.group && recorded.group.groupId) recordedGroupOf[entry.current.address] = recorded.group;
     wanted += 1;
   }
   if (wanted !== group.length) return group;
@@ -4817,31 +4898,77 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
     return group;
   }
 
-  // (5) the rects have to be a tree.
-  var items = [];
+  // (5) the rects have to be a tree — of TILES (epic 9i2). A tab group is one
+  // rect of the split tree, so its recorded members are one tile, keyed and
+  // placed by the lowest-index member (tilesOf). N identical member rects are
+  // no tree at all, which is why a group beside anything else used to leave the
+  // whole workspace unchoreographed.
+  var entries = [];
   for (var m = 0; m < group.length; m++) {
     var rect = rectByAddress[group[m].address];
     if (!rect || !rect.at || !rect.size) return group;
-    items.push({ key: group[m].address, at: rect.at, size: rect.size });
+    var rg = own(recordedGroupOf, group[m].address);
+    entries.push({
+      address: group[m].address, at: rect.at, size: rect.size,
+      groupId: rg ? rg.groupId : null, index: rg ? rg.index : null
+    });
   }
-  var order = placementOrderOf(items);
-  if (!order || order.length !== group.length) return group;
+  var tiles = tilesOf(entries);
+  // One tile — a lone group — splits nothing: its tabs are joined by the group
+  // op whatever order they arrived in, and the focus flicker buys nothing (1).
+  if (tiles.length < 2) return group;
+  var order = placementOrderOf(tiles);
+  if (!order || order.length !== tiles.length) return group;
+
+  // (6) a group member that is LIVE in a group is not an arrival of its own:
+  // Hyprland moves a grouped window's whole group with it, so the leader's move
+  // would drag its tabs along and the member chain below would split nothing.
+  // Standing down leaves exactly what was planned before tiles existed.
+  for (var t = 0; t < tiles.length; t++) {
+    if (tiles[t].members.length < 2) continue;
+    for (var tm = 0; tm < tiles[t].members.length; tm++) {
+      var tab = liveByAddress[tiles[t].members[tm]];
+      if (tab && isAddressList(tab.grouped) && tab.grouped.length > 1) return group;
+    }
+  }
 
   var byAddress = {};
   for (var b = 0; b < group.length; b++) byAddress[group[b].address] = group[b];
+  var tileByKey = {};
+  for (var tk = 0; tk < tiles.length; tk++) tileByKey[tiles[tk].key] = tiles[tk];
 
+  // The program: every tile's LEADER in placement order, each splitting the
+  // tile placementOrderOf names; then every group's other members in tab
+  // order, each splitting the member before it. The member chain was measured
+  // in the nested compositor (tests/nested-notes.md, 9i2 (e)): every member
+  // arrival lands beside its predecessor, every join in tab order is adjacent,
+  // and the joined group sits exactly on the leader's arrival rect — so the
+  // group op that follows the moves folds the chain back into the leader's
+  // tile and the tree is the recorded one. No scratch fallback is needed.
+  //
   // Resolved FIRST and stamped SECOND, deliberately. Stamping as we go would
   // leave half the ops carrying a splitParent if the last one failed to
   // resolve, and a partly-choreographed workspace is worse than an
   // unchoreographed one: it focuses some windows and not others, which is a
   // program nobody designed.
   var out = [];
+  var parents = [];
   for (var o = 0; o < order.length; o++) {
-    if (!byAddress[order[o].key]) return group;
+    if (!byAddress[order[o].key] || !own(tileByKey, order[o].key)) return group;
     out.push(byAddress[order[o].key]);
+    parents.push(order[o].parentKey);
   }
-  for (var s = 0; s < order.length; s++) {
-    if (order[s].parentKey) out[s].splitParent = order[s].parentKey;
+  for (var lo = 0; lo < order.length; lo++) {
+    var members = tileByKey[order[lo].key].members;
+    for (var mm = 1; mm < members.length; mm++) {
+      if (!byAddress[members[mm]]) return group;
+      out.push(byAddress[members[mm]]);
+      parents.push(members[mm - 1]);
+    }
+  }
+  if (out.length !== group.length) return group;
+  for (var s = 0; s < out.length; s++) {
+    if (parents[s]) out[s].splitParent = parents[s];
   }
   return out;
 }

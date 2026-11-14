@@ -132,6 +132,9 @@ const AT = "2026-08-16T08:00:00Z";
 const CASES = 300;
 const MAX_ITERATIONS = 10;
 const DEFAULT_SEED = 0x84a41;
+// The groupbar a tab group draws above its tabs: a member's rect is its tile
+// minus this, on top (tests/nested-notes.md 9i2 (c)).
+const GROUPBAR_PX = 21;
 const SEED = process.env.PROP_SEED ? Number(process.env.PROP_SEED) : DEFAULT_SEED;
 
 // ---------------------------------------------------------------- seeded rng
@@ -284,6 +287,10 @@ function generateCase(rng) {
       m.client.monitor = recordWsMon[ws];
       m.client.floating = false;
       m.client.grouped = order.slice();
+      // A tab group holds ONE rect of the tiling (epic 9i2): every member
+      // shows the first tab's. Assigned, not drawn, so the seed is unchanged.
+      m.client.at = members[0].client.at.slice();
+      m.client.size = members[0].client.size.slice();
     }
     // Held as ADDRESSES, not identity ids: two windows of one identity can be
     // tabbed into the same group now, and an id no longer names a window.
@@ -427,6 +434,14 @@ function generateCase(rng) {
     liveClients.push(stranger);
   }
 
+  // Every live group, the stranger's included, is one tile with one rect: the
+  // first tab's. Before the split-brain step, which only garbles the arrays.
+  for (const c of liveClients) {
+    if (c.grouped.length < 2) continue;
+    const head = liveClients.find((x) => x.address === c.grouped[0]);
+    if (head && head !== c) { c.at = head.at.slice(); c.size = head.size.slice(); }
+  }
+
   // Split-brain: one member of a live group under-reports its own array.
   const groupedLive = liveClients.filter((c) => c.grouped.length > 1);
   if (groupedLive.length > 0 && rng.chance(0.4)) {
@@ -452,6 +467,30 @@ function makeSimulator(clients, monitors, identities) {
   };
 
   const byAddress = (address) => state.clients.find((c) => c.address === address) || null;
+
+  // A TILE (epic 9i2): a tab group holds one rect of the tiling, shared by all
+  // its members, so anything that moves a tile moves every tab in it. Members
+  // are found by claims from either side, one hop — a split-brain member that
+  // under-reports its own array is still found through its peers' arrays.
+  function tileOf(c) {
+    return state.clients.filter((x) => x === c
+      || (!x.floating && x.workspace.id === c.workspace.id
+        && ((c.grouped.length > 1 && c.grouped.indexOf(x.address) !== -1)
+          || (x.grouped.length > 1 && x.grouped.indexOf(c.address) !== -1))));
+  }
+  function setRect(members, at, size) {
+    for (const m of members) { m.at = at.slice(); m.size = size.slice(); }
+  }
+  // A tile's whole box: a group's tabs report it minus the groupbar on top.
+  function tileBoxOf(members) {
+    const c = members[0];
+    if (members.length < 2) return { at: c.at.slice(), size: c.size.slice() };
+    return { at: [c.at[0], c.at[1] - GROUPBAR_PX], size: [c.size[0], c.size[1] + GROUPBAR_PX] };
+  }
+  function placeInBox(members, box) {
+    if (members.length < 2) { setRect(members, box.at, box.size); return; }
+    setRect(members, [box.at[0], box.at[1] + GROUPBAR_PX], [box.size[0], box.size[1] - GROUPBAR_PX]);
+  }
 
   // The monitor a workspace lives on, creating it on the "focused" (first)
   // monitor when it does not exist yet — the Hyprland behavior a viaMonitor
@@ -610,6 +649,8 @@ function makeSimulator(clients, monitors, identities) {
 
       const anchor = byAddress(op.addresses[0]);
       if (!anchor) return;
+      // The group forms in the anchor's tile (nested-notes 9i2 (e)).
+      const box = tileBoxOf([anchor]);
       let ring = [anchor.address];
       let focusedTab = anchor.address;
       anchor.grouped = ring.slice();
@@ -635,6 +676,10 @@ function makeSimulator(clients, monitors, identities) {
           if (m) m.grouped = ring.slice();
         }
       }
+      // Every tab takes the group's one rect: the anchor's tile under the
+      // groupbar.
+      const tabs = ring.map(byAddress).filter(Boolean);
+      if (tabs.length > 1) placeInBox(tabs, box);
       return;
     }
     if (op.kind === "split") {
@@ -659,7 +704,19 @@ function makeSimulator(clients, monitors, identities) {
         "the simulator was handed a split op for a FLOATING window: " + op.address);
       const peers = state.clients.filter(
         (c) => !c.floating && c.workspace.id === subject.workspace.id);
-      const items = peers.map((c) => ({ key: c.address, at: c.at.slice(), size: c.size.slice() }));
+      // One item per TILE: a group's tabs share one rect, so they are one leaf,
+      // represented by the first of them met and re-laid out together.
+      const repOf = {};
+      const membersOf = {};
+      const items = [];
+      for (const c of peers) {
+        if (repOf[c.address]) continue;
+        const tile = tileOf(c).filter((m) => peers.indexOf(m) !== -1 && !repOf[m.address]);
+        for (const m of tile) repOf[m.address] = c.address;
+        membersOf[c.address] = tile;
+        items.push({ key: c.address, at: c.at.slice(), size: c.size.slice() });
+      }
+      const subjectKey = repOf[op.address];
       const tree = engine.splitTreeOf(items);
       assert.ok(tree, "a split op was planned for a workspace that is not a guillotine tiling");
 
@@ -675,7 +732,7 @@ function makeSimulator(clients, monitors, identities) {
       // The node `togglesplit` would flip: the subject leaf's PARENT.
       let parent = null;
       for (let node = tree; node && node.key === undefined;) {
-        const child = holds(node.near, op.address) ? node.near : node.far;
+        const child = holds(node.near, subjectKey) ? node.near : node.far;
         if (child.key !== undefined) { parent = node; break; }
         node = child;
       }
@@ -727,8 +784,7 @@ function makeSimulator(clients, monitors, identities) {
             at[a] = near;
             size[a] = Math.max(1, far - near);
           }
-          c.at = at;
-          c.size = size;
+          setRect(membersOf[key], at, size);
         }
       };
       relayout(nearKeys, nearBox, targetOf("near"));
@@ -746,9 +802,18 @@ function makeSimulator(clients, monitors, identities) {
       assert.equal(a.workspace.id, b.workspace.id,
         "a swap crossed workspaces: " + op.address + " on " + a.workspace.id
           + ", " + op.target + " on " + b.workspace.id);
-      const at = a.at; const size = a.size;
-      a.at = b.at; a.size = b.size;
-      b.at = at; b.size = size;
+      // A swap with any member of a group swaps the whole tile (nested-notes
+      // 9i2 (d)): every tab moves with it.
+      // The TILES exchange, and a group's tabs sit inside its tile under the
+      // groupbar: probe (d) watched gd 5,5 691x417 and a group 5,449 691x396
+      // trade to 5,428 691x417 and 5,26 691x396.
+      const tileA = tileOf(a);
+      const tileB = tileOf(b);
+      assert.ok(tileA.indexOf(b) === -1, "a swap named two tabs of one group: " + op.address + ", " + op.target);
+      const boxA = tileBoxOf(tileA);
+      const boxB = tileBoxOf(tileB);
+      placeInBox(tileA, boxB);
+      placeInBox(tileB, boxA);
       return;
     }
     if (op.kind === "divider") {
@@ -790,8 +855,9 @@ function makeSimulator(clients, monitors, identities) {
       const farEdge = subject.at[axis] + subject.size[axis];
       let neighbour = null;
       const perp = axis === 0 ? 1 : 0;
+      const subjectTile = tileOf(subject);
       for (const c of state.clients) {
-        if (c === subject || c.floating) continue;
+        if (subjectTile.indexOf(c) !== -1 || c.floating) continue;
         if (c.workspace.id !== subject.workspace.id) continue;
         if (c.at[axis] < farEdge) continue;
         // Overlapping on the OTHER axis, or the two tiles do not share a line.
@@ -805,12 +871,16 @@ function makeSimulator(clients, monitors, identities) {
       // No neighbour means the subject's far edge was the edge of the tiling,
       // which is precisely the case the sign law forbids the planner to emit.
       assert.ok(neighbour, "a divider op was aimed at the FAR side of its split: " + op.address);
-      subject.size = subject.size.slice();
-      subject.size[axis] += delta;
-      neighbour.at = neighbour.at.slice();
-      neighbour.size = neighbour.size.slice();
-      neighbour.at[axis] += delta;
-      neighbour.size[axis] = Math.max(1, neighbour.size[axis] - delta);
+      // Resizing any tab moves the group tile's divider, and the whole group
+      // keeps one rect (nested-notes 9i2 (c)) — on both sides of the line.
+      const grown = subject.size.slice();
+      grown[axis] += delta;
+      setRect(subjectTile, subject.at, grown);
+      const shiftedAt = neighbour.at.slice();
+      const shrunk = neighbour.size.slice();
+      shiftedAt[axis] += delta;
+      shrunk[axis] = Math.max(1, shrunk[axis] - delta);
+      setRect(tileOf(neighbour), shiftedAt, shrunk);
       return;
     }
     throw new Error("simulator: unknown op kind " + op.kind);
@@ -1163,4 +1233,51 @@ test("a flipped workspace converges through the simulator, in one dispatch", () 
   assert.deepStrictEqual(
     engine.planRestore(makeSimulator(recorded, monitors, identities).state.clients,
       monitors, layout, identities), []);
+});
+
+// ------------------------------------------------ a group is one tile, through the simulator
+//
+// Directed, for the same reason as the flip: the generated cases put a group
+// beside a tile only now and then. A group (one rect shared by its tabs) living
+// below the tile it was recorded above is one swap addressed to its leader, and
+// the simulator's swap moves EVERY tab with it (nested-notes 9i2 (d)) — so the
+// loop converges with all three tabs back on the recorded rect.
+
+test("a group swapped with its neighbour converges through the simulator, every tab with it", () => {
+  const monitors = [{ ...MONITOR_POOL[0], x: 0, y: 0, width: 701, height: 850, scale: 1,
+    make: "T", model: "P", serial: "", activeWorkspace: { id: 1, name: "1" }, focused: true }];
+  const identities = makeIdentities(["alpha", "bravo", "charlie", "delta"]);
+  const desk = (groupAt, tileAt) => {
+    const members = ["alpha", "charlie", "bravo"].map((id) =>
+      makeClient(identityClass(id), 5, 0, false, groupAt.slice(), [691, 396]));
+    const ring = members.map((c) => c.address);
+    for (const c of members) c.grouped = ring.slice();
+    return members.concat([makeClient(identityClass("delta"), 5, 0, false, tileAt.slice(), [691, 417])]);
+  };
+  const recorded = desk([5, 26], [5, 428]);
+  const layout = engine.buildLayout(recorded, monitors, identities, AT);
+  const live = recorded.map((c) => ({
+    ...c, workspace: { ...c.workspace }, grouped: c.grouped.slice(),
+    at: c.grouped.length ? [5, 449] : [5, 5], size: c.size.slice()
+  }));
+
+  const sim = makeSimulator(live, monitors, identities);
+  let plan = engine.planRestore(sim.state.clients, monitors, layout, identities);
+  assert.deepStrictEqual(plan.map((op) => op.kind), ["swap"]);
+  assert.ok(engine.opAddressesOf(plan[0]).indexOf(recorded[0].address) !== -1,
+    "the swap names the group by its tab-0 window");
+
+  let previous = null;
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    plan = engine.planRestore(sim.state.clients, monitors, layout, identities);
+    if (plan.length === 0) break;
+    if (previous) assert.ok(!engine.samePlan(plan, previous), "no progress: " + engine.planSignature(plan));
+    for (const op of plan) sim.apply(op);
+    previous = plan;
+  }
+  assert.strictEqual(plan.length, 0, "did not converge: " + engine.planSignature(plan));
+  for (const c of sim.state.clients) {
+    const want = recorded.find((r) => r.address === c.address);
+    assert.deepStrictEqual([c.at, c.size], [want.at, want.size], c.class + " is back on its recorded rect");
+  }
 });
