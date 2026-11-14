@@ -4881,6 +4881,39 @@ Item {
               width: parent.width
             }
 
+            // ------------------------------- workspaces not in their shape
+            //
+            // Tiled workspaces a restore did not or could not bring back to the
+            // recorded tile shape (status.shapes, epic 9i2). Same glyph as window
+            // drift; THIS is where the reason lives. It sits below the map and
+            // the list, so both render paths (tiled and stacked) show it, and it
+            // is invisible when there are none: a status with shapeCount 0
+            // renders exactly as before. Words: PanelModel.shapeLinesFor.
+            Column {
+              id: shapeNotes
+              readonly property var shapeLines: PanelModel.shapeLinesFor(root.badgeStatus).lines
+              width: parent.width
+              spacing: Style.space(4)
+              visible: shapeNotes.shapeLines.length > 0
+
+              PanelSeparator { foreground: root.foreground }
+
+              Repeater {
+                model: shapeNotes.shapeLines
+
+                delegate: Text {
+                  required property string modelData
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: modelData
+                  color: root.foreground
+                  wrapMode: Text.WordWrap
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+            }
+
             // ---------------------------------------- failed restores (jzx)
             //
             // Between the list and the footer on purpose: it is a consequence of

@@ -64,3 +64,9 @@ test("a refused click says which half of the guard failed", () => {
   assert.strictEqual((src.match(/root\.routeRefusal\(\)/g) || []).length, 2, "both click paths log the reason");
   assert.doesNotMatch(src, /panel is not registered with the shell yet/, "the old one-size message hid the break");
 });
+
+test("the bar tooltip is built from the whole status, so shape lines reach it (tick u0w)", () => {
+  const src = read("BarWidget.qml");
+  assert.match(src, /barGlyphTooltip\(root\.glyph, root\.status, root\.topologyName\)/);
+  assert.match(src, /StateModel\.glyphState\(root\.status\)/);
+});
