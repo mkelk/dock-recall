@@ -104,6 +104,28 @@ test("a window on the wrong workspace says workspace, and nothing else", () => {
   assert.strictEqual(editor.text, "on the wrong workspace");
 });
 
+test("monitor-unknown has two causes, and the sentence follows the record", () => {
+  // From Slots.toLive: a monitor that is not connected and has no block.
+  const unblocked = Object.assign({}, recorded, {
+    apps: recorded.apps.map((a) =>
+      a.identityId === "editor" ? Object.assign({}, a, { workspaceId: null, unplaceable: "monitor-unknown" }) : a
+    )
+  });
+  const resolved = verdictFor(verdictsOf(clientsLaptop, monitorsLaptop, unblocked), "editor");
+  assert.strictEqual(resolved.monitor, "monitor-unknown");
+  assert.strictEqual(resolved.text, "its monitor is not connected and has no workspace block yet");
+  assert.strictEqual(panel.verdictLine(resolved), "its monitor is not connected and has no workspace block yet");
+
+  // The legacy cause: the record never had a monitor. Same word, and the old
+  // sentence — nothing was unplugged, so no cable is blamed.
+  const orphan = [makeClient({ address: "0xfff", class: "code", workspace: 3, monitor: 7 })];
+  const neverKnown = engine.buildLayout(orphan, monitorsLaptop, IDENTITIES, AT);
+  assert.strictEqual(neverKnown.apps[0].monitorDescription, "");
+  const legacy = verdictFor(verdictsOf(clientsLaptop, monitorsLaptop, neverKnown), "editor");
+  assert.strictEqual(legacy.monitor, "monitor-unknown");
+  assert.strictEqual(legacy.text, "no monitor was ever recorded for it");
+});
+
 test("a window on the wrong monitor AND workspace says both", () => {
   // Docked: the recording is a laptop-only one. The editor now sits on ws 4 of
   // the headless output; its recorded ws 3 exists nowhere, so the move is a
@@ -148,7 +170,9 @@ test("an unplaceable app is refused with its reason, in words", () => {
   // reason, and the verdict carries it on the dimension that is at fault.
   const cases = [
     ["monitor-unassigned", "monitor", "its monitor has no workspace block yet"],
-    ["monitor-unknown", "monitor", "no monitor was ever recorded for it"],
+    // Slots.toLive's monitor-unknown: recorded on a monitor that is not
+    // plugged in (or is disabled/mirrored) and has no workspace block.
+    ["monitor-unknown", "monitor", "its monitor is not connected and has no workspace block yet"],
     ["slot-unknown", "workspace", "no workspace slot was recorded for it"]
   ];
   for (const [reason, dimension, text] of cases) {

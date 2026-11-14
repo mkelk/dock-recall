@@ -2889,13 +2889,24 @@ function geometrySummaryOf(apps, refusalByWorkspace) {
   };
 }
 
+// driftOf reports `monitor-unknown` for two causes, and only the record can
+// tell them apart: an EMPTY monitorDescription means buildLayout never knew
+// where the window was. Saying "not connected" about that would send the user
+// to check a cable that was never the problem.
+var MONITOR_NEVER_RECORDED_PHRASE = "no monitor was ever recorded for it";
+
 // The phrase a verdict word becomes in a sentence. "not-judged" maps to the
 // empty string on purpose: it contributes nothing to a row's text.
 var VERDICT_PHRASES = {
   "wrong-workspace": "on the wrong workspace",
   "wrong-monitor": "on the wrong monitor",
   "monitor-absent": "its recorded monitor is not connected",
-  "monitor-unknown": "no monitor was ever recorded for it",
+  // From a resolved layout (Slots.toLive): the recorded monitor is not
+  // plugged in, or is disabled or mirrored, and Omarchy's blocks file has no
+  // workspace block for it. The LEGACY cause of the same reason — a record that
+  // never had a monitor at all — keeps its own sentence, see
+  // MONITOR_NEVER_RECORDED_PHRASE.
+  "monitor-unknown": "its monitor is not connected and has no workspace block yet",
   "workspace-special": "recorded on a special workspace — not restorable",
   "monitor-unassigned": "its monitor has no workspace block yet",
   "slot-unknown": "no workspace slot was recorded for it",
@@ -3091,6 +3102,9 @@ function verdictForApp(app, groupsById, blocked, instance) {
     if (word === "ok") continue;
     verdict.ok = false;
     var phrase = verdictPhrase(word);
+    if (word === "monitor-unknown" && !String(recorded.monitorDescription || "").trim()) {
+      phrase = MONITOR_NEVER_RECORDED_PHRASE;
+    }
     if (phrase && phrases.indexOf(phrase) === -1) phrases.push(phrase);
   }
 
