@@ -94,7 +94,7 @@ test("the drift report names what moved and how", () => {
   const editor = driftFor(report, "editor");
 
   assert.strictEqual(editor.status, "drifted");
-  assert.deepStrictEqual(editor.drift, { monitor: false, workspace: true, group: false, floating: false, geometry: false });
+  assert.deepStrictEqual(editor.drift, { monitor: false, workspace: true, group: false, floating: false, geometry: false, activeTab: false });
   assert.strictEqual(editor.recorded.workspaceId, 3);
   assert.strictEqual(editor.current.workspaceId, 7);
   assert.strictEqual(editor.current.address, addressOf(clientsLaptop, "code"));
@@ -347,7 +347,7 @@ test("launches come first, then the moves, then the groups — and no workspace 
   });
   assert.strictEqual(ops[2].viaMonitor, false);
   assert.strictEqual(ops[2].monitorName, "hw-test");
-  assert.deepStrictEqual(ops[3], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [] });
+  assert.deepStrictEqual(ops[3], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [], active: null });
 });
 
 test("a move to a workspace that already exists is a plain move, with no workspace dispatch", () => {
@@ -636,7 +636,7 @@ test("an ungrouped pair plans the moves first, then the group in tab order", () 
 
   // The group op is last and lists addresses in RECORDED TAB ORDER
   // (foot, then chromium) — not the order the moves happened in.
-  assert.deepStrictEqual(ops[2], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [] });
+  assert.deepStrictEqual(ops[2], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [], active: null });
 
   // And on a REAL plan, the lock gate (tick 97e) sees the join and defers only
   // it: a group join needs the keyboard focus, and under an ext-session-lock
@@ -659,10 +659,10 @@ test("a group in the wrong tab order is regrouped without any move", () => {
   );
 
   const ops = engine.planRestore(wrongOrder, monitorsLaptop, layout, IDENTITIES);
-  assert.deepStrictEqual(ops, [{ kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [] }]);
+  assert.deepStrictEqual(ops, [{ kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [], active: null }]);
 
   const report = engine.driftOf(wrongOrder, monitorsLaptop, layout, IDENTITIES);
-  assert.deepStrictEqual(driftFor(report, "terminal").drift, { monitor: false, workspace: false, group: true, floating: false, geometry: false });
+  assert.deepStrictEqual(driftFor(report, "terminal").drift, { monitor: false, workspace: false, group: true, floating: false, geometry: false, activeTab: false });
 });
 
 test("a group whose second member must be launched waits for the next pass", () => {
@@ -736,7 +736,8 @@ test("a group whose members are all here is rebuilt in recorded order", () => {
   assert.deepStrictEqual(groups[0], {
     kind: "group",
     addresses: ["0xtele", "0xslackgrouped", "0xwhats"],
-    missing: []
+    missing: [],
+    active: null
   });
 });
 
@@ -754,7 +755,8 @@ test("a group missing one member groups the two that are here, and names the abs
   assert.deepStrictEqual(groups[0], {
     kind: "group",
     addresses: ["0xtele", "0xwhats"],
-    missing: ["slack"]
+    missing: ["slack"],
+    active: null
   });
   // And the plan says so out loud, since the service logs describeOp.
   assert.strictEqual(engine.describeOp(groups[0]), "group 0xtele+0xwhats (without slack)");
@@ -784,7 +786,10 @@ test("a partial group CONVERGES once its present members are tabbed together", (
       memberKeys: ["telegram", "whatsapp"],
       addresses: ["0xtele", "0xwhats"],
       missing: ["slack"],
-      needed: false
+      needed: false,
+      activeRecorded: null,
+      activeLive: null,
+      activeDrift: false
     }
   ]);
   assert.strictEqual(driftFor(report, "telegram").drift.group, false);
@@ -816,7 +821,7 @@ test("the present members in the WRONG order is drift, and plans a rebuild", () 
   }
 
   assert.deepStrictEqual(engine.planRestore(wrongOrder, monitorsLaptop, layout, IDENTITIES), [
-    { kind: "group", addresses: ["0xtele", "0xslackgrouped", "0xwhats"], missing: [] }
+    { kind: "group", addresses: ["0xtele", "0xslackgrouped", "0xwhats"], missing: [], active: null }
   ]);
 
   // Put them in the recorded order and the plan is empty — membership AND order
@@ -906,7 +911,7 @@ test("a group recorded with an index hole plans what it can, and never loops", (
   // order. The third is a member in name only — the record puts it on ws 9,
   // ungrouped, and that is what gets restored.
   assert.deepStrictEqual(groups, [
-    { kind: "group", addresses: ["0xtele", "0xwhats"], missing: [] }
+    { kind: "group", addresses: ["0xtele", "0xwhats"], missing: [], active: null }
   ]);
 
   // And it converges: apply the plan and the next one is empty.
@@ -929,7 +934,10 @@ test("the drift report carries one group entry per recorded group", () => {
       memberKeys: ["telegram", "slack", "whatsapp"],
       addresses: ["0xtele", "0xslackgrouped", "0xwhats"],
       missing: [],
-      needed: true
+      needed: true,
+      activeRecorded: null,
+      activeLive: null,
+      activeDrift: false
     }
   ]);
 
@@ -1118,7 +1126,7 @@ test("a window recorded floating but live tiled plans a floating op, and back", 
   const report = engine.driftOf(clientsLaptop, monitorsLaptop, layout, IDENTITIES);
   const editor = driftFor(report, "editor");
   assert.strictEqual(editor.status, "drifted");
-  assert.deepStrictEqual(editor.drift, { monitor: false, workspace: false, group: false, floating: true, geometry: false });
+  assert.deepStrictEqual(editor.drift, { monitor: false, workspace: false, group: false, floating: true, geometry: false, activeTab: false });
   assert.strictEqual(editor.recorded.floating, true);
   assert.strictEqual(editor.current.floating, false);
 
@@ -1649,7 +1657,7 @@ test("opAddressesOf agrees with every op the planner actually emits", () => {
     [{ kind: "move", address: "0xa", workspaceId: 3 }, ["0xa"], "0xa"],
     [{ kind: "floating", address: "0xb", value: true }, ["0xb"], "0xb"],
     [{ kind: "geometry", address: "0xc", at: [1, 2], size: [3, 4] }, ["0xc"], "0xc"],
-    [{ kind: "group", addresses: ["0xd", "0xe"], missing: [] }, ["0xd", "0xe"], "0xd+0xe"],
+    [{ kind: "group", addresses: ["0xd", "0xe"], missing: [], active: null }, ["0xd", "0xe"], "0xd+0xe"],
     [{ kind: "ungroup", addresses: ["0xf"] }, ["0xf"], "0xf"]
   ];
   for (const [op, addresses, subject] of table) {
@@ -1816,7 +1824,7 @@ test("there is no workspace-monitor op any more: opToCommand has nothing for it"
 });
 
 test("a group op names the window it toggles, and focuses only for into_group", () => {
-  const op = { kind: "group", addresses: ["0xaaa", "0xbbb", "0xccc"], missing: [] };
+  const op = { kind: "group", addresses: ["0xaaa", "0xbbb", "0xccc"], missing: [], active: null };
 
   // Asymmetric on purpose, and both halves are live-verified: group.toggle
   // honours `window = "address:…"`, into_group ignores it and acts on the
@@ -2142,7 +2150,7 @@ test("a group op addresses the MATCHED windows, in recorded tuple order", () => 
   ]);
   const ops = engine.planRestore(scattered, monitorsLaptop, layout, TERMINALS);
   assert.deepStrictEqual(ops.filter((o) => o.kind === "group"), [
-    { kind: "group", addresses: ["0xt1", "0xt2"], missing: [] }
+    { kind: "group", addresses: ["0xt1", "0xt2"], missing: [], active: null }
   ]);
 
   const report = engine.driftOf(scattered, monitorsLaptop, layout, TERMINALS);
@@ -2460,4 +2468,189 @@ test("9i2 shapes: a settled workspace and a pending one are not shapes", () => {
   // A closed app: the workspace is not finished either.
   assert.deepEqual(engine.driftOf(shapeClients(TWO_SIDE_BY_SIDE).slice(0, 1), SHAPE_MONITORS,
     shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS).shapes, []);
+});
+
+// --- schema v9: the visible tab (epic 9i2, §2.6) -----------------------------
+
+// The messenger group with ONE member showing — `visible` is the compositor's
+// per-group "current tab" flag (nested-notes 9i2 (a)). `tabs` is the live ring.
+function messengersShowing(address, tabs) {
+  const ring = tabs || ["0xtele", "0xslackgrouped", "0xwhats"];
+  return [
+    makeClient({ address: "0xtele", class: "org.telegram.desktop", workspace: 10, grouped: ring }),
+    makeClient({ address: "0xslackgrouped", class: SLACK_CLASS, workspace: 10, grouped: ring }),
+    makeClient({ address: "0xwhats", class: WHATSAPP_CLASS, workspace: 10, grouped: ring })
+  ].concat(ring.indexOf("0xddd") === -1 ? []
+    : [makeClient({ address: "0xddd", class: "org.gnome.Nautilus", workspace: 10, grouped: ring })])
+    .map((c) => Object.assign(c, { visible: c.address === address }));
+}
+
+// Recorded with slack in front: slack active:true, the other two false.
+function slackInFrontLayout() {
+  const layout = engine.buildLayout(messengersShowing("0xslackgrouped"), monitorsLaptop, IDENTITIES, AT);
+  assert.deepStrictEqual(layout.apps.map((a) => [a.identityId, a.group.active]),
+    [["telegram", false], ["slack", true], ["whatsapp", false]]);
+  return layout;
+}
+
+// What the `tab` op does, as far as the plan can see: the named window becomes
+// the one visible tab of its ring.
+function applyTab(clients, op) {
+  const ring = clients.find((c) => c.address === op.address).grouped;
+  return clients.map((c) => (ring.indexOf(c.address) === -1 ? c
+    : Object.assign({}, c, { visible: c.address === op.address })));
+}
+
+test("9i2 tab: the wrong tab in front plans exactly one tab op, and converges", () => {
+  const layout = slackInFrontLayout();
+  const live = messengersShowing("0xtele");
+
+  const report = engine.driftOf(live, monitorsLaptop, layout, IDENTITIES);
+  assert.strictEqual(report.groups[0].needed, false, "the group itself stands");
+  assert.strictEqual(report.groups[0].activeRecorded, "0xslackgrouped");
+  assert.strictEqual(report.groups[0].activeLive, "0xtele");
+  assert.strictEqual(report.groups[0].activeDrift, true);
+  // The drift sits on the member that should be in front, and only there.
+  const slack = driftFor(report, "slack");
+  assert.deepStrictEqual(slack.drift,
+    { monitor: false, workspace: false, group: false, floating: false, geometry: false, activeTab: true });
+  assert.strictEqual(slack.status, "drifted");
+  assert.strictEqual(driftFor(report, "telegram").status, "ok");
+  assert.strictEqual(driftFor(report, "whatsapp").status, "ok");
+  assert.strictEqual(report.summary.drifted, 1, "so driftCount and the bar see it");
+
+  const ops = engine.planRestore(live, monitorsLaptop, layout, IDENTITIES);
+  assert.deepStrictEqual(ops, [{ kind: "tab", address: "0xslackgrouped", anchor: "0xtele", index: 1 }]);
+
+  // 1-based on the wire: tab index 1 goes out as 2, by selector, no focus.
+  assert.deepStrictEqual(engine.opToCommand(ops[0]), [
+    "hyprctl dispatch 'hl.dsp.group.active({ index = 2, window = \"address:0xslackgrouped\" })'"
+  ]);
+  assert.strictEqual(engine.planHasFocusOps(ops), false, "group.active honours its selector");
+  assert.deepStrictEqual(engine.planWithoutFocusOps(ops), ops, "so it runs while locked");
+  assert.strictEqual(engine.isRefinementPlan(ops), false, "a wrong tab is drift, not a shape nudge");
+  assert.deepStrictEqual(engine.opAddressesOf(ops[0]), ["0xslackgrouped", "0xtele"]);
+  assert.strictEqual(engine.opSubjectOf(ops[0]), "0xslackgrouped+0xtele");
+  assert.strictEqual(engine.opSignature(ops[0]), "tab:0xslackgrouped#1");
+  assert.strictEqual(engine.describeOp(ops[0]), "tab 0xslackgrouped to the front (tab 2)");
+  assert.deepStrictEqual(engine.unknownPlanAddresses(ops, live), []);
+
+  const after = applyTab(live, ops[0]);
+  assert.deepStrictEqual(engine.planRestore(after, monitorsLaptop, layout, IDENTITIES), []);
+  assert.strictEqual(engine.driftOf(after, monitorsLaptop, layout, IDENTITIES).summary.drifted, 0);
+});
+
+test("9i2 tab: the recorded tab in front plans nothing and reports nothing", () => {
+  const layout = slackInFrontLayout();
+  const live = messengersShowing("0xslackgrouped");
+  const report = engine.driftOf(live, monitorsLaptop, layout, IDENTITIES);
+  assert.strictEqual(report.groups[0].activeDrift, false);
+  assert.ok(report.apps.every((a) => a.status === "ok" && a.drift.activeTab === false));
+  assert.deepStrictEqual(engine.planRestore(live, monitorsLaptop, layout, IDENTITIES), []);
+});
+
+test("9i2 tab: a read that cannot name one tab is not drift", () => {
+  const layout = slackInFrontLayout();
+  for (const live of [messengersShowing(null),
+    messengersShowing("0xtele").map((c) => Object.assign(c, { visible: true }))]) {
+    const report = engine.driftOf(live, monitorsLaptop, layout, IDENTITIES);
+    assert.strictEqual(report.groups[0].activeLive, null);
+    assert.strictEqual(report.groups[0].activeDrift, false);
+    assert.deepStrictEqual(engine.planRestore(live, monitorsLaptop, layout, IDENTITIES), []);
+  }
+});
+
+test("9i2 tab: an unwatched tab in front is the wrong tab, and the index counts it", () => {
+  const layout = slackInFrontLayout();
+  const ring = ["0xtele", "0xddd", "0xslackgrouped", "0xwhats"];
+  const live = messengersShowing("0xddd", ring);
+  const ops = engine.planRestore(live, monitorsLaptop, layout, IDENTITIES);
+  // The stranger does not make the group "wrong" (no rebuild), but it is in
+  // front; the recorded tab is at live position 2, which is tab 3 on the wire.
+  assert.deepStrictEqual(ops, [{ kind: "tab", address: "0xslackgrouped", anchor: "0xtele", index: 2 }]);
+  assert.match(engine.opToCommand(ops[0])[0], /index = 3,/);
+  assert.deepStrictEqual(engine.planRestore(applyTab(live, ops[0]), monitorsLaptop, layout, IDENTITIES), []);
+});
+
+test("9i2 tab: a rebuild carries the recorded tab, and plans no tab op beside it", () => {
+  const layout = slackInFrontLayout();
+  // Wrong order AND the wrong tab: the group op is the one instruction.
+  const live = messengersShowing("0xtele", ["0xtele", "0xwhats", "0xslackgrouped"]);
+  const report = engine.driftOf(live, monitorsLaptop, layout, IDENTITIES);
+  assert.strictEqual(report.groups[0].needed, true);
+  assert.strictEqual(report.groups[0].activeDrift, false, "only an intact group drifts by tab");
+  assert.strictEqual(driftFor(report, "slack").drift.activeTab, false);
+  const ops = engine.planRestore(live, monitorsLaptop, layout, IDENTITIES);
+  assert.deepStrictEqual(ops, [{
+    kind: "group",
+    addresses: ["0xtele", "0xslackgrouped", "0xwhats"],
+    missing: [],
+    active: "0xslackgrouped"
+  }]);
+  assert.strictEqual(engine.opSignature(ops[0]), "group:0xtele+0xslackgrouped+0xwhats!0xslackgrouped");
+  assert.strictEqual(engine.describeOp(ops[0]), "group 0xtele+0xslackgrouped+0xwhats, 0xslackgrouped in front");
+
+  // A scattered group rebuilds the same way.
+  const scattered = scatteredMessengers();
+  const fromScatter = engine.planRestore(scattered, monitorsLaptop, layout, IDENTITIES)
+    .filter((o) => o.kind === "group");
+  assert.strictEqual(fromScatter[0].active, "0xslackgrouped");
+
+  // A rebuild that came out on another tab is caught on the next pass.
+  const rebuiltOnTele = messengersShowing("0xtele");
+  assert.deepStrictEqual(engine.planRestore(rebuiltOnTele, monitorsLaptop, layout, IDENTITIES).map((o) => o.kind),
+    ["tab"]);
+});
+
+test("9i2 tab: the recorded tab closed, or recorded behind an unwatched tab, never drifts", () => {
+  const layout = slackInFrontLayout();
+  // Slack is not running: the two that are here stand, and nobody is owed the front.
+  const withoutSlack = messengersShowing("0xtele", ["0xtele", "0xwhats"])
+    .filter((c) => c.address !== "0xslackgrouped");
+  const report = engine.driftOf(withoutSlack, monitorsLaptop, layout, IDENTITIES);
+  assert.strictEqual(report.groups[0].activeRecorded, null);
+  assert.strictEqual(report.groups[0].activeDrift, false);
+  assert.deepStrictEqual(engine.planRestore(withoutSlack, monitorsLaptop, layout, IDENTITIES).map((o) => o.kind),
+    ["launch"]);
+
+  // Recorded with an unwatched tab in front: every member active:false.
+  const ring = ["0xtele", "0xddd", "0xslackgrouped", "0xwhats"];
+  const behind = engine.buildLayout(messengersShowing("0xddd", ring), monitorsLaptop, IDENTITIES, AT);
+  assert.ok(behind.apps.every((a) => a.group.active === false));
+  assert.deepStrictEqual(engine.planRestore(messengersShowing("0xwhats", ring), monitorsLaptop, behind, IDENTITIES), []);
+});
+
+test("9i2 tab: a migrated v8 record (active null) plans no tab op and reports no drift", () => {
+  const layout = slackInFrontLayout();
+  const v8 = Object.assign({}, layout, {
+    apps: layout.apps.map((a) => Object.assign({}, a, { group: Object.assign({}, a.group, { active: null }) }))
+  });
+  const live = messengersShowing("0xtele");
+  const report = engine.driftOf(live, monitorsLaptop, v8, IDENTITIES);
+  assert.strictEqual(report.groups[0].activeRecorded, null);
+  assert.strictEqual(report.groups[0].activeLive, "0xtele");
+  assert.strictEqual(report.groups[0].activeDrift, false);
+  assert.strictEqual(report.summary.drifted, 0);
+  assert.deepStrictEqual(engine.planRestore(live, monitorsLaptop, v8, IDENTITIES), []);
+  // And a v8 rebuild's group op carries active: null, signing as it always did.
+  const ops = engine.planRestore(scatteredMessengers(), monitorsLaptop, v8, IDENTITIES).filter((o) => o.kind === "group");
+  assert.strictEqual(ops[0].active, null);
+  assert.strictEqual(engine.opSignature(ops[0]), "group:0xtele+0xslackgrouped+0xwhats");
+});
+
+test("9i2 tab: the tab op sits after the groups and before the geometry, and refuses a bad index", () => {
+  const layout = slackInFrontLayout();
+  // Telegram's group is intact but showing telegram, and the stranger moved
+  // the whole group to ws 4: moves, then the tab.
+  const live = messengersShowing("0xtele").map((c) => Object.assign(c, { workspace: { id: 4, name: "4" } }));
+  const kinds = engine.planRestore(live, monitorsLaptop, layout, IDENTITIES).map((o) => o.kind);
+  assert.strictEqual(kinds[kinds.length - 1], "tab");
+  assert.ok(kinds.indexOf("move") < kinds.indexOf("tab"));
+
+  for (const index of [-1, 1.5, "1", undefined, null]) {
+    assert.deepStrictEqual(engine.opToCommand({ kind: "tab", address: "0xa", anchor: "0xa", index }), [], String(index));
+  }
+  assert.deepStrictEqual(engine.opToCommand({ kind: "tab", address: "", index: 0 }), []);
+  assert.match(engine.opToCommand({ kind: "tab", address: "0xa", anchor: "0xa", index: 0 })[0], /index = 1,/,
+    "index 0 would select the LAST tab");
 });

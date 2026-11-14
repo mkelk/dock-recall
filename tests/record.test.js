@@ -761,6 +761,33 @@ test("the visible tab is recorded active, the others false", () => {
   assert.strictEqual(engine.activeTabOf([{ visible: true, address: "0xb" }, { visible: true }]), null);
 });
 
+test("the recorded tab survives the state file and is the tab driftOf judges against", () => {
+  // Through the file and back, then against the very desktop it was taken
+  // from: no tab drift. The same desktop with telegram in front: obsidian, the
+  // recorded tab, is the one member that drifted, and a `tab` op brings it back.
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
+  const stored = state.layoutFor(
+    state.parseState(state.serializeState(state.upsertLayout(state.defaultState(), layout))).state, LAPTOP_DESC);
+  // The stored form holds slots, not workspace ids (Slots resolves them), so
+  // the file is checked for the group fields and the drift runs on the record.
+  assert.deepStrictEqual(stored.apps.map((a) => a.group), layout.apps.map((a) => a.group));
+  assert.strictEqual(appsById(stored).obsidian.group.active, true);
+
+  const clean = engine.driftOf(clientsLaptop, monitorsLaptop, layout, IDENTITIES);
+  assert.ok(clean.apps.every((a) => a.drift.activeTab === false));
+  assert.ok(clean.groups.every((g) => g.activeDrift === false));
+
+  const obsidian = clientsLaptop.find((c) => c.class === "md.obsidian.Obsidian").address;
+  const telegram = clientsLaptop.find((c) => c.class === "org.telegram.desktop").address;
+  const ring = clientsLaptop.find((c) => c.address === obsidian).grouped;
+  const switched = clientsLaptop.map((c) => (ring.indexOf(c.address) === -1 ? c
+    : Object.assign({}, c, { visible: c.address === telegram })));
+  const report = engine.driftOf(switched, monitorsLaptop, layout, IDENTITIES);
+  assert.deepStrictEqual(report.apps.filter((a) => a.drift.activeTab).map((a) => a.identityId), ["obsidian"]);
+  assert.deepStrictEqual(engine.planRestore(switched, monitorsLaptop, layout, IDENTITIES),
+    [{ kind: "tab", address: obsidian, anchor: obsidian, index: ring.indexOf(obsidian) }]);
+});
+
 test("no context records layoutMode null", () => {
   for (const layout of [
     engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT),

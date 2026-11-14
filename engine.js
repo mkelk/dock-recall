@@ -2270,7 +2270,9 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
       // window never sets it — its rect is an outcome of the dwindle tree, not
       // a promise anything can keep, and `resize` aimed at one silently
       // rearranges the split (tick y29 evidence). See the geometry block below.
-      drift: { monitor: false, workspace: false, group: false, floating: false, geometry: false },
+      // `activeTab` (schema v9) is set in pass 2, on the one member of an
+      // intact group that was recorded as its visible tab and is not in front.
+      drift: { monitor: false, workspace: false, group: false, floating: false, geometry: false, activeTab: false },
       recorded: {
         monitorDescription: recorded.monitorDescription,
         workspaceId: recorded.workspaceId,
@@ -2426,7 +2428,7 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   var groups = groupDriftOf(recordedApps, apps, appClients, clients, identities, chosen);
 
   for (var s = 0; s < apps.length; s++) {
-    if (apps[s].status === "ok" && apps[s].drift.group) apps[s].status = "drifted";
+    if (apps[s].status === "ok" && (apps[s].drift.group || apps[s].drift.activeTab)) apps[s].status = "drifted";
     summary[apps[s].status] += 1;
   }
 
@@ -2558,6 +2560,32 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
     // drift to report: one window on its own is not a tab group, and saying it
     // has drifted would be a badge nobody can clear.
 
+    // The visible tab (schema v9, §2.6). `activeRecorded` is the live window of
+    // the ONE present member recorded `active: true` — none when the recording
+    // could not tell (a migrated v8 record holds `active: null` on every
+    // member), when the recorded tab is not here, or when a hand-edited file
+    // claims two. `activeLive` is the compositor's own answer over the group's
+    // live members, watched or not: an unwatched tab in front is a wrong tab.
+    // Judged only on an INTACT group of two or more present members: a group
+    // that is being rebuilt carries its tab on the group op instead, and one
+    // window on its own has no tab to be wrong about.
+    var activeAt = -1;
+    var activeCount = 0;
+    for (var r = 0; r < present.length; r++) {
+      var recordedGroup = recordedApps[present[r]].group;
+      if (recordedGroup && recordedGroup.active === true) {
+        activeCount++;
+        activeAt = present[r];
+      }
+    }
+    var activeRecorded = activeCount === 1 ? appClients[activeAt].address : null;
+    var activeLive = present.length > 1
+      ? activeTabOf(groupMemberClients(appClients[present[0]], clients))
+      : null;
+    var activeDrift = !needed && present.length > 1
+      && activeRecorded !== null && activeLive !== null && activeRecorded !== activeLive;
+    if (activeDrift) apps[activeAt].drift.activeTab = true;
+
     out.push({
       groupId: group.groupId,
       // The identity ids of the members that are here, in recorded order. Kept
@@ -2569,7 +2597,10 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
       memberKeys: memberKeys,
       addresses: addresses,
       missing: missing,
-      needed: needed
+      needed: needed,
+      activeRecorded: activeRecorded,
+      activeLive: activeLive,
+      activeDrift: activeDrift
     });
   }
   return out;
@@ -3117,6 +3148,8 @@ var VERDICT_PHRASES = {
   "wrong-order": "in its group in the wrong tab order",
   "unexpected-group": "grouped, but recorded standing alone",
   "missing-member": "its group is short a member that is here",
+  // Schema v9: the group stands, but another tab is in front of this one.
+  "wrong-tab": "wrong tab in front",
   "not-running": "not running",
   "identity-unknown": "no longer a watched app",
   "not-judged": "",
@@ -3297,6 +3330,9 @@ function verdictForApp(app, groupsById, blocked, instance) {
     if (drift.workspace) verdict.workspace = "wrong-workspace";
     if (drift.floating) verdict.floating = recorded.floating ? "should-float" : "should-tile";
     if (drift.group) verdict.group = groupVerdictFor(app, groupsById);
+    // A wrong tab is a group fact, so it reads on the group dimension — and only
+    // when the membership itself is right: a group being rebuilt says why.
+    else if (drift.activeTab) verdict.group = "wrong-tab";
   }
 
   var phrases = [];
@@ -4384,8 +4420,17 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
 //            //   the rebuild reproduces exactly this order, tab for tab.
 //            // missing:   recorded members that could not take part, so the
 //            //   service can log which app the group is short of.
+//            // active:    the live window of the member recorded as the
+//            //   visible tab, or null (schema v9) — the rebuild ends on it.
+//      | { kind: "tab",    address, anchor, index }
+//            // An INTACT group showing the wrong tab: bring `address` to the
+//            //   front. index: its 0-based position in the live tab ring;
+//            //   anchor: the group's tile key. Dispatched by selector,
+//            //   focus-independent (nested-notes 9i2 (b)).
 //
-// Order is launches, then ungroups, then moves, then floatings, then groups:
+// Order is launches, then ungroups, then moves, then floatings, then groups,
+// then tabs (a tab is chosen inside a group that stands), then geometry and the
+// tiled refinement:
 //   - a window that has to be launched has no address to do anything to yet;
 //   - stale groups are dissolved BEFORE any move, because Hyprland moves a
 //     grouped window's whole group with it — moving first would drag windows
@@ -4425,6 +4470,7 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   var moveRects = [];
   var floatings = [];
   var groups = [];
+  var tabs = [];
   var geometries = [];
 
   for (var i = 0; i < recordedApps.length; i++) {
@@ -4539,12 +4585,22 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   var reportGroups = report.groups || [];
   for (var g = 0; g < reportGroups.length; g++) {
     var group = reportGroups[g];
-    if (!group.needed) continue;
+    if (!group.needed) {
+      // An intact group showing the wrong tab (§2.6): one `tab` op, nothing
+      // else — the group itself is right and is never rebuilt for this.
+      var tab = tabOpFor(group, clients);
+      if (tab) tabs.push(tab);
+      continue;
+    }
     if (group.addresses.length < 2) continue;
     groups.push({
       kind: "group",
       addresses: group.addresses.slice(),
-      missing: group.missing.slice()
+      missing: group.missing.slice(),
+      // The live window of the member recorded as the visible tab, or null: a
+      // rebuild ends with this tab in front (the service's last step), so a
+      // regrouped group does not need a `tab` op on the next pass as well.
+      active: group.activeRecorded || null
     });
   }
 
@@ -4575,10 +4631,43 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
     .concat(orderedMoves)
     .concat(floatings)
     .concat(groups)
+    .concat(tabs)
     .concat(geometries)
     .concat(refinements.splits)
     .concat(refinements.swaps)
     .concat(refinements.dividers);
+}
+
+// The `tab` op for one report group, or null (§2.6).
+//
+// Only for a group driftOf found intact and showing the wrong tab. `index` is
+// the recorded-active window's position in the LIVE tab ring, 0-based, read off
+// the same ring activeTabOf judged — unwatched tabs included, because the
+// compositor counts them, and the recorded `group.index` does not. opToCommand
+// turns it into the dispatcher's 1-based index. `anchor` is the group's tile
+// key (its first present recorded member), named for the ledger and the
+// read-back; the dispatch itself names `address`, which picks the group just
+// as well (nested-notes 9i2 (b)). A window that is not in its own ring — a read
+// that cannot place it — plans nothing rather than a guessed index.
+function tabOpFor(group, clientsJson) {
+  if (!group || !group.activeDrift || !group.activeRecorded) return null;
+  var clients = clientsJson || [];
+  var client = null;
+  for (var c = 0; c < clients.length; c++) {
+    if (clients[c] && clients[c].address === group.activeRecorded) {
+      client = clients[c];
+      break;
+    }
+  }
+  if (!client) return null;
+  var index = groupOrderFor(client, clients).indexOf(group.activeRecorded);
+  if (index < 0) return null;
+  return {
+    kind: "tab",
+    address: group.activeRecorded,
+    anchor: (group.addresses && group.addresses[0]) || group.activeRecorded,
+    index: index
+  };
 }
 
 // Mark each move whose destination will NOT exist when it runs: `viaMonitor`.
@@ -5266,10 +5355,16 @@ function opAddressesOf(op) {
     // make the op meaningless — so every consumer (the snapshot invariant, the
     // ledger, the plan's address list) has to see it, and now they all do
     // without any of them knowing what a swap is.
+    var named = [op.address];
     if (typeof op.target === "string" && op.target && op.target !== op.address) {
-      return [op.address, op.target];
+      named.push(op.target);
     }
-    return [op.address];
+    // A FOURTH, from the `tab` op (schema v9): `anchor`, the window that names
+    // the group the op acts IN. Spelled by shape for the same reason.
+    if (typeof op.anchor === "string" && op.anchor && named.indexOf(op.anchor) === -1) {
+      named.push(op.anchor);
+    }
+    return named;
   }
   if (!isAddressList(op.addresses)) return [];
   var out = [];
@@ -5395,7 +5490,15 @@ function opSignature(op) {
   if (op.kind === "divider") {
     return "divider:" + op.address + ":" + op.axis + "->" + ((op.size || [])[op.axis]);
   }
-  if (op.kind === "group") return "group:" + ((op.addresses || []).join("+"));
+  // The rebuild's final tab is part of its program — two rebuilds of one group
+  // ending on different tabs build different desktops. Omitted when there is
+  // none, so a v8 record's group op signs exactly as it always did.
+  if (op.kind === "group") {
+    return "group:" + ((op.addresses || []).join("+")) + (op.active ? "!" + op.active : "");
+  }
+  // The index is signed: it is the instruction. The anchor is not — it only
+  // names the group, and the address already does.
+  if (op.kind === "tab") return "tab:" + op.address + "#" + op.index;
   if (op.kind === "ungroup") return "ungroup:" + ((op.addresses || []).join("+"));
   // An op kind this version has never heard of still has to compare by SUBJECT
   // and not just by kind: two different future ops that signed as the bare word
@@ -5431,7 +5534,8 @@ function samePlan(a, b) {
 // along must not buy the rest of the plan extra iterations.
 //
 // An empty plan is not a refinement plan. It is a converged desktop, and the
-// caller has already stopped.
+// caller has already stopped. A `tab` op is not refinement either: a wrong tab
+// in front is drift (it counts, it colours the bar), not a shape nudge.
 function isRefinementPlan(plan) {
   var list = plan || [];
   if (!list.length) return false;
@@ -5452,7 +5556,10 @@ function isRefinementPlan(plan) {
 // locked session would flip whatever the compositor was left holding, on a
 // workspace the user cannot see. Every other op names its subject and is
 // focus-independent: moves, the whole-group `group.toggle` an
-// `ungroup` dispatches, the float toggle, resize/move, swaps.
+// `ungroup` dispatches, the float toggle, resize/move, swaps — and the `tab`
+// op (schema v9): `group.active` honours its window selector on shown, hidden
+// and never-shown workspaces alike and moves neither the focus nor the shown
+// workspace (nested-notes 9i2 (b)), so it runs while the session is locked.
 //
 // The service asks because of the LOCKED SESSION (state-matrix §7, tick 97e):
 // under an ext-session-lock there is no window to focus, so a rebuild attempted
@@ -5523,7 +5630,11 @@ function describeOp(op) {
   }
   if (op.kind === "group") {
     return "group " + ((op.addresses || []).join("+"))
-      + ((op.missing && op.missing.length) ? " (without " + op.missing.join(", ") + ")" : "");
+      + ((op.missing && op.missing.length) ? " (without " + op.missing.join(", ") + ")" : "")
+      + (op.active ? ", " + op.active + " in front" : "");
+  }
+  if (op.kind === "tab") {
+    return "tab " + op.address + " to the front (tab " + (op.index + 1) + ")";
   }
   if (op.kind === "ungroup") return "ungroup " + ((op.addresses || []).join("+"));
   var subject = opSubjectOf(op);
@@ -5960,6 +6071,28 @@ function opToCommand(op) {
         "hl.dsp.window.resize({ " + windowSelector(op.address) +
         ", x = " + wanted[0] + ", y = " + wanted[1] + " })"
       )
+    ];
+  }
+
+  if (op.kind === "tab") {
+    // ONE dispatch, naming the window, and it needs no focus: measured nested
+    // (tests/nested-notes.md 9i2 (b)) — `group.active` honours its `window`
+    // selector on a shown, a hidden and a never-shown workspace, the named
+    // member only picks the group, and neither `activewindow` nor the shown
+    // workspace moves (unless the focus is already inside that group, where it
+    // follows the new tab exactly as a tab click would).
+    //
+    // The dispatcher's index is 1-BASED, and the op's is 0-based, so it goes
+    // out as index + 1. Get that wrong and nothing says so: index 0 silently
+    // selects the LAST tab, any other off-by-one picks a neighbour, and every
+    // one of them answers "ok". Which is why a non-integer or negative index
+    // dispatches nothing at all.
+    var tabIndex = op.index;
+    if (!op.address || typeof tabIndex !== "number" || tabIndex < 0 || Math.floor(tabIndex) !== tabIndex) {
+      return [];
+    }
+    return [
+      dispatchCommand("hl.dsp.group.active({ index = " + (tabIndex + 1) + ", " + windowSelector(op.address) + " })")
     ];
   }
 
