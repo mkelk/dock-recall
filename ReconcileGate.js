@@ -198,6 +198,53 @@ function check(gate, input) {
   return { gate: create(), ready: true, waitMs: 0, reason: null, timedOut: false, planAnyway: false };
 }
 
+// ------------------------------------------------- config reload: restore or not
+//
+// Human decision 2026-11-14, "restore only if monitors changed". Entering 4.5's
+// floating mode reloads Hyprland's config (several configreloaded events), and a
+// reload that started a restore cycle moved windows back and LAUNCHED recorded
+// but closed apps. A reload still feeds the gate (it holds, and 4.5 may re-sort),
+// but it is restore-relevant only when the monitor set, the topology key or the
+// block table (monitor-workspaces) differs from the reading taken before it.
+//
+// reloadReading(monitors, topologyKey, blocksText) -> the comparable reading.
+// The monitor set is name, description, on/off and mirror per output, sorted;
+// the focused workspace is left out (it moves with every keystroke). The block
+// table is compared row by row, trimmed and sorted, so a rewrite of the same
+// rows in another order is no change.
+function reloadReading(monitors, topologyKey, blocksText) {
+  var ml = monitors || [];
+  var mon = [];
+  for (var i = 0; i < ml.length; i++) {
+    var m = ml[i] || {};
+    mon.push([m.name, m.description, m.disabled === true ? "off" : "on", m.mirrorOf || ""].join("|"));
+  }
+  mon.sort();
+  var lines = String(blocksText || "").split("\n");
+  var rows = [];
+  for (var j = 0; j < lines.length; j++) {
+    var row = lines[j].trim();
+    if (row) rows.push(row);
+  }
+  rows.sort();
+  return { topologyKey: String(topologyKey || ""), monitors: mon.join(","), blocks: rows.join("\n") };
+}
+
+// reloadDecision(before, after) -> { restore, reason }
+//   before null: nothing was read before the reload, so "unchanged" cannot be
+//   shown — restore, as every reload did before this rule (reason no-baseline).
+//   after null: the reading after the reload failed — no restore (no-reading).
+//   Otherwise the first difference names the reason: topology-changed,
+//   monitors-changed, blocks-changed; none is { restore: false, unchanged }.
+function reloadDecision(before, after) {
+  if (!before) return { restore: true, reason: "no-baseline" };
+  if (!after) return { restore: false, reason: "no-reading" };
+  if (before.topologyKey !== after.topologyKey) return { restore: true, reason: "topology-changed" };
+  if (before.monitors !== after.monitors) return { restore: true, reason: "monitors-changed" };
+  if (before.blocks !== after.blocks) return { restore: true, reason: "blocks-changed" };
+  return { restore: false, reason: "unchanged" };
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     HOLD_AFTER_REMOVE_MS: HOLD_AFTER_REMOVE_MS,
@@ -209,6 +256,8 @@ if (typeof module !== "undefined") {
     signature: signature,
     pending: pending,
     offOwnerWorkspaces: offOwnerWorkspaces,
-    check: check
+    check: check,
+    reloadReading: reloadReading,
+    reloadDecision: reloadDecision
   };
 }

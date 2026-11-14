@@ -28,6 +28,9 @@
 #                                         window, the visible tab, the refusals
 #                                         for a scrolling workspace and an
 #                                         ambiguous tree.
+#      tests/sandbox-reload.sh            Tier B: a config reload with the
+#                                         monitors unchanged restores nothing;
+#                                         one beside an added output restores.
 #   5. tests/sandbox-future-version.sh --both   a schema-v99 file is INERT, with
 #                                         the same-seed control arm that makes
 #                                         "nothing happened" mean something.
@@ -155,6 +158,9 @@ step "tests/sandbox-slots.sh" \
 
 step "tests/sandbox-fidelity.sh" \
   ./tests/sandbox-fidelity.sh
+
+step "tests/sandbox-reload.sh" \
+  ./tests/sandbox-reload.sh
 
 step "tests/sandbox-future-version.sh --both" \
   ./tests/sandbox-future-version.sh --both

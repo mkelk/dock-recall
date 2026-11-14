@@ -596,14 +596,20 @@ case_floating() {
   must "F: the recording carries the float and its mode" "F: the recording does not say floating on a floating workspace" \
     bash -c "jq -e '[.layouts[]?.apps[]?|select(.identityId==\"dr-fa\")]|first|.floating==true and .layoutMode==\"floating\"' '$STATE' >/dev/null"
   restore
-  # Scatter: off the workspace, and to a different rect. Omarchy's mode tiles a
+  # Scatter: off the workspace, and to a different rect. The scatter itself is
+  # asserted FIRST, straight after the move and before anything could restore
+  # it: VM run 1 of epic 9i2 read it 2.5 s later, after a reload-triggered cycle
+  # had already put dr-fa back, and blamed the scatter. Omarchy's mode tiles a
   # window it floated once it leaves the workspace (one second after the move),
-  # so wait that out before looking.
+  # so the rect is compared only after waiting that out.
   mv_ws "$(addr_of dr-fa)" "$SCRATCH"
-  sleep 2.5
-  assert_moved "F scatter" "$SCRATCH" "$TMPD/f" 0.5
   must "F: the window left workspace $W" "F: dr-fa is still on workspace $W" \
     [ "$(clients | jq -r 'first(.[]|select(.class=="dr-fa")|.workspace.id)')" == "$SCRATCH" ]
+  sleep 2.5
+  must "F: nothing restored the window before the restore was asked for" \
+    "F: dr-fa left the scratch workspace for '$(clients | jq -r 'first(.[]|select(.class=="dr-fa")|.workspace.id)')' before any restore — something else restored it" \
+    [ "$(clients | jq -r 'first(.[]|select(.class=="dr-fa")|.workspace.id)')" == "$SCRATCH" ]
+  assert_moved "F scatter" "$SCRATCH" "$TMPD/f" 0.5
   restore
   show_rects "$W"
   must "F: the window is back on workspace $W" "F: dr-fa is on workspace '$(clients | jq -r 'first(.[]|select(.class=="dr-fa")|.workspace.id)')'" \
