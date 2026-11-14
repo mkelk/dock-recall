@@ -4524,7 +4524,10 @@ function driftTagFor(driftTo) {
 var REFUSAL_TAGS = {
   "not-a-tree": "not a tiling",
   "ambiguous-tree": "shape unclear",
-  "different-shape": "shape differs"
+  "different-shape": "shape differs",
+  "layout-scrolling": "scrolling layout",
+  "layout-floating": "floating layout",
+  "layout-mode-differs": "layout differs"
 };
 
 var REFUSAL_SENTENCES = {
@@ -4533,7 +4536,13 @@ var REFUSAL_SENTENCES = {
   "ambiguous-tree": "these windows fit more than one split shape, so which divider a nudge"
     + " would move is a guess — the shape is left as it is",
   "different-shape": "live split shape differs from the recording — auto-fix is limited to a"
-    + " single flip, so this shape is left as it is"
+    + " single flip, so this shape is left as it is",
+  "layout-scrolling": "this workspace is in the scrolling layout, which has no split shape"
+    + " to rebuild — its windows are left as they are",
+  "layout-floating": "this workspace is in the floating layout, so its windows are placed"
+    + " by hand, not by a split shape",
+  "layout-mode-differs": "this workspace was recorded in a different layout than it is in"
+    + " now, so the recorded shape cannot be rebuilt here"
 };
 
 // A code this panel has never heard of comes from a NEWER engine, and it is
@@ -6269,6 +6278,9 @@ function badgeTooltip(glyphState, status) {
   }
   if (glyphState === "drifted") {
     var count = Number(current.driftCount) || 0;
+    if (count === 0 && shapeLinesFor(current).lines.length > 0) {
+      return "Every watched app is where the recording puts it, but some workspaces are not in the recorded tile shape. The lines below say which and why.";
+    }
     return count + (count === 1 ? " app is" : " apps are")
       + " not where the recording puts them. Restore now moves them back; Record layout files where they are instead.";
   }
@@ -6662,6 +6674,38 @@ function deferredLockedSuffix(status) {
     ? " — joins deferred until unlock" : "";
 }
 
+// Workspaces whose tiles a restore did not or could not bring back to the
+// recorded shape (status.shapes, schema v9). Pure and null-safe: a status with
+// no shapes answers { lines: [], summary: "" } and the callers render nothing.
+//
+// lines:   one per shape — "workspace 3 on Laptop: 0.55 of its recorded shape -
+//          <reason sentence>", or "... - a restore will fix it" when the reason
+//          is null (a restore would act).
+// summary: one line for the bar tooltip, naming each workspace and its short tag.
+function shapeLinesFor(status) {
+  var rows = status && Array.isArray(status.shapes) ? status.shapes : [];
+  var lines = [];
+  var tags = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    if (!row || typeof row.workspaceId !== "number") continue;
+    var iou = typeof row.meanIou === "number" && isFinite(row.meanIou) ? row.meanIou : 0;
+    var reason = trim(row.reason);
+    var desc = trim(row.monitorDescription);
+    var where = desc ? " on " + shortMonitorLabel(desc, null) : "";
+    lines.push("workspace " + row.workspaceId + where + ": " + iou.toFixed(2)
+      + " of its recorded shape - "
+      + (reason ? refusalSentenceFor(reason) : "a restore will fix it"));
+    tags.push(row.workspaceId + " (" + (reason ? refusalTagFor(reason) : "a restore will fix it") + ")");
+  }
+  if (lines.length === 0) return { lines: [], summary: "" };
+  return {
+    lines: lines,
+    summary: lines.length + (lines.length === 1 ? " workspace is" : " workspaces are")
+      + " not in the recorded shape: " + tags.join(", ")
+  };
+}
+
 function barGlyphTooltip(glyphState, status, topologyName) {
   var current = status || {};
   var where = trim(topologyName);
@@ -6679,7 +6723,10 @@ function barGlyphTooltip(glyphState, status, topologyName) {
       + deferredLockedSuffix(current);
   }
   if (glyphState === "drifted") {
-    return where + " — drifted (" + (Number(current.driftCount) || 0) + ")"
+    var shapeSummary = shapeLinesFor(current).summary;
+    var driftN = Number(current.driftCount) || 0;
+    return where + (driftN === 0 && shapeSummary ? " — shape differs" : " — drifted (" + driftN + ")")
+      + (shapeSummary ? "\n" + shapeSummary : "")
       + deferredLockedSuffix(current);
   }
   return where + " — in sync" + deferredLockedSuffix(current);
@@ -7542,6 +7589,7 @@ if (typeof module !== "undefined") {
     refusalSentenceFor: refusalSentenceFor,
     refusalOfVerdict: refusalOfVerdict,
     REFUSAL_TAGS: REFUSAL_TAGS,
+    REFUSAL_SENTENCES: REFUSAL_SENTENCES,
     chipTooltipText: chipTooltipText,
     rowTooltipText: rowTooltipText,
     verdictIndexByOccurrence: verdictIndexByOccurrence,
@@ -7593,6 +7641,7 @@ if (typeof module !== "undefined") {
     menuAction: menuAction,
     firstEnabledActionId: firstEnabledActionId,
     barGlyphTooltip: barGlyphTooltip,
+    shapeLinesFor: shapeLinesFor,
     deferredLockedSuffix: deferredLockedSuffix,
     recordLabel: recordLabel,
     recordBlockedHint: recordBlockedHint,

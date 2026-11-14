@@ -8410,3 +8410,48 @@ test("the engine records layoutMode when the context carries the workspaces (tic
     assert.strictEqual(without.apps[0].layoutMode, null);
   }
 });
+
+test("the three layout-mode refusal words have a tag and a sentence of the panel's own", () => {
+  for (const code of [
+    engine.TILING_REFUSAL_LAYOUT_SCROLLING,
+    engine.TILING_REFUSAL_LAYOUT_FLOATING,
+    engine.TILING_REFUSAL_LAYOUT_MODE_DIFFERS
+  ]) {
+    const tag = panel.refusalTagFor(code);
+    assert.ok(tag && tag !== code && tag.length <= 16, code + " tag: " + tag);
+    const sentence = panel.refusalSentenceFor(code);
+    assert.ok(sentence.length > tag.length && sentence.indexOf(code) === -1, code + ": " + sentence);
+    assert.notStrictEqual(sentence, engine.tilingRefusalPhrase(code), code + " borrows the engine's voice");
+  }
+});
+
+test("shapeLinesFor: one line per unmet shape, and nothing when there are none", () => {
+  const empty = { lines: [], summary: "" };
+  assert.deepStrictEqual(panel.shapeLinesFor(null), empty);
+  assert.deepStrictEqual(panel.shapeLinesFor({}), empty);
+  assert.deepStrictEqual(panel.shapeLinesFor({ shapeCount: 0, shapes: [] }), empty);
+
+  const out = panel.shapeLinesFor({ shapeCount: 2, shapes: [
+    { workspaceId: 3, monitorDescription: "Samsung Display Corp. ATNA60HR07-0", meanIou: 0.55, reason: "ambiguous-tree" },
+    { workspaceId: 12, monitorDescription: "", meanIou: 0.9, reason: null }
+  ] });
+  assert.strictEqual(out.lines.length, 2);
+  assert.ok(out.lines[0].indexOf("workspace 3 on ") === 0, out.lines[0]);
+  assert.ok(out.lines[0].indexOf(": 0.55 of its recorded shape - ") !== -1, out.lines[0]);
+  assert.ok(out.lines[0].endsWith(panel.refusalSentenceFor("ambiguous-tree")), out.lines[0]);
+  assert.strictEqual(out.lines[1], "workspace 12: 0.90 of its recorded shape - a restore will fix it");
+  assert.ok(out.summary.indexOf("2 workspaces") !== -1 && out.summary.indexOf("3 (shape unclear)") !== -1, out.summary);
+  assert.strictEqual(out.summary.indexOf("\n"), -1);
+});
+
+test("the bar tooltip and badge tooltip carry the shape summary only when there is one", () => {
+  const withShape = statusOf({ recorded: true, shapeCount: 1,
+    shapes: [{ workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: "layout-floating" }] });
+  assert.strictEqual(state.glyphState(withShape), "drifted");
+  const tip = panel.barGlyphTooltip("drifted", withShape, "Desk");
+  assert.ok(tip.indexOf("\n") !== -1 && tip.indexOf("3 (floating layout)") !== -1, tip);
+  assert.ok(panel.badgeTooltip("drifted", withShape).indexOf("tile shape") !== -1);
+  // today's wording, untouched, with no shapes
+  assert.strictEqual(panel.barGlyphTooltip("drifted", statusOf({ recorded: true, driftCount: 2 }), "Desk"),
+    "Desk — drifted (2)");
+});
