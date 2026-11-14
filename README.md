@@ -371,10 +371,7 @@ can be compared rather than trusted. It is quoted in exactly ONE place —
 the command block above — because it has now drifted three times in one
 increment, every time because two paragraphs said it. (The transcript is from
 2026-09-02: it says 835, and its step 3 still names a hand-written file list,
-which is now a glob.) About eight minutes, all of it headless. Step 7
-needs `OMARCHY_ISO_HOST` (see
-[`tests/acceptance/PROVISIONING.md`](tests/acceptance/PROVISIONING.md)), and
-per-step logs land in a directory the summary names —
+which is now a glob.) About eight minutes, all of it headless. Per-step logs land in a directory the summary names —
 `DR_RUN_ALL_LOG_DIR` picks it, `DR_RUN_ALL_SKIP="4 5"` skips tiers that are
 known-unavailable on a machine (a skipped step reports SKIP and never a pass).
 

@@ -20,15 +20,15 @@
 # Usage: tests/acceptance/stage.sh <stage-dir> [omarchy-source]
 #
 #   omarchy-source is where omarchy's own test/acceptance and
-#   test/acceptance.d/base-test.sh are copied from: either a local omarchy
-#   checkout, or an scp-style host:path. Defaults to $OMARCHY_ISO_HOST's
-#   ~/git/omarchy, the fork that carries the acceptance suite. The installed
-#   /usr/share/omarchy does NOT ship test/, so a local Omarchy is not enough.
+#   test/acceptance.d/base-test.sh are copied from: a local omarchy checkout
+#   (default ~/git/omarchy, the fork that carries the acceptance suite), or an
+#   scp-style host:path. The installed /usr/share/omarchy does NOT ship test/,
+#   so a local Omarchy install is not enough.
 
 set -euo pipefail
 
 STAGE="${1:?usage: stage.sh <stage-dir> [omarchy-source]}"
-OMARCHY_SRC="${2:-${OMARCHY_ISO_HOST:?set OMARCHY_ISO_HOST to the host holding ~/git/omarchy, or pass a source explicitly}:git/omarchy}"
+OMARCHY_SRC="${2:-$HOME/git/omarchy}"
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 mkdir -p "$STAGE/test/acceptance.d"
