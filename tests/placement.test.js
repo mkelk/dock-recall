@@ -485,9 +485,20 @@ test("GATE 9i2: a destination recorded in another mode gets no splitParent; the 
     ["0x1", "0x2", "0x3"]);
   assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("dwindle")), IDS, dwindle)),
     ["0x1", "0x2<-0x1", "0x3<-0x2"]);
-  // A destination with no readable mode (it does not exist yet) is not refused.
+  // A destination with no readable mode (it does not exist yet) is not refused
+  // by its live mode — but one RECORDED scrolling or floating stands the
+  // sequencing down all the same (tick v2p); recorded dwindle or unrecorded
+  // keeps it, and the service re-reads the mode before any axis correction.
   const unknown = { workspaces: [{ id: 9, tiledLayout: "dwindle" }], built: null };
   assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, unknown)),
+    ["0x1", "0x2", "0x3"]);
+  assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("floating")), IDS, unknown)),
+    ["0x1", "0x2", "0x3"]);
+  assert.ok(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, unknown)
+    .filter((op) => op.kind === "move").every((op) => op.sequenced !== true && op.splitAxis === undefined));
+  assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("dwindle")), IDS, unknown)),
+    ["0x1", "0x2<-0x1", "0x3<-0x2"]);
+  assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode(null)), IDS, unknown)),
     ["0x1", "0x2<-0x1", "0x3<-0x2"]);
 });
 
@@ -562,4 +573,26 @@ test("9i2: the axis and the sequenced mark sign nothing — the parent is the pr
   assert.equal(engine.describeOp(marked), "move 0xB -> ws 5 (splitting 0xA, stacked)");
   assert.equal(engine.describeOp(Object.assign({}, marked, { splitAxis: 0 })),
     "move 0xB -> ws 5 (splitting 0xA, side by side)");
+});
+
+// ------------------------------------------- reading an arrival's axis back (tick v2p)
+//
+// The service reads each sequenced arrival back against its split parent. The
+// arrival always takes the FAR side (right / below), and a togglesplit keeps it
+// there: an arrival found left of or above its parent landed somewhere the
+// program did not put it — no axis to correct, and no known tree.
+
+test("v2p: arrivalAxisBetween reads the axis only with the arrival on the far side", () => {
+  const left = { at: [0, 0], size: [500, 800] };
+  const right = { at: [510, 0], size: [500, 800] };
+  const top = { at: [0, 0], size: [1000, 395] };
+  const bottom = { at: [0, 405], size: [1000, 395] };
+  assert.equal(engine.arrivalAxisBetween(left, right), 0, "beside, on the right");
+  assert.equal(engine.arrivalAxisBetween(top, bottom), 1, "below");
+  assert.equal(engine.arrivalAxisBetween(right, left), null, "on the parent's LEFT is not side by side");
+  assert.equal(engine.arrivalAxisBetween(bottom, top), null, "ABOVE the parent is not stacked");
+  // Not one cut, or nothing to compare: null as before.
+  assert.equal(engine.arrivalAxisBetween(left, { at: [100, 100], size: [500, 500] }), null);
+  assert.equal(engine.arrivalAxisBetween(null, right), null);
+  assert.equal(engine.arrivalAxisBetween(left, { at: [510, 0], size: [0, 800] }), null);
 });

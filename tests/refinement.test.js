@@ -1481,3 +1481,76 @@ test("5wo: G2's intended shape — a group of three as one tile beside gd — sw
   const program = engine.planWorkspaceTiling(recorded, swapped);
   assert.equal(program.swaps.length, 1, JSON.stringify(program));
 });
+
+// ------------------------------------------- a split on a group tile (tick v2p)
+//
+// `togglesplit` flips the node of the FOCUSED window, and focusing a member of
+// a group that is not its visible tab makes it the visible tab (§2 amendment).
+// So a split on a group tile must not address the tab-0 key blindly: it names
+// the tab that will be in front when it runs.
+
+const V2P_CTX = { workspaces: [{ id: 5, tiledLayout: "dwindle" }], built: null };
+// The group (ring ga, gc, gb) and gd, with `visible` set on the members listed.
+function v2pDesk(groupRect, tileRect, visible) {
+  return [["0xa", "app-ga"], ["0xb", "app-gb"], ["0xc", "app-gc"]].map(([address, cls]) =>
+    makeClient({
+      address, class: cls, workspace: 5,
+      at: groupRect.at.slice(), size: groupRect.size.slice(),
+      grouped: GROUP_ORDER.slice(), visible: visible.indexOf(address) !== -1
+    })).concat([makeClient({
+      address: "0xd", class: "app-gd", workspace: 5,
+      at: tileRect.at.slice(), size: tileRect.size.slice(), visible: true
+    })]);
+}
+// Recorded stacked (group on top, gb in front); live side by side — one flip.
+const V2P_LAYOUT = engine.buildLayout(v2pDesk(GROUP_TOP, TILE_BOTTOM, ["0xb"]), MONITORS, GIDS,
+  "2026-11-14T00:00:00Z", undefined, V2P_CTX);
+const V2P_SIDE_GROUP = { at: [12, 59], size: [703, 829] };
+const V2P_SIDE_TILE = { at: [725, 38], size: [703, 850] };
+const V2P_V8 = JSON.parse(JSON.stringify(V2P_LAYOUT));
+V2P_V8.apps.forEach((a) => { if (a.group) a.group.active = null; });
+
+function v2pSplits(plan) {
+  return plan.filter((op) => op.kind === "split").map((op) => op.address);
+}
+
+test("v2p: the recording under test has gb (not tab 0) as the visible tab", () => {
+  const byId = {};
+  for (const app of V2P_LAYOUT.apps) byId[app.identityId] = app;
+  assert.equal(byId.gb.group.active, true);
+  assert.equal(byId.ga.group.active, false);
+  assert.equal(byId.ga.group.index, 0);
+});
+
+test("v2p: a split on a group tile focuses the LIVE visible tab, not the tab-0 key", () => {
+  const plan = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xb"]), MONITORS, V2P_LAYOUT, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(plan), ["0xb"], JSON.stringify(plan));
+  assert.deepEqual(plan.filter((op) => op.kind === "tab"), [], "the right tab is in front already");
+  // The dispatch focuses that member, then toggles.
+  const cmds = engine.opToCommand(plan.find((op) => op.kind === "split"));
+  assert.ok(cmds[0].indexOf("address:0xb") !== -1, cmds[0]);
+});
+
+test("v2p: with the group's tab op in the same plan, the split focuses the tab that op brings forward", () => {
+  const plan = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xc"]), MONITORS, V2P_LAYOUT, GIDS, V2P_CTX);
+  const kinds = plan.map((op) => op.kind);
+  assert.ok(kinds.indexOf("tab") !== -1 && kinds.indexOf("tab") < kinds.indexOf("split"), JSON.stringify(plan));
+  assert.equal(plan.find((op) => op.kind === "tab").address, "0xb");
+  assert.deepEqual(v2pSplits(plan), ["0xb"], "focusing 0xc would undo the tab op");
+});
+
+test("v2p: no readable live tab falls back to the recorded-active member", () => {
+  const plan = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, []), MONITORS, V2P_LAYOUT, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(plan), ["0xb"], JSON.stringify(plan));
+});
+
+test("v2p: a migrated v8 record (active: null) takes the live tab, and only with neither the tab-0 key", () => {
+  const live = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xc"]), MONITORS, V2P_V8, GIDS, V2P_CTX);
+  assert.deepEqual(live.filter((op) => op.kind === "tab"), [], "active: null never plans a tab op");
+  assert.deepEqual(v2pSplits(live), ["0xc"], JSON.stringify(live));
+  const blind = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, []), MONITORS, V2P_V8, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(blind), ["0xa"], JSON.stringify(blind));
+  // Two visible members is a read that cannot tell: the same fallback.
+  const two = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xa", "0xc"]), MONITORS, V2P_V8, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(two), ["0xa"], JSON.stringify(two));
+});

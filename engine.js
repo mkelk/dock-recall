@@ -1858,9 +1858,8 @@ function isSpecialWorkspaceId(value) {
 
 // The tag Omarchy 4.5 puts on every window of a floating workspace
 // (workspace-modes.lua: Hyprland has no floating layout, so 4.5 floats the
-// windows and tags them), and the one it puts on a window it floated itself.
+// windows and tags them).
 var FLOATING_WORKSPACE_TAG = "omarchy-floating-workspace";
-var MODE_FLOATED_TAG = "omarchy-mode-floated";
 
 // hyprctl prints a dynamic tag with a trailing "*"; the name is the same tag.
 function hasTag(client, tag) {
@@ -3713,6 +3712,25 @@ function placementOrderOf(items) {
   return order;
 }
 
+// How an arrival reads against its split parent once it has landed (§2.5): the
+// axis of the one cut between their two tile boxes — 0 side by side, 1 stacked —
+// or null when it is not a cut with the arrival on the FAR side. The arrival
+// always takes the far side (right/below), and a togglesplit keeps it there, so
+// an arrival found left of or above its parent is not "the other axis": it
+// landed somewhere the program did not put it, and no toggle can make that the
+// recorded tree (tick v2p — an axis-only check read it as right and built on it).
+// `parent`, `arrival`: { at, size } tile boxes.
+function arrivalAxisBetween(parent, arrival) {
+  if (!parent || !arrival) return null;
+  var tree = splitTreeOf([
+    { key: "parent", at: parent.at, size: parent.size },
+    { key: "arrival", at: arrival.at, size: arrival.size }
+  ]);
+  if (!tree || (tree.axis !== 0 && tree.axis !== 1)) return null;
+  if (!tree.far || tree.far.key !== "arrival") return null;
+  return tree.axis;
+}
+
 // ---------------------------------------------------------------------------
 // Tiled refinement: the two things left over once the windows are on the
 // workspace (tick pyo)
@@ -5050,7 +5068,11 @@ function planTiledRefinements(recordedApps, report, clients, context) {
     var program = planWorkspaceTiling(group.items, group.live, null, treeOptsOf(group));
     if (!program) continue;
     if (program.split) {
-      splits.push({ kind: "split", address: program.split.address, workspaceId: group.workspaceId });
+      splits.push({
+        kind: "split",
+        address: splitAddressOf(program.split.address, report.groups, clients),
+        workspaceId: group.workspaceId
+      });
       continue;
     }
     var groupKeys = {};
@@ -5080,6 +5102,38 @@ function planTiledRefinements(recordedApps, report, clients, context) {
   }
 
   return { splits: splits, swaps: swaps, dividers: dividers };
+}
+
+// The window a `split` op on a tile focuses (tick v2p). `togglesplit` flips
+// the node of whatever is focused, and any member of a group stands for its
+// tile — but focusing a member that is not the visible tab MAKES it the visible
+// tab (§2 amendment), so a split aimed at the tile key (tab 0) would flip the
+// right node and show the wrong tab. So the op names the tab that will be in
+// front when it runs:
+//   - the recorded-active member when this plan also carries the group's `tab`
+//     op (tabOpFor): that op runs first and brings it to the front;
+//   - else the live visible tab (activeTabOf over the whole live ring, an
+//     unwatched tab included — it is in front, and focusing it keeps it there);
+//   - else the recorded-active member (a read that cannot tell which tab shows);
+//   - else the tile key itself (migrated v8, nothing known either way).
+// An ungrouped tile is its own key.
+function splitAddressOf(key, reportGroups, clientsJson) {
+  var clients = clientsJson || [];
+  var leader = null;
+  for (var c = 0; c < clients.length; c++) {
+    if (clients[c] && clients[c].address === key) { leader = clients[c]; break; }
+  }
+  if (!leader || !isAddressList(leader.grouped) || leader.grouped.length < 2) return key;
+  var groups = reportGroups || [];
+  var recorded = null;
+  for (var g = 0; g < groups.length; g++) {
+    if (!groups[g] || !isAddressList(groups[g].addresses)) continue;
+    if (groups[g].addresses.indexOf(key) === -1) continue;
+    if (tabOpFor(groups[g], clients)) return groups[g].activeRecorded;
+    recorded = groups[g].activeRecorded || null;
+    break;
+  }
+  return activeTabOf(groupMemberClients(leader, clients)) || recorded || key;
 }
 
 // ---------------------------------------------------------------------------
@@ -5166,9 +5220,16 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   // (0) the destination has a split tree to build, in the recorded mode (§2.4).
   // A splitParent on a scrolling or floating workspace focuses windows for an
   // arrival order nothing reads; the moves go in recorded order, unfocused.
-  // A destination that does not exist yet has no readable mode (null) and is
-  // not refused here.
   if (workspaceModeRefusalOf(recordedApps, context, clients, workspaceId, monitorDescription)) return group;
+  // A destination that does not exist yet has no readable mode (null), so the
+  // refusal above cannot see it — but one RECORDED scrolling or floating stands
+  // down as well (tick v2p): nothing says it will come up tiled, and an arrival
+  // order is no shape on either mode. The service re-reads the mode before any
+  // axis correction for the case left over (recorded dwindle or unrecorded).
+  if (context) {
+    var recordedMode = recordedLayoutModeOf(recordedApps, workspaceId, monitorDescription);
+    if (recordedMode === "scrolling" || recordedMode === "floating") return group;
+  }
 
   var moving = {};
   for (var g = 0; g < group.length; g++) moving[group[g].address] = true;
@@ -6239,6 +6300,7 @@ if (typeof module !== "undefined") {
     dissolveTargets: dissolveTargets,
     pickScratchWorkspace: pickScratchWorkspace,
     splitTreeOf: splitTreeOf,
+    arrivalAxisBetween: arrivalAxisBetween,
     layoutIsAmbiguous: layoutIsAmbiguous,
     placementOrderOf: placementOrderOf,
     planWorkspaceTiling: planWorkspaceTiling,
@@ -6255,7 +6317,6 @@ if (typeof module !== "undefined") {
     TILING_REFUSAL_LAYOUT_MODE_DIFFERS: TILING_REFUSAL_LAYOUT_MODE_DIFFERS,
     TILING_REFUSAL_PHRASES: TILING_REFUSAL_PHRASES,
     FLOATING_WORKSPACE_TAG: FLOATING_WORKSPACE_TAG,
-    MODE_FLOATED_TAG: MODE_FLOATED_TAG,
     workspaceModeOf: workspaceModeOf,
     activeTabOf: activeTabOf,
     tilesOf: tilesOf,
