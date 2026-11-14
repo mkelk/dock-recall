@@ -233,3 +233,28 @@ test("the flat list is exactly one AppStrip, and it declares the handle", () => 
     "expected exactly one AppStrip element in Panel.qml, found " + at.length
     + (at.length ? " (line(s) " + at.map((i) => i + 1).join(", ") + ")" : ""));
 });
+
+// ---------------------------------------------------------------------------
+// Service.qml threads the planning context (epic 9i2, tick ubt).
+//
+// Every Engine.driftOf / Engine.planRestore call hands the engine the same
+// context ({ workspaces, built }), because a call that forgets it silently
+// plans as if every workspace mode were unknown. Read as text: node cannot
+// instantiate QML.
+test("Service.qml passes planContext() to every driftOf and planRestore call", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  const calls = codeLines(source).filter((l) => /Engine\.(driftOf|planRestore)\(/.test(l));
+  assert.ok(calls.length >= 4, "expected at least four planner calls, found " + calls.length);
+  for (const line of calls) {
+    assert.match(line, /,\s*root\.planContext\(\)\)/, "missing planContext(): " + line.trim());
+  }
+});
+
+test("Service.qml reads hyprctl workspaces in snapshot and clears builtWorkspaces", () => {
+  const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
+  assert.match(source, /command: \["hyprctl", "workspaces", "-j"\]/);
+  assert.match(source, /READ-FAILED hyprctl workspaces/);
+  assert.match(source, /function planContext\(\) \{\s*return \{ workspaces: root\.liveWorkspaces, built: root\.builtWorkspaces \}/);
+  const clears = source.match(/root\.builtWorkspaces = \(\{\}\)/g) || [];
+  assert.ok(clears.length >= 2, "builtWorkspaces must be cleared at cycle start and with shapeAbandoned");
+});

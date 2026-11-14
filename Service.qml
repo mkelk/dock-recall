@@ -1023,7 +1023,7 @@ Item {
     // The restore cycle owns the read machinery while it runs (one Process,
     // one callback slot), and it ends with a refresh of its own — so there is
     // nothing to queue here, only a collision to stay out of.
-    if (root.cycleActive || clientsProc.running || monitorsProc.running) return
+    if (root.cycleActive || clientsProc.running || monitorsProc.running || workspacesProc.running) return
 
     root.snapshot(function (ok) {
       if (!ok) {
@@ -1034,7 +1034,7 @@ Item {
       var key = Engine.topologyKey(root.liveMonitors)
       var layout = key ? Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors) : null
       var drift = layout
-        ? Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state))
+        ? Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state), root.planContext())
         : null
       // Published on EVERY refresh, not only at the end of a cycle: the table
       // is a statement about the desktop as it is now, and a user who drags a
@@ -1065,6 +1065,21 @@ Item {
 
   property var clientsCallback: null
   property var monitorsCallback: null
+  property var workspacesCallback: null
+
+  // `hyprctl workspaces -j`, verbatim — the planner reads each workspace's
+  // tiledLayout mode from it. null = unknown (never read, or the last read
+  // failed): modes unknown is the pre-9i2 behaviour, not an abandoned pass.
+  property var liveWorkspaces: null
+  // Workspaces whose live tree is the recorded tree, because this cycle built
+  // it. Keyed by String(workspaceId). Filled by a later tick; cleared with
+  // shapeAbandoned and at cycle start.
+  property var builtWorkspaces: ({})
+
+  // The trailing argument of every Engine.driftOf / Engine.planRestore call.
+  function planContext() {
+    return { workspaces: root.liveWorkspaces, built: root.builtWorkspaces }
+  }
 
   // done(ok) — ok === false means "do not plan against this".
   function readClients(done) {
@@ -1075,6 +1090,11 @@ Item {
   function readMonitors(done) {
     root.monitorsCallback = done || null
     monitorsProc.running = true
+  }
+
+  function readWorkspaces(done) {
+    root.workspacesCallback = done || null
+    workspacesProc.running = true
   }
 
   // Both reads, in order, then done(ok). Monitors are read with `all` so a
@@ -1092,9 +1112,13 @@ Item {
           if (done) done(false)
           return
         }
-        // The block files are read last, straight after the two hyprctl reads,
-        // so table and snapshot describe the same instant.
-        root.readBlocks(done)
+        // Workspace modes are advisory: a failed read leaves them unknown
+        // (null) and the snapshot still stands.
+        root.readWorkspaces(function () {
+          // The block files are read last, straight after the hyprctl reads,
+          // so table and snapshot describe the same instant.
+          root.readBlocks(done)
+        })
       })
     })
   }
@@ -1160,6 +1184,25 @@ Item {
       }
       var done = root.monitorsCallback
       root.monitorsCallback = null
+      if (done) done(read.ok)
+    }
+  }
+
+  Process {
+    id: workspacesProc
+    command: ["hyprctl", "workspaces", "-j"]
+    stdout: StdioCollector { id: workspacesOut; waitForEnd: true }
+    stderr: StdioCollector { id: workspacesErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var read = StateModel.parseHyprctlArray(workspacesOut.text, exitCode, workspacesErr.text)
+      if (read.ok) {
+        root.liveWorkspaces = read.value
+      } else {
+        root.liveWorkspaces = null
+        root.warn("READ-FAILED hyprctl workspaces: " + read.error + " — workspace layout modes are unknown for this pass")
+      }
+      var done = root.workspacesCallback
+      root.workspacesCallback = null
       if (done) done(read.ok)
     }
   }
@@ -2798,6 +2841,7 @@ Item {
     root.cycleReason = reason
     root.passIndex = 0
     root.cycleEffects = ({})
+    root.builtWorkspaces = ({})
     root.launchSerial = 0
     // The previous cycle's ledger is retired HERE and not at its own end: the
     // verdicts published by every drift refresh in between keep explaining why
@@ -2861,6 +2905,7 @@ Item {
     root.refinementIterations = 0
     // A fresh pass may try the shape again — see shapeAbandoned.
     root.shapeAbandoned = ({})
+    root.builtWorkspaces = ({})
     root.lastPlan = null
     // No plan, and so no dispatch, until 4.5's re-sort has settled. A wait here
     // does not consume a settle pass: the pass simply starts later.
@@ -2980,7 +3025,7 @@ Item {
       }
 
       var identities = StateModel.identities(root.state)
-      var plan = Engine.planRestore(root.liveClients, root.liveMonitors, layout, identities)
+      var plan = Engine.planRestore(root.liveClients, root.liveMonitors, layout, identities, root.planContext())
 
       // Before the empty-plan check, because a REFUSAL is most often exactly
       // that: a workspace whose tiling this tool will not touch plans no ops at
@@ -3200,7 +3245,7 @@ Item {
   property var loggedRefusals: ({})
 
   function logTilingRefusals(layout, identities) {
-    var report = Engine.driftOf(root.liveClients, root.liveMonitors, layout, identities)
+    var report = Engine.driftOf(root.liveClients, root.liveMonitors, layout, identities, root.planContext())
     // Apps the planner will not place because their destination is not
     // resolvable (yet): once per cycle per app and reason, like the refusals.
     var apps = report.apps || []
@@ -3385,7 +3430,7 @@ Item {
     if (!key) return []
     var layout = Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors)
     if (!layout) return []
-    var drift = Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state))
+    var drift = Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state), root.planContext())
     return Engine.verdictsFor(drift, root.cycleOutcomes)
   }
 
