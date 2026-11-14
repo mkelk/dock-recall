@@ -1156,6 +1156,11 @@ function recordedGroupSlotOf(recorded) {
   return ids.join("+") + "@" + recorded.group.index;
 }
 
+// Whether a recorded entry has a workspace a window could be moved to.
+function isPlaceable(entry) {
+  return !entry.unplaceable && entry.workspaceId !== null && entry.workspaceId !== undefined;
+}
+
 // Pair one identity's recorded entries to its live windows.
 //
 // `recorded` is the identity's entries in record order; `live` is its windows in
@@ -1186,43 +1191,51 @@ function matchOccurrences(recorded, live, clientsJson, monitorsJson, identities)
     }
   }
 
-  // Pass 2: best geometry overlap, best pair first. Recomputed after each pick
-  // rather than sorted once, because taking a pair changes which pairs are
-  // still available — and a greedy best-first pass is deterministic as long as
-  // ties break on the recorded index then the live index, which they do.
-  for (;;) {
-    var bestScore = 0;
-    var bestI = -1;
-    var bestJ = -1;
-    for (i = 0; i < recorded.length; i++) {
-      if (out[i]) continue;
-      for (j = 0; j < live.length; j++) {
-        if (taken[j]) continue;
-        var iou = rectIou(
-          { at: recorded[i].at, size: recorded[i].size },
-          { at: live[j].at, size: live[j].size }
-        );
-        if (iou === null || iou <= 0) continue;
-        if (iou > bestScore) {
-          bestScore = iou;
-          bestI = i;
-          bestJ = j;
+  // Passes 2 and 3 run PLACEABLE entries first, then the rest. An entry that
+  // cannot be placed (unplaceable from Slots.toLive, or no workspaceId) has
+  // nowhere to move a window to, so it must not take a live window a placeable
+  // entry of the same identity is still waiting for: it would read as drifted
+  // while the placeable one reads missing and the plan launches a surplus.
+  for (var phase = 0; phase < 2; phase++) {
+    // Pass 2: best geometry overlap, best pair first. Recomputed after each
+    // pick rather than sorted once, because taking a pair changes which pairs
+    // are still available — and a greedy best-first pass is deterministic as
+    // long as ties break on the recorded index then the live index, which they
+    // do.
+    for (;;) {
+      var bestScore = 0;
+      var bestI = -1;
+      var bestJ = -1;
+      for (i = 0; i < recorded.length; i++) {
+        if (out[i] || isPlaceable(recorded[i]) !== (phase === 0)) continue;
+        for (j = 0; j < live.length; j++) {
+          if (taken[j]) continue;
+          var iou = rectIou(
+            { at: recorded[i].at, size: recorded[i].size },
+            { at: live[j].at, size: live[j].size }
+          );
+          if (iou === null || iou <= 0) continue;
+          if (iou > bestScore) {
+            bestScore = iou;
+            bestI = i;
+            bestJ = j;
+          }
         }
       }
+      if (bestI === -1) break;
+      out[bestI] = live[bestJ];
+      taken[bestJ] = true;
     }
-    if (bestI === -1) break;
-    out[bestI] = live[bestJ];
-    taken[bestJ] = true;
-  }
 
-  // Pass 3: the remainder, both sides in their own order.
-  j = 0;
-  for (i = 0; i < recorded.length; i++) {
-    if (out[i]) continue;
-    while (j < live.length && taken[j]) j++;
-    if (j >= live.length) break;
-    out[i] = live[j];
-    taken[j] = true;
+    // Pass 3: the remainder, both sides in their own order.
+    j = 0;
+    for (i = 0; i < recorded.length; i++) {
+      if (out[i] || isPlaceable(recorded[i]) !== (phase === 0)) continue;
+      while (j < live.length && taken[j]) j++;
+      if (j >= live.length) break;
+      out[i] = live[j];
+      taken[j] = true;
+    }
   }
   return out;
 }
