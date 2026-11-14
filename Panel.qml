@@ -125,6 +125,10 @@ Item {
   // what "Record layout" would then write over the user's layout.
   property var liveClients: []
   property var liveMonitors: []
+  // `hyprctl workspaces -j`, verbatim, or null when it could not be read. Only
+  // the planning context (layoutMode, active tab) depends on it, so a failed
+  // read nulls THIS and nothing else: it is not a READ-FAILED for the desktop.
+  property var liveWorkspaces: null
   property bool haveLiveData: false
   property string readError: ""
 
@@ -180,7 +184,8 @@ Item {
   readonly property var recordedLayout: root.resolvedLayout(StateModel.layoutFor(root.stateModel, root.topologyKey))
 
   readonly property var driftReport: root.recordedLayout
-    ? Engine.driftOf(root.liveClients, root.liveMonitors, root.recordedLayout, root.identities)
+    ? Engine.driftOf(root.liveClients, root.liveMonitors, root.recordedLayout, root.identities,
+        { workspaces: root.liveWorkspaces, built: null })
     : null
 
   // The per-identity verdict table, computed from the panel's OWN read for the
@@ -1294,7 +1299,7 @@ Item {
     // everything else, rather than freezing at whatever it read when the panel
     // opened.
     root.nowMs = Date.now()
-    if (clientsProc.running || monitorsProc.running) return
+    if (clientsProc.running || monitorsProc.running || workspacesProc.running) return
     clientsProc.running = true
   }
 
@@ -1357,6 +1362,26 @@ Item {
       // and its pid is the best source of a launch command. Cheap: a no-op
       // unless some identity still needs one AND its window is new to us.
       root.refreshCmdlines()
+      workspacesProc.running = true
+    }
+  }
+
+  Process {
+    id: workspacesProc
+    command: ["hyprctl", "workspaces", "-j"]
+    stdout: StdioCollector { id: workspacesOut; waitForEnd: true }
+    stderr: StdioCollector { id: workspacesErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var read = StateModel.parseHyprctlArray(String(workspacesOut.text || ""), exitCode, workspacesErr.text)
+      if (!read.ok) {
+        // Context only: no readError, no held snapshot. Without it a manual
+        // record stores layoutMode null and group.active null (never drift).
+        root.liveWorkspaces = null
+        root.warn("READ-FAILED hyprctl workspaces: " + read.error
+          + " — planning without workspace context")
+        return
+      }
+      root.liveWorkspaces = read.value
     }
   }
 
@@ -2564,7 +2589,8 @@ Item {
     // picture can be filed under a correct key and be of a different window.
     var chosen = Engine.chosenWindows(root.liveClients, root.identities, root.liveMonitors)
     var layout = Engine.buildLayout(root.liveClients, root.liveMonitors, root.identities,
-      new Date().toISOString(), chosen)
+      new Date().toISOString(), chosen,
+      { workspaces: root.liveWorkspaces, built: null })
     // The engine speaks live ids; the file stores slots. Windows on another
     // monitor's block (guests) come back in `guests` and are left out.
     // `layout` stays the engine's live-id layout (the pictures are indexed from

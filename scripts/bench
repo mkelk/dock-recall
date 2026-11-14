@@ -112,6 +112,9 @@ function parseArgs(argv) {
 function hyprctlJson(argv) {
   return JSON.parse(execFileSync("hyprctl", argv, { encoding: "utf8" }));
 }
+function workspaces() {
+  try { return hyprctlJson(["workspaces", "-j"]); } catch (e) { return null; }
+}
 function clients() { return hyprctlJson(["clients", "-j"]); }
 function monitors() { return hyprctlJson(["monitors", "all", "-j"]); }
 function dispatch(lua) {
@@ -308,7 +311,8 @@ function runRestore(layout, identities, restoreFocusTo) {
 // --------------------------------------------------------------------- score
 
 function scoreNow(layout, identities) {
-  const report = engine.driftOf(clients(), monitors(), layout, identities);
+  const report = engine.driftOf(clients(), monitors(), layout, identities,
+    { workspaces: workspaces(), built: null });
   const summary = engine.geometrySummaryOf(report.apps);
   const rows = [];
   for (let i = 0; i < report.apps.length; i++) {
@@ -387,7 +391,8 @@ function runRound(scenario, roundIndex, seed, identities, focusHome, cursorHome)
   sleep(SETTLE_MS);
 
   // ---- record it, exactly as the product records
-  const layout = engine.buildLayout(clients(), monitors(), identities, new Date().toISOString());
+  const layout = engine.buildLayout(clients(), monitors(), identities, new Date().toISOString(),
+    undefined, { workspaces: workspaces(), built: null });
   if (layout.apps.length !== count) {
     throw new Error("bench: recorded " + layout.apps.length + " apps, wanted " + count);
   }
