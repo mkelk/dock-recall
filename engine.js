@@ -1702,10 +1702,55 @@ function dissolveTargets(addresses, clientsJson) {
 // The pick avoids every workspace that HAS windows (the emptiness is the whole
 // point) and every workspace a monitor is currently SHOWING or has as its
 // special workspace (moving windows through a visible workspace is churn the
-// user watches happen). 31 is the base: past Omarchy's 1..10 bindings, stable
-// for tests. The scan is bounded; 31..99 all being in use means the desktop
-// has bigger problems than this join.
-function pickScratchWorkspace(clientsJson, monitorsJson) {
+// user watches happen).
+//
+// WHERE the scratch ids live — OUTSIDE EVERY BLOCK (tick vp0). Under Omarchy
+// 4.5 every monitor owns a block of ten ids (block B = B*10+1 .. B*10+10), and
+// /usr/share/omarchy/default/hypr/monitor-workspaces.lua reconciles them. The
+// old base, 31, is block 3 — a real monitor's slot 1 on a desk with four
+// monitors ever seen. So the scan starts at
+//
+//     base = max(90, highestAssignedBlock + 2) * 10 + 1      (901 by default)
+//
+// and covers 99 ids. Why that is safe, from the lua:
+//   - free_block() (lines 219-231) hands a new monitor the LOWEST block no
+//     identity holds, so blocks are assigned densely from 0. Block 90 is only
+//     ever owned after ninety monitors have been seen; a block above every
+//     assigned one, with a spare block between, is owned by nobody.
+//   - owner() (lines 279-291) therefore returns nil for every scratch id, and
+//     place() (565-578) only moves a workspace that HAS an owner on another
+//     monitor — it leaves the scratch workspace where it was created.
+//   - merge() (622-647) is the one that acts: at a RECONCILE (a monitor event
+//     or a config reload) a workspace with windows and no owner is a guest, and
+//     it is renumbered into the block of the monitor it sits on, with no merged
+//     record (block 90 has no identity to remember). Probed nested in tick zf6
+//     (tests/nested-notes.md, 2026-11-14, answer (c)): a window on 901 sat
+//     there untouched until `hyprctl reload`, then landed on ws 2.
+// So a scratch join must NOT straddle a reconcile: a reload or hotplug in the
+// middle renumbers the half-assembled group into a real workspace. The service
+// gates the join on that (ReconcileGate); this function only makes sure no
+// block owner is disturbed.
+//
+// `blocksTable` is optional: a Slots.parseBlocks table. Absent or junk, the
+// base is 901. Every row counts, superseded ones included — a block once
+// handed out may be handed back to its identity.
+var SCRATCH_MIN_BLOCK = 90;
+var SCRATCH_SPAN = 99;
+
+function scratchBase(blocksTable) {
+  var highest = -1;
+  var rows = blocksTable && Object.prototype.toString.call(blocksTable.rows) === "[object Array]"
+    ? blocksTable.rows : [];
+  for (var r = 0; r < rows.length; r++) {
+    var block = rows[r] ? rows[r].block : null;
+    if (typeof block === "number" && isFinite(block) && Math.floor(block) === block && block > highest) {
+      highest = block;
+    }
+  }
+  return Math.max(SCRATCH_MIN_BLOCK, highest + 2) * 10 + 1;
+}
+
+function pickScratchWorkspace(clientsJson, monitorsJson, blocksTable) {
   var used = {};
   var clients = clientsJson || [];
   for (var i = 0; i < clients.length; i++) {
@@ -1719,10 +1764,13 @@ function pickScratchWorkspace(clientsJson, monitorsJson) {
     if (mon.activeWorkspace && typeof mon.activeWorkspace.id === "number") used[mon.activeWorkspace.id] = true;
     if (mon.specialWorkspace && typeof mon.specialWorkspace.id === "number") used[mon.specialWorkspace.id] = true;
   }
-  for (var id = 31; id < 100; id++) {
+  var base = scratchBase(blocksTable);
+  for (var id = base; id < base + SCRATCH_SPAN; id++) {
     if (!used[id]) return id;
   }
-  return 100;
+  // 99 empty, invisible ids all in use means the desktop has bigger problems
+  // than this join. Still past every block.
+  return base + SCRATCH_SPAN;
 }
 
 // A window's `at` or `size` as the record stores it: a pair of finite numbers,
@@ -5351,9 +5399,11 @@ function opToCommand(op) {
     // And the tiling can make ALL FOUR directions no-ops: into_group only
     // joins a group that is the directly ADJACENT layout node (live-proven,
     // see pickScratchWorkspace above), so when the candidate is not next to
-    // the anchor the service assembles the pair on an empty workspace and
-    // moves the group home (Service.qml scratchJoin). These commands are the
-    // in-place half only.
+    // the anchor the service assembles the pair on an empty workspace outside
+    // every Omarchy 4.5 block (901 and up, which no monitor owns) and moves
+    // the group home (Service.qml scratchJoin) — never across a reconcile,
+    // whose merge() would renumber the scratch workspace into a real block.
+    // These commands are the in-place half only.
     var addresses = op.addresses || [];
     if (addresses.length < 2) return [];
 
