@@ -114,7 +114,8 @@
 //
 //   Layout — exactly what engine.buildLayout() returns:
 //     { topologyKey, recordedAt, apps: [ { identityId, occurrence,
-//       monitorDescription, slot, floating, group, at, size } ] }.  See
+//       monitorDescription, slot, floating, group, at, size, layoutMode } ] }.
+//     See
 //     Slots.js for the placement contract; this file stores it verbatim, with
 //     these exceptions:
 //       - apps[].slot (v8) is an integer 1..10 or null. It replaces v7's
@@ -123,6 +124,15 @@
 //         file stores the monitor and the slot and Slots.toLive resolves them.
 //         A v7-or-older entry with a workspaceId and no slot is migrated by
 //         normalizeSlot (slot = ((W - 1) % 10) + 1; W <= 0 or junk -> null).
+//       - apps[].layoutMode (v9) is "dwindle" | "scrolling" | "floating" |
+//         null: the recorded workspace's layout mode, null when it was not
+//         recorded (a migrated v8 entry, or a record taken without a planning
+//         context). Anything else reads as null. See normalizeLayoutMode.
+//       - apps[].group (v9) is null or { groupId, index, active }, every
+//         other field of it kept. `active` is true on the one watched member
+//         that was the group's visible tab, false on the others (on all of
+//         them when the visible tab was an unwatched window), null when not
+//         recorded — and null never drifts. See normalizeGroupMembership.
 //       - apps[].occurrence (v3) is coerced to a non-negative integer, default
 //         0. See normalizeOccurrence.
 //       - apps[].at and apps[].size (v2) are coerced to a pair of finite
@@ -242,11 +252,22 @@
 //   gains one `"pictures": true` line and loses `pictureConsent` and every
 //   `"pictured"` line in the same write.
 //
-//   A v1 file therefore CHAINS — v1 -> ... -> v8 in one read — because
-//   normalizeLayout writes the v2, v3 and v8 (slot) fields, normalizeIdentity
-//   writes the v4 one and normalizeState writes the v7 one, all
-//   unconditionally, so there are no intermediate states to sequence. A v8 file
-//   read and written back is byte-identical to itself.
+//   v7 -> v8 replaced each entry's live `workspaceId` with its `slot` (1..10)
+//   — see normalizeSlot.
+//
+//   v8 -> v9 is ADDITIVE again, per layout entry: `layoutMode` absent -> null,
+//   and a group membership without `active` gains `active: null`. Nothing else
+//   moves. null is the honest value — a v8 build never read either fact — and
+//   it is the one value no consumer acts on. The bump itself is what matters:
+//   normalizeLayout copies unknown fields, so a v8 build would not strip the
+//   new ones, but it would re-record without them and call the file its own;
+//   at v9 a v8 build refuses the file instead (the future-version refusal).
+//
+//   A v1 file therefore CHAINS — v1 -> ... -> v9 in one read — because
+//   normalizeLayout writes the v2, v3, v8 (slot) and v9 fields,
+//   normalizeIdentity writes the v4 one and normalizeState writes the v7 one,
+//   all unconditionally, so there are no intermediate states to sequence. A v9
+//   file read and written back is byte-identical to itself.
 //
 //   And every step of it happens IN MEMORY. Nothing here writes a file: the
 //   service reads an older file, runs from the upgraded state, and the file on
@@ -377,7 +398,7 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 8;
+var STATE_VERSION = 9;
 
 // The one v6 word this build still recognises, and the only place it appears.
 // `pictureConsent` held four values and three of them said "yes" or "nothing";
@@ -758,6 +779,28 @@ function normalizeGeometry(value) {
   return out;
 }
 
+// v9: the workspace's layout mode when the entry was recorded. Exactly the
+// three words engine.workspaceModeOf answers; anything else, absent included,
+// is null — "not recorded", which never refuses and never drifts.
+var LAYOUT_MODES = ["dwindle", "scrolling", "floating"];
+
+function normalizeLayoutMode(value) {
+  return (typeof value === "string" && LAYOUT_MODES.indexOf(value) !== -1) ? value : null;
+}
+
+// v9: a recorded group membership, every field kept, `active` coerced to
+// true | false | null. true is the member that was the group's visible tab,
+// false the others; null (a migrated v8 entry, junk, or a read that could not
+// tell) never drifts and never plans a tab switch.
+function normalizeGroupMembership(group) {
+  var out = {};
+  for (var key in group) {
+    if (Object.prototype.hasOwnProperty.call(group, key)) out[key] = group[key];
+  }
+  out.active = group.active === true ? true : (group.active === false ? false : null);
+  return out;
+}
+
 // A layout is stored verbatim, but its shell has to be sane: apps must be an
 // array, or every consumer (driftOf, planRestore, the panel list) has to guard.
 function normalizeLayout(value, keyFallback) {
@@ -789,6 +832,14 @@ function normalizeLayout(value, keyFallback) {
       // guessing whether it is reading an old file or a new one.
       placement.at = normalizeGeometry(app.at);
       placement.size = normalizeGeometry(app.size);
+      // v9. Both written unconditionally, the v2 way: an absent key in a v8
+      // entry means "not recorded", and null says so explicitly. The group is
+      // copied field by field too (it is the one nested object of a
+      // placement), and only its `active` is coerced.
+      if (app.group && typeof app.group === "object" && !isArray(app.group)) {
+        placement.group = normalizeGroupMembership(app.group);
+      }
+      placement.layoutMode = normalizeLayoutMode(app.layoutMode);
       apps.push(placement);
     }
   }
@@ -898,7 +949,7 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> ... -> v8, as far as it has to go, in the one
+//               upgraded (v1 -> ... -> v9, as far as it has to go, in the one
 //               pass). Not an error and not a recovery: nothing was invented,
 //               and the only things dropped are the workspaceId v7 -> v8
 //               replaces with a slot, the one v3 -> v4 subtracts on

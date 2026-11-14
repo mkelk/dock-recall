@@ -309,7 +309,8 @@ test("an identity with two windows records BOTH, and the grouped one keeps its s
   // The group names the TUPLE, so the membership says which Slack window it
   // means — and the three indexes are still 0, 1, 2 with no hole.
   const groupId = "group:telegram+slack#1+whatsapp";
-  assert.deepStrictEqual(byKey["slack#1"].group, { groupId: groupId, index: 1 });
+  // v9: the synthesized clients carry no `visible`, so no tab can be named.
+  assert.deepStrictEqual(byKey["slack#1"].group, { groupId: groupId, index: 1, active: null });
   assert.strictEqual(byKey.telegram.group.index, 0);
   assert.strictEqual(byKey.whatsapp.group.index, 2);
   for (const key of ["telegram", "slack#1", "whatsapp"]) {
@@ -511,9 +512,10 @@ test("the record round-trips through JSON unchanged", () => {
   for (const app of layout.apps) {
     assert.deepStrictEqual(
       Object.keys(app).sort(),
-      ["at", "floating", "group", "identityId", "monitorDescription", "occurrence", "size", "workspaceId"]
+      ["at", "floating", "group", "identityId", "layoutMode", "monitorDescription", "occurrence", "size",
+        "workspaceId"]
     );
-    if (app.group) assert.deepStrictEqual(Object.keys(app.group).sort(), ["groupId", "index"]);
+    if (app.group) assert.deepStrictEqual(Object.keys(app.group).sort(), ["active", "groupId", "index"]);
   }
 });
 
@@ -624,9 +626,10 @@ test("a single-window desktop records exactly what v2 recorded, plus occurrence 
     delete withoutOccurrence.occurrence;
     assert.deepStrictEqual(
       Object.keys(withoutOccurrence).sort(),
-      ["at", "floating", "group", "identityId", "monitorDescription", "size", "workspaceId"],
-      app.identityId + " carries the v2 field set and nothing else"
+      ["at", "floating", "group", "identityId", "layoutMode", "monitorDescription", "size", "workspaceId"],
+      app.identityId + " carries the v2 field set, the v9 layoutMode, and nothing else"
     );
+    assert.strictEqual(app.layoutMode, null, app.identityId + ": no context, no mode");
 
     // And no "#" reaches a stored string: a member key at occurrence 0 is the
     // bare identity id, so the groupId a v2 file holds still reads back equal.
@@ -699,4 +702,187 @@ test("chosenWindows indexes every window of an identity, both ways round", () =>
   }
   assert.strictEqual(engine.windowForOccurrence(chosen, "terminal", 7), null);
   assert.strictEqual(engine.windowForOccurrence(chosen, "spotify", 0), null);
+});
+
+// ------------------------- schema v9: active tab and layout mode (epic 9i2)
+
+test("the visible tab is recorded active, the others false", () => {
+  // The real capture: obsidian is the visible tab of the four-window group on
+  // workspace 10 (`visible: true` on it alone).
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
+  const apps = appsById(layout);
+  assert.strictEqual(apps.obsidian.group.active, true);
+  for (const id of ["telegram", "slack", "whatsapp"]) {
+    assert.strictEqual(apps[id].group.active, false, id);
+  }
+  for (const app of layout.apps) {
+    if (!app.group) continue;
+    assert.ok(app.group.active === true || app.group.active === false, app.identityId);
+  }
+
+  // Synthesized: the visible tab is the second member.
+  const tabs = ["0xaaa", "0xbbb"];
+  const pair = (visibleA, visibleB, extra) => [
+    makeClient({ address: "0xaaa", class: "foot", workspace: 2, grouped: tabs, visible: visibleA }),
+    makeClient({ address: "0xbbb", class: "chromium", workspace: 2, grouped: tabs, visible: visibleB })
+  ].concat(extra || []);
+  const activeOf = (clients) => {
+    const out = {};
+    for (const app of engine.buildLayout(clients, monitorsLaptop, IDENTITIES, AT).apps) {
+      out[app.identityId] = app.group ? app.group.active : undefined;
+    }
+    return out;
+  };
+  assert.deepStrictEqual(activeOf(pair(false, true)), { terminal: false, browser: true });
+  assert.deepStrictEqual(activeOf(pair(true, false)), { terminal: true, browser: false });
+
+  // A read that cannot name one visible tab records null on every member.
+  assert.deepStrictEqual(activeOf(pair(true, true)), { terminal: null, browser: null }, "two visible");
+  assert.deepStrictEqual(activeOf(pair(false, false)), { terminal: null, browser: null }, "none visible");
+  assert.deepStrictEqual(activeOf(pair(undefined, undefined)), { terminal: null, browser: null }, "no field");
+
+  // The visible tab is an UNWATCHED window: every watched member is false.
+  const three = ["0xaaa", "0xbbb", "0xzzz"];
+  const withStranger = [
+    makeClient({ address: "0xaaa", class: "foot", workspace: 2, grouped: three, visible: false }),
+    makeClient({ address: "0xbbb", class: "chromium", workspace: 2, grouped: three, visible: false }),
+    makeClient({ address: "0xzzz", class: "unwatched", workspace: 2, grouped: three, visible: true })
+  ];
+  assert.deepStrictEqual(activeOf(withStranger), { terminal: false, browser: false });
+  assertGroupInvariant(assert, engine.buildLayout(withStranger, monitorsLaptop, IDENTITIES, AT), "stranger tab");
+
+  // activeTabOf itself.
+  assert.strictEqual(engine.activeTabOf(withStranger), "0xzzz");
+  assert.strictEqual(engine.activeTabOf([]), null);
+  assert.strictEqual(engine.activeTabOf(null), null);
+  assert.strictEqual(engine.activeTabOf(pair(true, true)), null);
+});
+
+test("no context records layoutMode null", () => {
+  for (const layout of [
+    engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT),
+    engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT, undefined, null)
+  ]) {
+    assert.ok(layout.apps.length > 0);
+    for (const app of layout.apps) assert.strictEqual(app.layoutMode, null, app.identityId);
+  }
+  // Even a tagged floating workspace: without a context nothing is read.
+  const tagged = [makeClient({ address: "0xaaa", class: "foot", workspace: 4,
+    tags: ["omarchy-floating-workspace*"] })];
+  assert.strictEqual(engine.buildLayout(tagged, monitorsLaptop, IDENTITIES, AT).apps[0].layoutMode, null);
+  assert.strictEqual(engine.workspaceModeOf(null, tagged, 4), null);
+  assert.strictEqual(engine.workspaceModeOf(undefined, tagged, 4), null);
+
+  // With a context, a workspace it does not list (or lists without a layout
+  // this project knows) is null too: unknown, not a guess.
+  const context = { workspaces: [{ id: 1, tiledLayout: "master" }], built: null };
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT, undefined, context);
+  for (const app of layout.apps) assert.strictEqual(app.layoutMode, null, app.identityId);
+});
+
+test("a scrolling workspace records layoutMode scrolling", () => {
+  const context = {
+    workspaces: [
+      { id: 1, name: "1", tiledLayout: "dwindle" },
+      { id: 10, name: "10", tiledLayout: "scrolling" }
+    ],
+    built: null
+  };
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT, undefined, context);
+  for (const app of layout.apps) {
+    const ws = app.workspaceId;
+    const want = ws === 10 ? "scrolling" : ws === 1 ? "dwindle" : null;
+    assert.strictEqual(app.layoutMode, want, app.identityId + " on ws " + ws);
+  }
+  assert.ok(layout.apps.some((a) => a.layoutMode === "scrolling"), "the group's workspace is in the fixture");
+  assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, 10), "scrolling");
+  assert.strictEqual(engine.workspaceModeOf(context, clientsLaptop, 7), null, "not listed");
+
+  // And it is a stored field: the state file keeps it.
+  const stored = state.parseState(state.serializeState(state.upsertLayout(state.defaultState(), layout))).state;
+  assert.ok(state.layoutFor(stored, LAPTOP_DESC).apps.some((a) => a.layoutMode === "scrolling"));
+});
+
+test("a window tagged omarchy-floating-workspace records layoutMode floating", () => {
+  assert.strictEqual(engine.FLOATING_WORKSPACE_TAG, "omarchy-floating-workspace");
+  assert.strictEqual(engine.MODE_FLOATED_TAG, "omarchy-mode-floated");
+  const clients = [
+    makeClient({ address: "0xaaa", class: "foot", workspace: 4, floating: true,
+      tags: ["default-opacity*", "omarchy-floating-workspace*"] }),
+    makeClient({ address: "0xbbb", class: "chromium", workspace: 4, floating: true }),
+    makeClient({ address: "0xccc", class: "code", workspace: 5,
+      tags: ["omarchy-floating-workspace-not"] })
+  ];
+  // The tag outranks the workspace's tiledLayout: 4.5 floats on top of dwindle.
+  const context = { workspaces: [{ id: 4, tiledLayout: "dwindle" }, { id: 5, tiledLayout: "dwindle" }] };
+  const apps = appsById(engine.buildLayout(clients, monitorsLaptop, IDENTITIES, AT, undefined, context));
+  assert.strictEqual(apps.terminal.layoutMode, "floating");
+  assert.strictEqual(apps.browser.layoutMode, "floating", "any window of the workspace carrying it decides");
+  assert.strictEqual(apps.editor.layoutMode, "dwindle", "a different tag is not the tag");
+
+  // The tag without the trailing "*" is the same tag.
+  const bare = [makeClient({ address: "0xaaa", class: "foot", workspace: 4, tags: ["omarchy-floating-workspace"] })];
+  assert.strictEqual(engine.workspaceModeOf({ workspaces: null }, bare, 4), "floating");
+});
+
+test("tilesOf collapses a group to one tile keyed by tab 0", () => {
+  const tiles = engine.tilesOf([
+    { address: "0xsolo", at: [0, 0], size: [700, 1200], groupId: null, index: null },
+    { address: "0xb", at: [710, 0], size: [700, 1200], groupId: "group:a+b+c", index: 1 },
+    { address: "0xc", at: [710, 0], size: [700, 1200], groupId: "group:a+b+c", index: 2 },
+    { address: "0xa", at: [711, 1], size: [699, 1199], groupId: "group:a+b+c", index: 0 },
+    { address: "0xlast", at: [1420, 0], size: [500, 1200] }
+  ]);
+  assert.deepStrictEqual(tiles, [
+    { key: "0xsolo", at: [0, 0], size: [700, 1200], members: ["0xsolo"], groupId: null },
+    { key: "0xa", at: [711, 1], size: [699, 1199], members: ["0xa", "0xb", "0xc"], groupId: "group:a+b+c" },
+    { key: "0xlast", at: [1420, 0], size: [500, 1200], members: ["0xlast"], groupId: null }
+  ], "one tile per group, in first-appearance order, with tab 0's rect");
+
+  assert.strictEqual(engine.tileKeyOf(tiles, "0xc"), "0xa");
+  assert.strictEqual(engine.tileKeyOf(tiles, "0xa"), "0xa");
+  assert.strictEqual(engine.tileKeyOf(tiles, "0xsolo"), "0xsolo");
+  assert.strictEqual(engine.tileKeyOf(tiles, "0xnope"), null);
+  assert.strictEqual(engine.tileKeyOf(null, "0xa"), null);
+
+  // Only the members that are present take part: a group missing tab 0 is keyed
+  // by its lowest present index.
+  const partial = engine.tilesOf([
+    { address: "0xc", at: [1, 1], size: [2, 2], groupId: "g", index: 2 },
+    { address: "0xb", at: [3, 3], size: [4, 4], groupId: "g", index: 1 }
+  ]);
+  assert.deepStrictEqual(partial, [{ key: "0xb", at: [3, 3], size: [4, 4], members: ["0xb", "0xc"], groupId: "g" }]);
+
+  // A groupId that is an Object.prototype name is still a group, not a lookup hit.
+  const proto = engine.tilesOf([
+    { address: "0x1", at: [0, 0], size: [1, 1], groupId: "constructor", index: 0 },
+    { address: "0x2", at: [0, 0], size: [1, 1], groupId: "constructor", index: 1 }
+  ]);
+  assert.strictEqual(proto.length, 1);
+  assert.deepStrictEqual(proto[0].members, ["0x1", "0x2"]);
+  assert.deepStrictEqual(engine.tilesOf(null), []);
+});
+
+test("the layout-mode refusal words have phrases", () => {
+  assert.strictEqual(engine.TILING_REFUSAL_LAYOUT_SCROLLING, "layout-scrolling");
+  assert.strictEqual(engine.TILING_REFUSAL_LAYOUT_FLOATING, "layout-floating");
+  assert.strictEqual(engine.TILING_REFUSAL_LAYOUT_MODE_DIFFERS, "layout-mode-differs");
+  for (const word of ["layout-scrolling", "layout-floating", "layout-mode-differs"]) {
+    const phrase = engine.TILING_REFUSAL_PHRASES[word];
+    assert.ok(typeof phrase === "string" && phrase.length > 20, word);
+    assert.strictEqual(engine.tilingRefusalPhrase(word), phrase, word);
+  }
+});
+
+test("driftOf and planRestore take a trailing context and, for now, ignore it", () => {
+  const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
+  const drifted = clientsLaptop.map((c) => c.class === "code" ? Object.assign({}, c, { workspace: { id: 5, name: "5" } }) : c);
+  const context = { workspaces: [{ id: 3, tiledLayout: "scrolling" }], built: { "3": true } };
+  assert.strictEqual(engine.driftOf.length, 5);
+  assert.strictEqual(engine.planRestore.length, 5);
+  assert.strictEqual(engine.buildLayout.length, 6);
+  assert.deepStrictEqual(engine.driftOf(drifted, monitorsLaptop, layout, IDENTITIES, context),
+    engine.driftOf(drifted, monitorsLaptop, layout, IDENTITIES));
+  assert.deepStrictEqual(engine.planRestore(drifted, monitorsLaptop, layout, IDENTITIES, context),
+    engine.planRestore(drifted, monitorsLaptop, layout, IDENTITIES));
 });
