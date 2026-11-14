@@ -38,7 +38,12 @@ auto-arrange to your preferred setup the moment the cable changes.
 
 ## Requirements
 
-- Omarchy Quattro with third-party shell plugins (Hyprland 0.56)
+- Omarchy 4.5 or newer (Quattro, with third-party shell plugins; Hyprland 0.56).
+  Omarchy 4.5 numbers each monitor's workspaces in its own block of ten, so Dock
+  Recall records a window's monitor and its position within that block (its
+  slot) rather than a global workspace number, and leaves moving workspaces
+  between monitors to Omarchy. A recording made on an earlier Omarchy is
+  upgraded on first read.
 - No AUR package, no runtime network dependency, no privileged helper
 
 ## Install
@@ -391,7 +396,11 @@ workspace/monitor, put a SCATTERED window back, then do nothing at all. Every
 path the plugin writes is redirected into a `mktemp` HOME, and the script ends by
 asserting the live session is untouched — same active window, same monitors,
 same visible workspaces, and a byte-identical
-`~/.local/state/omarchy/dock-recall.json`. It needs no permission and no quiet
+`~/.local/state/omarchy/dock-recall.json`. The second Hyprland loads Omarchy
+4.5's own `monitor-workspaces.lua` (against a redirected state directory), so
+workspace blocks, the merged-workspace file and the re-sort after a hotplug
+behave as on a real desk; `tests/sandbox-slots.sh` runs dock, undock and dock
+again on top of that. It needs no permission and no quiet
 moment: run it from any working tree while you work. Exit 0 is the gate; a
 failure keeps the sandbox directory and prints its path. Two caveats come with
 running it alongside your work. **One run at a time** — a second concurrent run

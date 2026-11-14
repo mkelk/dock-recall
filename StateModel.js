@@ -242,11 +242,11 @@
 //   gains one `"pictures": true` line and loses `pictureConsent` and every
 //   `"pictured"` line in the same write.
 //
-//   A v1 file therefore CHAINS — v1 -> ... -> v7 in one read — because
-//   normalizeLayout writes the v2 and v3 fields, normalizeIdentity writes the
-//   v4 one and normalizeState writes the v7 one, all unconditionally, so there
-//   are no intermediate states to sequence. A v7 file read and written back is
-//   byte-identical to itself.
+//   A v1 file therefore CHAINS — v1 -> ... -> v8 in one read — because
+//   normalizeLayout writes the v2, v3 and v8 (slot) fields, normalizeIdentity
+//   writes the v4 one and normalizeState writes the v7 one, all
+//   unconditionally, so there are no intermediate states to sequence. A v8 file
+//   read and written back is byte-identical to itself.
 //
 //   And every step of it happens IN MEMORY. Nothing here writes a file: the
 //   service reads an older file, runs from the upgraded state, and the file on
