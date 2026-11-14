@@ -318,8 +318,9 @@ test("the split-brain recording round-trips into a plan that rebuilds the group"
 test("planAddresses names every window a plan touches, and nothing else", () => {
   const plan = [
     { kind: "launch", identityId: "slack" },
-    { kind: "workspace-monitor", workspaceId: 10, monitorName: "DP-2" },
-    { kind: "move", address: "0xa", workspaceId: 10 },
+    // A move that creates its destination also names a MONITOR (the
+    // workspace's owner); that is not a window, and must not be listed.
+    { kind: "move", address: "0xa", workspaceId: 10, monitorName: "DP-2", viaMonitor: true },
     { kind: "group", addresses: ["0xa", "0xb"], missing: [] }
   ];
   assert.deepStrictEqual(engine.planAddresses(plan), ["0xa", "0xb"]);

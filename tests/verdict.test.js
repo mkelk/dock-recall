@@ -104,17 +104,65 @@ test("a window on the wrong workspace says workspace, and nothing else", () => {
   assert.strictEqual(editor.text, "on the wrong workspace");
 });
 
-test("a window on the wrong monitor says monitor", () => {
-  // Docked: the recording is a laptop-only one, so an app read on the headless
-  // output is on the wrong monitor for it.
+test("a window on the wrong monitor AND workspace says both", () => {
+  // Docked: the recording is a laptop-only one. The editor now sits on ws 4 of
+  // the headless output; its recorded ws 3 exists nowhere, so the move is a
+  // plain restore and both dimensions name what is wrong.
+  const dockedLayout = Object.assign({}, recorded, {
+    topologyKey: engine.topologyKey(monitorsDocked)
+  });
+  const moved = clientsLaptop.map((c) =>
+    c.class === "code" ? Object.assign({}, c, { monitor: 1, workspace: { id: 4, name: "4" } }) : c
+  );
+  const editor = verdictFor(verdictsOf(moved, monitorsDocked, dockedLayout), "editor");
+
+  assert.strictEqual(editor.status, "drifted");
+  assert.strictEqual(editor.monitor, "wrong-monitor");
+  assert.strictEqual(editor.workspace, "wrong-workspace");
+  assert.strictEqual(editor.text, "on the wrong monitor, on the wrong workspace");
+});
+
+test("a recorded workspace that 4.5 put on another monitor is a WORKSPACE refusal, said in words", () => {
+  // Under Omarchy 4.5 which monitor shows a workspace is the compositor
+  // config's decision. The editor is on its recorded ws 3, but ws 3 sits on
+  // the headless output: the planner refuses (tick 7ph) and the row says why,
+  // without sending the user to check a cable.
   const dockedLayout = Object.assign({}, recorded, {
     topologyKey: engine.topologyKey(monitorsDocked)
   });
   const moved = clientsLaptop.map((c) => (c.class === "code" ? Object.assign({}, c, { monitor: 1 }) : c));
   const editor = verdictFor(verdictsOf(moved, monitorsDocked, dockedLayout), "editor");
 
-  assert.strictEqual(editor.monitor, "wrong-monitor");
-  assert.strictEqual(editor.text, "on the wrong monitor");
+  assert.strictEqual(editor.status, "skipped");
+  assert.strictEqual(editor.workspace, "workspace-elsewhere");
+  assert.strictEqual(editor.monitor, "not-judged");
+  assert.strictEqual(editor.floating, "not-judged");
+  assert.strictEqual(editor.group, "not-judged");
+  assert.strictEqual(editor.ok, false);
+  assert.strictEqual(editor.text, "its workspace is on another monitor — not moved");
+  assert.strictEqual(panel.verdictLine(editor), "its workspace is on another monitor — not moved");
+});
+
+test("an unplaceable app is refused with its reason, in words", () => {
+  // Slots.toLive marks what it cannot resolve; driftOf skips it with that
+  // reason, and the verdict carries it on the dimension that is at fault.
+  const cases = [
+    ["monitor-unassigned", "monitor", "its monitor has no workspace block yet"],
+    ["monitor-unknown", "monitor", "no monitor was ever recorded for it"],
+    ["slot-unknown", "workspace", "no workspace slot was recorded for it"]
+  ];
+  for (const [reason, dimension, text] of cases) {
+    const layout = Object.assign({}, recorded, {
+      apps: recorded.apps.map((a) =>
+        a.identityId === "editor" ? Object.assign({}, a, { workspaceId: null, unplaceable: reason }) : a
+      )
+    });
+    const editor = verdictFor(verdictsOf(clientsLaptop, monitorsLaptop, layout), "editor");
+    assert.strictEqual(editor.status, "skipped", reason);
+    assert.strictEqual(editor[dimension], reason, reason);
+    assert.strictEqual(editor.ok, false, reason);
+    assert.strictEqual(editor.text, text, reason);
+  }
 });
 
 test("floating says which way round it is wrong", () => {
