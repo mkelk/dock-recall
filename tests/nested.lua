@@ -14,10 +14,13 @@
 -- point of the sandbox is to exercise the Quattro Lua dispatch verbs this
 -- plugin uses, the nested config has to be Lua too.
 --
--- It deliberately inherits NOTHING from Omarchy: sourcing the real config drags
--- in the exec-once storm (bar, shell, agents) and a second omarchy-shell
+-- It deliberately inherits almost NOTHING from Omarchy: sourcing the real config
+-- drags in the exec-once storm (bar, shell, agents) and a second omarchy-shell
 -- fighting over the same state files. No exec-once at all — the test drives
--- everything through hyprctl.
+-- everything through hyprctl. The ONE exception is Omarchy 4.5's per-monitor
+-- workspaces module, loaded on its own below the park guard (tick zf6): it
+-- renumbers workspaces on every monitor change, and a sandbox without it would
+-- prove the plugin against a desk that no longer exists.
 
 -- ============================================================== THE PARK GUARD
 --
@@ -162,3 +165,74 @@ hl.config({
 
 -- One escape hatch, in case the nested window is ever driven by hand.
 hl.bind("SUPER + SHIFT + Q", hl.dsp.exit())
+
+-- ============================================ OMARCHY 4.5 PER-MONITOR WORKSPACES
+--
+-- default/hypr/monitor-workspaces.lua, loaded in isolation (tick zf6). On a 4.5
+-- desk every monitor owns a block of ten workspace ids (block 0 = 1..10, block 1
+-- = 11..20, …), and a reconcile on every monitor add/remove and config reload
+-- moves and RENUMBERS workspaces to keep it so. That is the behaviour the plugin
+-- must restore against, so the sandbox runs the real module, not a model of it.
+--
+-- AFTER the park guard, always: nothing below may run in an unparked start.
+--
+-- The shim is the smallest thing the module needs that Omarchy's own
+-- bootstrap.lua / helpers.lua would otherwise provide:
+--   - package.path reaching $OMARCHY_PATH/?.lua, for `require("default.hypr.paths")`.
+--     NOT bootstrap.lua's ~/.config and ~/.local/state entries — the user's own
+--     hypr modules have no business here (HOME is the sandbox's anyway).
+--   - a global `o` with shell_quote (the module's mkdir fallback) and
+--     bind_expressions (its key actions register there); it sets o.workspaces.
+--
+-- WHERE IT WRITES: paths.lua reads XDG_STATE_HOME, which the launch wrapper in
+-- tests/sandbox-lib.sh exports as the sandbox's own, so the block table lands
+-- in $SBOX/home/.local/state/omarchy/. sandbox_verdict checks both sides: the
+-- sandbox table exists with a row per nested monitor, and the desk's two files
+-- kept their mtimes. Refused outright if the state home is not under a
+-- dr-sandbox temp dir — a nested block table written over the desk's would
+-- renumber the human's bar.
+--
+-- Module cache: Hyprland keeps one Lua state across `hyprctl reload`, so, like
+-- bootstrap.lua, drop the cached default.hypr.* modules first; otherwise the
+-- reload would skip the module body and register none of its handlers.
+do
+  local function env_or(name, fallback)
+    local value = os.getenv(name)
+    if value == nil or value == "" then return fallback end
+    return value
+  end
+
+  local omarchy_path = env_or("OMARCHY_PATH", "/usr/share/omarchy")
+  local module_file = omarchy_path .. "/default/hypr/monitor-workspaces.lua"
+  local state_home = env_or("XDG_STATE_HOME", "")
+  local probe = io.open(module_file, "r")
+
+  if not state_home:match("/dr%-sandbox%.[^/]+/home/%.local/state$") then
+    io.stderr:write("nested.lua: NOT loading monitor-workspaces.lua — XDG_STATE_HOME '"
+      .. state_home .. "' is not a sandbox state home, and the module would write the desk's block table\n")
+  elseif not probe then
+    io.stderr:write("nested.lua: NOT loading monitor-workspaces.lua — " .. module_file
+      .. " is missing (Omarchy older than 4.5?)\n")
+  else
+    probe:close()
+
+    for name in pairs(package.loaded) do
+      if name == "default.hypr" or name:sub(1, 13) == "default.hypr." then
+        package.loaded[name] = nil
+      end
+    end
+
+    local entry = omarchy_path .. "/?.lua"
+    if not package.path:find(entry, 1, true) then
+      package.path = entry .. ";" .. package.path
+    end
+
+    o = o or {}
+    o.shell_quote = o.shell_quote or function(value)
+      return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+    end
+    o.bind_expressions = o.bind_expressions or {}
+
+    require("default.hypr.monitor-workspaces")
+  end
+end
