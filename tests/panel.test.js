@@ -7,6 +7,7 @@ const assert = require("node:assert");
 
 const engine = require("../engine.js");
 const state = require("../StateModel.js");
+const slots = require("../Slots.js");
 const panel = require("../PanelModel.js");
 const { loadFixture, makeClient, IDENTITIES } = require("./helpers.js");
 
@@ -3778,9 +3779,13 @@ test("record writes a layout the service reads back unchanged", () => {
   // Two foot windows are open, and schema v3 records both.
   assert.deepStrictEqual(stored.apps.map((a) => a.identityId).sort(), ["chromium", "foot", "foot"]);
   // And it converges: restoring onto the desktop it was recorded from is a
-  // no-op, which is what makes the badge flip to "In sync" straight after.
+  // no-op, which is what makes the badge flip to "In sync" straight after. The
+  // file holds slots (v8), so resolve them to live ids first, as the service does.
+  const table = slots.parseBlocks("0\teDP-1\t" + LAPTOP_KEY + "\n");
+  const resolved = slots.toLive(stored, table, monitorsLaptop);
+  assert.ok(resolved.apps.every((a) => a.unplaceable === null), "every recorded slot resolves");
   assert.strictEqual(
-    engine.planRestore(clientsLaptop, monitorsLaptop, stored, state.identities(round.state)).length, 0);
+    engine.planRestore(clientsLaptop, monitorsLaptop, resolved, state.identities(round.state)).length, 0);
 });
 
 test("recording again overwrites this topology and leaves the others alone", () => {

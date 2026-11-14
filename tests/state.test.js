@@ -8,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const engine = require("../engine.js");
+const slots = require("../Slots.js");
 const state = require("../StateModel.js");
 // Only for the cross-pin below: StateModel itself may never require PanelModel.
 const panel = require("../PanelModel.js");
@@ -41,6 +42,30 @@ function asRead(identities) {
   }));
 }
 
+// What the file stores for a live layout: engine.buildLayout speaks live
+// workspace ids, the v8 file speaks slots. Slots.toRecorded is the one converter
+// (no block table here, so no guest check).
+function recorded(layout) {
+  return slots.toRecorded(layout, slots.parseBlocks(""), []).layout;
+}
+
+// The slot a legacy workspaceId migrates to, said by the one translator.
+function slotFor(workspaceId) {
+  return typeof workspaceId === "number" ? slots.slotOf(workspaceId) : null;
+}
+
+// What a layout read from a v7-or-older file becomes in v8: workspaceId is gone
+// and the slot stands in its place; everything else is untouched.
+function asV8(layout) {
+  const out = Object.assign({}, layout);
+  out.apps = layout.apps.map((app) => {
+    const next = Object.assign({}, app, { slot: slotFor(app.workspaceId) });
+    delete next.workspaceId;
+    return next;
+  });
+  return out;
+}
+
 function sampleLayout(monitors) {
   return engine.buildLayout(clientsLaptop, monitors || monitorsLaptop, IDENTITIES, AT);
 }
@@ -54,11 +79,11 @@ function sampleState() {
 
 // --------------------------------------------------------------- roundtrip
 
-test("a default state is version 7, active, photographing, with nothing recorded", () => {
+test("a default state is version 8, active, photographing, with nothing recorded", () => {
   const fresh = state.defaultState();
   assert.deepStrictEqual(fresh,
-    { version: 7, paused: false, pictures: true, identities: [], layouts: {} });
-  assert.strictEqual(state.STATE_VERSION, 7);
+    { version: 8, paused: false, pictures: true, identities: [], layouts: {} });
+  assert.strictEqual(state.STATE_VERSION, 8);
   // The two keys v7 retired, named so a re-introduction has to argue with a
   // test: there is no file-level consent and no per-identity flag any more.
   assert.ok(!("pictureConsent" in fresh), "no consent answer in a fresh state");
@@ -83,7 +108,7 @@ test("serialize -> parse round-trips a populated state byte for byte", () => {
 test("the serialized file is human-readable JSON with a trailing newline", () => {
   const text = state.serializeState(sampleState());
   assert.ok(text.endsWith("\n"));
-  assert.ok(text.indexOf("\n  \"version\": 7") !== -1, "pretty-printed with 2-space indent");
+  assert.ok(text.indexOf("\n  \"version\": 8") !== -1, "pretty-printed with 2-space indent");
 });
 
 test("a recorded layout survives the round trip unchanged", () => {
@@ -95,8 +120,10 @@ test("a recorded layout survives the round trip unchanged", () => {
   assert.deepStrictEqual(state.layoutFor(parsed.state, LAPTOP_KEY), {
     topologyKey: layout.topologyKey,
     recordedAt: layout.recordedAt,
-    apps: layout.apps
+    apps: recorded(layout).apps
   });
+  assert.ok(state.layoutFor(parsed.state, LAPTOP_KEY).apps.every((a) => !("workspaceId" in a) && "slot" in a),
+    "v8 stores a slot and never a workspace id");
 });
 
 // ------------------------------------------------------------- layoutFor
@@ -246,7 +273,7 @@ test("a half-valid file keeps what is usable and repairs the rest", () => {
   ]);
   assert.deepStrictEqual(state.topologyKeys(result.state), ["Laptop"]);
   assert.deepStrictEqual(state.layoutFor(result.state, "Laptop").apps,
-    [{ identityId: "terminal", workspaceId: 1, occurrence: 0, at: null, size: null }]);
+    [{ identityId: "terminal", slot: 1, occurrence: 0, at: null, size: null }]);
   assert.strictEqual(result.state.strayKey, undefined);
 });
 
@@ -273,7 +300,10 @@ test("what the file stores is exactly what the engine plans from", () => {
   // desktop that already matches, with no ops at all.
   const populated = sampleState();
   const parsed = state.parseState(state.serializeState(populated)).state;
-  const layout = state.layoutFor(parsed, LAPTOP_KEY);
+  // The file holds slots; the engine plans from live ids, so resolve first.
+  const table = slots.parseBlocks("0\teDP-1\t" + LAPTOP_KEY + "\n");
+  const layout = slots.toLive(state.layoutFor(parsed, LAPTOP_KEY), table, monitorsLaptop);
+  assert.ok(layout.apps.every((a) => a.unplaceable === null), "every recorded slot resolves");
 
   assert.deepStrictEqual(engine.planRestore(clientsLaptop, monitorsLaptop, layout, IDENTITIES), []);
 });
@@ -327,12 +357,13 @@ test("a Lua payload smuggled into workspaceId does not survive the read", () => 
   }));
 
   const app = state.layoutFor(result.state, "Laptop").apps[0];
-  assert.strictEqual(app.workspaceId, null, "unparseable as a number, so it becomes null");
+  assert.strictEqual(app.slot, null, "unparseable as a number, so it becomes null");
+  assert.ok(!("workspaceId" in app), "and v8 keeps no workspace id");
   assert.strictEqual(state.serializeState(result.state).indexOf("os.execute"), -1,
     "and it is not written back to disk either");
 });
 
-test("a numeric-string workspaceId is repaired rather than dropped", () => {
+test("a numeric-string workspaceId is migrated to its slot rather than dropped", () => {
   // The realistic corruption is a panel or a hand edit writing "3" instead of 3.
   // That app should still restore, just with a number.
   const result = state.parseState(JSON.stringify({
@@ -340,7 +371,7 @@ test("a numeric-string workspaceId is repaired rather than dropped", () => {
     identities: [],
     layouts: { "Laptop": { topologyKey: "Laptop", apps: [{ identityId: "terminal", workspaceId: "3" }] } }
   }));
-  assert.strictEqual(state.layoutFor(result.state, "Laptop").apps[0].workspaceId, 3);
+  assert.strictEqual(state.layoutFor(result.state, "Laptop").apps[0].slot, 3);
 });
 
 test("normalizing a layout preserves placement fields this version does not know about", () => {
@@ -350,7 +381,7 @@ test("normalizing a layout preserves placement fields this version does not know
     layouts: { "Laptop": { topologyKey: "Laptop", apps: [{ identityId: "terminal", workspaceId: "2", futureField: "keep me" }] } }
   })).state.layouts["Laptop"];
   assert.deepStrictEqual(layout.apps[0],
-    { identityId: "terminal", workspaceId: 2, futureField: "keep me", occurrence: 0, at: null, size: null });
+    { identityId: "terminal", slot: 2, futureField: "keep me", occurrence: 0, at: null, size: null });
 });
 
 // ------------------------------------------- schema v2: geometry and paused
@@ -438,18 +469,18 @@ test("paused survives every other edit to the file", () => {
   assert.strictEqual(state.setIdentities(paused, FILE_IDENTITIES).paused, true);
 });
 
-// -------------------------------- the v1 -> ... -> v7 migration
+// -------------------------------- the v1 -> ... -> v8 migration
 
 const V1_TEXT = fs.readFileSync(path.join(__dirname, "fixtures", "state-v1.json"), "utf8");
 const V1_RAW = JSON.parse(V1_TEXT);
 
-test("a v1 file upgrades to v7 without losing anything it said", () => {
+test("a v1 file upgrades to v8 without losing anything it said", () => {
   const result = state.parseState(V1_TEXT);
 
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null, "and it is not an error either");
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 7, "the whole chain runs in one read");
+  assert.strictEqual(result.state.version, 8, "the whole chain runs in one read");
   assert.strictEqual(result.state.paused, false);
   assert.strictEqual(result.state.pictures, true,
     "v7: a file that never mentioned pictures gets them — the switch ships on");
@@ -471,7 +502,8 @@ test("a v1 file upgrades to v7 without losing anything it said", () => {
       const where = key + " app " + i + " (" + app.identityId + ")";
       assert.strictEqual(upgraded.identityId, app.identityId, where);
       assert.strictEqual(upgraded.monitorDescription, app.monitorDescription, where);
-      assert.strictEqual(upgraded.workspaceId, app.workspaceId, where);
+      assert.strictEqual(upgraded.slot, slotFor(app.workspaceId), where);
+      assert.ok(!("workspaceId" in upgraded), where + " keeps no workspace id");
       assert.strictEqual(upgraded.floating, app.floating, where);
       assert.deepStrictEqual(upgraded.group, app.group, where);
       // The only differences, and every one of them is additive.
@@ -526,20 +558,21 @@ test("a v1 file with junk in the new fields is repaired, never rejected", () => 
   assert.strictEqual(apps[0].at, null);
   assert.strictEqual(apps[1].size, null);
   assert.strictEqual(apps[2].at, null);
-  assert.strictEqual(apps[0].workspaceId, 10, "and the rest of the entry is untouched");
+  assert.strictEqual(apps[0].slot, 10, "and the rest of the entry is untouched");
 });
 
 test("a version from the FUTURE keeps its number; an older one does not", () => {
-  assert.strictEqual(state.migrateVersion(1), 7, "upgraded, the whole chain");
-  assert.strictEqual(state.migrateVersion(2), 7, "upgraded");
-  assert.strictEqual(state.migrateVersion(3), 7, "upgraded");
-  assert.strictEqual(state.migrateVersion(4), 7, "upgraded");
-  assert.strictEqual(state.migrateVersion(5), 7, "upgraded");
-  assert.strictEqual(state.migrateVersion(6), 7, "upgraded");
-  assert.strictEqual(state.migrateVersion(7), 7);
-  assert.strictEqual(state.migrateVersion(8), 8, "we did not write it, so we do not claim it");
-  assert.strictEqual(state.migrateVersion(undefined), 7, "a version-less file is as old as they come");
-  assert.strictEqual(state.migrateVersion("2"), 7);
+  assert.strictEqual(state.migrateVersion(1), 8, "upgraded, the whole chain");
+  assert.strictEqual(state.migrateVersion(2), 8, "upgraded");
+  assert.strictEqual(state.migrateVersion(3), 8, "upgraded");
+  assert.strictEqual(state.migrateVersion(4), 8, "upgraded");
+  assert.strictEqual(state.migrateVersion(5), 8, "upgraded");
+  assert.strictEqual(state.migrateVersion(6), 8, "upgraded");
+  assert.strictEqual(state.migrateVersion(7), 8, "upgraded: v7 -> v8 is the slot migration");
+  assert.strictEqual(state.migrateVersion(8), 8);
+  assert.strictEqual(state.migrateVersion(9), 9, "we did not write it, so we do not claim it");
+  assert.strictEqual(state.migrateVersion(undefined), 8, "a version-less file is as old as they come");
+  assert.strictEqual(state.migrateVersion("2"), 8);
 
   const future = state.parseState(JSON.stringify({ version: 99, identities: [], layouts: {} }));
   assert.strictEqual(future.state.version, 99);
@@ -562,15 +595,15 @@ test("a version from the FUTURE keeps its number; an older one does not", () => 
 // that the three write paths a user can reach leave the file byte-identical, and
 // pin that every writer in the repository actually consults it.
 
-// A v8 file: everything this build knows, plus one identity field it does not.
-// Hand-shaped rather than fixtured, because there is no v8 and the point is what
+// A v9 file: everything this build knows, plus one identity field it does not.
+// Hand-shaped rather than fixtured, because there is no v9 and the point is what
 // an unknown field does on the way through.
 const FUTURE_TEXT = JSON.stringify({
-  version: 8,
+  version: 9,
   paused: false,
   identities: [
     { id: "terminal", patterns: ["^foot$"], titlePatterns: ["^scratch$"], launch: "foot",
-      workspacePreference: "the v8 field this build has never heard of" }
+      workspacePreference: "the v9 field this build has never heard of" }
   ],
   layouts: {}
 }, null, 2) + "\n";
@@ -602,8 +635,8 @@ test("writeRefusal names the future version and the one this build writes", () =
   assert.strictEqual(state.writeRefusal(null), null, "nothing to refuse about nothing");
 
   const refusal = state.writeRefusal(state.parseState(FUTURE_TEXT).state);
-  assert.ok(refusal, "a v8 state cannot be written by a v7 build");
-  assert.ok(refusal.indexOf("v8") !== -1, "says which version the file is");
+  assert.ok(refusal, "a v9 state cannot be written by a v8 build");
+  assert.ok(refusal.indexOf("v9") !== -1, "says which version the file is");
   assert.ok(refusal.indexOf("v" + state.STATE_VERSION) !== -1, "and which one this build writes");
   assert.ok(refusal.indexOf("READ-ONLY") !== -1, "and what that means for the file");
 
@@ -617,17 +650,17 @@ test("writeRefusal names the future version and the one this build writes", () =
   assert.ok(state.writeRefusal(state.removeLayout(future, LAPTOP_KEY)));
 });
 
-test("this is what a write would destroy: the v8 field is gone by the time it is in memory", () => {
+test("this is what a write would destroy: the v9 field is gone by the time it is in memory", () => {
   const identity = state.parseState(FUTURE_TEXT).state.identities[0];
   assert.strictEqual(identity.workspacePreference, undefined,
     "normalizeIdentity is a whitelist — the unknown field never reaches memory");
   assert.strictEqual(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("workspacePreference"), -1,
     "so serializing would write the file back without it");
-  assert.ok(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("\"version\": 8") !== -1,
-    "and still stamped v8, which is the lie that loses the data");
+  assert.ok(state.serializeState(state.parseState(FUTURE_TEXT).state).indexOf("\"version\": 9") !== -1,
+    "and still stamped v9, which is the lie that loses the data");
 });
 
-test("a Record, a panel edit and a pause toggle each leave a v8 file byte-identical", () => {
+test("a Record, a panel edit and a pause toggle each leave a v9 file byte-identical", () => {
   const file = freshStateFile(FUTURE_TEXT);
   const before = fs.readFileSync(file);
   const loaded = state.parseState(fs.readFileSync(file, "utf8")).state;
@@ -656,7 +689,7 @@ test("a Record, a panel edit and a pause toggle each leave a v8 file byte-identi
 
   // Each refusal says why — a silent no-op would be the worse bug.
   for (const reason of [record, edit, pause]) {
-    assert.ok(reason.indexOf("v8") !== -1 && reason.indexOf("READ-ONLY") !== -1, reason);
+    assert.ok(reason.indexOf("v9") !== -1 && reason.indexOf("READ-ONLY") !== -1, reason);
   }
 
   // The file is still READ correctly — the identity it names is materialized in
@@ -666,11 +699,11 @@ test("a Record, a panel edit and a pause toggle each leave a v8 file byte-identi
   assert.deepStrictEqual(state.identities(loaded)[0].titlePatterns, ["^scratch$"]);
 });
 
-// ------------------------------------------- a v8 file is INERT, not read-only
+// ------------------------------------------- a v9 file is INERT, not read-only
 //
 // Finding A6. Write protection alone was half a rule. `normalizeIdentity` is a
-// whitelist, so a v8 identity arrives in memory with every narrowing field v8
-// added STRIPPED — a `^chromium$` rule that v8 scoped to one profile, one
+// whitelist, so a v9 identity arrives in memory with every narrowing field v9
+// added STRIPPED — a `^chromium$` rule that v9 scoped to one profile, one
 // title, one workspace comes through as class-only. The old build then restored
 // from it: it claimed, moved and RELAUNCHED windows against rules far broader
 // than the ones the user wrote. Refusing the write while still acting on the
@@ -708,8 +741,8 @@ test("restoreRefusal makes a future-version file inert and says why", () => {
 
   const future = state.parseState(FUTURE_TEXT).state;
   const refusal = state.restoreRefusal(future);
-  assert.ok(refusal, "a v8 state may not drive a restore on a v7 build");
-  assert.ok(refusal.indexOf("v8") !== -1, "says which version the file is");
+  assert.ok(refusal, "a v9 state may not drive a restore on a v8 build");
+  assert.ok(refusal.indexOf("v9") !== -1, "says which version the file is");
   assert.ok(refusal.indexOf("v" + state.STATE_VERSION) !== -1, "and which one this build understands");
   assert.ok(/INERT|no restore/i.test(refusal), "and what it means: nothing is dispatched");
 
@@ -719,7 +752,7 @@ test("restoreRefusal makes a future-version file inert and says why", () => {
   assert.ok(state.restoreRefusal(state.setPaused(future, true)));
   assert.ok(state.restoreRefusal(state.upsertLayout(future, sampleLayout())));
 
-  // A v8 file with a perfectly good layout for the topology on screen is STILL
+  // A v9 file with a perfectly good layout for the topology on screen is STILL
   // inert: the layout is not the problem, the stripped identities are.
   const withLayout = state.upsertLayout(future, sampleLayout());
   assert.ok(state.hasLayoutFor(withLayout, LAPTOP_KEY),
@@ -746,7 +779,7 @@ test("Service.qml gates every restore path on restoreRefusal", () => {
   const gateStart = request.indexOf("StateModel.restoreRefusal(");
   const gate = request.slice(gateStart, request.indexOf("return", gateStart) + "return".length);
   assert.strictEqual(gate.indexOf("byHand"), -1,
-    "the inert gate has a manual escape hatch — a v8 file must be inert for the button too");
+    "the inert gate has a manual escape hatch — a v9 file must be inert for the button too");
 
   // And it comes BEFORE the pause contract, which does have that escape hatch:
   // "I cannot read this file" outranks "not right now".
@@ -801,7 +834,7 @@ test("Panel.qml refuses a manual restore from an inert file before it dismisses"
     "canRestore no longer asks PanelModel — the condition has drifted back into a binding");
 });
 
-test("the same three writes against a v7 file go through (the guard is not a blanket no)", () => {
+test("the same three writes against a v8 file go through (the guard is not a blanket no)", () => {
   const file = freshStateFile(state.serializeState(sampleState()));
   const before = fs.readFileSync(file, "utf8");
   const loaded = state.parseState(before).state;
@@ -964,7 +997,7 @@ test("a v2 file upgrades to v3 by gaining occurrence 0, and nothing else moves",
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 7, "and it keeps going, to the current generation");
+  assert.strictEqual(result.state.version, 8, "and it keeps going, to the current generation");
   assert.deepStrictEqual(result.state.identities, asRead(before.identities));
 
   for (const key of Object.keys(before.layouts)) {
@@ -974,7 +1007,8 @@ test("a v2 file upgrades to v3 by gaining occurrence 0, and nothing else moves",
       const upgraded = after.apps[i];
       const where = key + " app " + i + " (" + app.identityId + ")";
       assert.strictEqual(upgraded.monitorDescription, app.monitorDescription, where);
-      assert.strictEqual(upgraded.workspaceId, app.workspaceId, where);
+      assert.strictEqual(upgraded.slot, slotFor(app.workspaceId), where);
+      assert.ok(!("workspaceId" in upgraded), where + " keeps no workspace id");
       assert.strictEqual(upgraded.floating, app.floating, where);
       assert.deepStrictEqual(upgraded.group, app.group, where);
       assert.deepStrictEqual(upgraded.at, app.at, where + " keeps its v2 geometry");
@@ -985,14 +1019,14 @@ test("a v2 file upgrades to v3 by gaining occurrence 0, and nothing else moves",
   }
 });
 
-test("a v7 file re-reads byte-identical: the migration has nothing left to do", () => {
-  // Every door into v7 — a v1 file, a v2 file, a v3 file, a v4 file, a v6 file
+test("a v8 file re-reads byte-identical: the migration has nothing left to do", () => {
+  // Every door into v8 — a v1 file, a v2 file, a v3 file, a v4 file, a v6 file
   // — and then the fixed point.
   for (const source of [V1_TEXT, syntheticV2Text(), syntheticV3Text(), syntheticV4Text(),
     syntheticV6Text()]) {
     const once = state.serializeState(state.parseState(source).state);
     const again = state.parseState(once);
-    assert.strictEqual(again.migrated, false, "a v7 file is not migrated again");
+    assert.strictEqual(again.migrated, false, "a v8 file is not migrated again");
     assert.strictEqual(again.error, null);
     assert.strictEqual(state.serializeState(again.state), once, "byte for byte");
   }
@@ -1038,7 +1072,7 @@ test("a mangled occurrence never stops a file from reading", () => {
   assert.strictEqual(result.recovered, false);
   const apps = state.layoutFor(result.state, "Laptop").apps;
   assert.deepStrictEqual(apps.map((a) => a.occurrence), [0, 1, 0]);
-  assert.strictEqual(apps[0].workspaceId, 1, "and the rest of the entry is untouched");
+  assert.strictEqual(apps[0].slot, 1, "and the rest of the entry is untouched");
 });
 
 test("the recorder writes an occurrence on every entry it produces", () => {
@@ -1115,7 +1149,7 @@ test("a v3 file upgrades to v4 by gaining an empty titlePatterns, and nothing el
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 7, "and it keeps going, to the current generation");
+  assert.strictEqual(result.state.version, 8, "and it keeps going, to the current generation");
 
   // Every identity byte for byte, plus the one additive field and nothing else.
   assert.strictEqual(result.state.identities.length, before.identities.length);
@@ -1134,10 +1168,11 @@ test("a v3 file upgrades to v4 by gaining an empty titlePatterns, and nothing el
       ["id", "patterns", "titlePatterns", "launch"], identity.id);
   });
 
-  // v4 is an identity-only generation: not one layout entry moves.
+  // v4 is an identity-only generation: no layout entry moves in it (the v8 slot
+  // standing in for workspaceId is the one later change).
   assert.deepStrictEqual(state.topologyKeys(result.state), Object.keys(before.layouts).sort());
   for (const key of Object.keys(before.layouts)) {
-    assert.deepStrictEqual(state.layoutFor(result.state, key), before.layouts[key], key);
+    assert.deepStrictEqual(state.layoutFor(result.state, key), asV8(before.layouts[key]), key);
   }
 
   // And it is written back on the way out.
@@ -1195,7 +1230,7 @@ test("a v3 --app-id launch the identity's own patterns cannot claim is neutraliz
   assert.strictEqual(result.error, null);
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 7);
+  assert.strictEqual(result.state.version, 8);
 
   const migrated = result.state.identities[0];
   assert.notStrictEqual(migrated.launch, "foot --app-id=herdr herdr",
@@ -1315,7 +1350,7 @@ test("the version bump is unchanged for a v3 file whose launches are clean", () 
   const before = JSON.parse(text);
   const result = state.parseState(text);
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 7);
+  assert.strictEqual(result.state.version, 8);
   before.identities.forEach((identity, i) => {
     assert.strictEqual(result.state.identities[i].launch, identity.launch, identity.id);
   });
@@ -1351,7 +1386,7 @@ test("the launch subtraction belongs to v3 -> v4, not to \"older than today\"", 
 
   // AT v4 AND ABOVE: the user's, untouched, at every generation since — the
   // assertion that would have failed on the shipped v6 and v7 builds.
-  for (const version of [4, 5, 6, 7]) {
+  for (const version of [4, 5, 6, 7, 8]) {
     assert.strictEqual(launchAt(version), "foot --app-id=herdr herdr",
       "v" + version + " is at or past the generation that stopped deriving the flag,"
       + " so this launch was typed by hand and is not this module's to empty");
@@ -1359,19 +1394,19 @@ test("the launch subtraction belongs to v3 -> v4, not to \"older than today\"", 
 
   // And it is still a MIGRATION at every one of those versions but the last —
   // the repair being skipped is not the read being skipped.
-  for (const version of [1, 3, 4, 5, 6]) {
+  for (const version of [1, 3, 4, 5, 6, 7]) {
     assert.strictEqual(state.parseState(carrying(version)).migrated, true, "v" + version);
   }
-  assert.strictEqual(state.parseState(carrying(7)).migrated, false);
+  assert.strictEqual(state.parseState(carrying(8)).migrated, false);
 });
 
-test("a v7 file's --app-id launch is the USER's and is never touched", () => {
+test("a v8 file's --app-id launch is the USER's and is never touched", () => {
   // Only a MIGRATED file carries the retired mechanism's data. A file already at
   // this generation was written by a build that no longer derives the flag, so
   // anything spelling it there was typed by hand — and a hand edit of the launch
   // field is a decision this module does not overrule.
   const text = JSON.stringify({
-    version: 7,
+    version: 8,
     paused: false,
     pictures: true,
     identities: [{ id: "herdr", patterns: ["^foot$"], titlePatterns: [],
@@ -1381,7 +1416,7 @@ test("a v7 file's --app-id launch is the USER's and is never touched", () => {
   const result = state.parseState(text);
   assert.strictEqual(result.migrated, false);
   assert.strictEqual(result.state.identities[0].launch, "foot --app-id=herdr herdr");
-  assert.strictEqual(state.serializeState(result.state), text, "and the v7 file is still a fixed point");
+  assert.strictEqual(state.serializeState(result.state), text, "and the v8 file is still a fixed point");
 });
 
 // ------------------------------------------ schema v7: the one switch (fhy)
@@ -1426,7 +1461,7 @@ function syntheticV6Text(answer) {
   return JSON.stringify(raw, null, 2) + "\n";
 }
 
-test("a v6 file reads as v7: one switch on, both consents gone, nothing else moved", () => {
+test("a v6 file reads as v8: one switch on, both consents gone, nothing else moved", () => {
   const text = syntheticV6Text("keep");
   const before = JSON.parse(text);
   const result = state.parseState(text);
@@ -1434,7 +1469,7 @@ test("a v6 file reads as v7: one switch on, both consents gone, nothing else mov
   assert.strictEqual(result.recovered, false, "an upgrade is not a recovery");
   assert.strictEqual(result.error, null, "and it is not an error either");
   assert.strictEqual(result.migrated, true);
-  assert.strictEqual(result.state.version, 7);
+  assert.strictEqual(result.state.version, 8);
   assert.strictEqual(result.state.pictures, true, "'keep' was a consent, so the pictures stay");
   assert.ok(!("pictureConsent" in result.state), "and the answer itself does not survive");
 
@@ -1454,11 +1489,131 @@ test("a v6 file reads as v7: one switch on, both consents gone, nothing else mov
   assert.ok(before.identities.some((i) => i.pictured === true),
     "the fixture granted at least one camera, or the drop above proves nothing");
 
-  // v7 is a top-level generation: not one layout entry moves.
+  // v7 is a top-level generation: no layout entry moves in it. The one change
+  // to an entry on the way to v8 is the slot standing in for workspaceId.
   assert.deepStrictEqual(state.topologyKeys(result.state), Object.keys(before.layouts).sort());
   for (const key of Object.keys(before.layouts)) {
-    assert.deepStrictEqual(state.layoutFor(result.state, key), before.layouts[key], key);
+    assert.deepStrictEqual(state.layoutFor(result.state, key), asV8(before.layouts[key]), key);
   }
+});
+
+// ------------------------------------------ schema v8: slots (tick ucu)
+//
+// v7 recorded a LIVE workspace id (global numbering); Omarchy 4.5 gives every
+// monitor its own block of ten, so v8 records the SLOT (1..10) and Slots.toLive
+// resolves it against whichever block the monitor holds now. The v7 -> v8 step
+// is slot = ((W - 1) % 10) + 1 for W >= 1, null otherwise.
+
+const V7_TEXT = fs.readFileSync(path.join(__dirname, "fixtures", "state-v7.json"), "utf8");
+const V7_RAW = JSON.parse(V7_TEXT);
+const AOC_KEY = "AOC CU34V5C XXXXXXXXXXXXX";
+const DOCKED_KEY = LAPTOP_KEY + " | " + AOC_KEY;
+
+function legacyApp(workspaceId, extra) {
+  return Object.assign({ identityId: "terminal", monitorDescription: LAPTOP_KEY, workspaceId: workspaceId }, extra || {});
+}
+
+function slotsOfLegacy(workspaceIds) {
+  const result = state.parseState(JSON.stringify({
+    version: 7,
+    identities: [],
+    layouts: { "Laptop": { topologyKey: "Laptop", apps: workspaceIds.map((id) => legacyApp(id)) } }
+  }));
+  return state.layoutFor(result.state, "Laptop").apps.map((a) => a.slot);
+}
+
+test("a v7 file reads as v8: the human's docked file keeps every window on its slot", () => {
+  const result = state.parseState(V7_TEXT);
+  assert.strictEqual(result.migrated, true, "v7 is now an older generation");
+  assert.strictEqual(result.error, null);
+  assert.strictEqual(result.recovered, false);
+  assert.strictEqual(result.state.version, 8);
+
+  const docked = state.layoutFor(result.state, DOCKED_KEY);
+  const onAoc = docked.apps.filter((a) => a.monitorDescription === AOC_KEY);
+  assert.deepStrictEqual(onAoc.map((a) => a.slot), [1, 2, 3, 8, 9, 10], "the AOC's workspaces 1,2,3,8,9,10");
+  const onLaptop = docked.apps.filter((a) => a.monitorDescription === LAPTOP_KEY);
+  assert.deepStrictEqual(onLaptop.map((a) => a.slot), [4, 5], "laptop workspace N is slot N");
+  assert.ok(docked.apps.every((a) => !("workspaceId" in a)), "no workspace id survives");
+
+  // The laptop-only layout is otherwise deep-equal: slot stands in for workspaceId.
+  assert.deepStrictEqual(state.layoutFor(result.state, LAPTOP_KEY), asV8(V7_RAW.layouts[LAPTOP_KEY]));
+  assert.deepStrictEqual(state.layoutFor(result.state, DOCKED_KEY), asV8(V7_RAW.layouts[DOCKED_KEY]));
+
+  // Everything above the layouts is untouched.
+  assert.strictEqual(result.state.paused, V7_RAW.paused);
+  assert.strictEqual(result.state.pictures, V7_RAW.pictures);
+  assert.deepStrictEqual(result.state.identities, V7_RAW.identities);
+});
+
+test("a v7 file stays v7 on disk until the next write, and a v9 file is still a refusal", () => {
+  const file = freshStateFile(V7_TEXT);
+  const loaded = state.parseState(fs.readFileSync(file, "utf8"));
+  assert.strictEqual(loaded.migrated, true);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 7, "the read touched nothing");
+  assert.strictEqual(guardedWrite(file, state.setPaused(loaded.state, true)), null);
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.strictEqual(after.version, 8);
+  assert.ok(after.layouts[LAPTOP_KEY].apps.every((a) => "slot" in a && !("workspaceId" in a)));
+
+  const future = state.parseState(JSON.stringify({ version: 9, identities: [], layouts: {} }));
+  assert.ok(future.error && future.error.indexOf("9") !== -1);
+  assert.ok(state.writeRefusal(future.state), "v9 stays read-only");
+  assert.ok(state.restoreRefusal(future.state), "and inert");
+});
+
+test("v7 workspace ids migrate to slots: 13 is slot 3, special and junk are null", () => {
+  assert.deepStrictEqual(slotsOfLegacy([1, 3, 10, 11, 13, 20, 21, 100]), [1, 3, 10, 1, 3, 10, 1, 10]);
+  assert.deepStrictEqual(slotsOfLegacy([0, -98, -1, 0.5, 1.5, "junk", null, undefined, true, {}]),
+    [null, null, null, null, null, null, null, null, null, null], "W <= 0, fractions and junk have no slot");
+  assert.deepStrictEqual(slotsOfLegacy(["13", " 7 "]), [3, 7], "a numeric string is read as its number");
+});
+
+test("the inline slot arithmetic is Slots.slotOf", () => {
+  // StateModel may not require Slots.js, so the formula is written twice and
+  // this is the only thing holding the two together.
+  const ids = [];
+  for (let id = -120; id <= 300; id++) ids.push(id);
+  assert.deepStrictEqual(slotsOfLegacy(ids), ids.map((id) => slots.slotOf(id)));
+});
+
+test("a migrated v7 file is a fixed point: migration is idempotent", () => {
+  const once = state.parseState(V7_TEXT).state;
+  const written = state.serializeState(once);
+  const again = state.parseState(written);
+  assert.strictEqual(again.migrated, false);
+  assert.deepStrictEqual(again.state, once);
+  assert.strictEqual(state.serializeState(again.state), written, "byte for byte");
+  // And normalizing the in-memory state again changes nothing either.
+  assert.deepStrictEqual(state.parseState(JSON.stringify(once)).state, once);
+});
+
+test("a v8 round-trip keeps slot, and a recorded slot beats a stray workspaceId", () => {
+  const file = {
+    version: 8, paused: false, pictures: true, identities: [],
+    layouts: { "Laptop": { topologyKey: "Laptop", recordedAt: AT, apps: [
+      { identityId: "terminal", occurrence: 0, monitorDescription: "Laptop", slot: 4, floating: false, group: null, at: null, size: null },
+      { identityId: "editor", occurrence: 0, monitorDescription: "Laptop", slot: null, workspaceId: 7, floating: false, group: null, at: null, size: null }
+    ] } }
+  };
+  const read = state.parseState(JSON.stringify(file));
+  assert.strictEqual(read.migrated, false);
+  const apps = state.layoutFor(read.state, "Laptop").apps;
+  assert.strictEqual(apps[0].slot, 4);
+  assert.strictEqual(apps[1].slot, null, "a v8 entry that says null means null");
+  assert.ok(apps.every((a) => !("workspaceId" in a)), "workspaceId is never written back");
+  assert.strictEqual(state.serializeState(state.parseState(state.serializeState(read.state)).state),
+    state.serializeState(read.state));
+});
+
+test("a hand-edited slot is coerced: '3' is 3, and 0, 11, 1.5 and junk are null", () => {
+  const apps = [3, "3", " 10 ", 1, 0, 11, 1.5, "1.5", -1, "x", "", NaN, true, [3], {}, null]
+    .map((slot) => ({ identityId: "terminal", slot: slot }));
+  const read = state.parseState(JSON.stringify({
+    version: 8, identities: [], layouts: { "Laptop": { topologyKey: "Laptop", apps: apps } }
+  }));
+  assert.deepStrictEqual(state.layoutFor(read.state, "Laptop").apps.map((a) => a.slot),
+    [3, 3, 10, 1, null, null, null, null, null, null, null, null, null, null, null, null]);
 });
 
 test("the one v6 answer that carries forward is the refusal", () => {
@@ -1477,7 +1632,7 @@ test("the one v6 answer that carries forward is the refusal", () => {
   assert.strictEqual(state.parseState(syntheticV6Text("No")).state.pictures, true);
 });
 
-test("a v6 file is READ as v7 while the file on disk stays v6 until the next write", () => {
+test("a v6 file is READ as v8 while the file on disk stays v6 until the next write", () => {
   // The property every migration in this file has, kept: the read upgrades in
   // MEMORY and touches nothing. A migration that rewrote the file on sight would
   // rewrite it under a user who only opened the panel — and the acceptance suite
@@ -1489,7 +1644,7 @@ test("a v6 file is READ as v7 while the file on disk stays v6 until the next wri
 
   const loaded = state.parseState(fs.readFileSync(file, "utf8"));
   assert.strictEqual(loaded.migrated, true, "the read IS an upgrade");
-  assert.strictEqual(loaded.state.version, 7, "and in memory it is v7");
+  assert.strictEqual(loaded.state.version, 8, "and in memory it is v8");
   assert.strictEqual(loaded.state.pictures, false, "carrying the answer the file gave");
 
   assert.deepStrictEqual(fs.readFileSync(file), before, "and the file on disk is untouched by the read");
@@ -1502,18 +1657,18 @@ test("a v6 file is READ as v7 while the file on disk stays v6 until the next wri
   // older file is writable, only a newer one is not.
   assert.strictEqual(guardedWrite(file, state.setPaused(loaded.state, true)), null);
   const after = fs.readFileSync(file, "utf8");
-  assert.strictEqual(JSON.parse(after).version, 7, "now the file itself is v7");
+  assert.strictEqual(JSON.parse(after).version, 8, "now the file itself is v8");
   assert.strictEqual(JSON.parse(after).pictures, false, "and the refusal survived the write");
   assert.strictEqual(after.indexOf("pictureConsent"), -1, "with no consent answer left in it");
   assert.strictEqual(after.indexOf("pictured"), -1, "and no per-app camera anywhere");
 });
 
-test("a v7 file re-reads byte-identical, and the three writes leave it v7", () => {
+test("a v8 file re-reads byte-identical, and the three writes leave it v8", () => {
   const file = freshStateFile(state.serializeState(state.parseState(syntheticV6Text("keep")).state));
   const written = fs.readFileSync(file, "utf8");
 
   const again = state.parseState(written);
-  assert.strictEqual(again.migrated, false, "a v7 file is not a migration");
+  assert.strictEqual(again.migrated, false, "a v8 file is not a migration");
   assert.strictEqual(again.error, null);
   assert.strictEqual(state.serializeState(again.state), written, "byte for byte");
 
@@ -1521,16 +1676,16 @@ test("a v7 file re-reads byte-identical, and the three writes leave it v7", () =
   // is exactly where a top-level field goes missing (see stateWith).
   const record = state.upsertLayout(again.state, sampleLayout());
   assert.strictEqual(guardedWrite(file, record), null);
-  assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 7, "after a Record");
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 8, "after a Record");
 
   const loadedA = state.parseState(fs.readFileSync(file, "utf8")).state;
   assert.strictEqual(guardedWrite(file, state.setIdentities(loadedA, loadedA.identities)), null);
-  assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 7, "after a panel edit");
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, "utf8")).version, 8, "after a panel edit");
 
   const loadedB = state.parseState(fs.readFileSync(file, "utf8")).state;
   assert.strictEqual(guardedWrite(file, state.setPaused(loadedB, true)), null);
   const end = JSON.parse(fs.readFileSync(file, "utf8"));
-  assert.strictEqual(end.version, 7, "after the pause toggle");
+  assert.strictEqual(end.version, 8, "after the pause toggle");
   assert.strictEqual(end.pictures, true, "and the switch survived all three");
 });
 

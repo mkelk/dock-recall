@@ -9,6 +9,7 @@ const path = require("node:path");
 
 const engine = require("../engine.js");
 const state = require("../StateModel.js");
+const slots = require("../Slots.js");
 const {
   loadFixture,
   IDENTITIES,
@@ -583,7 +584,8 @@ test("geometry comes back byte-identical through the state file", () => {
   assert.deepStrictEqual(state.layoutFor(stored, LAPTOP_DESC), {
     topologyKey: layout.topologyKey,
     recordedAt: layout.recordedAt,
-    apps: layout.apps
+    // v8: the file holds slots, converted by the one translator, no workspaceId.
+    apps: slots.toRecorded(layout, slots.parseBlocks(""), []).layout.apps
   });
 });
 

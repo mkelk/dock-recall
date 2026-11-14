@@ -114,12 +114,15 @@
 //
 //   Layout — exactly what engine.buildLayout() returns:
 //     { topologyKey, recordedAt, apps: [ { identityId, occurrence,
-//       monitorDescription, workspaceId, floating, group, at, size } ] }.  See
-//     the schema block in engine.js; this file stores it verbatim, with these
-//     exceptions:
-//       - apps[].workspaceId is coerced to a number, because it is the only
-//         recorded field that ends up inside a Lua dispatch string. See
-//         normalizeWorkspaceId.
+//       monitorDescription, slot, floating, group, at, size } ] }.  See
+//     Slots.js for the placement contract; this file stores it verbatim, with
+//     these exceptions:
+//       - apps[].slot (v8) is an integer 1..10 or null. It replaces v7's
+//         workspaceId, which is NOT written any more: a live workspace id
+//         depends on which block of ten Omarchy 4.5 handed the monitor, so the
+//         file stores the monitor and the slot and Slots.toLive resolves them.
+//         A v7-or-older entry with a workspaceId and no slot is migrated by
+//         normalizeSlot (slot = ((W - 1) % 10) + 1; W <= 0 or junk -> null).
 //       - apps[].occurrence (v3) is coerced to a non-negative integer, default
 //         0. See normalizeOccurrence.
 //       - apps[].at and apps[].size (v2) are coerced to a pair of finite
@@ -374,7 +377,7 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 7;
+var STATE_VERSION = 8;
 
 // The one v6 word this build still recognises, and the only place it appears.
 // `pictureConsent` held four values and three of them said "yes" or "nothing";
@@ -683,8 +686,11 @@ function normalizeOccurrence(value) {
   return n;
 }
 
-// A recorded workspace id is INTERPOLATED INTO A LUA DISPATCH by the restore
-// executor (`hl.dsp.window.move({ workspace = "<id>" })`), which makes it the
+// v7 and older: a recorded workspace id. Since v8 this is only the MIGRATION
+// INPUT for the slot (see normalizeSlot); it is never written back.
+//
+// It used to be INTERPOLATED INTO A LUA DISPATCH by the restore
+// executor (`hl.dsp.window.move({ workspace = "<id>" })`), which made it the
 // one field of a hand-edited or corrupted state file that could smuggle code
 // into the compositor — `"1\", follow = false }); os.execute(\"…"` and the
 // quoting is gone. Coerced to a finite number at the single choke point every
@@ -700,6 +706,25 @@ function normalizeWorkspaceId(value) {
   if (!trimmed) return null;
   var parsed = Number(trimmed);
   return isFinite(parsed) ? parsed : null;
+}
+
+// v8: a recorded slot — an integer 1..10, or null. A hand-edited numeric
+// string is coerced like normalizeWorkspaceId does; 0, 11 and fractions are null.
+function normalizeSlotValue(value) {
+  var n = normalizeWorkspaceId(value);
+  return n !== null && Math.floor(n) === n && n >= 1 && n <= 10 ? n : null;
+}
+
+// The v7 -> v8 step for one app. A recorded `slot` wins, valid or not (a v8
+// entry that says null means null). Without one, the legacy workspaceId decides:
+// W >= 1 -> ((W - 1) % 10) + 1, anything else (0, specials, junk) -> null.
+// Inline arithmetic on purpose, Slots.js may not be required here; a test pins
+// it equal to Slots.slotOf.
+function normalizeSlot(app) {
+  if (app.slot !== undefined) return normalizeSlotValue(app.slot);
+  var w = normalizeWorkspaceId(app.workspaceId);
+  if (w === null || Math.floor(w) !== w || w < 1) return null;
+  return ((w - 1) % 10) + 1;
 }
 
 // A recorded `at` or `size`: a pair of finite numbers, or null.
@@ -749,7 +774,10 @@ function normalizeLayout(value, keyFallback) {
       for (var key in app) {
         if (Object.prototype.hasOwnProperty.call(app, key)) placement[key] = app[key];
       }
-      placement.workspaceId = normalizeWorkspaceId(app.workspaceId);
+      // v8. The slot is derived (from a v7 workspaceId) BEFORE the legacy field
+      // is dropped, and the drop is unconditional: v8 stores no workspace id.
+      placement.slot = normalizeSlot(app);
+      delete placement.workspaceId;
       // v3. Written unconditionally too, and for the same reason: a v2 entry
       // that never carried the field described the identity's one window, which
       // IS occurrence 0. Writing it here is the whole of the v2 -> v3
@@ -870,9 +898,10 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> ... -> v7, as far as it has to go, in the one
+//               upgraded (v1 -> ... -> v8, as far as it has to go, in the one
 //               pass). Not an error and not a recovery: nothing was invented,
-//               and the only things dropped are the one v3 -> v4 subtracts on
+//               and the only things dropped are the workspaceId v7 -> v8
+//               replaces with a slot, the one v3 -> v4 subtracts on
 //               purpose (migratedLaunch, and only for a file below v4 — see
 //               needsLaunchRepair) and the two consent fields v6 -> v7 replaced.
 //               The service logs it once and the next write persists the
