@@ -859,3 +859,159 @@ reports an empty description, and its block-table row is
   reconcile renumbers it into that monitor's block.
 - A scratch workspace at 901+ is safe only between reconciles: any monitor
   event or config reload moves its windows into a real block.
+
+# 2026-11-14 — 9i2 fidelity facts (tick ejc)
+
+Run: `tests/sandbox-fidelity-probe.sh` over `tests/sandbox-lib.sh`, Hyprland
+0.56.2, nested `WAYLAND-1` at 701x850 (gaps_in 2, gaps_out 4, border 1).
+`tests/nested.lua` does not set Omarchy's split settings yet, so the probe set
+them with `nested eval` (`force_split = 2`, `preserve_split = true`, read back
+as 2/1). The sandboxed plugin service ran with no seeded layout and made no
+ops. Isolation footer `ALL PASS`. Two full runs; the first was cut short in (f)
+by an edit to the script while it ran, and every answer it got to matched the
+second run to the pixel.
+
+The ground truth for "which tab is active" is the compositor's own:
+`hyprctl eval` writes Lua's `window.group.current` / `current_index`
+(typed in `/usr/share/hypr/stubs/hl.meta.lua`) to a file in the sandbox, and
+the probe reads it back. Classes are `dr-fp-<name>`; below, the bare name.
+
+### 9i2 (a) — the active tab is `visible`, on every workspace
+
+Group ga,gb,gc (tab order), each candidate against `Group.current`:
+
+    shown, gb last focused:        truth gb [current_index 2] | visible=true:[gb] hidden=false:[ga+gb+gc] min-fhid:gb
+    shown, tab set by group.active: truth gc [3]              | visible=true:[gc] hidden=false:[ga+gb+gc] min-fhid:gb
+    hidden (was shown), same:      truth gc [3]              | visible=true:[gc] ...                    min-fhid:gb
+    NEVER shown (group carried to ws 8 with window.move, follow=false):
+                                   truth gb [2]              | visible=true:[gb] ...                    min-fhid:gb
+    NEVER shown, tab set by group.active: truth gc [3]       | visible=true:[gc] ...                    min-fhid:gb
+
+`visible === true` names the active tab on shown, hidden and never-shown
+workspaces alike — it is a per-group "current tab" flag, not "on screen" (every
+window on a hidden ws 2 or never-shown ws 8 outside a group also reads
+`visible: true`). `hidden` is `false` on every member always. The lowest
+`focusHistoryID` is wrong whenever the tab changed without a focus. **Agrees with
+§2.2 `activeTabOf`** (exactly one member with `visible === true`).
+
+### 9i2 (b) — group.active honours the selector; the index is 1-based
+
+With the focus on a2 (tiled beside the group, not in it), ws 2 shown:
+
+    group.active({ index = 0, window = "address:<gc>" }) -> ok, tab gc   (aw a2, shown 2 unchanged)
+    index = 1 -> ga    index = 2 -> gb    index = 3 -> gc               (aw, shown unchanged each time)
+    no selector, a2 focused, index = 1 -> "warning: Window is not in a group", tab unchanged
+    focus on ga (in the group), index = 2 by selector -> tab gb, activewindow ga -> gb
+    group on hidden ws 2, focus home on ws 1, index = 0 -> tab gc; aw home, shown 1 unchanged
+    group on never-shown ws 8, index = 3 -> tab gc; aw home, shown 1 unchanged
+
+The selector is honoured, on a hidden and a never-shown workspace too, and the
+named member only picks the group. The index is **1-based** (Lua's
+`current_index` agrees). **Index 0 silently selects the LAST tab.** It moves
+neither the shown workspace nor `activewindow`, unless the focus is already
+inside that group. Then `activewindow` follows the new tab, as a tab click would.
+So a `tab` op needs no focus and does not have to wait while the session is locked.
+
+For the record, the focus path: `focus({ window = ga })` on hidden ws 8 changed
+the shown workspace 1 -> 8 and made ga the tab. `focus(home)` brought ws 1 back,
+and ws 8 kept ga as its tab.
+
+**Contradiction with §2 to settle in the contract:** §2.6's `tab` op carries
+`index`, and the recorded `group.index` is 0-based (ga@0, gb@1, gc@2). The
+dispatch must send `index = group.index + 1`. Sent unconverted, tab 0 lands on
+the last tab and every other tab is off by one, and the call still answers `ok`.
+
+### 9i2 (c) — resizing any member moves the group tile's divider; the sign law holds
+
+Group tile and plain window et, stacked (axis 1). Sizes are the member's WINDOW
+height, which is the tile minus the 21px groupbar:
+
+    group FAR (below et), active ea:    cur 396 ask 356 -> 436 = 2*cur-ask; et 417 -> 377
+    group FAR, non-active eb:           cur 436 ask 396 -> 476 = 2*cur-ask; et 377 -> 337
+    (swap et with the group: group now NEAR)
+    group NEAR, active ea:              cur 316 ask 276 -> 276 EXACT;      et 497 -> 537
+    group NEAR, non-active eb:          cur 276 ask 236 -> 236 EXACT;      et 537 -> 577
+    plain et, far side:                 cur 577 ask 537 -> 617 = 2*cur-ask
+
+The active and non-active members behave the same, all members keep one shared
+rect, the tab does not change, and every call answers `ok`. A divider op may be
+addressed to the tile key (§2.3) whatever its tab. The asked value is the
+member's window size, so recorded and live member rects compare like for like.
+`splitTreeOf` accepts the 21px inset: et 5,5 691x417 over group 5,449 691x396
+reconstructs as `{axis 1, near et, far g}`.
+
+### 9i2 (d) — swap with a non-active member swaps the whole tile; togglesplit from a member flips the tile's parent
+
+    tab ec; swap({ window = et, target = ea (non-active) }) -> ok:
+      et 5,5 691x417 -> 5,428 691x417; group 5,449 691x396 -> 5,26 691x396 (all three members);
+      tab still ec; activewindow and shown workspace unchanged
+    swap({ window = eb (non-active), target = et }) -> ok: back to et 5,5 / group 5,449, tab ec
+    focus ec (active), layout("togglesplit") -> ok: et/group axis 1 -> 0 (et 5,5 343x840, group 354,26 342x819)
+    focus ea (non-active), layout("togglesplit") -> ok: axis 0 -> 1, back.
+      Focusing ea MADE ea the tab.
+
+A swap works with a member in either role, and it needs no focus.
+Togglesplit flips the tile's parent from any member. But focusing a non-active
+member changes the active tab, so a `split` op on a group tile should focus the
+recorded-active member, or reapply the tab afterwards. Agrees with §2.3 and
+rationale point 2.
+
+### 9i2 (e) — the member chain holds: adjacent joins, leader keeps its rect
+
+Leader et, then ea arriving on et, eb on ea, ec on eb (focus on the predecessor,
+then `window.move`). Then `group.toggle(ea)`, and the joins in tab order (focus the
+predecessor, focus the candidate, `into_group`):
+
+    leaders: et 5,5 691x417, ea 5,428 691x417
+    after arrivals: ea 5,428 343x417, eb 354,428 342x205, ec 354,639 342x206
+    join eb (pred ea): took on "left", the first direction tried
+    join ec (pred eb): took on "left", the first direction tried
+    after: group ea,eb,ec at 5,449 691x396 — same left, width and bottom as ea's
+           417-high tile, 21px groupbar inset; et unchanged
+
+Every join was adjacent, with no scratch fallback. The tab order is ea,eb,ec, and
+the leader's tile is exactly its arrival rect. **E1 can sequence members (§2.3
+arrival program)**; the fallback named in rationale point 3 is not needed.
+
+### 9i2 (f) — the arrival's axis is the split tile's aspect; togglesplit on the arrival flips only its node
+
+    f2 on f1 (tile 691x840, taller): axis 1, f2 below   (5,428 691x417)
+    f3 on f2 (tile 691x417, wider):  axis 0, f3 right   (354,428 342x417)
+    f4 on f3 (tile 342x417, taller): axis 1, f4 below   (354,639 342x206)
+    togglesplit, f3 focused right after it arrived: f2/f3 axis 0 -> 1; only f2 and f3 moved
+    togglesplit, f4 focused right after it arrived: f3/f4 axis 1 -> 0; only f3 and f4 moved
+
+Under `force_split = 2` the arrival always takes the far side (right or below).
+The axis follows the split tile's aspect: wider gives side by side (axis 0),
+taller gives stacked (axis 1). Togglesplit with the arrival focused, right after
+it arrives, flips exactly the node the arrival created. Each flip was toggled
+back. Agrees with §2.5's axis step: one toggle is always enough.
+
+### 9i2 (g) — modes, float, tags
+
+    workspacerules -j for ws 9 before the rule: []
+    hl.workspace_rule({ workspace = "9", layout = "scrolling" }) -> ok
+    workspacerules -j for ws 9 after:  [{"workspaceString":"9","enabled":true}]   (keys: enabled, workspaceString only)
+    windows spawned onto ws 9 (never shown): workspaces -j tiledLayout "scrolling"; ws 5 "dwindle"
+    on scrolling, shown: swap(s1, s3) -> ok, positions exchanged
+                         resize(s2 341 -> ask 281) -> ok, s2 280 wide, neighbours shifted
+                         layout("togglesplit") -> error: no such layoutmsg for scrolling
+    float action "on","on","off","off" -> ok each; floating true,true,false,false
+    window.tag({ tag = "+omarchy-floating-workspace" }) -> tags ["omarchy-floating-workspace"]
+    the same tag from a window RULE                   -> tags ["omarchy-floating-workspace*"]
+
+`tiledLayout` reads the mode of any existing workspace, shown or not.
+`workspacerules -j` does **not** expose a rule's layout, so a workspace that does
+not exist yet has an unreadable mode. On scrolling, swap and resize answer `ok`
+and really do rearrange, which is why §2.4 must refuse them by name: no error will
+catch them. `float` on/off is absolute and idempotent. A tag set by dispatch has no
+`*`, and a rule's tag has a trailing `*`. 4.5's `workspace-modes.lua` sets
+`omarchy-floating-workspace` by dispatch, so it reads bare, and §2.2's "a
+trailing `*` is ignored" covers both forms.
+
+**Gap in §2.2/§2.4 (not a contradiction):** `workspaceModeOf` is null for a
+workspace that does not exist yet, whatever rule is waiting for it. A
+sequenced program into a not-yet-existing scrolling workspace therefore gets
+`splitParent` moves on its first plan. The mode becomes readable once the first
+arrival creates the workspace. S-ticks should re-read `workspaces -j` between
+arrivals, or accept one mis-choreographed first pass.
