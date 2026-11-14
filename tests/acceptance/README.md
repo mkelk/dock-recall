@@ -18,6 +18,7 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `dock-recall-roundtrip-test.sh` | record, undock, scatter, redock, restored |
 | `dock-recall-appid-migration-test.sh` | the v3 `--app-id` upgrade, end to end |
 | `dock-recall-captures-test.sh` | pictures on the guest filesystem, and the one switch that governs them |
+| `dock-recall-fidelity-test.sh` | within-workspace fidelity on Omarchy's own workspace modes |
 | `dock-recall-motion-test.sh` | that the motion is *wired* — bound durations, and a morph that ran |
 | `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
@@ -1152,6 +1153,29 @@ The payloads are copied into the artifacts directory as
 `-fallback.json` and `dock-recall-motion-bar.json`. The panel is dismissed, both
 windows are killed and the status file is restored on the way out however the
 test ends.
+
+## What the fidelity test asserts
+
+Epic 9i2's Tier C case: the shapes `tests/sandbox-fidelity.sh` pins under
+Hyprland's own settings, run on a real 4.5 install, where a workspace can be put
+in scrolling or floating mode by Omarchy's `omarchy-hyprland-workspace-layout-toggle`
+(it acts on the *active* workspace and cycles dwindle, scrolling, floating; the
+test reads the result back with `omarchy-hyprland-workspace-layout-current`).
+
+Each case records the live desk the way the panel does, scatters the windows to
+the scratch slot, triggers a restore and reads rects:
+
+| case | built | asserted |
+|---|---|---|
+| G | tab group `ga,gc,gb` beside tiled `gd`, unequal tiles, visible tab `gc` (not tab 0) | mean IoU >= 0.95, tab order kept, `gc` visible |
+| T | three stacked rows, dragged divider | mean IoU >= 0.95 |
+| S | a workspace switched to scrolling | windows back, no split / swap / divider op in the plan; resized in place, the log names `layout-scrolling` and the rects are left alone |
+| F | a workspace switched to floating, one window floating at a rect | recorded `floating` + `layoutMode: floating`; after a scatter it is back on the workspace, floating, IoU >= 0.95 |
+
+Shapes are built from rects, never assumed (the VM output is not the sandbox's);
+every disturbance first asserts it moved the rects. Workspace ids come from
+`dr_ws_id`. The workspaces switched to a mode are put back to dwindle on exit.
+The `ok - dock-recall fidelity: …` line is in `run.sh`'s `REQUIRED_OK`.
 
 ## What the undock-while-locked scenario asserts
 
