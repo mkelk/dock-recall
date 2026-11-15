@@ -4378,6 +4378,32 @@ function verdictInstanceLabel(verdict) {
   return "window " + index + " of " + count;
 }
 
+// Workspace id -> block and slot label, twins of Slots.blockOf / Slots.slotOf
+// (this file may not import Slots.js: QML .js imports cannot see each other, so
+// the twin is pinned against it by a test). Omarchy 4.5 numbers a monitor's
+// workspaces block * 10 + slot, and its bar prints the slot, so a human-facing
+// name is the slot. Slot 10 is printed "0", exactly like the bar (human,
+// 2026-11-15); that is the one constant below.
+var SLOT_TEN_LABEL = "0";
+
+function isWholeWorkspaceId(id) {
+  return typeof id === "number" && isFinite(id) && Math.floor(id) === id && id >= 1;
+}
+
+function blockOfWorkspace(id) {
+  return isWholeWorkspaceId(id) ? Math.floor((id - 1) / 10) : null;
+}
+
+function slotOfWorkspace(id) {
+  return isWholeWorkspaceId(id) ? ((id - 1) % 10) + 1 : null;
+}
+
+function slotLabelFor(id) {
+  var slot = slotOfWorkspace(id);
+  if (slot === null) return "?";
+  return slot === 10 ? SLOT_TEN_LABEL : String(slot);
+}
+
 // "HDMI-A-1 · ws 2" — where a placement points, in the shortest form that is
 // still unambiguous. Falls back to the recorded description when that monitor
 // is not part of the current topology, which is exactly when the user most
@@ -4393,7 +4419,7 @@ function placementLabel(monitorDescription, workspaceId, monitors) {
     if (label === wanted && trim(monitor.name)) { name = trim(monitor.name); break; }
   }
   var workspace = (workspaceId === null || workspaceId === undefined || workspaceId === "")
-    ? "?" : String(workspaceId);
+    ? "?" : slotLabelFor(workspaceId);
   if (!name) return "ws " + workspace;
   return name + " · ws " + workspace;
 }
@@ -4415,7 +4441,7 @@ function livePlacementLabel(client, monitors) {
     }
   }
   var workspaceId = (client && client.workspace && client.workspace.id !== undefined
-    && client.workspace.id !== null) ? client.workspace.id : "?";
+    && client.workspace.id !== null) ? slotLabelFor(client.workspace.id) : "?";
   return (label ? label + " · " : "") + "ws " + workspaceId;
 }
 
@@ -4784,7 +4810,7 @@ function isMappable(client) {
   return !!trim(client.class || client.initialClass);
 }
 
-function workspacesForMonitor(clients, monitor) {
+function workspacesForMonitor(clients, monitor, block) {
   var list = isArray(clients) ? clients : [];
   var byWorkspace = {};
   var order = [];
@@ -4795,16 +4821,47 @@ function workspacesForMonitor(clients, monitor) {
     if (client.monitor !== monitor.id) continue;
     var id = client.workspace.id;
     if (!byWorkspace[id]) {
-      byWorkspace[id] = { id: id, name: trim(client.workspace.name) || String(id), clients: [] };
+      byWorkspace[id] = { id: id, name: slotLabelFor(id), slot: slotOfWorkspace(id), clients: [] };
       order.push(id);
     }
     byWorkspace[id].clients.push(client);
   }
 
-  order.sort(function (a, b) { return a - b; });
+  // Own workspaces ascending, then guests ascending — the bar's workspaceIds().
+  var hasBlock = typeof block === "number";
+  function isGuest(id) { return hasBlock && blockOfWorkspace(id) !== block; }
+  order.sort(function (a, b) {
+    var ga = isGuest(a) ? 1 : 0;
+    var gb = isGuest(b) ? 1 : 0;
+    return ga !== gb ? ga - gb : a - b;
+  });
   var out = [];
-  for (var o = 0; o < order.length; o++) out.push(byWorkspace[order[o]]);
+  var seenOwn = false;
+  var seenGuest = false;
+  for (var o = 0; o < order.length; o++) {
+    var model = byWorkspace[order[o]];
+    model.guest = isGuest(model.id);
+    model.firstGuest = model.guest && !seenGuest && seenOwn;
+    if (model.guest) seenGuest = true; else seenOwn = true;
+    out.push(model);
+  }
   return out;
+}
+
+// The block a monitor box shows: the caller's table by connector name, else the
+// block of the monitor's own active workspace (the bar's fallback), else null.
+function boxBlockFor(box, monitors, blocks) {
+  var name = box ? box.name : undefined;
+  if (blocks && typeof blocks === "object" && typeof name === "string"
+      && typeof blocks[name] === "number") return blocks[name];
+  var list = isArray(monitors) ? monitors : [];
+  for (var i = 0; i < list.length; i++) {
+    var monitor = list[i];
+    if (!monitor || monitor.name !== name) continue;
+    var active = monitor.activeWorkspace;
+    return blockOfWorkspace(active ? active.id : null);
+  }
+  return null;
 }
 
 // The logical rectangle a mapGeometry box came from. mapGeometry already keeps
@@ -4881,7 +4938,7 @@ function workspaceModel(id, name, rect, slots) {
 // The LIVE map: what is on screen right now.
 //
 //   resolve(client) -> identityId | ""   (engine.matchClient, injected)
-function liveMapModel(clients, monitors, resolve, driftReport, targetWidth, targetHeight, verdicts, instances) {
+function liveMapModel(clients, monitors, resolve, driftReport, targetWidth, targetHeight, verdicts, instances, blocks) {
   var geometry = mapGeometry(monitors, targetWidth, targetHeight);
   var drift = driftIndex(driftReport);
   var driftByAddress = driftIndexByAddress(driftReport);
@@ -4896,12 +4953,17 @@ function liveMapModel(clients, monitors, resolve, driftReport, targetWidth, targ
     var box = geometry.monitors[i];
     box.shortLabel = shortMonitorLabel(box.label, { name: box.name });
     var rect = boxRect(box);
-    var workspaces = workspacesForMonitor(clients, box);
+    box.block = boxBlockFor(box, monitors, blocks);
+    var workspaces = workspacesForMonitor(clients, box, box.block);
     var built = [];
     for (var w = 0; w < workspaces.length; w++) {
-      built.push(workspaceModel(workspaces[w].id, workspaces[w].name, rect,
+      var liveWorkspace = workspaceModel(workspaces[w].id, workspaces[w].name, rect,
         slotsForClients(workspaces[w].clients, resolver, drift, monitors, verdictsByOccurrence,
-          rect, index, driftByAddress)));
+          rect, index, driftByAddress));
+      liveWorkspace.slot = workspaces[w].slot;
+      liveWorkspace.guest = workspaces[w].guest;
+      liveWorkspace.firstGuest = workspaces[w].firstGuest;
+      built.push(liveWorkspace);
     }
     box.workspaces = built;
   }
@@ -4921,7 +4983,7 @@ function liveMapModel(clients, monitors, resolve, driftReport, targetWidth, targ
 // the app is still on the watched list is a different question, and appRows
 // (which has the identity list to answer it with) is where the panel answers
 // it, in the row states documented there.
-function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, targetHeight, instances) {
+function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, targetHeight, instances, blocks) {
   var geometry = mapGeometry(monitors, targetWidth, targetHeight);
   var apps = (layout && isArray(layout.apps)) ? layout.apps : [];
   var running = {};
@@ -4947,6 +5009,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
     var box = geometry.monitors[i];
     box.shortLabel = shortMonitorLabel(box.label, { name: box.name });
     var rect = boxRect(box);
+    box.block = boxBlockFor(box, monitors, blocks);
 
     var byWorkspace = {};
     var order = [];
@@ -4955,7 +5018,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
       if (!app || trim(app.monitorDescription) !== box.label) continue;
       var id = app.workspaceId === null || app.workspaceId === undefined ? 0 : app.workspaceId;
       if (!byWorkspace[id]) {
-        byWorkspace[id] = { id: id, name: String(id), slots: [], groups: {} };
+        byWorkspace[id] = { id: id, name: recordedNameFor(app), slot: recordedSlotFor(app), slots: [], groups: {} };
         order.push(id);
       }
 
@@ -5026,12 +5089,31 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
         // is has to be the same question the live map answers.
         workspace.slots[s].rect = workspace.slots[s].chips[0].rect;
       }
-      built.push(workspaceModel(workspace.id, workspace.name, rect, workspace.slots));
+      var recordedWorkspace = workspaceModel(workspace.id, workspace.name, rect, workspace.slots);
+      recordedWorkspace.slot = workspace.slot;
+      recordedWorkspace.guest = false;
+      recordedWorkspace.firstGuest = false;
+      built.push(recordedWorkspace);
     }
     box.workspaces = built;
   }
 
   return geometry;
+}
+
+// A recorded app's slot, 1..10, from the schema-v9 `slot` field when usable,
+// else from its workspace id; null when neither says.
+function recordedSlotFor(app) {
+  var slot = app ? app.slot : null;
+  if (typeof slot === "number" && isFinite(slot) && Math.floor(slot) === slot
+      && slot >= 1 && slot <= 10) return slot;
+  return slotOfWorkspace(app ? app.workspaceId : null);
+}
+
+function recordedNameFor(app) {
+  var slot = recordedSlotFor(app);
+  if (slot === null) return "?";
+  return slot === 10 ? SLOT_TEN_LABEL : String(slot);
 }
 
 // ---------------------------------------------------------------------------
@@ -6696,10 +6778,10 @@ function shapeLinesFor(status) {
     var reason = trim(row.reason);
     var desc = trim(row.monitorDescription);
     var where = desc ? " on " + shortMonitorLabel(desc, null) : "";
-    lines.push("workspace " + row.workspaceId + where + ": " + iou.toFixed(2)
+    lines.push("workspace " + slotLabelFor(row.workspaceId) + where + ": " + iou.toFixed(2)
       + " of its recorded shape - "
       + (reason ? refusalSentenceFor(reason) : "not yet in that shape"));
-    tags.push(row.workspaceId + " (" + (reason ? refusalTagFor(reason) : "shape differs") + ")");
+    tags.push(slotLabelFor(row.workspaceId) + " (" + (reason ? refusalTagFor(reason) : "shape differs") + ")");
   }
   if (lines.length === 0) return { lines: [], summary: "" };
   return {
@@ -7617,6 +7699,8 @@ if (typeof module !== "undefined") {
     verdictInstanceLabel: verdictInstanceLabel,
     chipFor: chipFor,
     slotsForClients: slotsForClients,
+    blockOfWorkspace: blockOfWorkspace,
+    slotLabelFor: slotLabelFor,
     liveMapModel: liveMapModel,
     recordedMapModel: recordedMapModel,
     appRows: appRows,

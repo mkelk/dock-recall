@@ -2603,7 +2603,7 @@ test("the flat list mirrors the map, in the map's reading order", () => {
 
   // One monitor in this fixture, so the whole list is workspace order — and
   // within a workspace, position order.
-  const workspaces = rows.map((r) => Number(/ws (\d+)/.exec(r.position)[1]));
+  const workspaces = rows.map((r) => Number(/ws (\d+)/.exec(r.position)[1]) || 10); // slot 10 reads "0"
   assert.deepStrictEqual(workspaces, workspaces.slice().sort((a, b) => a - b),
     "workspaces climb, they do not jump about: " + JSON.stringify(rows.map((r) => r.position)));
   // Within workspace 8 the left window (RTM at x=12) comes before the right one
@@ -8439,7 +8439,7 @@ test("shapeLinesFor: one line per unmet shape, and nothing when there are none",
   assert.ok(out.lines[0].indexOf("workspace 3 on ") === 0, out.lines[0]);
   assert.ok(out.lines[0].indexOf(": 0.55 of its recorded shape - ") !== -1, out.lines[0]);
   assert.ok(out.lines[0].endsWith(panel.refusalSentenceFor("ambiguous-tree")), out.lines[0]);
-  assert.strictEqual(out.lines[1], "workspace 12: 0.90 of its recorded shape - not yet in that shape");
+  assert.strictEqual(out.lines[1], "workspace 2: 0.90 of its recorded shape - not yet in that shape");
   assert.ok(out.summary.indexOf("2 workspaces") !== -1 && out.summary.indexOf("3 (shape unclear)") !== -1, out.summary);
   assert.strictEqual(out.summary.indexOf("\n"), -1);
 });
@@ -8462,7 +8462,7 @@ test("shapeLinesFor: a null reason never promises a restore will fix it", () => 
   ] });
   assert.ok(out.lines[0].indexOf("restore") === -1, out.lines[0]);
   assert.ok(out.summary.indexOf("restore") === -1, out.summary);
-  assert.ok(out.summary.indexOf("12 (shape differs)") !== -1, out.summary);
+  assert.ok(out.summary.indexOf("2 (shape differs)") !== -1, out.summary);
 });
 
 test("v2p: the badge tooltip says the shapes too when apps have drifted as well", () => {
@@ -8475,4 +8475,133 @@ test("v2p: the badge tooltip says the shapes too when apps have drifted as well"
   // Drift alone keeps today's sentence, word for word.
   assert.strictEqual(panel.badgeTooltip("drifted", statusOf({ recorded: true, driftCount: 1 })),
     "1 app is not where the recording puts them. Restore now moves them back; Record layout files where they are instead.");
+});
+
+// ------------------------------------------- slot labels (5ue / m73)
+
+const monitorsDockedLabels = loadFixture("monitors-laptop+headless.json");
+
+function labelClient(workspace, monitor, n) {
+  return makeClient({ address: "0x" + (1000 + n), class: "foot", workspace: workspace, monitor: monitor,
+    at: [0, 0], size: [100, 100] });
+}
+
+function liveLabelMap(monitors, placements, blocks) {
+  const clients = placements.map((p, n) => labelClient(p[0], p[1], n));
+  return panel.liveMapModel(clients, monitors, resolver(IDENTITIES), null, 600, 300, null, null, blocks);
+}
+
+function monitorBox(map, name) {
+  return map.monitors.find((m) => m.name === name);
+}
+
+test("two monitors, blocks 0 and 1: each monitor's workspaces are labelled 1-10", () => {
+  const map = liveLabelMap(monitorsDockedLabels,
+    [[1, 0], [3, 0], [10, 0], [11, 1], [13, 1], [20, 1]], { "eDP-1": 0, "hw-test": 1 });
+  const laptop = monitorBox(map, "eDP-1");
+  const external = monitorBox(map, "hw-test");
+  // Slot 10 reads "0", exactly like 4.5's bar (human, 2026-11-15).
+  assert.deepStrictEqual(laptop.workspaces.map((w) => w.name), ["1", "3", "0"]);
+  assert.deepStrictEqual(external.workspaces.map((w) => w.name), ["1", "3", "0"]);
+  assert.deepStrictEqual(laptop.workspaces.map((w) => w.id), [1, 3, 10]);
+  assert.deepStrictEqual(external.workspaces.map((w) => w.id), [11, 13, 20]);
+  assert.deepStrictEqual(laptop.workspaces.map((w) => w.slot), [1, 3, 10]);
+  assert.strictEqual(laptop.block, 0);
+  assert.strictEqual(external.block, 1);
+  assert.ok(laptop.workspaces.concat(external.workspaces).every((w) => w.guest === false && w.firstGuest === false));
+});
+
+test("a merged workspace is labelled by its slot after its host's own", () => {
+  const laptopOnly = [monitorsDockedLabels[0]];
+  const map = liveLabelMap(laptopOnly, [[1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0]], { "eDP-1": 0 });
+  const ws = monitorBox(map, "eDP-1").workspaces;
+  assert.deepStrictEqual(ws.map((w) => w.id), [1, 2, 3, 4, 5, 6]);
+  const last = ws[ws.length - 1];
+  assert.strictEqual(last.name, "6");
+  assert.strictEqual(last.guest, false);
+});
+
+test("a guest that kept its id comes after its host's own, labelled by its slot", () => {
+  const laptopOnly = [monitorsDockedLabels[0]];
+  const map = liveLabelMap(laptopOnly, [[14, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0]], { "eDP-1": 0 });
+  const ws = monitorBox(map, "eDP-1").workspaces;
+  assert.deepStrictEqual(ws.map((w) => w.id), [1, 2, 3, 4, 5, 14]);
+  const guest = ws[5];
+  assert.strictEqual(guest.name, "4");
+  assert.strictEqual(guest.guest, true);
+  assert.strictEqual(guest.firstGuest, true);
+  assert.ok(ws.slice(0, 5).every((w) => !w.guest && !w.firstGuest));
+});
+
+test("a block-1 host lists a block-0 guest after its own", () => {
+  const map = liveLabelMap(monitorsDockedLabels, [[3, 1], [11, 1], [12, 1]], { "eDP-1": 0, "hw-test": 1 });
+  const ws = monitorBox(map, "hw-test").workspaces;
+  assert.deepStrictEqual(ws.map((w) => w.id), [11, 12, 3]);
+  assert.deepStrictEqual(ws.map((w) => w.guest), [false, false, true]);
+  assert.deepStrictEqual(ws.map((w) => w.firstGuest), [false, false, true]);
+  assert.strictEqual(ws[2].name, "3");
+});
+
+test("no blocks passed: the block is the one the monitor's active workspace is in", () => {
+  // The fixture's active workspaces are 9 (eDP-1, block 0) and 4 (hw-test, block 0).
+  const monitors = JSON.parse(JSON.stringify(monitorsDockedLabels));
+  monitors[1].activeWorkspace = { id: 12, name: "12" };
+  const map = liveLabelMap(monitors, [[1, 0], [15, 0], [12, 1], [2, 1]]);
+  assert.strictEqual(monitorBox(map, "eDP-1").block, 0);
+  assert.strictEqual(monitorBox(map, "hw-test").block, 1);
+  assert.deepStrictEqual(monitorBox(map, "eDP-1").workspaces.map((w) => [w.id, w.guest]), [[1, false], [15, true]]);
+  assert.deepStrictEqual(monitorBox(map, "hw-test").workspaces.map((w) => [w.id, w.guest]), [[12, false], [2, true]]);
+  // A monitor with no usable active workspace has no block, and so no guests.
+  const bare = JSON.parse(JSON.stringify(monitorsDockedLabels));
+  bare[1].activeWorkspace = null;
+  const none = liveLabelMap(bare, [[12, 1], [2, 1]]);
+  assert.strictEqual(monitorBox(none, "hw-test").block, null);
+  assert.ok(monitorBox(none, "hw-test").workspaces.every((w) => !w.guest));
+  // An explicit block beats the active workspace.
+  const forced = liveLabelMap(monitors, [[12, 1], [2, 1]], { "hw-test": 0 });
+  assert.strictEqual(monitorBox(forced, "hw-test").block, 0);
+});
+
+test("the recorded map labels a workspace by its recorded slot", () => {
+  const app = (extra) => Object.assign({ identityId: "terminal", monitorDescription: LAPTOP_KEY,
+    occurrence: 1, at: [0, 0], size: [100, 100], floating: false, group: null }, extra);
+  const layout = { apps: [
+    app({ workspaceId: 14, slot: 4, occurrence: 1 }),
+    app({ workspaceId: 3, occurrence: 2 }),
+    app({ workspaceId: 20, occurrence: 3 }),
+    app({ workspaceId: null, occurrence: 4 }),
+    app({ workspaceId: 7, slot: 10, occurrence: 5 })
+  ] };
+  const map = panel.recordedMapModel(layout, [monitorsDockedLabels[0]], [], 600, 300);
+  const ws = monitorBox(map, "eDP-1").workspaces;
+  const byId = {};
+  ws.forEach((w) => { byId[w.id] = w; });
+  assert.strictEqual(byId[14].name, "4");
+  assert.strictEqual(byId[3].name, "3");
+  assert.strictEqual(byId[20].name, "0");
+  assert.strictEqual(byId[7].name, "0", "a recorded slot wins over the id");
+  assert.strictEqual(byId[0].name, "?", "no workspace and no slot is unknown, never 0");
+  assert.ok(ws.every((w) => w.guest === false));
+});
+
+test("placement and shape text name the slot, not the id", () => {
+  assert.strictEqual(panel.placementLabel("X", 13, [{ name: "DP-1", description: "X" }]), "DP-1 · ws 3");
+  assert.strictEqual(panel.placementLabel("X", null, [{ name: "DP-1", description: "X" }]), "DP-1 · ws ?");
+  assert.strictEqual(panel.livePlacementLabel(
+    { monitor: 1, workspace: { id: 13 } }, [{ id: 1, name: "DP-1" }]), "DP-1 · ws 3");
+  assert.strictEqual(panel.livePlacementLabel({ monitor: 1 }, [{ id: 1, name: "DP-1" }]), "DP-1 · ws ?");
+  const out = panel.shapeLinesFor({ shapes: [{ workspaceId: 14, monitorDescription: "", meanIou: 0.5, reason: null }] });
+  assert.strictEqual(out.lines[0], "workspace 4: 0.50 of its recorded shape - not yet in that shape");
+  assert.ok(out.summary.indexOf("4 (shape differs)") !== -1, out.summary);
+});
+
+test("slotLabelFor and blockOfWorkspace are twins of Slots.slotOf and Slots.blockOf", () => {
+  for (let i = 1; i <= 40; i++) {
+    const slot = slots.slotOf(i);
+    assert.strictEqual(panel.slotLabelFor(i), slot === 10 ? "0" : String(slot), "id " + i);
+    assert.strictEqual(panel.blockOfWorkspace(i), slots.blockOf(i), "id " + i);
+  }
+  [0, -98, null, undefined, 1.5, "3"].forEach((bad) => {
+    assert.strictEqual(panel.slotLabelFor(bad), "?");
+  });
 });
