@@ -369,6 +369,9 @@ Item {
   // The cost is one extra pure map build per refresh, on the tab that is not
   // visible. Both are pure functions over values the panel already holds, and
   // `appRows` — which is heavier than either — has always run on both tabs.
+  // Connector -> 4.5 block, for the map's guest and slot marks.
+  readonly property var mapBlocks: Slots.blocksByConnector(root.blockTable, root.liveMonitors)
+
   readonly property var liveMap: {
     // Referenced so the map rebuilds when the watched list changes — the
     // resolver below closes over it, and a closure is invisible to QML's
@@ -376,7 +379,7 @@ Item {
     var list = root.identities
     return PanelModel.liveMapModel(root.liveClients, root.liveMonitors,
       function (client) { return Engine.matchClient(client, list) || "" },
-      root.driftReport, root.mapWidth, root.mapHeight, root.verdicts, root.instanceIndex)
+      root.driftReport, root.mapWidth, root.mapHeight, root.verdicts, root.instanceIndex, root.mapBlocks)
   }
 
   // A topology with nothing recorded builds an EMPTY recorded map rather than
@@ -386,7 +389,7 @@ Item {
   // falls out as `live-only`, which is exactly right.
   readonly property var recordedMap: PanelModel.recordedMapModel(
     root.recordedLayout, root.liveMonitors, root.runningIdentityIds,
-    root.mapWidth, root.mapHeight, root.instanceIndex)
+    root.mapWidth, root.mapHeight, root.instanceIndex, root.mapBlocks)
 
   readonly property var mapModel: root.showRecorded ? root.recordedMap : root.liveMap
 
@@ -2628,8 +2631,9 @@ Item {
     var excluded = (layout.excluded || []).concat(converted.excluded)
     for (var e = 0; e < excluded.length; e++) {
       if (excluded[e].reason === "workspace-guest") {
-        root.warn("not recorded: \"" + excluded[e].identityId + "\" is on workspace "
-          + excluded[e].workspaceId + ", another monitor's block — its slot would land it"
+        root.warn("not recorded: \"" + excluded[e].identityId + "\" is on slot "
+          + PanelModel.slotLabelFor(excluded[e].workspaceId) + " [workspace " + excluded[e].workspaceId
+          + "], another monitor's block — its slot would land it"
           + " somewhere else, so it is left out of the layout")
       } else {
         root.warn("not recorded: \"" + excluded[e].identityId + "\" is on special workspace "
@@ -3274,6 +3278,8 @@ Item {
           // disambiguation the key was built for, and a cross-check that
           // matches on `id` alone matches across monitors.
           monitorName: String(box.name),
+          slot: workspace.slot,
+          guest: workspace.guest === true,
           renderPath: root.reported(wsReport, "renderPath"),
           // What the number badge says, and whether it is the filled one. Both
           // from the delegate that drew the badge — `name` above is the model's

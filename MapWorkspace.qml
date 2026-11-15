@@ -1694,8 +1694,15 @@ BorderSurface {
     // Follows the theme the way the kit's own switches do: pill on rounded
     // corners, square on sharp.
     radius: Style.cornerRadius > 0 ? height / 2 : 0
-    color: workspaceSlot.badgeFocused
-      ? Color.accent : Util.alpha(Color.popups.background, 0.72)
+    // A guest workspace (another monitor's block) is outlined, not filled.
+    readonly property bool outlined: workspaceSlot.modelData.guest === true
+      && !workspaceSlot.badgeFocused
+    color: workspaceLabel.outlined
+      ? "transparent"
+      : (workspaceSlot.badgeFocused
+        ? Color.accent : Util.alpha(Color.popups.background, 0.72))
+    border.width: workspaceLabel.outlined ? 1 : 0
+    border.color: panel.faintForeground
 
     Text {
       id: workspaceBadgeText

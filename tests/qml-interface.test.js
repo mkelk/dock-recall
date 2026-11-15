@@ -372,3 +372,12 @@ test("Service.qml: a config-reload check always resolves — watchdog, stale cal
   assert.match(finish,
     /requestRestore\("queued rerun", wasManual\)\s*(\/\/[^\n]*\n\s*)*if \(root\.cycleActive \|\| !root\.reloadCheckAfterCycle\) return\s*\}\s*if \(root\.reloadCheckAfterCycle\)/);
 });
+
+test("Panel.qml: both map-model calls pass root.mapBlocks as the trailing argument", () => {
+  const source = fs.readFileSync(PANEL_QML, "utf8");
+  assert.match(source, /readonly property var mapBlocks: Slots\.blocksByConnector\(root\.blockTable, root\.liveMonitors\)/);
+  for (const fn of ["liveMapModel", "recordedMapModel"]) {
+    assert.match(source, new RegExp("PanelModel\\." + fn + "\\([^;]*?root\\.mapBlocks\\)"),
+      fn + " must pass root.mapBlocks last");
+  }
+});
