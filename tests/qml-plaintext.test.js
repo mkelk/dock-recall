@@ -525,7 +525,7 @@ test("Service.qml: float is absolute on/off, never toggle; swap read-back compar
   assert.ok(source.indexOf("function floatSetStep(") !== -1);
   assert.ok(/\(wantFloating \? "on" : "off"\)/.test(source), "floatSetStep must dispatch action on/off");
   assert.ok(source.indexOf("can only oscillate") === -1, "the toggle-oscillation wording is gone");
-  assert.ok(source.indexOf("function tileBox(") !== -1 && source.indexOf("var wantedA = root.tileBox(b)") !== -1,
+  assert.ok(source.indexOf("function tileRect(") !== -1 && source.indexOf("var wantedRect = root.tileRect(b)") !== -1,
     "the swap read-back must compare tile boxes (a group member is its tile minus the groupbar)");
   assert.ok(/status published \([\s\S]{0,300}" shapes=" \+ \(next\.shapeCount \|\| 0\)/.test(source),
     "the status published log line carries shapes=N");

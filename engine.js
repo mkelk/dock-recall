@@ -2782,6 +2782,38 @@ function withinTolerance(delta, tolerance) {
     && Math.abs(delta.dh) <= limit;
 }
 
+// The swap read-back compares whole tile boxes, and the read can land
+// mid-animation, so it takes a band wider than GEOMETRY_TOLERANCE_PX. A genuine
+// miss is still drift on the next plan.
+var TILE_BOX_TOLERANCE_PX = 8;
+
+// The groupbar height used when `hyprctl getoption group:groupbar:height -j`
+// cannot be read (the desk answered 22).
+var GROUPBAR_FALLBACK_PX = 22;
+
+// `hyprctl getoption group:groupbar:height -j` -> a positive integer, or null.
+function parseGroupbarHeight(text) {
+  var parsed;
+  try { parsed = JSON.parse(String(text)); } catch (e) { return null; }
+  var value = parsed && typeof parsed === "object" ? parsed.int : null;
+  if (typeof value !== "number" || !isFinite(value) || value <= 0 || Math.floor(value) !== value) return null;
+  return value;
+}
+
+// Two tile boxes ({ at, size }) agree when every edge (left, top, right,
+// bottom) is within the tolerance.
+function tileBoxesMatch(wanted, actual, tolerance) {
+  if (!wanted || !actual) return false;
+  var a = geometryOf(wanted.at), s = geometryOf(wanted.size);
+  var b = geometryOf(actual.at), t = geometryOf(actual.size);
+  if (!a || !s || !b || !t) return false;
+  var limit = typeof tolerance === "number" && isFinite(tolerance) ? Math.abs(tolerance) : TILE_BOX_TOLERANCE_PX;
+  return Math.abs(a[0] - b[0]) <= limit
+    && Math.abs(a[1] - b[1]) <= limit
+    && Math.abs((a[0] + s[0]) - (b[0] + t[0])) <= limit
+    && Math.abs((a[1] + s[1]) - (b[1] + t[1])) <= limit;
+}
+
 // Round to 4 decimals, so a similarity score is stable enough to serialize into
 // the status file and to compare in a test without chasing float dust.
 function round4(value) {
@@ -6338,6 +6370,10 @@ if (typeof module !== "undefined") {
     GEOMETRY_TOLERANCE_PX: GEOMETRY_TOLERANCE_PX,
     geometryDelta: geometryDelta,
     withinTolerance: withinTolerance,
+    TILE_BOX_TOLERANCE_PX: TILE_BOX_TOLERANCE_PX,
+    GROUPBAR_FALLBACK_PX: GROUPBAR_FALLBACK_PX,
+    parseGroupbarHeight: parseGroupbarHeight,
+    tileBoxesMatch: tileBoxesMatch,
     rectIou: rectIou,
     geometryScoreFor: geometryScoreFor,
     geometrySummaryOf: geometrySummaryOf,
