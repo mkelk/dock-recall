@@ -10,7 +10,7 @@
 # no golden images, no Pillow on host or guest, and `undock-locked.sh` already
 # measured (2026-09-02) that the emulated framebuffer goes on showing a normal
 # desktop while the session is genuinely locked — so a screendump is an artifact
-# here, never evidence. The standard increment 06-bwf adopted instead is
+# here, never evidence. The standard adopted instead is
 # bind-level: the panel reports the values it COMPUTED AND BOUND, queried over
 # IPC in the guest and asserted the way every other test here asserts. It cannot
 # catch a purely rasterization-layer bug (a theme override, zero opacity, a
@@ -86,11 +86,11 @@
 #   overflowOpen,— the overflow menu, and its rows as its DELEGATES drew them.
 #   overflowLayouts A shut menu lists nothing however many layouts are on disk
 #                  — not because the delegates come and go with the popup
-#                  (tick be1: they do not; they live for the whole panel
+#                  (an earlier change: they do not; they live for the whole panel
 #                  session), but because the payload only reads their reports
 #                  while overflowOpen is true — which is what makes a non-empty
 #                  list evidence of drawing rather than of a model.
-#   rows         — the app list, which is a STRIP now (tick 0kv): a cell is an
+#   rows         — the app list, which is a STRIP now: a cell is an
 #                  icon, a name and a small switch, several to a line, and the
 #                  54-px Ui/Toggle rows with a placement caption stranded on the
 #                  right are gone. appRows still builds THREE states and all
@@ -134,7 +134,7 @@
 #                  the other tab. Derived from the recording's own recordedAt
 #                  and never from a file mtime; WHY is in README.md, under
 #                  "Absent vs `null` — the normative statement".
-#   pictures     — THE ONE SWITCH (schema v7, epic wau), top-level and always
+#   pictures     — THE ONE SWITCH (schema v7), top-level and always
 #                  present. Whether this tool may photograph the windows it
 #                  watches is a fact about the TOOL, so it is one boolean on the
 #                  payload rather than a grant on every chip and every row. The
@@ -365,7 +365,7 @@ CHIP_MIN_H=10
 # means either the panel never asked or the guest icon theme has no generic
 # executable icon at all. The second would leave every unrecognised app drawing
 # nothing, which is worth failing on. The first is what Omarchy 4.5 did to
-# every chip and row (tick 0i5): its scoped plugin facade lends `appLibrary`
+# every chip and row: its scoped plugin facade lends `appLibrary`
 # only to `menu` plugins, and the panel asked the null one. It now resolves
 # names itself when there is no library (Panel.qml iconSourceForName).
 #
@@ -395,7 +395,7 @@ CHIP_MIN_H=10
 # legitimate (a headless output set has no focus at all), which is why this is a
 # ceiling rather than an equality.
 #
-# THE STRIP, AND THE TWO HEIGHTS IT IS JUDGED AGAINST (tick 0kv's redesign).
+# THE STRIP, AND THE TWO HEIGHTS IT IS JUDGED AGAINST.
 # `strip`, `mapHeight` and `panelHeight` are required on BOTH views, and that is
 # not decoration: the strip sits in the card's own column BELOW the map and is
 # the same component whichever tab is showing, so a payload carrying them on one
@@ -988,7 +988,7 @@ if ! poll 30 capture_live_state; then
   # Named per clause rather than left as "the shape failed": capture_live_state
   # is one jq predicate over chips, rows AND workspaces, but this message used
   # to describe only the chip and workspace clauses — so a ROW clause failing
-  # (tick sm1: a row's iconResolved disagreeing with its own chip's) printed a
+  # (an earlier change: a row's iconResolved disagreeing with its own chip's) printed a
   # paragraph about chips that were fine, and a full gate cycle went to a
   # wrong diagnosis before anyone thought to suspect the row side at all. If
   # you are reading this because the run failed, replay $LIVE_JSON (or the
@@ -1049,7 +1049,7 @@ pass "POSITIONED workspace badges: $live_badges"
 # 4.5's slot label, end to end: workspace id N reads ((N-1)%10)+1, so slot 10 is
 # "0" for slot 10 (the human's decision: labelled like the bar).
 if ! printf '%s' "$LIVE_JSON" | jq -e \
-    '[.workspaces[]|select(.id >= 1 and .badgeValue != (((.id - 1) % 10) + 1 | if . == 10 then "0" else tostring end))]|length == 0' >/dev/null; then
+    '[.workspaces[]|select((.id|type)=="number" and .id >= 1 and .badgeValue != (((.id - 1) % 10) + 1 | if . == 10 then "0" else tostring end))]|length == 0' >/dev/null; then
   fail "every workspace badge reads its slot (panel IPC)" "badges: $live_badges"
 fi
 pass "every workspace badge reads its slot, ((id-1)%10)+1 (10 shown as 0)"
@@ -1114,7 +1114,7 @@ if ! printf '%s' "$LIVE_JSON" | jq -e '.strip.height <= .mapHeight' >/dev/null; 
 fi
 pass "the strip as it was laid out: $strip_columns cell(s) on the first line, ${strip_row_height}px each, ${strip_height}px in all, under a ${map_height}px map, in a ${panel_height}px card"
 
-# A picture of the live map with its pictures drawn (tick i93). The captures
+# A picture of the live map with its pictures drawn. The captures
 # test PROVES the live round; this only waits for it, so the screenshot shows
 # the panel as a user sees it after a moment rather than the instant it opened.
 # A timeout here is not a failure — the picture is for eyes, not for the gate,
@@ -1311,7 +1311,7 @@ resumed_badge=$(panel_state_json | jq -r '"\(.badgeText)/\(.badgeTone)"')
 pass "and back: paused=false, and the badge is the desk again ($resumed_badge)"
 
 # THE OVERFLOW MENU. `overflowLayouts` is reported by the row DELEGATES and
-# gated on `overflowOpen` at read time (tick be1: the delegates themselves live
+# gated on `overflowOpen` at read time (an earlier change: the delegates themselves live
 # for the whole panel session, not just while the popup is up — a shut menu
 # reports none because panelState() only reads their reports while
 # overflowOpen is true, not because the delegates come and go). This topology
@@ -1328,7 +1328,7 @@ overflow_listed() {
 }
 if ! poll 20 overflow_listed; then
   diagnostics
-  # Named per clause (tick be1: the three conjuncts printed nothing on the
+  # Named per clause (an earlier change: the three conjuncts printed nothing on the
   # gate run that first exercised this assertion) — replay the numbers below
   # rather than re-deriving them from the raw payload above.
   overflow_conjuncts=$(panel_state_json | jq -c '{
@@ -1406,7 +1406,7 @@ fi
 # survived the move is to light a cell and read back the text it is showing.
 #
 # Both halves of the identification are computed FROM THIS PAYLOAD rather than
-# from a literal or from an earlier read (learnings, j18: compare like with
+# from a literal or from an earlier read(compare like with
 # like). The lit row must contain its OWN name — not any name, which a cell
 # stuck on the wrong model would also satisfy — and the monitor its own chip
 # reports, which is the placement line the caption used to carry. The chip is

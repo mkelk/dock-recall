@@ -40,14 +40,14 @@ targets is precisely the case where the compositor's own re-homing is believed
 to fail (the lock surface holds keyboard focus on an output that is
 disappearing), and reproducing it needs a lock screen inside the nested
 instance plus a way to observe input while locked — impractical here, and
-explicitly out of scope for the tick.
+explicitly out of scope for that work.
 
 So what is proven is: the DETECTION reads the right thing (`hyprctl monitors
 -j`, `focused` flag, active outputs only) and the REPAIR dispatch works. What
 is unproven is that the repair is reached in the real freeze, and that it is
 sufficient to unfreeze a locked session.
 
-**Tick sug is therefore DONE_WITH_CONCERNS.** Closing the gap needs Layer 5:
+**This check is therefore left with a concern.** Closing the gap needs Layer 5:
 lock the real session, undock the physical AOC, and read the `[dock-recall]`
 log afterwards for either
 
@@ -289,7 +289,7 @@ the input path with a wrong password before the right one.
 
 ---
 
-# 2026-09-04 — Can we photograph a window we cannot see? (tick o2x)
+# 2026-09-04 — Can we photograph a window we cannot see?
 
 The Recorded map wants a picture of each watched window, taken when the user
 presses Record and shown later with the app closed. The whole feature stands on
@@ -352,7 +352,7 @@ nothing about the product. On a real desk the equivalent is a monitor that is of
 or asleep. **Every capture needs a timeout as well as a callback**, and a "no
 frame" answer must be reported as such rather than treated as an empty picture.
 
-## What the capture tick has to know
+## What the capture work has to know
 
 - **`HyprlandToplevel.address` has no `0x` prefix.** The model returns
   `"562be03ac9a0"` where `hyprctl clients` says `"0x562be03ac9a0"`. Normalizing
@@ -405,7 +405,7 @@ sessions on the compositor simultaneously.
 
 ## Where the evidence is
 
-`.devmeta/increments/increment-06-bwf/evidence/o2x/` in the dev repository — the
+The capture evidence is kept outside this repository — the
 four capture PNGs, the `grim` screen scrape they are absent from, the
 `hyprctl monitors`/`workspaces`/`clients` dumps taken while they were hidden, and
 the full sandbox run log. The probe itself was a throwaway; only the bridge it
@@ -413,7 +413,7 @@ exercised is in this repository.
 
 ---
 
-# 2026-09-04 — Does the bridge tell the truth about TIME? (tick w25)
+# 2026-09-04 — Does the bridge tell the truth about TIME?
 
 Every capture tick in this epic stands on `ToplevelBridge`, and a foundation
 review found it dishonest in exactly the place nothing could test: it treated
@@ -487,7 +487,7 @@ so a pending answer stays pending — and `deadlineMs: 800`:
 `resolveWhenReady` is the bounded wait, built once on the bridge so this epic's
 several capture ticks do not each invent one. It matters beyond startup: a
 window on a monitor that is not rendering resolves its handle **perfectly** and
-then never delivers a frame (tick o2x), so the timeout is the only thing that
+then never delivers a frame, so the timeout is the only thing that
 ends that capture.
 
 ## The QVariant guard, measured rather than assumed
@@ -511,12 +511,12 @@ everything fine" over windows nobody photographed.
 `true` (permanent, and `ok=false`). Both are derived: `pending` is the only
 retryable bucket, so `pending` is the only bucket that gates the predicate.
 
-The probe was a throwaway, as in o2x; only the bridge it exercised is in this
+The probe was a throwaway, as in the earlier bridge probe; only the bridge it exercised is in this
 repository, and every decidable part of it now has a node test.
 
 ---
 
-# 2026-09-04 — The sandbox refuses to start unparked (tick n1s)
+# 2026-09-04 — The sandbox refuses to start unparked
 
 Run: `tests/sandbox-nested-guard.sh` over `tests/sandbox-lib.sh`. Machine: the
 dev box, Hyprland 0.56.2, Omarchy 4 "Quattro". Nothing ran against the live
@@ -576,7 +576,7 @@ marker present — and a compositor came up. Measured, one run:
 
 ## Correction: `disable_logo` was never the red banner
 
-`.tick/learnings.md` blames `nested.lua`'s `misc.disable_logo` for a red
+the project notes blames `nested.lua`'s `misc.disable_logo` for a red
 *"Your config has errors"* overlay on every nested start. **It does not
 produce one.** Measured both ways in the sandbox, with the key in and out:
 
@@ -599,7 +599,7 @@ Two more things worth knowing, both of which broke a first draft of this check:
 
 ---
 
-# 2026-09-04 — Why the two test windows would not change shape (tick z65)
+# 2026-09-04 — Why the two test windows would not change shape
 
 Run: a throwaway probe over `tests/sandbox-lib.sh` (nested Hyprland 0.56.2,
 Lua-configured exactly as an Omarchy Quattro guest is). Nothing ran against the
@@ -635,7 +635,7 @@ identical tiled sizes, five minutes into a VM boot.
 
 ## The working form
 
-The one `engine.js`'s own restore executor emits (`opToCommand`, ticks 8t4/y29)
+The one `engine.js`'s own restore executor emits (`opToCommand`)
 and the one every other script in `tests/acceptance/` already uses:
 
     hl.dsp.window.float({ window = "address:0x…", action = "toggle" })
@@ -654,7 +654,7 @@ Measured, two tiled 700x840 `foot` windows on a 1416x850 nested output:
     aspect 2.647 vs 0.486 — 81.7% apart, against the test's 40% floor
 
 Both landed on the window they NAMED. That is not a formality: an unrecognised
-selector key acts silently on the ACTIVE window (`.tick/learnings.md`), so "one
+selector key acts silently on the ACTIVE window (the project notes), so "one
 window carries the other's numbers" is a live failure mode, and it is what the
 `900x340 != 340x700` check in the probe was there to catch.
 
@@ -667,7 +667,7 @@ absent. Both cases happen to want the same thing here, so it worked by accident;
 
 ---
 
-# 2026-09-04 — Where the capture round went silent (tick 070)
+# 2026-09-04 — Where the capture round went silent
 
 Run: a throwaway probe over `tests/sandbox-lib.sh` (nested Hyprland 0.56.2,
 Lua-configured, quickshell 0.3.1). Nothing ran against the live session; the
@@ -679,7 +679,7 @@ nothing at all, and the cache stayed empty.
 ## The stage the probe rebuilt
 
 The captures acceptance test's, inside the nested compositor: two `foot` windows
-told apart by `--title=`, floated at aspect ratios five times apart (tick z65),
+told apart by `--title=`, floated at aspect ratios five times apart,
 two seeded identities of which one is `pictured`, a `headless` output for the
 windows to live on, and a Record driven through the panel's own
 `dock-recall record` IPC. `sandbox_up`'s generated `shell.qml` was replaced with
@@ -746,7 +746,7 @@ sitting over the capture host: a second, bare `CaptureStore` with its own 1x1
 host was driven directly, with the panel CLOSED and then OPEN, and both answered
 `no-frame`. And the output IS rendering — `grim -o sbx-cap` came back with a
 46 KB PNG in the same run. So the frame path is a limitation of this stage
-(tick o2x captured on a nested headless output by moving BOTH workspaces onto it,
+(an earlier change captured on a nested headless output by moving BOTH workspaces onto it,
 which this probe did not do), not of the round.
 
 **The picture itself is the VM's to prove.** What the sandbox settles is that the
@@ -759,7 +759,7 @@ within one step budget, where before it said nothing for 45 s and then
 
 ---
 
-# 2026-11-14 — Omarchy 4.5's per-monitor workspaces, measured nested (tick zf6)
+# 2026-11-14 — Omarchy 4.5's per-monitor workspaces, measured nested
 
 Run: `tests/sandbox-45-probe.sh` over `tests/sandbox-lib.sh`, three runs with
 identical answers. Machine: the dev box, Hyprland 0.56.2, the 4.5
@@ -860,7 +860,7 @@ reports an empty description, and its block-table row is
 - A scratch workspace at 901+ is safe only between reconciles: any monitor
   event or config reload moves its windows into a real block.
 
-# 2026-11-14 — 9i2 fidelity facts (tick ejc)
+# 2026-11-14 — fidelity facts
 
 Run: `tests/sandbox-fidelity-probe.sh` over `tests/sandbox-lib.sh`, Hyprland
 0.56.2, nested `WAYLAND-1` at 701x850 (gaps_in 2, gaps_out 4, border 1).
@@ -876,7 +876,7 @@ The ground truth for "which tab is active" is the compositor's own:
 (typed in `/usr/share/hypr/stubs/hl.meta.lua`) to a file in the sandbox, and
 the probe reads it back. Classes are `dr-fp-<name>`; below, the bare name.
 
-### 9i2 (a) — the active tab is `visible`, on every workspace
+### fidelity (a) — the active tab is `visible`, on every workspace
 
 Group ga,gb,gc (tab order), each candidate against `Group.current`:
 
@@ -894,7 +894,7 @@ window on a hidden ws 2 or never-shown ws 8 outside a group also reads
 `focusHistoryID` is wrong whenever the tab changed without a focus. **Agrees with
 §2.2 `activeTabOf`** (exactly one member with `visible === true`).
 
-### 9i2 (b) — group.active honours the selector; the index is 1-based
+### fidelity (b) — group.active honours the selector; the index is 1-based
 
 With the focus on a2 (tiled beside the group, not in it), ws 2 shown:
 
@@ -921,7 +921,7 @@ and ws 8 kept ga as its tab.
 dispatch must send `index = group.index + 1`. Sent unconverted, tab 0 lands on
 the last tab and every other tab is off by one, and the call still answers `ok`.
 
-### 9i2 (c) — resizing any member moves the group tile's divider; the sign law holds
+### fidelity (c) — resizing any member moves the group tile's divider; the sign law holds
 
 Group tile and plain window et, stacked (axis 1). Sizes are the member's WINDOW
 height, which is the tile minus the 21px groupbar:
@@ -940,7 +940,7 @@ member's window size, so recorded and live member rects compare like for like.
 `splitTreeOf` accepts the 21px inset: et 5,5 691x417 over group 5,449 691x396
 reconstructs as `{axis 1, near et, far g}`.
 
-### 9i2 (d) — swap with a non-active member swaps the whole tile; togglesplit from a member flips the tile's parent
+### fidelity (d) — swap with a non-active member swaps the whole tile; togglesplit from a member flips the tile's parent
 
     tab ec; swap({ window = et, target = ea (non-active) }) -> ok:
       et 5,5 691x417 -> 5,428 691x417; group 5,449 691x396 -> 5,26 691x396 (all three members);
@@ -956,7 +956,7 @@ member changes the active tab, so a `split` op on a group tile should focus the
 recorded-active member, or reapply the tab afterwards. Agrees with §2.3 and
 rationale point 2.
 
-### 9i2 (e) — the member chain holds: adjacent joins, leader keeps its rect
+### fidelity (e) — the member chain holds: adjacent joins, leader keeps its rect
 
 Leader et, then ea arriving on et, eb on ea, ec on eb (focus on the predecessor,
 then `window.move`). Then `group.toggle(ea)`, and the joins in tab order (focus the
@@ -973,7 +973,7 @@ Every join was adjacent, with no scratch fallback. The tab order is ea,eb,ec, an
 the leader's tile is exactly its arrival rect. **E1 can sequence members (§2.3
 arrival program)**; the fallback named in rationale point 3 is not needed.
 
-### 9i2 (f) — the arrival's axis is the split tile's aspect; togglesplit on the arrival flips only its node
+### fidelity (f) — the arrival's axis is the split tile's aspect; togglesplit on the arrival flips only its node
 
     f2 on f1 (tile 691x840, taller): axis 1, f2 below   (5,428 691x417)
     f3 on f2 (tile 691x417, wider):  axis 0, f3 right   (354,428 342x417)
@@ -987,7 +987,7 @@ taller gives stacked (axis 1). Togglesplit with the arrival focused, right after
 it arrives, flips exactly the node the arrival created. Each flip was toggled
 back. Agrees with §2.5's axis step: one toggle is always enough.
 
-### 9i2 (g) — modes, float, tags
+### fidelity (g) — modes, float, tags
 
     workspacerules -j for ws 9 before the rule: []
     hl.workspace_rule({ workspace = "9", layout = "scrolling" }) -> ok

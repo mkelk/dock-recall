@@ -1,7 +1,7 @@
 // AppStrip.qml — the apps under the map, as a STRIP: an icon, a name and a
 // small switch, several to a line, and everything else on hover.
 //
-// WHAT IT REPLACES AND WHY (tick 0kv). This was ten bordered 54-px rows, each
+// WHAT IT REPLACES AND WHY. This was ten bordered 54-px rows, each
 // one a shell `Ui/Toggle` with a placement caption stranded on the far right —
 // a form, sitting under a map that already says where every window is. The
 // human's verdict on first use was that the panel felt clunky, and this list
@@ -25,7 +25,7 @@
 // WIDTH alone, and the name elides against `nameRoom` rather than sizing
 // anything. Unticking an app changes a colour and the position of a knob. It
 // cannot change a cell width, and it cannot change how many cells share a line
-// — which is what the old list did every time, and what tick 5jl had already
+// — which is what the old list did every time, and what an earlier change had already
 // had to fix once on the caption.
 //
 // A CELL IS PACKED LEFT, and the first VM look is why (finding S1). The switch
@@ -232,7 +232,7 @@ Grid {
         appStrip.panel.reportRow(appCell.modelData.key, report)
       }
       onIconSourceChanged: appCell.reportRender()
-      // This was the bug (sm1): the desktop-file scan that resolves an icon
+      // This was the bug: the desktop-file scan that resolves an icon
       // lands AFTER open(), so both properties start out ""/false and are
       // re-evaluated once the scan completes. `reportRender()` above is called
       // from `onIconSourceChanged`, and on that pass `iconSource`'s own
@@ -248,7 +248,7 @@ Grid {
       onIconResolvedChanged: appCell.reportRender()
       onLinkedChanged: appCell.reportRender()
       // One handler per captured property, `hoverText` included — the whole of
-      // the rule sm1 above cost us, applied to the field this tick adds.
+      // the rule sm1 above cost us, applied to the field this change adds.
       onTipTextChanged: appCell.reportRender()
       onModelDataChanged: appCell.reportRender()
       Component.onCompleted: appCell.reportRender()

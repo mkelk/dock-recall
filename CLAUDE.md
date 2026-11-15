@@ -4,9 +4,8 @@ This repository **is** the plugin: `omarchy plugin add` clones it and installs
 the clone root, so `manifest.json` and the three QML entry points sit at the top
 level and everything here ships to a user's `~/.config/omarchy/plugins/`.
 
-Planning, issue tracking, design notes, evidence and benchmark history live in
-the private sibling repository `mkelk/dock-recall-dev` (`~/git/dock-recall-dev`).
-Nothing from there belongs here.
+Planning, issue tracking, design notes, evidence and benchmark history are kept
+outside this repository. Nothing from there belongs here.
 
 ## The one architectural rule
 
@@ -53,7 +52,7 @@ window titles, an email address, a Slack workspace and channel id, an Obsidian
 vault name, the host name and `/home/<user>` paths. When capturing a fresh dump,
 sanitize it the same way **before** committing — grep the diff for an email
 address, a hostname, a `T…`/`C…` Slack id and a home directory. The unsanitized
-originals stay in the dev repository.
+originals are not kept here.
 
 ## Refusals are a feature
 

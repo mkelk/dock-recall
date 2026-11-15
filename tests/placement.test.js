@@ -1,11 +1,11 @@
-// Tiled placement — tick 35n.
+// Tiled placement — an earlier change.
 //
 // Two questions, kept apart on purpose:
 //
 //   1. THE READING. Given a set of recorded rects, what dwindle tree produced
 //      them, and what insertion program rebuilds it? That is pure geometry, it
 //      is a table, and it is checked below against trees this project WATCHED
-//      being built (docs/state-matrix.md § Tiled placement § 4) — not against
+//      being built (the state matrix § Tiled placement § 4) — not against
 //      trees invented here, which would only prove the code agrees with itself.
 //
 //   2. THE GATE. planRestore may only put that program in a plan when the
@@ -72,7 +72,7 @@ function program(items) {
 }
 
 test("the insertion program of a tree the probe watched being built is the program that built it", () => {
-  // Left column is what docs/state-matrix.md § Tiled placement § 4 dispatched;
+  // Left column is what the state matrix § Tiled placement § 4 dispatched;
   // right column is what this code reads back out of the rects it produced.
   assert.equal(program(TREES.pair), "a b<-a");
   assert.equal(program(TREES.spine3), "a b<-a c<-b");
@@ -265,7 +265,7 @@ test("GATE: a recorded FLOAT on the workspace stands the choreography down", () 
 test("GATE: a window recorded tiled but LIVE FLOATING stands the choreography down", () => {
   // Found by tests/property.test.js, not by reasoning, and it is the subtlest
   // of the five: the plan DOES fix this window, with a `floating` op — but that
-  // op runs after the moves (tick y29 settled that ordering), so at the moment
+  // op runs after the moves (an earlier change settled that ordering), so at the moment
   // the choreography runs the window is still a float and holds no tile.
   // Focusing it splits nothing; being it, it takes no slot. Every dispatch
   // would answer "ok".
@@ -300,7 +300,7 @@ test("GATE: rects that are not a tree fall back to recorded order, silently and 
   assert.deepEqual(movesOf(plan), ["0x1", "0x2", "0x3"]);
 });
 
-test("GATE: a v1 recording has no rects at all, and plans exactly as it did before this tick", () => {
+test("GATE: a v1 recording has no rects at all, and plans exactly as it did before this change", () => {
   const layout = layoutOn(5);
   for (const app of layout.apps) { delete app.at; delete app.size; }
   const plan = engine.planRestore(scattered(), MONITORS, layout, IDS);
@@ -369,7 +369,7 @@ test("a choreographed plan still only ever names addresses the read contained", 
 });
 
 // ---------------------------------------------------------------------------
-// A tab group arrives as ONE tile, then its tabs chain off its leader (9i2)
+// A tab group arrives as ONE tile, then its tabs chain off its leader 
 // ---------------------------------------------------------------------------
 //
 // The group's recorded members share one rect, so they are one tile of the
@@ -378,7 +378,7 @@ test("a choreographed plan still only ever names addresses the read contained", 
 // before it; the group op that follows the moves folds that chain back into
 // the leader's tile. Measured in the nested compositor: every member arrival
 // lands beside its predecessor and the joined group sits exactly on the
-// leader's rect (tests/nested-notes.md, 9i2 (e)).
+// leader's rect (tests/nested-notes.md, fidelity facts (e)).
 
 const GIDS = [
   { id: "ga", patterns: ["^app-ga$"] },
@@ -416,7 +416,7 @@ function scatteredGroup(extra) {
   ].concat(extra || []);
 }
 
-test("9i2: a group beside a tile arrives leader first, then its tabs chain in tab order", () => {
+test("a group beside a tile arrives leader first, then its tabs chain in tab order", () => {
   const plan = engine.planRestore(scatteredGroup(), MONITORS, groupLayout(false), GIDS);
   assert.deepEqual(movesOf(plan), ["0xa", "0xd<-0xa", "0xc<-0xa", "0xb<-0xc"]);
   // …and the group op after the moves joins them in the recorded tab order.
@@ -425,13 +425,13 @@ test("9i2: a group beside a tile arrives leader first, then its tabs chain in ta
   assert.ok(plan.indexOf(groups[0]) > plan.map((op) => op.kind).lastIndexOf("move"));
 });
 
-test("9i2: a group on the FAR side arrives after the tile it splits, its tabs after that", () => {
+test("a group on the FAR side arrives after the tile it splits, its tabs after that", () => {
   const plan = engine.planRestore(scatteredGroup(), MONITORS, groupLayout(true), GIDS);
   assert.deepEqual(movesOf(plan), ["0xd", "0xa<-0xd", "0xc<-0xa", "0xb<-0xc"]);
   assert.deepEqual(engine.unknownPlanAddresses(plan, scatteredGroup()), []);
 });
 
-test("9i2: the whole-workspace gate counts windows — one tab still away stands it down", () => {
+test("the whole-workspace gate counts windows — one tab still away stands it down", () => {
   // gb is already home on ws 5 and is not moving, so the workspace is not
   // being built from empty by this plan.
   const clients = scatteredGroup();
@@ -440,7 +440,7 @@ test("9i2: the whole-workspace gate counts windows — one tab still away stands
   assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
 });
 
-test("9i2: a group that is still a live group is not chained — its leader's move drags its tabs", () => {
+test("a group that is still a live group is not chained — its leader's move drags its tabs", () => {
   const ring = ["0xa", "0xc", "0xb"];
   const clients = scatteredGroup();
   for (const c of clients) if (ring.indexOf(c.address) !== -1) c.grouped = ring.slice();
@@ -448,7 +448,7 @@ test("9i2: a group that is still a live group is not chained — its leader's mo
   assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
 });
 
-test("9i2: a workspace that is ONE group splits nothing, so it is not choreographed", () => {
+test("a workspace that is ONE group splits nothing, so it is not choreographed", () => {
   const layout = groupLayout(false);
   layout.apps = layout.apps.filter((a) => a.identityId !== "gd");
   const plan = engine.planRestore(scatteredGroup().filter((c) => c.address !== "0xd"), MONITORS, layout, GIDS);
@@ -456,19 +456,19 @@ test("9i2: a workspace that is ONE group splits nothing, so it is not choreograp
   assert.ok(plan.every((op) => !op.splitParent), JSON.stringify(plan));
 });
 
-// ------------------------------------------- the destination's layout mode (9i2)
+// ------------------------------------------- the destination's layout mode 
 //
 // A splitParent is a focus dispatch for an arrival order only dwindle reads.
 // Into a scrolling or floating workspace, or one recorded in another mode, the
 // moves keep their recorded order and lose the focus (§2.4).
 
-test("GATE 9i2: a destination in the SCROLLING layout gets its moves and no splitParent", () => {
+test("GATE: a destination in the SCROLLING layout gets its moves and no splitParent", () => {
   const scrolling = { workspaces: [{ id: 5, tiledLayout: "scrolling" }, { id: 9, tiledLayout: "dwindle" }], built: null };
   const plan = engine.planRestore(scattered(), MONITORS, layoutOn(5), IDS, scrolling);
   assert.deepEqual(movesOf(plan), ["0x1", "0x2", "0x3"]);
 });
 
-test("GATE 9i2: a destination the FLOATING layout tagged gets no splitParent", () => {
+test("GATE: a destination the FLOATING layout tagged gets no splitParent", () => {
   const tagged = makeClient({ address: "0x9", class: "some-app-nobody-watches", workspace: 5, floating: true,
     tags: ["omarchy-floating-workspace"] });
   const dwindle = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
@@ -478,7 +478,7 @@ test("GATE 9i2: a destination the FLOATING layout tagged gets no splitParent", (
     ["0x1", "0x2", "0x3"]);
 });
 
-test("GATE 9i2: a destination recorded in another mode gets no splitParent; the same mode keeps it", () => {
+test("GATE: a destination recorded in another mode gets no splitParent; the same mode keeps it", () => {
   const dwindle = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
   const mode = (m) => ({ one: { layoutMode: m }, two: { layoutMode: m }, three: { layoutMode: m } });
   assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, dwindle)),
@@ -487,7 +487,7 @@ test("GATE 9i2: a destination recorded in another mode gets no splitParent; the 
     ["0x1", "0x2<-0x1", "0x3<-0x2"]);
   // A destination with no readable mode (it does not exist yet) is not refused
   // by its live mode — but one RECORDED scrolling or floating stands the
-  // sequencing down all the same (tick v2p); recorded dwindle or unrecorded
+  // sequencing down all the same; recorded dwindle or unrecorded
   // keeps it, and the service re-reads the mode before any axis correction.
   const unknown = { workspaces: [{ id: 9, tiledLayout: "dwindle" }], built: null };
   assert.deepEqual(movesOf(engine.planRestore(scattered(), MONITORS, layoutOn(5, mode("scrolling")), IDS, unknown)),
@@ -502,7 +502,7 @@ test("GATE 9i2: a destination recorded in another mode gets no splitParent; the 
     ["0x1", "0x2<-0x1", "0x3<-0x2"]);
 });
 
-// ------------------------------------------- the arrival's split axis (9i2 §2.5)
+// ------------------------------------------- the arrival's split axis (§2.5)
 //
 // Dwindle picks an arrival's axis from the shape of the tile it splits (wider:
 // side by side, taller: stacked), not from the recording. So each LEADER
@@ -532,7 +532,7 @@ function axesOf(plan) {
       + (op.splitAxis === undefined ? "" : "/" + op.splitAxis));
 }
 
-test("9i2: probe T's program carries the axis of each recorded cut — ta<-tb stacked, tc<-ta stacked", () => {
+test("probe T's program carries the axis of each recorded cut — ta<-tb stacked, tc<-ta stacked", () => {
   // 0x1 = ta, 0x2 = tb, 0x3 = tc. Both arrivals land BELOW their parent: the
   // second one is the arrival dwindle put side by side in the probe (0.546),
   // because ta's tile was wider than tall when tc split it.
@@ -543,18 +543,18 @@ test("9i2: probe T's program carries the axis of each recorded cut — ta<-tb st
   assert.equal(moves[0].splitAxis, undefined, "the first arrival splits nothing, so it has no axis");
 });
 
-test("9i2: the spine's two cuts carry two different axes — beside, then below", () => {
+test("the spine's two cuts carry two different axes — beside, then below", () => {
   const plan = engine.planRestore(scattered(), MONITORS, layoutOn(5), IDS);
   assert.deepEqual(axesOf(plan), ["0x1", "0x2<-0x1/0", "0x3<-0x2/1"]);
 });
 
-test("9i2: a group's member chain carries no axis — only the leaders do", () => {
+test("a group's member chain carries no axis — only the leaders do", () => {
   const plan = engine.planRestore(scatteredGroup(), MONITORS, groupLayout(false), GIDS);
   assert.deepEqual(axesOf(plan), ["0xa", "0xd<-0xa/0", "0xc<-0xa", "0xb<-0xc"]);
   assert.ok(plan.filter((op) => op.kind === "move").every((op) => op.sequenced === true));
 });
 
-test("9i2: an unsequenced move carries neither sequenced nor splitAxis", () => {
+test("an unsequenced move carries neither sequenced nor splitAxis", () => {
   // A recorded app that is not running leaves a hole: the gate stands down.
   const plan = engine.planRestore(
     [makeClient({ address: "0x1", class: "app-one", workspace: 9 }),
@@ -565,7 +565,7 @@ test("9i2: an unsequenced move carries neither sequenced nor splitAxis", () => {
   }
 });
 
-test("9i2: the axis and the sequenced mark sign nothing — the parent is the program", () => {
+test("the axis and the sequenced mark sign nothing — the parent is the program", () => {
   const base = { kind: "move", address: "0xB", workspaceId: 5, splitParent: "0xA" };
   const marked = Object.assign({}, base, { sequenced: true, splitAxis: 1 });
   assert.equal(engine.opSignature(marked), engine.opSignature(base));
@@ -575,7 +575,7 @@ test("9i2: the axis and the sequenced mark sign nothing — the parent is the pr
     "move 0xB -> ws 5 (splitting 0xA, side by side)");
 });
 
-// ------------------------------------------- reading an arrival's axis back (tick v2p)
+// ------------------------------------------- reading an arrival's axis back
 //
 // The service reads each sequenced arrival back against its split parent. The
 // arrival always takes the FAR side (right / below), and a togglesplit keeps it

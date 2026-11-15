@@ -24,7 +24,7 @@
 // 140. So "the house convention" is really two neighbouring values, and the
 // increment's spec named the ToggleSwitch one. That is the one used here. The
 // difference is 20ms and no assertion can tell anyone which is right; whether
-// the motion FEELS right is the human's gate for this epic (tick 0c7), and this
+// the motion FEELS right is the human's gate for this epic, and this
 // is on the list to look at when they answer it.
 //
 // A COLOUR FADE DECLARES NO EASING. ToggleSwitch does not give its
@@ -54,7 +54,7 @@ QtObject {
   // desk that may sit untouched for minutes. At 1100ms each way a chip breathes
   // roughly every 2.2 seconds, which is near the slow end of what reads as
   // alive rather than as a blink. Whether it is the RIGHT number is the human's
-  // gate (tick 0c7) — a loop is the most intrusive motion in this plugin and
+  // gate — a loop is the most intrusive motion in this plugin and
   // the easiest to get wrong.
   readonly property int breatheDuration: 1100
 }

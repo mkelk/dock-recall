@@ -1,12 +1,12 @@
 #!/bin/bash
-# sandbox-fidelity-probe.sh — tick ejc: the compositor facts epic 9i2
-# (within-workspace fidelity) rests on, measured in the nested compositor.
+# sandbox-fidelity-probe.sh — the compositor facts the within-workspace fidelity work
+# rests on, measured in the nested compositor.
 #
-# The 9i2 plan (tab group = one tile, active tab recorded and restored, a tree
+# The plan (tab group = one tile, active tab recorded and restored, a tree
 # the plugin built itself, layout modes refused by name) assumes seven things
 # about Hyprland 0.56 that nobody had measured. This script asks each of them
 # and prints the answer with the raw read-back; tests/nested-notes.md, section
-# "9i2 fidelity facts", records what they were on the day.
+# "fidelity facts", records what they were on the day.
 #
 #   (a) which clients-JSON field names a group's ACTIVE TAB — on a shown
 #       workspace, on a hidden one, and on one that has NEVER been shown
@@ -519,7 +519,7 @@ ANSWER[g]="tiledLayout ws $W9 (rule, then windows): $G_TL9; ws $W5: $G_TL5 | wor
 
 # ----------------------------------------------------------------- answers
 
-echo "=== ANSWERS (tick ejc) ==="
+echo "=== ANSWERS ==="
 for k in a b c d e f g; do
   echo "($k) ${ANSWER[$k]:-unanswered}"
 done

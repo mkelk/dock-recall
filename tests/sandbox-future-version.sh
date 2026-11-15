@@ -1,5 +1,5 @@
 #!/bin/bash
-# sandbox-future-version.sh — finding A6 / tick t03, proven in the nested
+# sandbox-future-version.sh — proven in the nested
 # compositor: a state file from a schema generation this build does not
 # understand is INERT. It is read, it is never written, and it dispatches
 # NOTHING.

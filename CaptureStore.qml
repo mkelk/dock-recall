@@ -6,14 +6,14 @@
 // NAMES are PanelModel's (captureFileName, captureTopologyPrefix, capturePlan)
 // and so is the plan — this file only performs it.
 //
-// It is its own file for the reason MapWorkspace.qml is (tick xk5): Panel.qml
+// It is its own file for the reason MapWorkspace.qml is: Panel.qml
 // is the panel, and a capture pipeline with a Wayland host window, a toplevel
 // bridge, three subprocesses and a two-callback state machine is a subsystem
 // rather than a section.
 //
 // ------------------------------------------------------------------ the shape
 //
-// A capture is doubly async and the spike (tick o2x) measured exactly how:
+// A capture is doubly async and the spike measured exactly how:
 // `hasContent` arrives only after a Wayland buffer round trip, and
 // `grabToImage` then queues a render-thread job with a callback of its own. So
 // one window is a two-callback chain, and N windows is that chain run STRICTLY
@@ -92,7 +92,7 @@ Item {
   // pixels and the map scales to fit, so anything larger is bytes nobody looks
   // at; 512 is wide enough that a HiDPI chip is not upscaled.
   //
-  // MEASURED, not estimated (tick sz6, nested sandbox, this component driven
+  // MEASURED, not estimated (nested sandbox, this component driven
   // against three text-dense terminal windows — the worst case for JPEG, since
   // a screen of small type is exactly what does not compress):
   //
@@ -121,12 +121,12 @@ Item {
   // beside it for that job, read by the panel through a `< 0` branch that could
   // never be taken — a binding dependency disguised as a guard, pinned by
   // nothing, and one tidy-up away from every chip's picture never refreshing
-  // again with no test failure and no visible error (tick md1). `hasIn` below
+  // again with no test failure and no visible error. `hasIn` below
   // takes the listing as an ARGUMENT instead, so the dependency is in the call
   // and deleting it does not compile.
   property var files: ({})
 
-  // IS A ROUND IN FLIGHT? The one truth, and it is LOAD-BEARING (tick ilg):
+  // IS A ROUND IN FLIGHT? The one truth, and it is LOAD-BEARING:
   // `capture()`'s own guard reads it, and so does the panel — `canRecord` is
   // false while it holds, so a second Record cannot be pressed against a live
   // round at all. Before that it was read nowhere, and a refused Record was the
@@ -151,7 +151,7 @@ Item {
   //
   // `own`, not a bare lookup: a basename that collides with an Object.prototype
   // key would otherwise answer truthy for a picture that is not there
-  // (.tick/learnings.md, tick 8hp).
+  //.
   function hasIn(files, name) {
     if (!name || !files) return false
     return Object.prototype.hasOwnProperty.call(files, String(name))
@@ -208,7 +208,7 @@ Item {
   // directory is a place other software also writes. One process, no name ever
   // leaving the kernel, and nothing outside the prefix can be named.
   //
-  // ONE AT A TIME, QUEUED, NEVER CLOBBERED (tick ilg). `evictProc` is a single
+  // ONE AT A TIME, QUEUED, NEVER CLOBBERED. `evictProc` is a single
   // Process shared by five callers, and the pattern, the reason and the
   // continuation used to live in properties beside it. A second eviction
   // therefore SIGTERMed the first and then ran the first's `onExited` against
@@ -227,7 +227,7 @@ Item {
       reason, then)
   }
 
-  // EVERY PICTURE OF THESE APPS, ON EVERY DESK (tick sp7). The eviction
+  // EVERY PICTURE OF THESE APPS, ON EVERY DESK. The eviction
   // UNWATCHING needs, and the one this store had no shape for.
   //
   // Being watched is a fact about an app, not about a desk. Unwatching one and
@@ -330,7 +330,7 @@ Item {
       var job = store._evictJob
       store._evictJob = null
 
-      // A DELETE THAT FAILED IS SAID OUT LOUD (tick ilg). `find`'s exit code was
+      // A DELETE THAT FAILED IS SAID OUT LOUD. `find`'s exit code was
       // ignored and its stderr went to a collector nothing read, so a picture
       // that could not be removed — a permission, a read-only cache, a full
       // inode table — left a log line claiming the pictures were dropped. The
@@ -396,11 +396,11 @@ Item {
   property bool _active: false
   property var _current: null
 
-  // WHICH STEP IS IN FLIGHT, AS A NUMBER (tick 070). It counts up by one in
+  // WHICH STEP IS IN FLIGHT, AS A NUMBER. It counts up by one in
   // `_next()` for every step that is started, and the view created for that step
   // carries the same number.
   //
-  // A NUMBER AND NOT THE ENTRY OBJECT, and this is the whole of tick 070's
+  // A NUMBER AND NOT THE ENTRY OBJECT, and this is the whole of an earlier change's
   // repair. The three things that answer for a step — the frame handler, the
   // grab callback and the per-window guard — used to be handed `view.entry` and
   // ask `store._queue[0] === entry`. That comparison CAN NEVER BE TRUE:
@@ -432,11 +432,11 @@ Item {
   // step? — asked in a currency the boundary cannot copy.
   property int _step: 0
 
-  // BOTH REFUSALS COME BEFORE ANY ROUND STATE IS TOUCHED (tick ilg), and
+  // BOTH REFUSALS COME BEFORE ANY ROUND STATE IS TOUCHED, and
   // neither calls `_finish()`.
   //
   // That ordering is the whole of this repair. `_finish()` is — correctly, since
-  // tick gox — the place a round tears ITSELF down, resetting everything it
+  // an earlier change — the place a round tears ITSELF down, resetting everything it
   // owns. Calling it from a REFUSAL, after `_plan`/`_done`/`_results` had
   // already been overwritten, meant a second Record during a live round tore the
   // FIRST round down instead of the second: the first round's `_done` was lost
@@ -582,7 +582,7 @@ Item {
     store._current = view
     guard.restart()
     // NOT captureFrame(): with live:false, assigning captureSource has already
-    // started the capture and a second call errors (spike o2x, measured).
+    // started the capture and a second call errors (measured).
   }
 
   // Is this step the one in flight? The head of the queue IS the step: every
@@ -618,7 +618,7 @@ Item {
   //
   // The Forget's `find` had already scanned past a file that did not exist yet.
   // Racing the eviction is unwinnable from that side; the answer is the same one
-  // tick zxg used for the picture gate — ask again at the instant of the write,
+  // an earlier change used for the picture gate — ask again at the instant of the write,
   // when both facts are current.
   function _stillOwed(entry) {
     if (typeof store.stillOwed !== "function") return true
@@ -640,15 +640,15 @@ Item {
   // Record one answer and move on. The only way out of a step, so no path can
   // leave the queue holding an entry it has already answered for.
   //
-  // IDEMPOTENT PER STEP (tick ilg). Two things can answer for the same step —
+  // IDEMPOTENT PER STEP. Two things can answer for the same step —
   // the per-window guard and the grab callback it outlived — and a second answer
   // was not merely a duplicate: it pushed an extra result AND shifted the queue
   // again, so one queue entry was dropped unphotographed and unreported. That
   // window is then missing from the round's results entirely, so the log line
   // cannot mention it and nobody can be told it was never taken.
   //
-  // The subject is the STEP NUMBER and the entry is read from the queue (tick
-  // 070): a caller holding a view's copy of the entry could never be recognised
+  // The subject is the STEP NUMBER and the entry is read from the queue: a caller holding a view's
+  // copy of the entry could never be recognised
   // as the step in flight, so every answer was thrown away and the queue never
   // moved.
   function _settle(step, ok, reason) {
@@ -660,7 +660,7 @@ Item {
     // survives the shift, so answering a step has to end it explicitly —
     // otherwise the second answer for step N (the grab callback the guard
     // outlived) would be accepted against the entry that has just become the
-    // head, which is tick ilg's dropped window wearing a different hat.
+    // head, which is an earlier change's dropped window wearing a different hat.
     store._step = store._step + 1
     var results = store._results.slice()
     results.push({
@@ -684,7 +684,7 @@ Item {
     // destroyed, and the round has moved on.
     if (!store._isCurrentStep(step)) return
     var entry = store._currentEntry()
-    // THE PER-WINDOW DEADLINE ENDS HERE (tick ilg). It measures exactly one
+    // THE PER-WINDOW DEADLINE ENDS HERE. It measures exactly one
     // thing — "does this window ever deliver a frame" — and the frame has just
     // arrived. Left running, it could fire while `grabToImage` was still on the
     // render thread: the step was settled "no-frame", the view destroyed, and
@@ -693,7 +693,7 @@ Item {
     guard.stop()
     var width = view.sourceSize.width
     var height = view.sourceSize.height
-    // FROM sourceSize, never from hyprctl — the two disagree (spike o2x).
+    // FROM sourceSize, never from hyprctl — the two disagree.
     if (!(width > 0) || !(height > 0)) {
       store._settle(step, false, "empty-source")
       return
@@ -704,13 +704,13 @@ Item {
     var path = store.pathFor(entry.file)
 
     var started = view.grabToImage(function (result) {
-      // THE SAVE ITSELF IS GATED, not just the result (tick ilg). The render
+      // THE SAVE ITSELF IS GATED, not just the result. The render
       // thread answers on its own schedule and the whole-queue deadline can end
       // this step while it works; a file written after that is a picture that no
       // listing knows about and that can land after `evictAll` has run. So a
       // callback whose step is over writes nothing and says nothing.
       if (!store._isCurrentStep(step)) return
-      // AND THE GATE IS RE-ASKED AT THE MOMENT OF THE WRITE (tick zxg).
+      // AND THE GATE IS RE-ASKED AT THE MOMENT OF THE WRITE.
       //
       // `_isCurrentStep` only says the step is still the one in flight. It says
       // nothing about whether this picture is still owed AT ALL, and the two are
@@ -728,7 +728,7 @@ Item {
       // the second door onto the same instant and is answered by the same call.
       // Making the DELETE wait for the round would mean tearing down a live
       // ScreencopyView whose grabToImage can still fire, which is the orphan
-      // class tick ilg exists to prevent. So the delete does not wait: the SAVE
+      // class an earlier change exists to prevent. So the delete does not wait: the SAVE
       // asks again, at the last instant before the bytes hit the disk, and a
       // picture nobody is owed is never written.
       if (!store._stillOwed(entry)) {
@@ -756,12 +756,12 @@ Item {
     repeat: false
     onTriggered: {
       var step = store._current ? store._current.step : 0
-      // NOT THE STEP IN FLIGHT: AN IMPOSSIBLE STATE, AND IT SAYS SO (tick 070).
+      // NOT THE STEP IN FLIGHT: AN IMPOSSIBLE STATE, AND IT SAYS SO.
       // `_next()` arms this timer for the step it has just claimed, `_onContent`
       // stops it the moment a frame arrives, and nothing else moves `_step`, so
       // this branch cannot be reached by any sequence the round can perform.
       //
-      // It used to call `store._next()`, which is the shape of the bug this tick
+      // It used to call `store._next()`, which is the shape of the bug this change
       // closed: `_next()` destroys the view and builds another one for the SAME
       // queue head, so a mismatch that is not self-correcting becomes a silent
       // loop — a fresh compositor capture session every `stepMs`, no result, no
@@ -778,7 +778,7 @@ Item {
     }
   }
 
-  // END THE ROUND, OUT LOUD (tick 070). The one way a round dies without
+  // END THE ROUND, OUT LOUD. The one way a round dies without
   // draining its queue, shared by the whole-queue deadline and by the per-window
   // guard's impossible state, so "a round that cannot proceed fails loudly"
   // has one implementation rather than one per caller.
@@ -814,7 +814,7 @@ Item {
   // `busy` is what stops a second Record from interleaving — and what dims
   // Record in the panel, so a latched round would be a dead button.
   //
-  // Since tick ilg it is also the ONLY bound on the grab phase: the per-window
+  // Since an earlier change it is also the ONLY bound on the grab phase: the per-window
   // guard stops the moment a frame arrives, so a `grabToImage` whose callback
   // never comes is caught here rather than after one more step budget. Its
   // result is honest either way — the entry is reported "timed-out", and a
@@ -832,7 +832,7 @@ Item {
   }
 
   // THE SINGLE PLACE a round's state is torn down, and ONLY a round's OWN state
-  // (tick ilg): every early-return path AFTER capture()'s guards has to reach
+  //: every early-return path AFTER capture()'s guards has to reach
   // this, and no path before them may — a refusal that called this tore down the
   // round that was actually running. That audit is a TEST, not a comment in this
   // file: "_finish() tears down every piece of round state, and every
@@ -867,7 +867,7 @@ Item {
     id: viewComponent
 
     ScreencopyView {
-      // THE STEP THIS VIEW IS FOR, and deliberately an `int` (tick 070). It used
+      // THE STEP THIS VIEW IS FOR, and deliberately an `int`. It used
       // to be `property var entry` carrying the queue entry itself, and a JS
       // object assigned through `createObject`'s property map arrives here as a
       // copy — so the round could never recognise its own answers. See `_step`.

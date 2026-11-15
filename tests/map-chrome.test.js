@@ -1,5 +1,5 @@
 // map-chrome.test.js — the map draws ONE line weight, and everything else is a
-// ground or nothing (tick ep6).
+// ground or nothing.
 //
 // WHY A SOURCE SCAN. Node cannot instantiate QML and this machine cannot look
 // at the panel, so every claim here is a claim about the TREE: which element
@@ -9,7 +9,7 @@
 // there is no second copy of the logic to unit-test, only the question of who
 // draws what.
 //
-// WHAT IT IS DEFENDING. Before this tick five nested border lines ran from the
+// WHAT IT IS DEFENDING. Before this change five nested border lines ran from the
 // card to a window's picture — card (2 px) → mapSurface (1) → monitorRect (1)
 // → workspaceSlot (1) → chipSlot (1), with a dashed sixth on a ghost — and the
 // map surface was filled as well. No hierarchy for the eye; the thumbnails, the
@@ -98,8 +98,8 @@ function bindingsOf(source, name) {
 // over: once because it left the element, and once because a match at any
 // indent is a match on a CHILD. A source scan that finds SOMETHING is the
 // vacuity this repository has already paid for (tests/qml-plaintext.test.js,
-// tick md1), and it is measured here rather than argued: the mutations that
-// were run against this file are in the tick's report.
+// an earlier change), and it is measured here rather than argued: the mutations that
+// were run against this file are in the change's report.
 function bindingAfterId(label, source, id, name) {
   const lines = source.split("\n");
   const idLine = new RegExp("^(\\s*)id: " + id + "\\s*$");
@@ -158,7 +158,7 @@ test("the map surface is a spacer: no line, no fill — the card is the frame", 
 
 test("the monitor box draws nothing on a laptop and a hairline on a desk", () => {
   // THE GUARD MOVED WITH THE DESIGN (ep6 pinned Border.none() on every monitor
-  // count; tick 0qd made it conditional). ep6 removed the box everywhere, and
+  // count; an earlier change made it conditional). ep6 removed the box everywhere, and
   // the definition of done had only asked for "no monitor box on a single
   // monitor" — the human's look on a real two-monitor desk found what that
   // cost. So what this pins now is the CONDITION, both ways: nothing on a
@@ -211,7 +211,7 @@ test("the monitor box draws nothing on a laptop and a hairline on a desk", () =>
 test("the monitor sections STACK, and the id that measures them outlived the shape", () => {
   // "I want two separated sections vertically, one section for laptop and one
   // (or more) for each external monitor" — the human, answering his own gate
-  // (tick yn6). The sections were a Row; they are a Column.
+  //. The sections were a Row; they are a Column.
   const at = PANEL.indexOf("id: monitorRow\n");
   assert.ok(at !== -1, "the element that holds the monitor sections lost its id");
   const opener = PANEL.slice(0, at).split("\n").filter((l) => /^\s*\w+ \{\s*$/.test(l)).pop();
@@ -251,7 +251,7 @@ test("the workspace is a TILE: a ground, and no outline of its own", () => {
     + " workspace with no windows in it is now invisible:\n" + color);
 
   // The chips still sit inside the tile rather than on its edge — and the
-  // number is the PANEL's (tick dmm), because the map subtracts it from the row
+  // number is the PANEL's, because the map subtracts it from the row
   // before it solves for the scale every tile is drawn at. A tile padded by a
   // different number than the scale was solved for is a row that does not fit
   // its canvas.
@@ -286,7 +286,7 @@ test("every drawn chip state carries a real edge, whatever the theme says a stat
   assert.match(border, /chipSlot\.anyGhost[\s\S]*Border\.none\(\)/,
     "a ghost chip draws a solid edge as well as its dash:\n" + border);
 
-  // THE MAP'S ONE LINE WEIGHT, and since tick 0qd it is one NUMBER as well as
+  // THE MAP'S ONE LINE WEIGHT, and since an earlier change it is one NUMBER as well as
   // one weight: the monitor frame spends it too, and two spellings of the same
   // number are two numbers.
   const width = bindingAfterId("MapWorkspace.qml", MAP, "chipSlot", "edgeWidth");
@@ -416,7 +416,7 @@ test("the chip icon scales with the chip instead of stamping 18 px on it", () =>
     "the icon's cap is not Style.space(56):\n" + side);
   assert.doesNotMatch(side, /iconLarge/,
     "the icon is capped at the kit's large icon again — 18 px in a"
-    + " workspace-sized chip, which is the tiny icon in a big box this tick"
+    + " workspace-sized chip, which is the tiny icon in a big box this change"
     + " removed:\n" + side);
 
   // Decoded at the DRAWN size in physical pixels. Now that the icon can be 56 px
@@ -479,7 +479,7 @@ test("the number badge overlays the tile's corner rather than owning a row above
 
 test("the canvas fills the tile on the positioned path, and steps below the badge on the fallback", () => {
   // BOTH RENDER PATHS, and here they genuinely want different answers
-  // (.tick/learnings.md). On the positioned path a chip is a window's picture
+  // (the project notes). On the positioned path a chip is a window's picture
   // and a number lying on one is the whole Exposé idea, so the canvas has the
   // tile and `badgeInset` is 0. On the fallback a "chip" is a canvas-wide 17 px
   // row carrying the app's NAME, and a 14 px badge lying on it covered the left
@@ -506,7 +506,7 @@ test("the canvas fills the tile on the positioned path, and steps below the badg
     + " stacked row is pushed out of the bottom of its own tile:\n" + height);
   assert.doesNotMatch(height, /workspaceLabel/,
     "the workspace box reserves the badge's height directly again, which is the"
-    + " caption-stacked-on-a-picture this tick removed from the positioned"
+    + " caption-stacked-on-a-picture this change removed from the positioned"
     + " path:\n" + height);
 
   const y = bindingAfterId("MapWorkspace.qml", MAP, "workspaceCanvas", "y");

@@ -2,7 +2,7 @@
 # dock-recall-undock-locked-prepare-test.sh — the in-guest HALF of the
 # undock-while-locked scenario (Tier C).
 #
-# WHY THIS FILE IS ONLY A HALF. `tests/nested-notes.md` closed tick sug as
+# WHY THIS FILE IS ONLY A HALF. `tests/nested-notes.md` closed an earlier change as
 # DONE_WITH_CONCERNS with one gap: the undock focus failover's repair branch has
 # never fired, because the state it targets — the lock surface holding keyboard
 # focus on an output that is disappearing — needs a real lock screen and a real

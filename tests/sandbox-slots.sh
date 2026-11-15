@@ -1,6 +1,6 @@
 #!/bin/bash
 # sandbox-slots.sh — the Omarchy 4.5 dock / undock / dock scenario, in the nested
-# compositor (Tier B). Increment 08-qjd, definition of done A.
+# compositor (Tier B).
 #
 # What it proves, with the REAL 4.5 monitor-workspaces.lua running in the nested
 # Hyprland and the REAL plugin service restoring against it:

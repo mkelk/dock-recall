@@ -33,7 +33,7 @@
 //     monitor) — measured nested under Omarchy 4.5 (tests/nested-notes.md,
 //     2026-11-14). A move stamped `viaMonitor` carries the second dispatch
 //     opToCommand emits for it: the workspace goes to `monitorName`, and every
-//     window on it follows. There is no other workspace move (tick 7ph).
+//     window on it follows. There is no other workspace move.
 //   - group: the service's rebuild choreography, mechanically: dissolve every
 //     claim-tangled window (engine.dissolveTargets), create the group around
 //     the anchor, then join member i by focusing member i-1 (nominating the
@@ -46,12 +46,12 @@
 //     AND it hands the window a fresh compositor-chosen rect, because that is
 //     what a real float toggle does. Modeled as a deterministic scramble.
 //   - geometry: resize-then-move, both absolute and both exact (live-proven on
-//     scale-1.6 hardware, tick y29), so the op nets out to assigning the
+//     scale-1.6 hardware), so the op nets out to assigning the
 //     recorded rect. Only ever emitted for a recorded FLOAT.
 //   - launch: a window of the identity's class appears on workspace 1 —
 //     never on its recorded placement; the moves have to earn that.
 //
-// GEOMETRY, and what is and is not modeled (tick qkv). Floats carry real rects
+// GEOMETRY, and what is and is not modeled. Floats carry real rects
 // through the whole simulation, and the two things that DISPLACE a float are
 // modeled because they are the reason the geometry op has to run last: a
 // workspace move re-clamps a float against the new workspace's reserved area
@@ -62,20 +62,20 @@
 // real rather than decorative.
 //
 // TILED rects used to be carried but never planned for, exactly as the engine
-// treated them. TICK pyo CHANGED THAT: tiled placement is now approximated, and
+// treated them. THAT HAS CHANGED: tiled placement is now approximated, and
 // this file has to say precisely how much of that it can and cannot see.
 //
-//   swap      MODELLED EXACTLY. or5 measured hl.dsp.window.swap exchanging two
+//   swap      MODELLED EXACTLY. the placement probe measured hl.dsp.window.swap exchanging two
 //             tiles' rects and doing nothing else — no focus, no divider, no
 //             workspace shown — so the model IS the measurement.
 //   divider   MODELLED, WITH LIMITS. The ask lands exactly on the subject and
 //             the neighbour beyond its far edge absorbs the difference; both
-//             are measured (or5 § 8). The fiction is that there is no dwindle
+//             are measured. The fiction is that there is no dwindle
 //             tree here, so "the neighbour" is found geometrically and a real
 //             divider drags a whole SUBTREE rather than one window. On a
 //             two-window split those are the same thing; deeper, this model
 //             moves LESS of the desktop than the compositor does.
-//             That cuts two ways, and tick eqb corrected the second half of
+//             That cuts two ways, and an earlier change corrected the second half of
 //             this note. For CONVERGENCE it is conservative: a plan that
 //             converges here is not leaning on help it will not get. For
 //             DIVERGENCE it is UNDER-MODELLED, which is the more important
@@ -85,7 +85,7 @@
 //             from the far side, lands on 2 × current − asked. So this file
 //             cannot be read as evidence that a wrong nudge is survivable. The
 //             sign law and the ambiguity refusal are argued from the TREE in
-//             engine.js and measured live in docs/state-matrix.md § 8; nothing
+//             engine.js and measured live in the state matrix § 8; nothing
 //             here tests them.
 //   the tree  NOT MODELLED for the generated cases, and it cannot be: this file
 //             generates arbitrary rects, not tilings, so there is no split tree
@@ -95,7 +95,7 @@
 //             move branch. A tiled rect is still a number along for the ride
 //             everywhere else, and re-tiling after a dissolve still does not
 //             recompute anything.
-//   split     MODELLED FROM THE TREE (tick uk5), which is possible for exactly
+//   split     MODELLED FROM THE TREE, which is possible for exactly
 //             this one op because the planner only emits it for a workspace
 //             whose live rects reconstruct to ONE guillotine tree. So the
 //             simulator rebuilds that tree and applies dwindle's own semantics —
@@ -113,7 +113,7 @@
 // defect:
 // this file used to say "into_group always succeeds in one direction", and on
 // the live compositor that is FALSE — into_group only joins a group that is
-// the directly ADJACENT tile (live-proven 2026-08-16, tick z0l; forensics dump
+// the directly ADJACENT tile (live-proven 2026-08-16, an earlier change; forensics dump
 // 2026-08-16T06:34:51.393Z), and a dock transition routinely leaves the
 // candidate non-adjacent, which made every real group join fail while this
 // test stayed green. The join modeled below is faithful to the FIXED service
@@ -133,7 +133,7 @@ const CASES = 300;
 const MAX_ITERATIONS = 10;
 const DEFAULT_SEED = 0x84a41;
 // The groupbar a tab group draws above its tabs: a member's rect is its tile
-// minus this, on top (tests/nested-notes.md 9i2 (c)).
+// minus this, on top (tests/nested-notes.md, fidelity facts (c)).
 const GROUPBAR_PX = 21;
 const SEED = process.env.PROP_SEED ? Number(process.env.PROP_SEED) : DEFAULT_SEED;
 
@@ -310,7 +310,7 @@ function generateCase(rng, side) {
       m.client.monitor = recordWsMon[ws];
       m.client.floating = false;
       m.client.grouped = order.slice();
-      // A tab group holds ONE rect of the tiling (epic 9i2): every member
+      // A tab group holds ONE rect of the tiling: every member
       // shows the first tab's. Assigned, not drawn, so the seed is unchanged.
       m.client.at = members[0].client.at.slice();
       m.client.size = members[0].client.size.slice();
@@ -495,7 +495,7 @@ function makeSimulator(clients, monitors, identities) {
 
   const byAddress = (address) => state.clients.find((c) => c.address === address) || null;
 
-  // A TILE (epic 9i2): a tab group holds one rect of the tiling, shared by all
+  // A TILE: a tab group holds one rect of the tiling, shared by all
   // its members, so anything that moves a tile moves every tab in it. Members
   // are found by claims from either side, one hop — a split-brain member that
   // under-reports its own array is still found through its peers' arrays.
@@ -519,7 +519,7 @@ function makeSimulator(clients, monitors, identities) {
     setRect(members, [box.at[0], box.at[1] + GROUPBAR_PX], [box.size[0], box.size[1] - GROUPBAR_PX]);
   }
   // `address` becomes its group's visible tab. Focusing a member does this too
-  // (nested-notes 9i2 (b)/(d)), which is why a focus on a group tile — a split
+  // (nested-notes, fidelity facts (b)/(d)), which is why a focus on a group tile — a split
   // parent, a togglesplit — is followed here by the tab it leaves in front.
   function showTab(address) {
     const c = byAddress(address);
@@ -583,7 +583,7 @@ function makeSimulator(clients, monitors, identities) {
       m.workspace = { id: ws, name: String(ws) };
       m.monitor = mon;
       // A workspace move re-clamps a floating window against the new
-      // workspace's reserved area (live-measured, tick y29). This is exactly
+      // workspace's reserved area (live-measured). This is exactly
       // why the geometry op runs last; if it did not, this line would break
       // the property.
       if (moved) displace(m, 3);
@@ -605,7 +605,7 @@ function makeSimulator(clients, monitors, identities) {
       return;
     }
     if (op.kind === "move") {
-      // TILED PLACEMENT IS FICTION HERE, AND IT IS SPELLED OUT (tick 35n).
+      // TILED PLACEMENT IS FICTION HERE, AND IT IS SPELLED OUT.
       //
       // A move may carry a `splitParent`: the window whose tile this arrival
       // has to split, which the service turns into a focus dispatch in front
@@ -653,7 +653,7 @@ function makeSimulator(clients, monitors, identities) {
           c.monitor = target.id;
           // A float's rect is in GLOBAL layout coordinates, so a workspace that
           // changes monitor relocates every float on it — the same re-clamp a
-          // per-window workspace move causes (tick y29). Modeled here too, so
+          // per-window workspace move causes. Modeled here too, so
           // "geometry runs last" is held against both.
           if (moved) displace(c, 5);
         }
@@ -692,7 +692,7 @@ function makeSimulator(clients, monitors, identities) {
 
       const anchor = byAddress(op.addresses[0]);
       if (!anchor) return;
-      // The group forms in the anchor's tile (nested-notes 9i2 (e)).
+      // The group forms in the anchor's tile (nested-notes, fidelity facts (e)).
       const box = tileBoxOf([anchor]);
       let ring = [anchor.address];
       let focusedTab = anchor.address;
@@ -840,7 +840,7 @@ function makeSimulator(clients, monitors, identities) {
       return;
     }
     if (op.kind === "swap") {
-      // EXACT, and modelled exactly. Tick or5 measured `hl.dsp.window.swap`
+      // EXACT, and modelled exactly. An earlier change measured `hl.dsp.window.swap`
       // exchanging two tiles' rects and doing nothing else — no focus moved, no
       // divider moved, no workspace shown — so the model is the measurement.
       const a = byAddress(op.address);
@@ -851,7 +851,7 @@ function makeSimulator(clients, monitors, identities) {
         "a swap crossed workspaces: " + op.address + " on " + a.workspace.id
           + ", " + op.target + " on " + b.workspace.id);
       // A swap with any member of a group swaps the whole tile (nested-notes
-      // 9i2 (d)): every tab moves with it.
+      // fidelity facts (d)): every tab moves with it.
       // The TILES exchange, and a group's tabs sit inside its tile under the
       // groupbar: probe (d) watched gd 5,5 691x417 and a group 5,449 691x396
       // trade to 5,428 691x417 and 5,26 691x396.
@@ -867,7 +867,7 @@ function makeSimulator(clients, monitors, identities) {
     if (op.kind === "divider") {
       // MODELLED, WITH ITS LIMITS SAID OUT LOUD.
       //
-      // What or5 measured, and what is faithful here: the ask lands EXACTLY on
+      // What the placement probe measured, and what is faithful here: the ask lands EXACTLY on
       // the subject (it is the left/top child of the divider it moves — the
       // planner emits it for no other case), and the neighbour on the far side
       // of that divider absorbs the whole difference. Both are reproduced.
@@ -920,7 +920,7 @@ function makeSimulator(clients, monitors, identities) {
       // which is precisely the case the sign law forbids the planner to emit.
       assert.ok(neighbour, "a divider op was aimed at the FAR side of its split: " + op.address);
       // Resizing any tab moves the group tile's divider, and the whole group
-      // keeps one rect (nested-notes 9i2 (c)) — on both sides of the line.
+      // keeps one rect (nested-notes, fidelity facts (c)) — on both sides of the line.
       const grown = subject.size.slice();
       grown[axis] += delta;
       setRect(subjectTile, subject.at, grown);
@@ -965,7 +965,7 @@ function makeSimulator(clients, monitors, identities) {
 // the first occurrence" are not op KINDS, they are the shape a
 // one-entry-per-identity planner would have had, and they are exactly what this
 // file has to be able to notice.
-// THE ARRIVAL AXIS (9i2 §2.5), checked against the RECORDING rather than the
+// THE ARRIVAL AXIS (§2.5), checked against the RECORDING rather than the
 // simulator, which models no tree. Every choreographed move belongs to a
 // complete program (`sequenced`), and every LEADER arrival names the axis of
 // the recorded cut it makes: the arrival takes the far side, so its recorded
@@ -1184,7 +1184,7 @@ test("suppressing an op kind makes the property fail — for every kind that pla
   const seeds = caseSeeds(CASES);
 
   // Every kind planRestore can emit. (The workspace-monitor op is gone since
-  // tick 7ph; the one workspace move left rides on a viaMonitor move and has
+  // an earlier change; the one workspace move left rides on a viaMonitor move and has
   // its own mutation below.)
   for (const kind of [
     "geometry", "floating", "ungroup", "move", "group", "launch", "tab"
@@ -1214,7 +1214,7 @@ test("suppressing an op kind makes the property fail — for every kind that pla
 // The mutations above drop whole op kinds. These two drop the part of an op
 // kind that only exists because a record can name several windows of one
 // identity — the second launch, the second window's move — which is the whole
-// of what tick 9sl added. Without them, a planner that quietly went back to one
+// of what an earlier change added. Without them, a planner that quietly went back to one
 // entry per identity would still pass every check in this file.
 
 const OCCURRENCE_MUTATIONS = {
@@ -1258,7 +1258,7 @@ test("suppressing a per-occurrence op makes the property fail — launch and mov
 
 // ------------------------------------------------ mutation: the viaMonitor dispatch
 //
-// The one workspace move left (tick 7ph) rides on a move whose destination does
+// The one workspace move left rides on a move whose destination does
 // not exist when it runs: the window move creates the workspace on the FOCUSED
 // monitor, and the workspace move sends it to its owner. Strip the flag — the
 // planner that forgot the second dispatch — and new workspaces must land on
@@ -1385,7 +1385,7 @@ test("a flipped workspace converges through the simulator, in one dispatch", () 
 // Directed, for the same reason as the flip: the generated cases put a group
 // beside a tile only now and then. A group (one rect shared by its tabs) living
 // below the tile it was recorded above is one swap addressed to its leader, and
-// the simulator's swap moves EVERY tab with it (nested-notes 9i2 (d)) — so the
+// the simulator's swap moves EVERY tab with it (nested-notes, fidelity facts (d)) — so the
 // loop converges with all three tabs back on the recorded rect.
 
 test("a group swapped with its neighbour converges through the simulator, every tab with it", () => {
@@ -1427,7 +1427,7 @@ test("a group swapped with its neighbour converges through the simulator, every 
   }
 });
 
-// ------------------------------------------------ the planning context (9i2)
+// ------------------------------------------------ the planning context 
 //
 // §2.2: without a context, or with one that reads every workspace as dwindle
 // and every recording as dwindle (or unrecorded), every plan is the plan this

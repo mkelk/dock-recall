@@ -85,6 +85,19 @@ function main() {
     process.exit(1);
   }
 
+  // Recording is off on a system without Omarchy 4.5's per-monitor workspaces,
+  // the same decision the service and the panel make (Slots.unsupportedReason).
+  const stateBase = process.env.XDG_STATE_HOME || path.join(process.env.HOME || "", ".local", "state");
+  const shellRoot = process.env.OMARCHY_PATH || "/usr/share/omarchy";
+  const unsupported = Slots.unsupportedReason(
+    fs.existsSync(path.join(stateBase, "omarchy", "monitor-workspaces")),
+    fs.existsSync(path.join(shellRoot, "default", "hypr", "monitor-workspaces.lua")));
+  if (unsupported !== "") {
+    process.stderr.write("record-current: Needs Omarchy 4.5 or newer (" + unsupported +
+      ") — recording is off on this system\n");
+    process.exit(1);
+  }
+
   const clients = hyprctlJson(["clients", "-j"]);
   const monitors = hyprctlJson(["monitors", "all", "-j"]);
   // The workspace context: layoutMode and group.active come from here. A failed
@@ -104,7 +117,7 @@ function main() {
   }
 
   // The third writer of the state file, bound by the same read-only rule as the
-  // panel and the service (tick 291): a file from a newer schema would come back
+  // panel and the service: a file from a newer schema would come back
   // stripped of everything this build does not know, still stamped with the
   // newer version. `--print` above is unaffected — reading is always allowed.
   const refusal = StateModel.writeRefusal(state);
@@ -128,7 +141,7 @@ function main() {
     Object.keys(recordedApps).length + "/" + identities.length +
     " watched apps -> " + args.state + "\n"
   );
-  // Same note the panel logs (tick pqv): the count above is short by these, and
+  // Same note the panel logs: the count above is short by these, and
   // this is why. A scratchpad's negative workspace id is not dispatchable, so
   // the app is left out of the layout rather than recorded unrestorably.
   for (const skipped of layout.excluded || []) {

@@ -1,9 +1,9 @@
-// Geometry scoring — tick 5sc, amended by tick qkv.
+// Geometry scoring, amended once since it was first written.
 //
-// Schema v2 (tick xz9) started recording each window's `at`/`size`; this file
-// pins what the tool is allowed to CONCLUDE from them. Tick 5sc's rule was flat
+// Schema v2 started recording each window's `at`/`size`; this file
+// pins what the tool is allowed to CONCLUDE from them. The original rule was flat
 // — measured, never enforced, because nothing in planRestore could move a
-// window by pixels. Epic yyz built the op that can, for FLOATS, so the rule
+// window by pixels. An op that can move floats now exists, so the rule
 // split in two and this file now holds both halves:
 //
 //   FLOAT  — enforced. A recorded float outside the ±2px band is drift: it
@@ -14,7 +14,7 @@
 //            hold that line are the more important half of this file. A tiled
 //            rect is an outcome of the dwindle tree, Hyprland exposes no way to
 //            command it, and `window.resize` aimed at one silently rearranges
-//            the split (tick y29). Nothing here may mark a tiled desktop down.
+//            the split. Nothing here may mark a tiled desktop down.
 //
 // The second property is the null contract. Any recording written before schema
 // v2 carries no geometry at all; every entry of it scores `not-scored`, and a
@@ -25,7 +25,7 @@
 // (Until 2026-08-16 that described the user's own file, and several comments in
 // this tree said so. It does not any more — theirs is v2 with rects on all 18
 // entries. What keeps THEIR desktop unmarked is the tiled rule above, not this
-// one: every entry of it is recorded `floating: false`. Checked in tick qkv.)
+// one: every entry of it is recorded `floating: false`. Checked in an earlier change.)
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -78,7 +78,7 @@ test("rectIou is 1 for the same rect and 0 for rects that do not touch", () => {
   assert.strictEqual(engine.rectIou(a, { at: [100, 0], size: [100, 100] }), 0);
 });
 
-// The worked example carried in docs/state-matrix.md § Geometry scoring. If
+// The worked example carried in the state matrix § Geometry scoring. If
 // this number ever changes, that document is wrong and has to move with it.
 test("the worked example from the state matrix scores 0.667", () => {
   const recorded = { at: [0, 0], size: [1000, 1000] };
@@ -260,7 +260,7 @@ test("a float 40 px out of place is NOT ok and is not counted as arranged", () =
   assert.strictEqual(verdict.workspace, "ok");
   assert.strictEqual(verdict.floating, "ok");
   assert.strictEqual(verdict.group, "ok");
-  // Reversed by tick qkv: there is an op for this now, so saying "arranged"
+  // Reversed by an earlier change: there is an op for this now, so saying "arranged"
   // would be claiming a restore finished when a button can still improve it.
   assert.strictEqual(verdict.ok, false, "a drifted float is not arranged");
   assert.strictEqual(engine.verdictSummary([verdict]).ok, false);
@@ -269,7 +269,7 @@ test("a float 40 px out of place is NOT ok and is not counted as arranged", () =
 });
 
 test("a TILED window's score never makes a verdict not-ok, however bad", () => {
-  // The line tick 5sc drew and tick qkv did NOT cross. This rect misses by
+  // The line an earlier change drew and an earlier change did NOT cross. This rect misses by
   // hundreds of pixels in both axes and at half the size; it scores, and the
   // verdict stays green, because Hyprland exposes nothing that could command it.
   const verdict = verdictOf(
@@ -431,7 +431,7 @@ test("the panel row speaks for a geometry-off float, with the deltas", () => {
     oneWindow({ floating: true }),
     oneWindow({ floating: true, at: [200, 200], size: [800, 600] })
   );
-  assert.strictEqual(verdict.ok, false, "since tick qkv a drifted float is drift");
+  assert.strictEqual(verdict.ok, false, "since an earlier change a drifted float is drift");
   const line = panel.verdictLine(verdict);
   assert.ok(line, "a measured miss the user can see must reach the row");
   assert.match(line, /Δpos/);
@@ -528,7 +528,7 @@ test("engine.geometryPair and StateModel.normalizeGeometry still agree", () => {
   }
 });
 
-// ------------------------------------------------ the planner gate (tick ae1)
+// ------------------------------------------------ the planner gate
 //
 // Scoring answers "is this float where it was recorded". The gate answers the
 // second question the op needs and scoring cannot: "is the recorded rect

@@ -19,7 +19,7 @@ const AT = "2026-08-15T18:30:00Z";
 // QML source with its comments removed, for the source audits below that assert
 // an expression is ABSENT. Those files explain themselves at length, and a
 // comment warning "never write `store._queue[0] === entry` again" would fail the
-// very assertion it is documenting (tick 070). Line comments only — neither QML
+// very assertion it is documenting. Line comments only — neither QML
 // file here uses a block comment, and neither has a `//` inside a string.
 function qmlCode(source) {
   return String(source).split("\n").map(function (line) {
@@ -96,7 +96,7 @@ test("the derived pattern is case-insensitive in practice", () => {
 
 test("the generated pattern is what the engine matches with", () => {
   // Not a terminal class: ticking one of those refuses rather than proposing
-  // the class (tick gpq, and the terminal section far below).
+  // the class.
   const identity = panel.suggestIdentity("chromium", []);
   const client = makeClient({ class: "chromium" });
   assert.strictEqual(engine.clientMatchesIdentity(client, identity), true);
@@ -166,7 +166,7 @@ test("a new identity never invents a launch command", () => {
 
 test("ticking something already watched is a no-op, not a duplicate", () => {
   const existing = [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }];
-  // A refusal rather than null since tick v5c: "nothing to add" is a fact the
+  // A refusal rather than null since an earlier change: "nothing to add" is a fact the
   // panel has to be able to SAY, or the click reports a success it did not have.
   assert.deepStrictEqual(panel.suggestIdentity("foot", existing), { refusal: "already-watched" });
 });
@@ -340,7 +340,7 @@ const WHATSAPP_CLASS = "chrome-web.whatsapp.com__-Profile_1";
 const OBSIDIAN_CLASS = "md.obsidian.Obsidian";
 
 // The launch command the user's state file really carried for obsidian before
-// this tick — a whole command line quoted as ONE shell word, from before the
+// this change — a whole command line quoted as ONE shell word, from before the
 // quoting fix. It can never exec; the symptom is "no new window appeared".
 const BROKEN_OBSIDIAN_LAUNCH =
   "'/usr/lib/electron43/electron -disable-gpu --enable-wayland-ime /usr/lib/obsidian/app.asar'";
@@ -784,7 +784,7 @@ test("a chip asks by identity first and by class second", () => {
 
 test("with no app library, an icon name is routed the way AppLibrary.iconSource routes it", () => {
   // Omarchy 4.5's scoped facade lends appLibrary only to `menu` plugins, so the
-  // panel resolves names itself (tick 0i5). The branch is pure; the two
+  // panel resolves names itself. The branch is pure; the two
   // lookups it names are Quickshell.iconPath and Util.fileUrl, in Panel.qml.
   // An empty name is the generic executable icon — never an empty source.
   assert.deepStrictEqual(panel.iconRequest(""), { kind: "generic" });
@@ -813,7 +813,7 @@ test("with no app library, an icon name is routed the way AppLibrary.iconSource 
 test("Panel.qml resolves icon names itself when the shell lends no app library", () => {
   // BY PATH: the wiring half of the test above. Node cannot run the QML, so
   // this pins the shape that made the 4.5 VM gate's chips and rows report
-  // iconSource "" (tick 0i5): a null appLibrary answered "" instead of falling
+  // iconSource "": a null appLibrary answered "" instead of falling
   // through to a lookup of our own.
   const qml = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8");
   const body = (name) => {
@@ -1283,7 +1283,7 @@ test("backfill fills empty launches and NEVER overwrites one that is set", () =>
 });
 
 test("a repaired identity keeps every field it had — titlePatterns included", () => {
-  // The defect (tick h5i): the backfill rebuilt the repaired identity from a
+  // The defect: the backfill rebuilt the repaired identity from a
   // FIXED field list, so schema v4's `titlePatterns` fell on the floor.
   // Pressing "Learn launch" on a title-matched app silently destroyed its
   // title matching, and the loss only surfaced later, when the window stopped
@@ -1433,7 +1433,7 @@ test("the map is ordered for the eye, not by hyprctl's connection order", () => 
   assert.deepStrictEqual(map.monitors.map((m) => m.name), ["eDP-1", "DP-2"]);
 });
 
-test("the laptop's section comes first, then the external screens left to right (tick yn6)", () => {
+test("the laptop's section comes first, then the external screens left to right", () => {
   // THE HUMAN'S ANSWER TO HIS OWN GATE: "I want two separated sections
   // vertically, one section for laptop and one (or more) for each external
   // monitor". A stack is read top to bottom, so the first section is the screen
@@ -1472,7 +1472,7 @@ test("the laptop's section comes first, then the external screens left to right 
     ["DP-1", "DP-2", "HDMI-A-1"]);
 });
 
-test("inside a section the workspaces run 1..10, not 1, 10, 2 (tick yn6)", () => {
+test("inside a section the workspaces run 1..10, not 1, 10, 2", () => {
   // The human's addendum, in his words: "in each section, order by workspace
   // number". It is what the map already drew — both map builders sort their
   // workspace ids with `a - b` — and it is pinned here so it cannot regress
@@ -1587,7 +1587,7 @@ test("no monitors at all is an empty map, not a crash", () => {
 // ------------------------------------- packing the map (the m9u layout repair)
 //
 // The defect these cover, measured live on a 1440×900 laptop with 7 occupied
-// workspaces (docs/evidence/increment-03/m9u): the map was bound by a FIXED
+// workspaces (the map-layout evidence): the map was bound by a FIXED
 // height, so 70 % of its width sat empty and each workspace came out ~42×86 —
 // portrait, for a 16:10 screen — and every chip hit a 24-unit floor, so a 98 %
 // window and a 49 % one were drawn identically and two side-by-side tiles were
@@ -1713,7 +1713,7 @@ const OPTS = {
   tileGap: 6, sectionGap: 12,
   tileMinWidth: 96, tileMaxWidth: 220, tilePadding: 8, sectionPadding: 0
 };
-// And the same map with a frame around each section (tick 0qd).
+// And the same map with a frame around each section.
 const FRAMED = Object.assign({}, OPTS, { sectionPadding: 12 });
 
 test("the sections stack: every one of them is the whole width of the map", () => {
@@ -1862,7 +1862,7 @@ test("one monitor is what it has always been, to the pixel", () => {
   // side is computed the way the panel computed it before these ticks —
   // workspaceGridLayout, then the delegate's own height from its own width —
   // rather than written as a literal, because a literal in declaration order is
-  // a restatement and not an oracle (.tick/learnings.md, tick j18).
+  // a restatement and not an oracle.
   for (const [lw, lh, count, width] of [
     [1440, 900, 7, 600], [1440, 900, 3, 959], [3440, 1440, 10, 700],
     [1920, 1080, 1, 900], [1440, 900, 5, 300]
@@ -1891,8 +1891,8 @@ test("one monitor is what it has always been, to the pixel", () => {
 });
 
 test("the frame is paid for out of the scale, not out of the canvas", () => {
-  // HUMAN GATE FINDING 3: each section is framed on a multi-monitor desk (tick
-  // 0qd), and the frame costs width — which is why the layout is TOLD about it
+  // HUMAN GATE FINDING 3: each section is framed on a multi-monitor desk, and the frame costs
+  // width — which is why the layout is TOLD about it
   // rather than having it drawn on afterwards. A frame added after the scale
   // was solved is a row that overflows the section it is in.
   const framed = panel.mapSectionLayout(DESK, DESK_WIDTH, FRAMED);
@@ -2760,7 +2760,7 @@ test("the list does not depend on the order hyprctl listed the windows in", () =
 });
 
 test("the three row states survive the reordering", () => {
-  // The sort is the only thing tick ph0 changes: a row still knows whether it is
+  // The sort is the only thing an earlier change changes: a row still knows whether it is
   // watched, unwatched, or recorded-but-orphaned.
   const monitors = [LEFT];
   const recordedClients = [
@@ -2800,7 +2800,7 @@ test("two windows of the same UNWATCHED app are still one row", () => {
 });
 
 test("one row per INSTANCE of a watched identity, one tick for the app", () => {
-  // Schema v3 (tick wzg) replaced "one row per app". Three terminals are three
+  // Schema v3 replaced "one row per app". Three terminals are three
   // rows — the user has to be able to see which of them is out of place — and
   // still ONE tick, because a pattern matches a class and there is no such
   // thing as watching one window of an app. The toggle test below pins that.
@@ -2862,7 +2862,7 @@ test("clicking ANY instance row toggles the whole identity", () => {
 
   // And back the other way: ticking either one watches the app once, not twice.
   // The class here is a terminal, so the tick carries the derivation that names
-  // the app inside it — without one it refuses (tick gpq).
+  // the app inside it — without one it refuses.
   const unwatchedRows = panel.appRows(clients, monitors, resolver([]), null, null, []);
   const retickd = panel.toggleWatchedIdentities([], unwatchedRows[0].className,
     unwatchedRows[0].identityId, { command: "foot --title=herdr herdr", title: "herdr", reason: "" });
@@ -3123,7 +3123,7 @@ test("a row tooltip leads with the app, not with a window it does not have", () 
   const row = scene.rows.find((r) => r.identityId === "terminal");
   const lines = panel.rowTooltipText(row).split("\n");
   // The app, its class, where it is — and LAST what Restore can do for it.
-  // That fourth line arrived with tick pct: the strip has no captions left to
+  // That fourth line arrived with an earlier change: the strip has no captions left to
   // print the launch hint on, so the tooltip is the only place it can be said,
   // and every WATCHED row appRows builds has one (this identity has no launch
   // command recorded, which is exactly "no launch cmd").
@@ -3229,7 +3229,7 @@ test("Tab loops through the three focus sections both ways", () => {
   assert.strictEqual(panel.nextSection(order, "nonsense", 1), "restore");
 });
 
-// ------------------------------------------------- the Tab chain (tick wgj)
+// ------------------------------------------------- the Tab chain
 
 test("the failed-restore section joins the Tab chain, between the map and the footer", () => {
   // F4 from the live round: the Retry buttons were pointer-only, which made
@@ -3406,7 +3406,7 @@ test("the switch, the repair and the view toggle all say what they do", () => {
   assert.ok(panel.viewToggleTooltip(true, true).indexOf("dashed ghosts") !== -1);
   assert.ok(panel.viewToggleTooltip(true, false).indexOf("Nothing recorded") !== -1);
 
-  // The overflow affordance opens the menu now (tick gwa), and its sentence
+  // The overflow affordance opens the menu now, and its sentence
   // names what is behind it rather than apologising for being a stub.
   assert.ok(panel.overflowTooltip().length > 0);
   assert.ok(panel.overflowTooltip().indexOf("Not wired up yet") === -1);
@@ -3693,7 +3693,7 @@ test("the recorded age is read in the recording's own units", () => {
 });
 
 test("the last five days of the year do not read as twelve months", () => {
-  // The cosmetic bug epic c7f's retro caught (tick 05q): `days < 365` with
+  // The cosmetic bug an earlier epic's retro caught: `days < 365` with
   // `floor(days / 30)` made 360 to 364 days say "12 months ago" — a unit nobody
   // uses out loud, and one the very next day replaces with "1 year ago".
   const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -3782,7 +3782,7 @@ test("Record says why it is unavailable while a restore is in flight", () => {
   assert.ok(hint.indexOf("Record") !== -1 && hint.length > 0, hint);
 });
 
-test("Record also says why it is out while the last recording's pictures are still being taken (tick ilg)", () => {
+test("Record also says why it is out while the last recording's pictures are still being taken", () => {
   // The second blocked reason, and the one the button gained when `busy` became
   // load-bearing: a control that dims with no explanation reads as broken.
   const capturing = panel.recordBlockedHint(false, true);
@@ -3821,7 +3821,7 @@ test("the empty state has exactly one hint, and only when it is empty", () => {
 // action that overwrites, so the round trip is worth pinning down.
 
 // The class-only terminal identity a hand-written state file may carry and the
-// panel refuses to create (tick gpq — it claims every terminal on the desk).
+// panel refuses to create (an earlier change — it claims every terminal on the desk).
 // Written as a literal because these tests are about the record round trip, not
 // about what a tick proposes.
 const FOOT_CLASS_IDENTITY = { id: "foot", patterns: ["^foot$"], launch: "" };
@@ -3862,7 +3862,7 @@ test("recording again overwrites this topology and leaves the others alone", () 
   assert.strictEqual(state.layoutFor(after, LAPTOP_KEY).apps.length, layout.apps.length);
 });
 
-// ---- instance rows and occurrence-aware chips (tick wzg) -------------------
+// ---- instance rows and occurrence-aware chips -------------------
 
 const ONE_MONITOR = [{ id: 0, name: "eDP-1", description: "Laptop", x: 0, y: 0, width: 1920, height: 1080, scale: 1 }];
 const TWO_TERMINALS = [
@@ -4013,14 +4013,14 @@ test("the panel's occurrence coercion is the engine's and the file's", () => {
   }
 });
 
-// ---- terminal-hosted apps: deriving from the CHILD process (tick dwv) -------
+// ---- terminal-hosted apps: deriving from the CHILD process -------
 //
 // The other side of the README's terminal-title rule. `herdr` typed into `foot`
 // owns no window: the window is class `foot` and its cmdline is `foot`. The app
 // is the terminal's child process, and reading it turns that into the very
 // command the README asks the user to bind by hand.
 //
-// The command names a TITLE, not a private window class (tick hqa, measured
+// The command names a TITLE, not a private window class (measured
 // 2026-08-18): `foot --title=herdr herdr` fixes `initialTitle` at `herdr` while
 // the window keeps `class: foot`, so every Omarchy class-matched rule still
 // applies; an app that renames itself on start moves `title` only; and
@@ -4227,7 +4227,7 @@ test("the titled-terminal fixture is a foot window whose initialTitle is NOT foo
 
 // -------------------------------------------- a tick that proposes a TITLE
 //
-// Tick 1uz. Ticking a plain `foot` window running `herdr` used to propose
+// Ticking a plain `foot` window running `herdr` used to propose
 // `^foot$` — an identity that claims EVERY terminal on the desktop, which is
 // worse than useless: the next terminal the user opens would be "herdr" too.
 // When the child process names the app unambiguously the proposal is the PAIR
@@ -4294,10 +4294,10 @@ test("ticking a terminal that hosts one app proposes the app, not the terminal",
 });
 
 test("a refusal proposes nothing at all, and says why", () => {
-  // It USED to propose the pre-1uz class identity here — `^foot$` with an empty
+  // It USED to propose the pre-fix class identity here — `^foot$` with an empty
   // launch — which claims every terminal on the desktop and, once the autofill
   // pass had stamped one app's command onto it, launched whichever one the
-  // click happened to catch. Tick gpq made it a refusal the panel says out loud.
+  // click happened to catch. It is now a refusal the panel says out loud.
   const ambiguous = footChildDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
   assert.deepStrictEqual(panel.suggestIdentity("foot", [], ambiguous),
     { refusal: "several-children" });
@@ -4314,7 +4314,7 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   const herdr = footChildDerivation([{ pid: 901, argv: ["herdr"] }]);
   const btop = footChildDerivation([{ pid: 901, argv: ["btop"] }]);
 
-  // The case the whole tick turns on: plain foot is already watched, so the
+  // The case the whole change turns on: plain foot is already watched, so the
   // class pattern collides. Comparing `patterns` alone would call this a
   // duplicate and propose nothing — but "every foot window" and "the foot
   // window titled herdr" are different rules over different windows.
@@ -4325,7 +4325,7 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   });
 
   // The same PAIR already on the list is the same rule, so nothing is added —
-  // and since tick v5c that is said out loud rather than answered with null.
+  // and since an earlier change that is said out loud rather than answered with null.
   const watchedHerdr = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
   assert.deepStrictEqual(panel.suggestIdentity("foot", watchedHerdr, herdr), { refusal: "already-watched" });
 
@@ -4335,7 +4335,7 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   // The other direction: watching one titled foot window does not make a
   // class-only proposal a DUPLICATE — an empty title list is no constraint,
   // which makes it a wider rule rather than the same one. It is refused for the
-  // other reason, that a terminal's class names no app (tick gpq).
+  // other reason, that a terminal's class names no app.
   assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr).refusal, "not-read");
 
   // The class-only guard still answers the same FACT, now with a reason.
@@ -4420,7 +4420,7 @@ test("a window already launched with --title proposes that title", () => {
 });
 
 test("a --title belonging to the HOSTED command is never read as the terminal's", () => {
-  // Tick qkz. The scan ran to the end of argv, so the flag of the program the
+  // The scan ran to the end of argv, so the flag of the program the
   // terminal is RUNNING was read as the terminal's own. `watch --title x` is an
   // ordinary command line, and the identity it produced promised a window
   // titled `x` that alacritty never sets — a permanent awaiting-title ghost,
@@ -4467,7 +4467,7 @@ test("a terminal launched with a command of its own is named by its window title
 });
 
 test("a shell or flag-only argv never trusts a shell-retitled window title", () => {
-  // Tick q58. `argv.length > 1` was a proxy for "the terminal was launched with
+  // `argv.length > 1` was a proxy for "the terminal was launched with
   // a command of its own", and it is not one: a terminal carrying only its own
   // flags, or one whose command is a bare SHELL, is exactly the case the
   // comment above the branch says must never be trusted — an interactive shell
@@ -4501,7 +4501,7 @@ test("a shell or flag-only argv never trusts a shell-retitled window title", () 
 });
 
 test("a flag's SPACE-separated value is never a hosted command", () => {
-  // Tick 3bp. The two spellings of one flag answered differently. `foot
+  // The two spellings of one flag answered differently. `foot
   // --working-directory=/x` refused (the test above pins it); `foot
   // --working-directory /x` produced `{command: "foot --working-directory /x",
   // title: "~/proj"}` — the same junk identity, from the same launch, because
@@ -4541,7 +4541,7 @@ test("a flag's SPACE-separated value is never a hosted command", () => {
 });
 
 test("no title travels with a command the panel refuses to run", () => {
-  // Tick cjs. The invariant terminalChildDerivation states in as many words —
+  // The invariant terminalChildDerivation states in as many words —
   // "the title travels only with a command that survived dispatchableCommand"
   // — was not held by the two cases that read the terminal's OWN argv. A
   // refused command left `command: ""` and handed the title over anyway, and
@@ -4605,7 +4605,7 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
   assert.deepStrictEqual(panel.suggestIdentity("chromium", []),
     { id: "chromium", patterns: ["^chromium$"], launch: "" });
 
-  // Already watched is a no-op — and since tick v5c a no-op the panel can SAY,
+  // Already watched is a no-op — and since an earlier change a no-op the panel can SAY,
   // because a silent one logged a success line for a click that changed nothing.
   assert.deepStrictEqual(panel.suggestIdentity("foot",
     [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }]), { refusal: "already-watched" });
@@ -4714,7 +4714,7 @@ test("the panel names the exact relaunch command until a matching window exists"
 });
 
 test("a title identity with no window yet still gets a row, and the row unticks it", () => {
-  // The gap tick 1m4 closes. Ticking a bare terminal creates a correct identity
+  // The gap an earlier change closes. Ticking a bare terminal creates a correct identity
   // that matches nothing yet, so it produced no chip and no row — and pressing
   // the chip again re-ticked idempotently rather than unticking, because there
   // was no ticked chip to clear. A mis-tick could only be undone by editing the
@@ -4774,8 +4774,8 @@ test("a title identity with no window yet still gets a row, and the row unticks 
 
   // But a HAND-AUTHORED non-terminal title identity whose class IS on screen and
   // still matches nothing is the same recoverable mis-tick a terminal's is, and
-  // since tick s7l it gets the same row. What it does not get is the `--title`
-  // advice, which is not true about a chromium window — see the s7l tests below.
+  // since an earlier change it gets the same row. What it does not get is the `--title`
+  // advice, which is not true about a chromium window — see the tests below.
   const gmail = [{ id: "gmail", patterns: ["^chromium$"], titlePatterns: ["^Gmail$"], launch: "" }];
   assert.deepStrictEqual(panel.awaitingTitleIndex(
     [makeClient({ class: "chromium", initialTitle: "News" })], gmail, resolver(gmail)),
@@ -4817,7 +4817,7 @@ test("the panel knows which pids to read and which window a tick is about", () =
 });
 
 test("the awaiting-title row and hint read patterns the way the MATCHER reads them", () => {
-  // Tick 7qe. Both asked `patternListHas(identity.patterns,
+  // Both asked `patternListHas(identity.patterns,
   // derivePattern(className))` — exact string equality against a freshly
   // regenerated pattern — while the matcher compiles the pattern
   // case-insensitively (engine.js compilePattern). A hand-edited pattern is
@@ -5011,7 +5011,7 @@ test("refusalOfVerdict survives every layer a verdict can arrive missing", () =>
 });
 
 // A workspace whose live split tree is TWO flips from the recording — the shape
-// that is still refused now that one flip is repaired (tick uk5).
+// that is still refused now that one flip is repaired.
 function refusedShapeScene() {
   const monitors = [LEFT];
   const recorded = [
@@ -5117,7 +5117,7 @@ test("an UNWATCHED window never carries a refusal, whatever its workspace is doi
   assert.strictEqual(unwatched.refusalTag, "");
 });
 
-// ------------------------------------------ the failed-restore list (tick jzx)
+// ------------------------------------------ the failed-restore list
 //
 // The sketch: "failures: red dot on the glyph; the panel lists which apps
 // failed, each with a retry". The badge and the per-app rows existed; the LIST
@@ -5280,7 +5280,7 @@ test("Retry says out loud that it runs the whole restore", () => {
   assert.ok(panel.retryTooltip(null, false).length > 0);
 });
 
-// ------------------------------------- may the manual restore fire at all (66x)
+// ------------------------------------- may the manual restore fire at all
 //
 // The blocker: an INERT state file (a schema from the future — StateModel.
 // restoreRefusal) left Restore now and Retry LIT. Pressing either wrote the
@@ -5333,7 +5333,7 @@ test("an inert state file refuses the manual restore, and every button says so",
   assert.strictEqual(panel.retryTooltip(browser, false, ""), panel.retryTooltip(browser, false));
 });
 
-// ------------------------------------------------ one undo after Record (7ow)
+// ------------------------------------------------ one undo after Record
 //
 // The sketch, twice: "Recording OVERWRITES this topology's layout — the previous
 // one is gone (single undo kept in memory until next record)", and "the panel
@@ -5665,7 +5665,7 @@ test("the overflow tooltip stops claiming it does nothing", () => {
   assert.ok(panel.overflowTooltip().indexOf("recorded layout") !== -1);
 });
 
-// ------------------------------------- launch fixes: fill it, don't lose it (i07)
+// ------------------------------------- launch fixes: fill it, don't lose it
 //
 // The bug, in one sentence: ticking an app writes `launch: ""` INSTANTLY — and
 // "" means never start this one — while the scan that could have filled it
@@ -5825,7 +5825,7 @@ test("a request with no window at all is still a request the derivation can read
 test("the shadow notice names the losing identity, its shadower and the fix", () => {
   // `strict` is the engine's answer to "is the claimant wider BY CONSTRUCTION"
   // — a class-only rule in front of a class+title one is. Only then is the
-  // instruction provably safe advice (tick ytt).
+  // instruction provably safe advice.
   const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true });
 
   assert.ok(line.indexOf('"herdr"') >= 0, line);
@@ -5845,7 +5845,7 @@ test("without a strict-subset relation the notice observes rather than instructs
   assert.strictEqual(soft.indexOf("untick"), -1, soft);
   assert.strictEqual(soft.indexOf("above"), -1, soft);
 
-  // THE MISCOUNT (tick ytt): term2 claims ONE of the two windows allfoot
+  // THE MISCOUNT: term2 claims ONE of the two windows allfoot
   // matches — the other was taken by an identity that is not a claimant — and
   // the sentence used to say it claimed all of them.
   assert.ok(soft.indexOf("claims 1 of the 2 windows it matches") >= 0, soft);
@@ -5920,7 +5920,7 @@ test("the whole path: a catch-all in front is detected and explained", () => {
 
 // ------------------------------------------ what a row's Learn button may write
 //
-// Tick tnm / finding A9. `learnLaunchFor(identityId)` read
+// `learnLaunchFor(identityId)` read
 // `root.derivedLaunch[identityId]` with a bare bracket lookup on a bare object,
 // and the derivation map is keyed by identity id. For the id `constructor` on a
 // KEY MISS — an app with no derivable launch, which is precisely when the row's
@@ -6024,7 +6024,7 @@ test("Panel.qml reads the derivation through the guarded lookup and nowhere else
 
 // ------------------------------------------- a duplicate tick is a VISIBLE no-op
 //
-// Tick v5c / finding A7. Click a chip whose window matches nothing, on an app an
+// Click a chip whose window matches nothing, on an app an
 // identity on the list ALREADY claims — the ordinary way to get there is a
 // terminal running `herdr` that was started without `--title`, while
 // `{^foot$ + ^herdr$}` is watched — and every gate said yes to a click that
@@ -6111,7 +6111,7 @@ test("Panel.qml reserves the success line for a list that actually changed", () 
 
 // ------------------------------------------- a refusal dies with its window
 //
-// Tick 8rw / finding A10. `refusedTick` is `{ className, address }` — the
+// `refusedTick` is `{ className, address }` — the
 // QUESTION a refused tick asked, kept so the hint can re-ask it against the live
 // desktop every frame and clear itself the moment the answer changes. That
 // self-clearing is the design, and it had one hole: nothing ever asked whether
@@ -6192,7 +6192,7 @@ test("Panel.qml clears refusedTick when the clients list says the window is gone
 
 // ------------------------ the awaiting-title surface is not terminals-only
 //
-// Tick s7l / finding A12. The tick-1m4 gap re-opened outside the terminal case.
+// The tick-1m4 gap re-opened outside the terminal case.
 //
 // awaitingTitleCandidates — the one place that decides which identities are
 // waiting on a title — filtered its windows through isTerminalClass. The
@@ -6204,7 +6204,7 @@ test("Panel.qml clears refusedTick when the clients list says the window is gone
 // So a hand-authored `^chromium$` + `^Gmail$` — the README invites the hand
 // edit — matched no window while an ordinary chromium window sat on screen, and
 // had no chip, no row, and no way back except editing the state file. Exactly
-// the state 1m4 exists to make recoverable, one class of app further out.
+// the state the earlier fix exists to make recoverable, one class of app further out.
 //
 // The filter moves rather than disappears: every candidate says whether its
 // window is a terminal, and the two places that give ADVICE branch on it. A
@@ -6344,7 +6344,7 @@ test("tickOutcome answers the whole click in one pass", () => {
   assert.strictEqual(refused.added, null);
   assert.deepStrictEqual(refused.identities, []);
 
-  // The duplicate from tick v5c arrives the same way.
+  // The duplicate from an earlier change arrives the same way.
   const dup = panel.tickOutcome(add.identities, "foot", "", derivation, engine.couldShadow);
   assert.strictEqual(dup.refusal, "already-watched");
   assert.strictEqual(dup.added, null);
@@ -6442,7 +6442,7 @@ test("the /proc maps are reassigned only when they changed", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The capture cache (tick sz6)
+// The capture cache
 // ---------------------------------------------------------------------------
 //
 // Pictures are keyed on (identityId, occurrence, topologyKey) and stored under
@@ -6711,12 +6711,12 @@ test("the pictures are evicted at all three points a recording can end", () => {
   assert.ok(store.indexOf("store.evict(store._plan ? store._plan.prefix : \"\", \"re-recorded\",") !== -1,
     "the capture sequence no longer evicts before it writes");
   // And the walk is chained onto THAT eviction's own completion, not onto
-  // whichever eviction happens to finish next (tick ilg).
+  // whichever eviction happens to finish next.
   assert.ok(store.indexOf("function () { store._runEvictThen() })") !== -1,
     "the round's continuation is no longer attached to the round's own eviction job");
 });
 
-test("_finish() tears down every piece of round state, and every early-return path between the guard and completion reaches it (tick gox)", () => {
+test("_finish() tears down every piece of round state, and every early-return path between the guard and completion reaches it", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -6751,7 +6751,7 @@ test("_finish() tears down every piece of round state, and every early-return pa
   // such path, isolated the same way the QML itself separates them, and each
   // must contain a call to store._finish().
   //
-  // capture()'s OWN two refusals are the exception, and tick ilg is why: they
+  // capture()'s OWN two refusals are the exception, and an earlier change is why: they
   // run before a single field of round state is written, so there is nothing to
   // tear down — and calling _finish() there tore down the round that was
   // actually running. They are pinned by their own test below.
@@ -6760,7 +6760,7 @@ test("_finish() tears down every piece of round state, and every early-return pa
   const mkdirFail = mkdirBody.slice(mkdirBody.indexOf("if (exitCode !== 0)"),
     mkdirBody.indexOf("store.evict("));
   assert.ok(mkdirFail.indexOf("store._finish()") !== -1,
-    "mkdirProc's failure path no longer reaches _finish() — this is the exact path tick gox found broken");
+    "mkdirProc's failure path no longer reaches _finish() — this is the exact path an earlier change found broken");
 
   const walkAt = store.indexOf("function _resolveThenWalk()");
   const walkBody = store.slice(walkAt, store.indexOf("\n  }\n", walkAt));
@@ -6776,7 +6776,7 @@ test("_finish() tears down every piece of round state, and every early-return pa
     "_next()'s normal-completion path (empty queue) no longer reaches _finish()");
 
   // The whole-queue deadline reaches _finish() through the shared loud-abandon
-  // path (tick 070), which is also the guard's impossible-state exit — one
+  // path, which is also the guard's impossible-state exit — one
   // implementation of "a round that cannot proceed fails loudly", not one per
   // caller. Both halves are pinned: the deadline delegates, and the delegate
   // both warns and tears the round down.
@@ -6790,7 +6790,7 @@ test("_finish() tears down every piece of round state, and every early-return pa
   assert.ok(abandonBody.indexOf("store._finish()") !== -1,
     "_abandonRound() no longer reaches _finish(), so an abandoned round latches `busy` forever");
   assert.ok(abandonBody.indexOf("store.warn(sentence)") !== -1,
-    "_abandonRound() no longer says anything — a round that gives up in silence is tick 070 again");
+    "_abandonRound() no longer says anything — a round that gives up in silence is an earlier change again");
   assert.ok(abandonBody.indexOf("guard.stop()") !== -1 && abandonBody.indexOf("total.stop()") !== -1,
     "_abandonRound() leaves a timer armed over a round that is over:\n" + abandonBody);
   assert.ok(abandonBody.indexOf("store._results = results") !== -1,
@@ -6811,10 +6811,10 @@ test("_finish() tears down every piece of round state, and every early-return pa
 });
 
 // ---------------------------------------------------------------------------
-// A capture round cannot be destroyed by the Record that was refused (tick ilg)
+// A capture round cannot be destroyed by the Record that was refused
 // ---------------------------------------------------------------------------
 
-test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round state (tick ilg)", () => {
+test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round state", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -6826,7 +6826,7 @@ test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round
   // 1. THE GUARD IS FIRST. `_plan`, `_done` and `_results` used to be assigned
   //    above it, so a second Record during a live round overwrote the FIRST
   //    round's fields with the refused one's — and then called _finish(), which
-  //    since tick gox correctly resets everything, tearing down the round that
+  //    since an earlier change correctly resets everything, tearing down the round that
   //    was actually running: its `done` lost (so its log line never appeared),
   //    its view left alive with a pending grab, and `busy` false so the NEXT
   //    Record was not blocked either.
@@ -6846,7 +6846,7 @@ test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round
   //    way to stop the interleave, and nothing here reintroduces it.
   const refusals = body.slice(guard, body.indexOf("var captures ="));
   assert.strictEqual(refusals.indexOf("_finish"), -1,
-    "capture()'s refusal paths call _finish() again — the exact bug tick ilg closed:\n" + refusals);
+    "capture()'s refusal paths call _finish() again — the exact bug an earlier change closed:\n" + refusals);
 
   // 3. The caller is still answered, with the empty round it always got: it
   //    logs "0 picture(s) stored".
@@ -6854,7 +6854,7 @@ test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round
     "capture()'s two refusals no longer both answer the caller with an empty round:\n" + refusals);
 });
 
-test("`busy` is load-bearing: a live capture round dims Record, and says why (tick ilg)", () => {
+test("`busy` is load-bearing: a live capture round dims Record, and says why", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -6894,13 +6894,13 @@ test("`busy` is load-bearing: a live capture round dims Record, and says why (ti
     "recordHint never mentions the capture round, so Record dims with no explanation");
 });
 
-test("a late grab cannot write a picture for a capture already reported failed (tick ilg)", () => {
+test("a late grab cannot write a picture for a capture already reported failed", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
 
   // "The step in flight" is the head of the queue, and every path that answers
-  // for a step shifts it off. Asked as a NUMBER since tick 070 — see the
+  // for a step shifts it off. Asked as a NUMBER since an earlier change — see the
   // regression test below for why an object could never answer it.
   const isAt = store.indexOf("function _isCurrentStep(step)");
   assert.ok(isAt !== -1, "_isCurrentStep is gone");
@@ -6941,7 +6941,7 @@ test("a late grab cannot write a picture for a capture already reported failed (
   assert.ok(settleGate < settleBody.indexOf("store._results = results"),
     "_settle() records the result before checking the step is still in flight");
 
-  //    AND THE TOKEN IS BURNT (tick 070). Shifting the queue was enough while
+  //    AND THE TOKEN IS BURNT. Shifting the queue was enough while
   //    the subject was the entry object — the shifted-off entry could never be
   //    the head again. A number survives the shift, so answering a step has to
   //    END it, or the second answer for step N lands on the entry that has just
@@ -6959,7 +6959,7 @@ test("a late grab cannot write a picture for a capture already reported failed (
   const guardBody = store.slice(guardAt, store.indexOf("\n  }\n", guardAt));
   assert.ok(guardBody.indexOf("if (!store._isCurrentStep(step))") !== -1,
     "the per-window guard settles a step without checking it is the one in flight:\n" + guardBody);
-  // NOT _next() (tick 070): _next() rebuilds a view for the SAME queue head, so
+  // NOT _next(): _next() rebuilds a view for the SAME queue head, so
   // a mismatch that does not correct itself is an invisible loop — a fresh
   // compositor capture session every stepMs, no result and no log line.
   //
@@ -6968,17 +6968,17 @@ test("a late grab cannot write a picture for a capture already reported failed (
   const guardCode = qmlCode(guardBody);
   assert.strictEqual(guardCode.indexOf("store._next()"), -1,
     "the per-window guard retries the step by calling _next() again — the silent "
-    + "respawn loop tick 070 closed:\n" + guardBody);
+    + "respawn loop an earlier change closed:\n" + guardBody);
   assert.ok(guardBody.indexOf("store._abandonRound(") !== -1,
     "the per-window guard's impossible state is silent again:\n" + guardBody);
 });
 
 // ---------------------------------------------------------------------------
 // The step in flight is a NUMBER, because an object cannot cross into a view
-// (tick 070)
+//
 // ---------------------------------------------------------------------------
 
-test("no answer for a capture step is carried in a QML property as a JS object (tick 070)", () => {
+test("no answer for a capture step is carried in a QML property as a JS object", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -7066,7 +7066,7 @@ test("no answer for a capture step is carried in a QML property as a JS object (
     "the deadline and the guard no longer share the one loud exit");
 });
 
-test("two evictions cannot cross, and a `find` that failed is not silent (tick ilg)", () => {
+test("two evictions cannot cross, and a `find` that failed is not silent", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
@@ -7122,7 +7122,7 @@ test("two evictions cannot cross, and a `find` that failed is not silent (tick i
 });
 
 // ---------------------------------------------------------------------------
-// Unwatching an app deletes its pictures, on every desk (tick sp7)
+// Unwatching an app deletes its pictures, on every desk
 // ---------------------------------------------------------------------------
 
 // `find -name` is fnmatch, so the pattern is testable against real file names
@@ -7136,7 +7136,7 @@ function globToRegExp(glob) {
     .replace(/\*/g, ".*") + "$");
 }
 
-test("an unwatched app names EVERY picture of itself, on every desk (tick sp7)", () => {
+test("an unwatched app names EVERY picture of itself, on every desk", () => {
   const mine = "obsidian";
   const theirs = "slack";
   const pattern = panel.captureIdentityPattern(mine);
@@ -7161,7 +7161,7 @@ test("an unwatched app names EVERY picture of itself, on every desk (tick sp7)",
   assert.ok(!re.test(panel.captureFileName(mine, 0, "Laptop").replace(/\.jpg$/, ".png")));
 });
 
-test("the identity pattern carries no glob metacharacter of its own (tick sp7)", () => {
+test("the identity pattern carries no glob metacharacter of its own", () => {
   // captureSafeSegment maps everything outside [A-Za-z0-9._-] to "_", so the
   // only "?" and "*" in a pattern are the ones captureIdentityPattern puts
   // there: eight for the topology hash, one for the occurrence. An id that could
@@ -7194,7 +7194,7 @@ test("the identity pattern carries no glob metacharacter of its own (tick sp7)",
   assert.deepStrictEqual(panel.captureIdentityPatterns(null), []);
 });
 
-test("EVERY WAY OF DROPPING A PICTURE DELETES IT, on every desk (tick sp7)", () => {
+test("EVERY WAY OF DROPPING A PICTURE DELETES IT, on every desk", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
@@ -7247,10 +7247,10 @@ test("EVERY WAY OF DROPPING A PICTURE DELETES IT, on every desk (tick sp7)", () 
 });
 
 // ---------------------------------------------------------------------------
-// ONE SWITCH, AND NO SECOND ANSWER ANYWHERE (epic wau)
+// ONE SWITCH, AND NO SECOND ANSWER ANYWHERE
 // ---------------------------------------------------------------------------
 //
-// Increment 06 shipped two consents: a camera on every row and a three-answer
+// The first version shipped two consents: a camera on every row and a three-answer
 // dialogue on the first Record. The human used them, could not find the camera,
 // and was talked out of his own pictures by the dialogue. Both are gone, and
 // these are the pins that keep them gone — an absence needs a test more than a
@@ -7461,7 +7461,7 @@ test("switching the pictures back ON restarts the live round under an open panel
 });
 
 // ---------------------------------------------------------------------------
-// The picture is of the window it claims (tick 3xi)
+// The picture is of the window it claims
 // ---------------------------------------------------------------------------
 
 // Two windows of one identity, far enough apart that the placement comparator
@@ -7475,7 +7475,7 @@ function twoTerminals(leftAt, rightAt) {
   ];
 }
 
-test("a SECOND window index is a second opinion, and it can photograph the wrong window (tick 3xi)", () => {
+test("a SECOND window index is a second opinion, and it can photograph the wrong window", () => {
   // This test exists to show the failure is real rather than theoretical, and to
   // make it impossible to reintroduce quietly. Both halves use the SAME layout;
   // the only difference is which index the plan is built from.
@@ -7525,7 +7525,7 @@ test("a SECOND window index is a second opinion, and it can photograph the wrong
   }
 });
 
-test("ONE INDEX, TWO USES: buildLayout takes the index the capture will be handed (tick 3xi)", () => {
+test("ONE INDEX, TWO USES: buildLayout takes the index the capture will be handed", () => {
   const identities = [{ id: "terminal", patterns: ["^foot$"] }];
   const clients = twoTerminals([100, 100], [900, 100]);
   const chosen = engine.chosenWindows(clients, identities, monitorsLaptop);
@@ -7552,7 +7552,7 @@ test("ONE INDEX, TWO USES: buildLayout takes the index the capture will be hande
     engine.buildLayout(clients, monitorsLaptop, identities, AT));
 });
 
-test("the panel builds the window index ONCE, and the comment says what the code does (tick 3xi)", () => {
+test("the panel builds the window index ONCE, and the comment says what the code does", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
@@ -7594,7 +7594,7 @@ test("the panel builds the window index ONCE, and the comment says what the code
   assert.ok(comment.indexOf("HANDED IN") !== -1, comment);
 });
 
-test("the map stops drawing a picture the switch has turned off (tick sp7)", () => {
+test("the map stops drawing a picture the switch has turned off", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
@@ -7619,7 +7619,7 @@ test("the map stops drawing a picture the switch has turned off (tick sp7)", () 
   // `captureSource` (which the payload reports as BOUND) name a picture the
   // chip is not drawing.
   //
-  // Since tick 2zi the Image binds `pictureSource`, which is the UNION of the
+  // Since an earlier change the Image binds `pictureSource`, which is the UNION of the
   // recorded source and the live one — declared in the delegate, from the two
   // reported properties themselves, so it still cannot be a second derivation of
   // either gate. The assertion that matters is unchanged: no picture question is
@@ -7640,7 +7640,7 @@ test("the map stops drawing a picture the switch has turned off (tick sp7)", () 
 });
 
 // ---------------------------------------------------------------------------
-// The Recorded map draws its captures (tick vbh)
+// The Recorded map draws its captures
 // ---------------------------------------------------------------------------
 //
 // The rendering itself cannot be proven here — no scene graph, no pixels. What
@@ -7674,7 +7674,7 @@ test("A CAPTURE CANNOT PUSH THE NAME OUT: it is a sibling of the content, not a 
   const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
 
   // The Recorded map is entirely the FALLBACK path — 210x17 stacked rows —
-  // which is where names came back in tick ajp after a size ladder silently
+  // which is where names came back in an earlier change after a size ladder silently
   // took every one of them away. A capture inside `chipContent` would take a
   // share of the Column's width and could do it again.
   const contentAt = source.indexOf("id: chipContent");
@@ -7711,7 +7711,7 @@ test("no empty-image flash, and a deleted capture is not an error", () => {
   assert.ok(block.indexOf("cache: false") !== -1, block);
 });
 
-test("the ladder's cutoffs are exactly what epic c7f ratified — captures did not move them", () => {
+test("the ladder's cutoffs are exactly what an earlier epic ratified — captures did not move them", () => {
   // Restated here rather than imported, for the reason the VM test restates
   // them in jq: a test that asked chipTreatment what chipTreatment thinks would
   // agree with a wrong answer. This is the guard that a tick which fills a
@@ -7748,10 +7748,10 @@ test("the capture source is a fact about the RECORDED map, and a file URL", () =
 });
 
 // ---------------------------------------------------------------------------
-// LIVE PICTURES (tick 2zi) — the Live map draws the windows as they are NOW
+// LIVE PICTURES — the Live map draws the windows as they are NOW
 // ---------------------------------------------------------------------------
 //
-// The human's ratified choice, in full (epic tsp): live pictures are held in
+// The human's ratified choice, in full: live pictures are held in
 // MEMORY ONLY. Photographed when the panel opens, drawn from memory, NEVER
 // written to disk, discarded when the panel closes. The parts with a right
 // answer are pure and live here; the machinery is QML and is pinned at the
@@ -7874,7 +7874,7 @@ test("NOTHING ON THE LIVE PATH CAN WRITE A FILE", () => {
   const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
 
   // THE CONSTRAINT THE WHOLE TICK HANGS ON, and the human chose it over an
-  // on-disk cache after being shown both (epic tsp). A picture that never
+  // on-disk cache after being shown both. A picture that never
   // persists has no withdrawal surface, and that absence IS the design — so it
   // is guarded here rather than left to a reviewer noticing a new `saveToFile`.
   const code = store.split("\n")
@@ -7902,7 +7902,7 @@ test("RECORD STAYS AVAILABLE: the dependency between the two rounds runs one way
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
   const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
 
-  // `captureStore.busy` dims Record (tick ilg) so two rounds cannot interleave.
+  // `captureStore.busy` dims Record so two rounds cannot interleave.
   // A live round on every panel open sharing that flag would make Record refuse
   // for a moment EVERY time the panel appeared — a new defect, and worse than
   // the one ilg fixed. So `canRecord` must never learn about the live store.
@@ -7920,7 +7920,7 @@ test("RECORD STAYS AVAILABLE: the dependency between the two rounds runs one way
 
   // Parking BURNS THE TOKEN. The view being destroyed may already have a
   // grabToImage on the render thread, and its callback must answer for nothing
-  // when it lands (tick 070's currency, tick ilg's hazard).
+  // when it lands.
   const park = store.slice(store.indexOf("function _park()"),
     store.indexOf("function _resume()"));
   assert.ok(park.indexOf("liveStore._step = liveStore._step + 1") !== -1, park);
@@ -7944,7 +7944,7 @@ test("a chip is never blank: the icon is the fallback, and there is only one of 
   assert.ok(image.indexOf("visible: chipCapture.status === Image.Ready") !== -1, image);
 
   // AND THE ICON STEPS ASIDE FOR A PICTURE THIS CHIP IS HOLDING, which since
-  // tick nlg is `pictureHeld` and not `captureDrawn`. The two differ in exactly
+  // an earlier change is `pictureHeld` and not `captureDrawn`. The two differ in exactly
   // one case — a picture being RELOADED — and that case is the blink this is
   // now pinned against: on the recorded map a reload is asynchronous and
   // happens on every re-layout (sourceSize is the chip's drawn size), so
@@ -8004,7 +8004,7 @@ test("the live source is a fact about the LIVE map, keyed by the window address"
   // is written, with no panel reopen and nothing to wait for.
   assert.ok(body.indexOf("if (!root.picturesOn) return \"\"") !== -1, body);
   // The map is PASSED IN, so the binding's dependency is visible at the call
-  // site and cannot be tidied away (tick md1).
+  // site and cannot be tidied away.
   assert.ok(body.indexOf("liveCaptures.urlIn(liveCaptures.pictures, address)") !== -1, body);
 
   // And the pixels go too, at both of the two sites that can drop a live
@@ -8092,7 +8092,7 @@ test("A LIVE ROUND IS A BRACKET: it says when it opens and when it closes", () =
   // different faults produce exactly that silence: a round never started, a
   // round started with an empty plan, and a round that started and stalled. An
   // unclosed bracket is now a stall and a bracket around zero is a desk with
-  // nothing to photograph — tick 070's lesson, applied one VM cycle earlier
+  // nothing to photograph — an earlier change's lesson, applied one VM cycle earlier
   // than last time.
   const start = store.slice(store.indexOf("function start(plan) {"),
     store.indexOf("function clear()"));
@@ -8116,14 +8116,14 @@ test("A LIVE ROUND IS A BRACKET: it says when it opens and when it closes", () =
   assert.ok(body.indexOf("liveCaptureLogLine(plan, results)") !== -1, body);
 });
 
-test("the chip's report carries an onXChanged for EVERY property it captures (tick sm1)", () => {
+test("the chip's report carries an onXChanged for EVERY property it captures", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
 
   // THE RULE, MECHANISED. A report site that captures a property with no handler
   // for it reports whatever that property was when some OTHER handler last
-  // fired, for ever — the sm1 family of defects, which this increment has paid
+  // fired, for ever — that family of defects, which this increment has paid
   // for twice (`iconResolved` for a whole session; `captureDrawn`, which lands
   // after the source it belongs to). Arguing the exception per property is how
   // the rule stops being checkable, so it is checked.
@@ -8162,10 +8162,10 @@ test("the chip's report carries an onXChanged for EVERY property it captures (ti
 });
 
 // ---------------------------------------------------------------------------
-// The guards stop being whitelists, and the small correctness items (tick md1)
+// The guards stop being whitelists, and the small correctness items
 // ---------------------------------------------------------------------------
 
-test("the chip's picture depends on the LISTING, in the call rather than in a dead branch (tick md1)", () => {
+test("the chip's picture depends on the LISTING, in the call rather than in a dead branch", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
@@ -8198,7 +8198,7 @@ test("the chip's picture depends on the LISTING, in the call rather than in a de
     "the generation counter is still there, read by nobody");
 });
 
-test("the five copies of plugin_state in the acceptance suite are one function (tick md1)", () => {
+test("the five copies of plugin_state in the acceptance suite are one function", () => {
   const fs = require("node:fs");
   const path = require("node:path");
   const dir = path.join(__dirname, "acceptance");
@@ -8232,7 +8232,7 @@ test("the state file's writes block, so a record is on disk when it says it is",
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
 
-  // The defect this pins (tick m4s) was invisible in every cheaper tier: the
+  // The defect this pins was invisible in every cheaper tier: the
   // acceptance VM recorded a layout, the IPC answered "recorded", and a jq in
   // the very next process found no layout in the file. `setText` schedules an
   // asynchronous job unless the view is told otherwise, and five whole-file
@@ -8259,7 +8259,7 @@ test("a capture is not written once the pictures have been switched off mid-roun
   const path = require("node:path");
   const source = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
 
-  // The defect this pins (tick zxg), from the acceptance log verbatim:
+  // The defect this pins, from the acceptance log verbatim:
   //
   //   recorded 2 apps for topology "… | dr-cap-dock"
   //   unwatched "dr-two" — its stored pictures are deleted, on every desk
@@ -8374,11 +8374,11 @@ test("a capture is not written once the pictures have been switched off mid-roun
     "and the instant it is off nothing is — which is the case this gate exists for");
 });
 
-// ---------------------------------------------------------------- tick fe3
+// ---------------------------------------------------------------- an earlier change
 // The workspace context: a manual record stores layoutMode and group.active,
 // which only happens when the panel hands Engine.buildLayout / driftOf the
 // `hyprctl workspaces -j` read. A failed read nulls the context, nothing else.
-test("the panel reads hyprctl workspaces and passes the context to record and drift (tick fe3)", () => {
+test("the panel reads hyprctl workspaces and passes the context to record and drift", () => {
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8");
   assert.ok(src.indexOf('command: ["hyprctl", "workspaces", "-j"]') !== -1, "no workspaces read");
   const ctx = "{ workspaces: root.liveWorkspaces, built: null }";
@@ -8396,7 +8396,7 @@ test("the panel reads hyprctl workspaces and passes the context to record and dr
   assert.ok(procBody.indexOf("root.liveWorkspaces = null") !== -1, "a failed read must null the context");
 });
 
-test("the engine records layoutMode when the context carries the workspaces (tick fe3)", () => {
+test("the engine records layoutMode when the context carries the workspaces", () => {
   const clients = [{ address: "0x1", class: "kitty", workspace: { id: 1 }, monitor: 0,
     at: [0, 0], size: [100, 100], floating: false, mapped: true, hidden: false, pid: 1 }];
   const monitors = [{ id: 0, name: "A", description: "A", x: 0, y: 0, width: 1920, height: 1080, scale: 1,
@@ -8487,7 +8487,7 @@ test("v2p: the badge tooltip says the shapes too when apps have drifted as well"
     "1 app is not where the recording puts them. Restore now moves them back; Record layout files where they are instead.");
 });
 
-// ------------------------------------------- slot labels (5ue / m73)
+// ------------------------------------------- slot labels
 
 const monitorsDockedLabels = loadFixture("monitors-laptop+headless.json");
 
@@ -8510,7 +8510,7 @@ test("two monitors, blocks 0 and 1: each monitor's workspaces are labelled 1-10"
     [[1, 0], [3, 0], [10, 0], [11, 1], [13, 1], [20, 1]], { "eDP-1": 0, "hw-test": 1 });
   const laptop = monitorBox(map, "eDP-1");
   const external = monitorBox(map, "hw-test");
-  // Slot 10 reads "0", exactly like 4.5's bar (human, 2026-11-15).
+  // Slot 10 reads "0", exactly like 4.5's bar.
   assert.deepStrictEqual(laptop.workspaces.map((w) => w.name), ["1", "3", "0"]);
   assert.deepStrictEqual(external.workspaces.map((w) => w.name), ["1", "3", "0"]);
   assert.deepStrictEqual(laptop.workspaces.map((w) => w.id), [1, 3, 10]);

@@ -1,9 +1,9 @@
 #!/bin/bash
-# sandbox-reserved-id.sh — finding A8 / tick v29, proven in the nested
+# sandbox-reserved-id.sh — proven in the nested
 # compositor: an app whose identity id collides with an Object.prototype key is
 # matched, launched, placed, moved and named in the diagnostics like any other.
 #
-# WHY IT NEEDS A COMPOSITOR. The rule (`own()`, tick 8hp) is pure and pinned in
+# WHY IT NEEDS A COMPOSITOR. The rule (`own()`) is pure and pinned in
 # tests/reserved-ids.test.js. The maps that still got it wrong were the three
 # bare-object dedupes inside Panel.qml and Service.qml, where node cannot look:
 # `seen[id]` on a bare object is truthy for `constructor` before anything is put
@@ -40,7 +40,7 @@ LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$LIB_DIR/sandbox-lib.sh"
 
 # AFTER the source, and that is not a style choice. sandbox-lib.sh assigns
-# `APP_ID="${DR_SANDBOX_APP_ID:-dr-sim}"` unconditionally (tick 66x, so an
+# `APP_ID="${DR_SANDBOX_APP_ID:-dr-sim}"` unconditionally (so an
 # ambient `APP_ID` from a shell rc cannot silently reconfigure the gate), so a
 # scenario's own value only survives if it is set afterwards — which is what
 # sandbox-dock.sh does. Set above the source, this file's `Constructor` was
@@ -125,7 +125,7 @@ HYPRLAND_INSTANCE_SIGNATURE="$NESTED_SIG" node -e '
     + " @ " + layout.apps[0].monitorDescription);
 ' "$REPO_ROOT" "$STATE" "$OUTPUT" "$DERIVED_ID" "$TARGET_SLOT" || { echo "FAIL: seeding failed"; exit 1; }
 
-# The identity survived the round trip through the reader, which is the 8hp half
+# The identity survived the round trip through the reader, which is the earlier half
 # and the precondition for everything below.
 if [[ $(jq -r --arg id "$DERIVED_ID" '[.identities[]|select(.id==$id)]|length' "$STATE") == "1" ]]; then
   pass "the identity \"$DERIVED_ID\" survived the read/write round trip"

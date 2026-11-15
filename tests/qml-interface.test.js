@@ -2,7 +2,7 @@
 // is really declared on Panel.qml's root.
 //
 // WHY THIS EXISTS. This plugin extracts big subtrees out of Panel.qml into
-// root-level components — MapWorkspace.qml (tick xk5), AppStrip.qml (tick kex)
+// root-level components — MapWorkspace.qml, AppStrip.qml
 // — and the convention both of them state at their own top is that the outer
 // scope hands in ONE handle: `panel: root`, plus the facts only the outer scope
 // owns. That makes `grep -o 'panel\.[a-zA-Z]*' <file> | sort -u` the component's
@@ -10,7 +10,7 @@
 // silent break in a file the rename never touched.
 //
 // Nothing else catches it. `qmllint -I "$OMARCHY_PATH/shell" *.qml` is
-// SYNTAX-ONLY here: measured in 06-bwf it exits 0 with an unknown id injected
+// SYNTAX-ONLY here: measured once, it exits 0 with an unknown id injected
 // and with a handler for a signal that does not exist, so it cannot be cited as
 // evidence that a binding resolves. Node cannot instantiate QML. And the failure
 // mode is quiet — an undefined member is not an error in a QML binding, it is
@@ -24,8 +24,8 @@
 // bash inside Service.qml) — there is no second copy of the logic here, only the
 // question of who declares what.
 //
-// THE SET COMES FROM A GLOB, not from a list of two file names. That is tick
-// md1's lesson, paid for in this repository: a hand-maintained list of files
+// THE SET COMES FROM A GLOB, not from a list of two file names. That is the lesson, paid for in
+// this repository: a hand-maintained list of files
 // rots silently the moment somebody adds the next one, and the guard stays
 // green while scanning less than it did. "Every root-level QML file that
 // declares a `panel` property" IS the set of extracted components, by
@@ -104,7 +104,7 @@ function componentFiles() {
 
 // `<Name> {` and the form it appears in as a property value, `delegate: <Name>
 // {`. The brace may be pressed against the name or spaced off it, and anything
-// may follow it on the line: tick md1 measured an opener that demanded exactly
+// may follow it on the line: an earlier change measured an opener that demanded exactly
 // one space reading `PanelHero{` as an ordinary line and passing three
 // assertions VACUOUSLY over an empty string.
 function instantiationLines(source, name) {
@@ -235,7 +235,7 @@ test("the flat list is exactly one AppStrip, and it declares the handle", () => 
 });
 
 // ---------------------------------------------------------------------------
-// Service.qml threads the planning context (epic 9i2, tick ubt).
+// Service.qml threads the planning context.
 //
 // Every Engine.driftOf / Engine.planRestore call hands the engine the same
 // context ({ workspaces, built }), because a call that forgets it silently
@@ -259,7 +259,7 @@ test("Service.qml reads hyprctl workspaces in snapshot and clears builtWorkspace
   assert.ok(clears.length >= 1, "builtWorkspaces must be cleared at cycle start");
 });
 
-// Epic 9i2 §2.5 — the known tree lives for one restore. Cleared at cycle start
+// Thethe known tree lives for one restore. Cleared at cycle start
 // only (a settle pass refining the tree this cycle built is what it is for),
 // deleted per workspace when its shape is abandoned, and set only by the
 // post-plan bookkeeping.
@@ -332,7 +332,7 @@ test("Service.qml executes the tab op, reads it back, and clears the known tree 
   assert.match(functionBody(source, "finishCycle"), /root\.builtWorkspaces = \(\{\}\)/);
 });
 
-// Tick v2p — final-review fixes to the known tree and the reload check.
+// An earlier change — final-review fixes to the known tree and the reload check.
 test("Service.qml: a scratch-workspace join revokes home's known tree and breaks this plan's build", () => {
   const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");
   const ready = functionBody(source, "scratchJoinReady");

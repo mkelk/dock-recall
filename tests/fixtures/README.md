@@ -31,7 +31,7 @@ output is removed under a shell `trap` even if capture fails.
 
 Not a raw hyprctl capture but the service's OWN forensics dump
 (`~/.local/state/omarchy/monitor-watch-forensics/2026-08-16T06:34:51.393Z.json`,
-copied verbatim) of the tick-z0l defect: after a real dock transition, slack
+copied verbatim) of the earlier defect: after a real dock transition, slack
 would not join whatsapp's group in any `into_group` direction across three
 passes. It carries the raw `clients`/`monitors` reads, the recording, the
 identities, the per-op outcomes and the verdicts of the failing cycle — one
@@ -67,7 +67,7 @@ terminal produces. Two `foot` clients on one workspace:
 | `0x55c6f81a2500` | `foot` | `foot` | `user@host:~/git/dock-recall` | a plain terminal at a prompt |
 | `0x55c6f73e6d80` | `foot` | `herdr` | `herdr — 3 lists, 41 items` | `foot --title=herdr herdr` |
 
-Synthesized rather than captured (tick hqa) — every `foot` client in
+Synthesized rather than captured — every `foot` client in
 `clients-laptop.json` carries `initialTitle: "foot"`, so no real capture had
 the shape — but synthesized from the fields hyprctl really reports.
 

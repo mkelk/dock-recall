@@ -1,6 +1,6 @@
 #!/bin/bash
 # dock-recall-fidelity-test.sh — within-workspace fidelity on a real Omarchy 4.5
-# install (Tier C, epic 9i2).
+# install (Tier C).
 #
 # The sandbox (tests/sandbox-fidelity.sh) proves the engine and the service
 # against Hyprland under Omarchy's dwindle settings. What it cannot have is
@@ -598,7 +598,7 @@ case_floating() {
   restore
   # Scatter: off the workspace, and to a different rect. The scatter itself is
   # asserted FIRST, straight after the move and before anything could restore
-  # it: VM run 1 of epic 9i2 read it 2.5 s later, after a reload-triggered cycle
+  # it: VM run 1 of the fidelity epic read it 2.5 s later, after a reload-triggered cycle
   # had already put dr-fa back, and blamed the scatter. Omarchy's mode tiles a
   # window it floated once it leaves the workspace (one second after the move),
   # so the rect is compared only after waiting that out.

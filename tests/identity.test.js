@@ -336,7 +336,7 @@ test("a list that is not a list is no constraint, never a string of characters",
 });
 
 test("a compiled pattern is reused, and reuse changes no answer", () => {
-  // Tick bvs. compilePattern memoizes on the pattern's source string, because
+  // compilePattern memoizes on the pattern's source string, because
   // shadowedIdentities is O(clients x identities^2) on a binding that fires for
   // every Hyprland event. The invariant that makes it safe: fixed "i" flags and
   // no /g anywhere, so a shared regex carries no lastIndex cursor between
@@ -375,7 +375,7 @@ test("identity order decides between a class identity and a title identity", () 
 });
 
 // ---------------------------------------------------------------------------
-// Shadowed identities — an identity that can never win says so (tick 1vq)
+// Shadowed identities — an identity that can never win says so
 // ---------------------------------------------------------------------------
 //
 // matchClient is first-match-wins across the whole list, and toggleWatchedIdentities
@@ -394,7 +394,7 @@ test("an identity whose every live match is claimed earlier is reported, with it
   // The hazard order: the catch-all was prepended in front of the title identity.
   // `strict` because a class-only rule constrains strictly fewer axes than a
   // class+title one — wider by construction, which is what makes "move it up,
-  // or untick the other one" provably safe advice (tick ytt).
+  // or untick the other one" provably safe advice.
   const report = engine.shadowedIdentities(clients, [terminal, herdr]);
   assert.deepStrictEqual(report,
     [{ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true }]);
@@ -439,7 +439,7 @@ test("a shadow report names every earlier identity that took a window, in list o
   // Two one-pattern identities shadow a two-pattern one BETWEEN THEM, which is
   // why the coverage test below asks about the claimants as a union rather than
   // one at a time. Not `strict`: all three constrain the same axis, so the
-  // panel observes rather than instructs (tick ytt).
+  // panel observes rather than instructs.
   assert.deepStrictEqual(engine.shadowedIdentities(clients, [editor, terminal, both]), [
     { id: "workbench", windows: 2, claimed: 2, claimedBy: ["editor", "terminal"], strict: false }
   ]);
@@ -453,7 +453,7 @@ test("a shadow report names every earlier identity that took a window, in list o
 
 // -------------------------------------------------- and when it must NOT fire
 //
-// Tick ytt. The axes-subset rule fixed the wolf-cry across axes and could not
+// The axes-subset rule fixed the wolf-cry across axes and could not
 // see breadth WITHIN one, so the same false alarm came back class-against-class
 // — on the exact configuration StateModel's schema comment mandates.
 
@@ -499,7 +499,7 @@ test("a shadow is called strict only when the claimant is wider by construction"
 });
 
 test("the notice counts what the NAMED claimant took, not every window matched", () => {
-  // Verified by execution in the vx3 review: with one titled and one plain foot
+  // Verified by execution in the review: with one titled and one plain foot
   // window, `allfoot` matches both — but the titled one went to `herdr`, which
   // is not a claimant (a class+title rule cannot shadow a class-only one). The
   // notice used to read "term2 claims all 2 windows it matches". term2 claims

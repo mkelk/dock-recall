@@ -149,7 +149,7 @@
 //   the fields were missing. It is a legal, permanent value: consumers must
 //   treat it as "nothing to compare against" (verdict word `not-scored`), never
 //   as zero.
-//   RESTORE PLANNING READS THESE FIELDS (since tick qkv), for entries recorded
+//   RESTORE PLANNING READS THESE FIELDS (since an earlier change), for entries recorded
 //   `floating: true`: a float outside engine.GEOMETRY_TOLERANCE_PX of its
 //   recorded rect is drift and plans a `geometry` op that resizes and moves it
 //   back. For entries recorded tiled they are still measurement only. Which is
@@ -211,7 +211,7 @@
 //   field. The precedent survives its first casualty: it is about fields that
 //   EXIST, and the cheapest way to keep a shape honest is still to write it.
 //
-//   THE ONE THING v4 TAKES AWAY (tick j8o): a migrated `launch` that forces a
+//   THE ONE THING v4 TAKES AWAY: a migrated `launch` that forces a
 //   window class NO pattern of its own identity claims — the signature of v3's
 //   retired `--app-id` backfill — is EMPTIED. It is the first non-additive step
 //   in the chain, and the reason is that the alternative is worse: the command
@@ -287,7 +287,7 @@
 //   stripped back to whatever they meant before the newer schema narrowed them.
 //   `isFutureVersion` is the single question; `writeRefusal` and
 //   `restoreRefusal` are its two consequences, and every writer of this file and
-//   the one funnel that dispatches restores ask them (tick t03).
+//   the one funnel that dispatches restores ask them.
 //
 // Quirks the UI must know:
 //   - layouts is a MAP keyed by topologyKey, and Layout.topologyKey repeats that
@@ -333,7 +333,7 @@
 //     driftCount:  int           // how many recorded apps a restore would act
 //                                // on RIGHT NOW — see driftCountOf. 0 with
 //                                // recorded=true is the "in sync" badge.
-//     shapes:      Shape[]       // v9 (epic 9i2). Finished tiled workspaces whose
+//     shapes:      Shape[]       // v9. Finished tiled workspaces whose
 //                                // tile shape a restore did not or could not
 //                                // reproduce: { workspaceId, monitorDescription,
 //                                // meanIou, reason } — reason is a refusal word
@@ -361,7 +361,7 @@
 //                                // panel's to write and nobody else's to poll.
 //                                // The state file remains the source of truth;
 //                                // this is a read-only echo of it.
-//     deferredLocked: boolean    // v2 (tick 97e). The last cycle found group
+//     deferredLocked: boolean    // v2. The last cycle found group
 //                                // JOIN work in its plan while the session was
 //                                // LOCKED, executed everything focus-
 //                                // independent, and left the joins for the
@@ -392,7 +392,7 @@
 //                                // measured rects, delta and IoU. Neither is
 //                                // part of `ok`, and neither may ever become
 //                                // part of it: geometry is measured, never
-//                                // enforced (tick 5sc).
+//                                // enforced.
 //   }
 //
 // The discipline that makes this file trustworthy, and the reason the writer
@@ -461,7 +461,7 @@ function isArray(value) {
 // identityById, launchCommandFor — all pinned in tests/reserved-ids.test.js),
 // and a hand-written LAYOUT entry naming it makes engine.matchLayout, driftOf
 // and planRestore throw a TypeError. That is a known limit rather than a
-// regression — the pre-8hp code throws identically — and it is pinned as one:
+// regression — the earlier code throws identically — and it is pinned as one:
 // nothing derives the id `__proto__`, so reaching it takes a hand edit.
 function own(map, key) {
   if (!map) return undefined;
@@ -547,7 +547,7 @@ function isTerminalArgvEnd(word) {
 // names no such flag. `""` — the flag with nothing after it — is a found flag
 // with no class, which is not the same answer as "absent".
 //
-// The shape is the whole point (tick bcc). This asked only "does the command
+// The shape is the whole point. This asked only "does the command
 // spell `--app-id` anywhere?", and the backfill is far from the only thing that
 // does; two ordinary launches were emptied on migration because of it:
 //
@@ -906,7 +906,7 @@ function isOlderVersion(value) {
 // Is this file old enough for v4's LAUNCH SUBTRACTION to apply to it?
 //
 // A SEPARATE QUESTION FROM isOlderVersion, and conflating the two was a bug
-// that shipped with the v5 -> v6 bump and survived to v7 (review z4b). The
+// that shipped with the v5 -> v6 bump and survived to v7. The
 // subtraction is v3 -> v4's and only v3 -> v4's: it empties a `launch` that
 // forces an `--app-id` class no pattern of its own identity claims, because
 // that string is the signature of a mechanism v3 retired and cannot be repaired
@@ -1062,8 +1062,8 @@ function writeRefusal(state) {
 // may not when it may not. `requestRestore` — the single funnel every event,
 // settle pass, replayed request and manual trigger arrives at — asks this first.
 //
-// Same question as writeRefusal, opposite half of the same damage (tick t03,
-// finding A6). Protecting only the file was protecting the wrong thing:
+// Same question as writeRefusal, opposite half of the same damage (an earlier change,
+//). Protecting only the file was protecting the wrong thing:
 //
 //   - normalizeIdentity is a WHITELIST, so a v6 identity reaches memory with
 //     every field v6 added STRIPPED. A rule that v6 narrowed — to a profile, a
@@ -1111,7 +1111,7 @@ function serializeState(state) {
 // It exists because every setter here used to end with the same literal:
 //   `return { version: …, paused: …, identities: …, layouts: … }`
 // written out four times. That is precisely the enumerated-field-list shape
-// .tick/learnings.md calls "a data-loss bug waiting for the next field", and it
+// the project notes calls "a data-loss bug waiting for the next field", and it
 // has had two of them since: v6's `pictureConsent` and now v7's `pictures`,
 // either of which would have survived a pause toggle and been silently dropped
 // by the first Record, because upsertLayout's literal never mentioned it.
@@ -1318,7 +1318,7 @@ function normalizeBlockedBy(value) {
   };
 }
 
-// The geometry verdict word (tick 5sc). Unlike the four placement words this
+// The geometry verdict word. Unlike the four placement words this
 // does NOT default to "ok": a status file written by a service that knew
 // nothing about geometry has measured nothing, and "ok" would be an agreement
 // nobody reached. "not-scored" is the honest default and the honest fallback.
@@ -1369,7 +1369,7 @@ function normalizeGeometryDetail(value) {
     // panel prints whatever it is handed (engine.geometrySkipPhrase falls back
     // to the word itself).
     skip: (typeof value.skip === "string" && value.skip) ? value.skip : null,
-    // …and its tiled twin (tick eqb): why the tiled refinement will not touch
+    // …and its tiled twin: why the tiled refinement will not touch
     // this window's workspace, or null. Same free-string rule and the same
     // reason — a word a newer service knows about must reach the row it
     // explains rather than being blanked into an unexplained number.
@@ -1391,12 +1391,12 @@ function normalizeVerdict(value) {
     group: normalizeVerdictWord(value.group),
     // Recomputed rather than trusted: `ok` is what the UI paints green, and a
     // file claiming ok:true beside a non-ok dimension is exactly the lie this
-    // whole tick exists to remove.
+    // whole change exists to remove.
     //
-    // GEOMETRY joins this expression as of tick qkv, on ONE word and no other:
-    // `geometry-off`. Tick 5sc kept geometry out entirely because there was no
-    // op that moved a window by pixels, so a miss was unactionable; epic yyz
-    // added one for floats, and `geometry-off` is a verdict engine's
+    // GEOMETRY joins this expression, on ONE word and no other:
+    // `geometry-off`. Geometry used to be kept out entirely because there was no
+    // op that moved a window by pixels, so a miss was unactionable; there is
+    // one now for floats, and `geometry-off` is a verdict engine's
     // geometryScoreFor only ever reaches in FLOAT mode. A tiled window scores
     // `scored` or `not-scored` and still cannot turn this false — which is what
     // keeps 5sc's actual promise intact: no tiled desktop goes amber, negative
@@ -1480,7 +1480,7 @@ function normalizeStatus(value) {
     // Same default direction as State.paused: only an explicit `true` pauses,
     // so a status file written by an older service reads as active.
     paused: src.paused === true,
-    // Same direction again (tick 97e): only an explicit `true` defers. A status
+    // Same direction again: only an explicit `true` defers. A status
     // file from a service that had never heard of the lock probe reads as "no
     // joins are waiting", which is the state such a service was always in.
     deferredLocked: src.deferredLocked === true,
@@ -1579,7 +1579,7 @@ function mergeStatus(previous, patch) {
 
 // May the service run its slow background drift poll right now?
 //
-// The poll exists for ONE compositor limitation (state-matrix §4b, tick ae1):
+// The poll exists for ONE compositor limitation (state-matrix §4b):
 // an in-place float drag or resize emits no Hyprland event at all, so the badge
 // would stay stale until something else happened on the desktop. The poll puts
 // a bound on that; the event path is still what does the work.
@@ -1836,7 +1836,7 @@ function pickFailoverTarget(monitors, lastFocusedName) {
 // locked. Builds on pickFailoverTarget and adds the one case it cannot see:
 //
 //   Under the session lock, "focus intact" is not the same as "keyboard input
-//   has somewhere to go". VM run 2 (tick s58): removing the FOCUSED output
+//   has somewhere to go". VM run 2: removing the FOCUSED output
 //   while locked left input on no lock surface until the pointer touched the
 //   survivor, while hyprctl went on reporting focus on the survivor. So when
 //   locked, even an intact focus is re-asserted: a monitor focus dispatch

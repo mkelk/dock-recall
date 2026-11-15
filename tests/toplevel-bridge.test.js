@@ -1,5 +1,5 @@
 // The toplevel bridge's pure half — hyprctl address to a place in the
-// Quickshell.Hyprland toplevel model (ticks o2x, w25).
+// Quickshell.Hyprland toplevel model.
 //
 // ToplevelBridge.qml owns two things a test here cannot reach: a live QObject,
 // and the CLOCK. Everything else was pushed down into PanelModel so it could be
@@ -20,16 +20,16 @@ const PanelModel = require("../PanelModel.js");
 
 // THE MODEL'S OWN DIALECT: `HyprlandToplevel.address` carries NO `0x` prefix
 // ("562be03ac9a0"), where `hyprctl clients` prints one ("0x562be03ac9a0") —
-// measured in the nested sandbox, tick o2x. That asymmetry is the entire reason
+// measured in the nested sandbox, an earlier change. That asymmetry is the entire reason
 // `normalizedAddress` exists, so the fixture has to speak the dialect the real
 // model speaks; written in the hyprctl form it exercised nothing, and dropping
-// normalization on the model side left every test green (tick w25).
+// normalization on the model side left every test green.
 //
 // One-off literals rather than tests/helpers.js IDENTITIES — nothing here is
 // about identity matching, and the shared fixture is priority-ordered
-// (.tick/learnings.md § Test fixtures).
+// (the project notes § Test fixtures).
 const MODEL = [
-  { address: "55c506263040", hasWayland: true },  // the hidden window, o2x
+  { address: "55c506263040", hasWayland: true },  // the hidden window
   { address: "55c5062bc3e0", hasWayland: true },  // the visible one
   { address: "7f0011223344", hasWayland: false }  // in the model, no handle yet
 ];
@@ -202,7 +202,7 @@ test("resolveToplevels survives junk arguments", () => {
 
 test("an address that is a bare Object.prototype key is not a false hit", () => {
   // `map["constructor"]` is truthy on a bare object; the index reads through
-  // `own` for exactly this reason (tick 8hp). "constructor" is not hex, so it
+  // `own` for exactly this reason. "constructor" is not hex, so it
   // normalizes away — this pins that it does not sneak in another way.
   const plan = PanelModel.resolveToplevels(MODEL, ["constructor", "__proto__"]);
   assert.deepStrictEqual(plan.resolved, []);
@@ -219,7 +219,7 @@ test("a real array of addresses is accepted, empty included", () => {
 });
 
 test("a QML sequence for the addresses is refused out loud, not silently emptied", () => {
-  // The hazard the `entries` side has been defended against since o2x, on the
+  // The hazard the `entries` side has been defended against since it was measured, on the
   // side that was not: a QVariant-wrapped sequence used to make a whole batch
   // return {resolved:[],…} with refusal "" — "nothing to do, everything fine".
   const sequence = { length: 2, 0: HIDDEN, 1: VISIBLE };
@@ -390,7 +390,7 @@ test("the refusal sentence is defensive about junk", () => {
 });
 
 // ---------------------------------------------------------------------------
-// `decided` and `ok` have ONE definition (tick md1)
+// `decided` and `ok` have ONE definition
 // ---------------------------------------------------------------------------
 
 test("the bridge re-derives decided/ok with the same function classifyToplevels used", () => {

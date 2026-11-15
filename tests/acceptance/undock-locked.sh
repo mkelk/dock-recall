@@ -1,7 +1,7 @@
 #!/bin/bash
 # undock-locked.sh — the HOST half of the undock-while-locked scenario (Tier C).
 #
-# THE GAP THIS CLOSES. `tests/nested-notes.md` closed tick sug DONE_WITH_CONCERNS:
+# THE GAP THIS CLOSES. `tests/nested-notes.md` closed an earlier change DONE_WITH_CONCERNS:
 # the undock focus failover's DETECTION reads the right thing and its REPAIR
 # dispatch works, but the repair branch has never actually fired, because the
 # state it targets — a lock surface holding keyboard focus on an output that is
@@ -136,7 +136,7 @@ lock_blocker() { dr_ssh_session "omarchy-hyprland-session-locked; echo exit=\$?"
 # what the lock binds its password field's `inputEnabled` to, so a lock that is
 # up with requested=false is a lock that ignores every key — a different failure
 # from keys that never reach it, and one this scenario must be able to tell apart
-# (tick 0i5). The lock's event log ("omarchy lock <time> <event>") is kept beside
+#. The lock's event log ("omarchy lock <time> <event>") is kept beside
 # it for the same reason.
 lock_status() { dr_ssh_session "omarchy-shell lock status" | tr -d '\r\n'; }
 lock_requested() { lock_status | jq -r '.requested // empty' 2>/dev/null; }
@@ -286,7 +286,7 @@ if [[ -n $failover_line ]]; then
   fi
 elif [[ -n $intact_line ]]; then
   if [[ $intact_line == *"session LOCKED, re-asserting"* ]]; then
-    # Tick s58: locked, the service re-asserts focus (and moves the cursor onto
+    # An earlier change: locked, the service re-asserts focus (and moves the cursor onto
     # the survivor) even though hyprctl says focus is intact. Pinned by position
     # like the failover confirmation above.
     reassert_ok=$(printf '%s\n' "$log_text" |
@@ -302,7 +302,7 @@ elif [[ -n $intact_line ]]; then
     fi
   else
     notok "dock-recall undock while locked: focus was re-asserted on the survivor" \
-      "the session was locked but the service logged only a plain 'focus intact' — the s58 re-assert did not run: ${intact_line#*\[dock-recall\] }"
+      "the session was locked but the service logged only a plain 'focus intact' — the re-assert did not run: ${intact_line#*\[dock-recall\] }"
   fi
 else
   printf '%s\n' "$log_text" | tail -30 >&2
@@ -324,7 +324,7 @@ fi
 # reading the emulated keyboard and authenticating against PAM — which is the
 # whole claim. (pam_faillock on this image is deny=10, so one miss is free.)
 #
-# THE LOCK MUST BE TAKING INPUT FIRST (tick 0i5). The 4.5 lock binds its field's
+# THE LOCK MUST BE TAKING INPUT FIRST. The 4.5 lock binds its field's
 # `inputEnabled` to its own `requested` flag, and a lock that is up with that
 # flag down swallows every key — so the wrong-password control would pass on a
 # lock that never read it. Asked before a single key is typed.
@@ -379,7 +379,7 @@ if is_unlocked; then
 else
   dr_screendump "failure-dock-recall-locked-03-still-locked"
   lock_snapshot "after two typed attempts"
-  # THE DISCRIMINATOR (tick 0i5). The first 4.5 run ended here with the field
+  # THE DISCRIMINATOR. The first 4.5 run ended here with the field
   # showing "Enter Password": no failure message, so not one of three typed
   # submissions — the wrong one included — ever reached the lock. Either the
   # compositor's keyboard focus is on no lock surface (it was on the removed

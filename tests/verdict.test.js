@@ -2,7 +2,7 @@
 // pieces of plumbing that carry it: the status file's copy of the table
 // (StateModel) and the row/chip text the panel renders from it (PanelModel).
 //
-// What this file is for: before tick vkx the product measured itself with one
+// What this file is for: before an earlier change the product measured itself with one
 // number (driftCount) and four booleans nobody could see, so the USER was the
 // measurement instrument — "windows out of sync" was the whole bug report,
 // because there was no other vocabulary available. Every test here pins a word
@@ -147,7 +147,7 @@ test("a window on the wrong monitor AND workspace says both", () => {
 test("a recorded workspace that 4.5 put on another monitor is a WORKSPACE refusal, said in words", () => {
   // Under Omarchy 4.5 which monitor shows a workspace is the compositor
   // config's decision. The editor is on its recorded ws 3, but ws 3 sits on
-  // the headless output: the planner refuses (tick 7ph) and the row says why,
+  // the headless output: the planner refuses and the row says why,
   // without sending the user to check a cable.
   const dockedLayout = Object.assign({}, recorded, {
     topologyKey: engine.topologyKey(monitorsDocked)
@@ -217,7 +217,7 @@ test("two dimensions wrong is two phrases, in plan order", () => {
 
 // --- the five group words ---------------------------------------------------
 //
-// This is the distinction the whole tick exists for: driftOf said `group: true`
+// This is the distinction the whole change exists for: driftOf said `group: true`
 // for every one of these, and the user had to look at the screen to find out
 // which of them it was.
 
@@ -377,7 +377,7 @@ test("a skipped app says not-judged rather than pretending to be ok", () => {
 });
 
 test("a scratchpad recording blames the WORKSPACE, and the row says it in words", () => {
-  // A legacy entry (buildLayout refuses these since tick pqv). Its monitor is
+  // A legacy entry (buildLayout refuses these since an earlier change). Its monitor is
   // connected and fine — the unrestorable thing is the negative workspace id —
   // so the sentence must not send the user to check a cable.
   const legacy = Object.assign({}, recorded, {
@@ -503,7 +503,7 @@ test("the summary counts apps, not dispatches", () => {
 });
 
 test("the app that was refused is named with the compositor's reason", () => {
-  // Exactly the sentence the tick asked for: one app out of place, and the
+  // Exactly the sentence the change asked for: one app out of place, and the
   // reason it is, from the op that failed.
   const verdicts = verdictsOf(clientsLaptop).map((v) =>
     v.identityId === "telegram"
@@ -798,7 +798,7 @@ test("the panel's instance label is the engine's, word for word", () => {
   }
 });
 
-// ------------------------------------------ layout-mode words (9i2, §2.4)
+// ------------------------------------------ layout-mode words (§2.4)
 
 const MODE_MONITORS = [{
   id: 0, name: "eDP-1", description: "Test Panel", make: "T", model: "P", serial: "",

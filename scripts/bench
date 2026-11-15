@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // bench — how close does a restore put TILED windows back?
 //
-// The number this epic is judged on is an IoU (docs/state-matrix.md
+// The number this epic is judged on is an IoU (the state matrix
 // § Geometry scoring), and until this script existed the only two measurements
 // of it were the user's own desktop — ws-8 at 0.782 after a redock window swap,
 // `herdr` at 0.497 — taken by hand, once, on windows nobody may perturb twice.
@@ -42,7 +42,7 @@
 //   scripts/bench                                  # 5 rounds, scenarios 2,3,4
 //   scripts/bench --rounds 8 --scenarios 2,4
 //   scripts/bench --out docs/bench/baseline.md --json docs/bench/baseline.json
-//   scripts/bench --label "tick or5 · current code"
+//   scripts/bench --label "baseline · current code"
 
 "use strict";
 
@@ -126,11 +126,11 @@ function dispatch(lua) {
     return { ok: false, text: String((e && e.stdout) || (e && e.message) || "").trim().split("\n")[0] };
   }
 }
-// `hyprctl dispatch` is a synchronous round trip (tick y29 row 12), but a tiled
+// `hyprctl dispatch` is a synchronous round trip, but a tiled
 // re-layout is applied on the next frame, so a READ that immediately follows a
 // move can still see the old rect. Everything here that reads after a dispatch
 // waits this long first; the probe measured the tree to be stable well inside
-// it (docs/state-matrix.md § Tiled placement).
+// it (the state matrix § Tiled placement).
 function sleep(ms) { execFileSync("bash", ["-c", "sleep " + (ms / 1000)]); }
 function focusedAddress() {
   try { return hyprctlJson(["activewindow", "-j"]).address || ""; } catch (e) { return ""; }
@@ -173,7 +173,7 @@ function spawnWindows(count) {
     if (addressFor(clients(), i)) continue;
     // The `workspace = "<id> silent"` exec rule is what keeps this off the
     // user's screen — the window is born on the scratch workspace and the
-    // visible workspace never changes. Live-verified in the or5 probe.
+    // visible workspace never changes. Live-verified in the probe.
     dispatch('hl.dsp.exec_cmd([[foot --app-id=' + APP_PREFIX + i + ' -e sleep 7200]], ' +
       '{ workspace = "' + PARK_WS + ' silent" })');
   }
@@ -366,7 +366,7 @@ function scoreNow(layout, identities) {
 //            the restore. That is not a stress test, it is the honest one:
 //            dwindle picks the tile a new arrival splits from the pointer when
 //            no window on the target workspace holds the focus
-//            (docs/state-matrix.md § Tiled placement, § 3), so a bench that
+//            (the state matrix § Tiled placement, § 3), so a bench that
 //            records and restores inside the same second silently holds that
 //            variable still and reports a 1.000 the user's desktop — recorded
 //            yesterday, restored after a dock, mouse somewhere else entirely —
@@ -430,7 +430,7 @@ function runRound(scenario, roundIndex, seed, identities, focusHome, cursorHome)
       // vertical one the first drag moves, and the second drag asks the
       // right-hand window for a HEIGHT it already fills. There is no horizontal
       // cut for that ask to move, so the compositor answers "ok" and nothing
-      // happens (or5 § 8's clamping, at the outer edge of the workspace). The
+      // happens (the probe's clamping, at the outer edge of the workspace). The
       // 2-window `ratio` rows are therefore a one-divider scramble measured by a
       // two-drag setup — `before` 0.673 in every round of every report, which is
       // the constant that gives it away.
@@ -631,7 +631,7 @@ function main() {
     // commit. A bench is nearly always run on a working tree that is a few
     // edits ahead of HEAD — that is the point of running it — and a report
     // whose header says `dc470e8` when the numbers came from `dc470e8` plus the
-    // tick's uncommitted work names the wrong code as the thing measured. The
+    // the change's uncommitted work names the wrong code as the thing measured. The
     // `-dirty` suffix is `git describe`'s own convention and says exactly what
     // is true: this is HEAD, plus changes that are not in it.
     commit: (() => {

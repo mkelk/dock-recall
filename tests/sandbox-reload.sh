@@ -1,7 +1,7 @@
 #!/bin/bash
 # sandbox-reload.sh — a Hyprland config reload restores only when the monitors
 # or the block table changed (human decision 2026-11-14, "restore only if
-# monitors changed"; epic 9i2). Tier B, nested compositor.
+# monitors changed"; the fidelity epic). Tier B, nested compositor.
 #
 # Why it exists: entering Omarchy 4.5's floating mode reloads Hyprland's config,
 # and while every configreloaded started a restore cycle, a VM run saw the plugin

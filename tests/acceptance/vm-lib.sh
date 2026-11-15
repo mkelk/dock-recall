@@ -168,7 +168,7 @@ dr_press() {
 
 # The harness boots the VM with a usb-tablet, so the pointer is ABSOLUTE: QMP
 # input-send-event takes 0..32767 per axis across the whole framebuffer. Used by
-# undock-locked.sh only as a diagnostic (tick 0i5): when typed keys do not reach
+# undock-locked.sh only as a diagnostic: when typed keys do not reach
 # a session lock, moving the pointer onto a lock surface is what tells "the
 # keyboard focus is on no surface" apart from "the lock is not taking input".
 dr_pointer_click() {

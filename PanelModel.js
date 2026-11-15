@@ -32,7 +32,7 @@ function trim(value) {
 // A map lookup Object.prototype cannot answer — see the long note above
 // `own` in StateModel.js. Every index in this file keyed by an identity id, a
 // group id or a member key reads through this, because `map["constructor"]` on
-// a bare object is truthy whether or not anything was put there (tick 8hp).
+// a bare object is truthy whether or not anything was put there.
 function own(map, key) {
   if (!map) return undefined;
   return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
@@ -267,7 +267,7 @@ function displayNameFor(className) {
 // question: it compares a pattern this file just generated against patterns
 // stored in the file, and two identities are duplicates only when they say the
 // same thing. Every place that asks whether a pattern MATCHES something reads
-// it the matcher's way instead — matchesAnyPattern, tick 7qe.
+// it the matcher's way instead — matchesAnyPattern, an earlier change.
 function patternListHas(value, pattern) {
   return (isArray(value) ? value : []).indexOf(pattern) !== -1;
 }
@@ -351,7 +351,7 @@ function identityClaimsSame(identity, pattern, titlePattern) {
 //
 // The refusal covers the ABSENT derivation too — the /proc read that has not
 // come back yet, the race the panel's tickDerivation comment admits — under the
-// reason "not-read". Before tick gpq that race wrote the catch-all and the
+// reason "not-read". Before an earlier change that race wrote the catch-all and the
 // autofill pass a moment later stamped the one app's command onto it, so what
 // a tick produced was decided by click timing.
 function suggestIdentity(className, identities, derivation) {
@@ -368,7 +368,7 @@ function suggestIdentity(className, identities, derivation) {
     var identity = list[i];
     if (!identity || typeof identity.id !== "string") continue;
     taken[identity.id] = true;
-    // A duplicate is a REFUSAL, not a null (tick v5c, finding A7).
+    // A duplicate is a REFUSAL, not a null.
     //
     // It used to answer null, on the reasoning that ticking something already
     // watched is a harmless no-op. It is a no-op; it was not harmless, because
@@ -423,7 +423,7 @@ function suggestIdentity(className, identities, derivation) {
   // identity is complete in the first write.
   //
   // NO PICTURE FIELD on either return, and that is the schema's shape since v7
-  // (tick fhy): whether a window is photographed is one switch for the whole
+  //: whether a window is photographed is one switch for the whole
   // tool, not a fact about an app, so there is nothing per-identity for a
   // proposal to carry. The rule this obeys is still the one the learnings entry
   // names — the object this function HANDS BACK has the schema's shape before
@@ -456,7 +456,7 @@ function suggestIdentity(className, identities, derivation) {
 // has to sit in front of a plain `{^foot$}` or the catch-all answers first and
 // the title axis never gets asked.
 //
-// THE EXCEPTION (tick gpq, human decision 2026-08-19). Prepending blindly is
+// THE EXCEPTION. Prepending blindly is
 // how the panel MANUFACTURED the state engine.shadowedIdentities exists to
 // report: a user with a working `{^foot$ + ^herdr$}` ticks a plain terminal, a
 // fresh `^foot$` lands in front of it, and every herdr window silently becomes
@@ -471,12 +471,12 @@ function suggestIdentity(className, identities, derivation) {
 // `couldShadow` is engine.couldShadow, passed IN rather than reimplemented:
 // which pairs of identities stand in the shadowing relation is one rule and it
 // lives beside the matcher. Without it the insert prepends, which is what every
-// caller that predates tick gpq expects.
+// caller that predates an earlier change expects.
 function toggleWatchedIdentities(identities, className, identityId, derivation, couldShadow) {
   return tickOutcome(identities, className, identityId, derivation, couldShadow).identities;
 }
 
-// EVERYTHING one chip click does, decided once (tick zkb).
+// EVERYTHING one chip click does, decided once.
 //
 // A single click used to ask suggestIdentity TWICE — through tickRefusalReason
 // to decide whether to refuse, and again inside toggleWatchedIdentities to
@@ -623,7 +623,7 @@ function quotedIdList(ids) {
 // renders as an empty line looks like a bug in the panel).
 //
 // TWO SENTENCES, because the evidence supports two different strengths of claim
-// (tick ytt). `entry.strict` says every claimant constrains strictly fewer axes
+//. `entry.strict` says every claimant constrains strictly fewer axes
 // than the shadowed identity — it is wider by construction, so moving the
 // shadowed identity above it costs the claimant nothing it can still reach, and
 // "put it above, or untick" is provably safe advice. Where the two constrain
@@ -772,7 +772,7 @@ function dispatchableCommand(command) {
 //
 // dispatchableCommand asks whether a string survives the trip to
 // `hl.dsp.exec_cmd`. This asks the question before that one: is this a command
-// at all? It exists because of tick tnm (finding A9), where the answer was no
+// at all? It exists because of an earlier change (finding A9), where the answer was no
 // and every gate downstream said yes.
 //
 // The panel's row repair read its derivation map with a bare bracket lookup.
@@ -1244,7 +1244,7 @@ function terminalChildDerivation(className, ownArgv, node) {
 // for alacritty and ghostty, and `--` is the universal end-of-options marker.
 //
 // `--hold` is here for a DIFFERENT reason, and the comment that said it "takes
-// the command on the terminals that spell it" was simply wrong (tick 3bp): foot,
+// the command on the terminals that spell it" was simply wrong: foot,
 // kitty and alacritty all document `--hold` as "remain open after the child
 // process exits", a plain flag taking no value and hosting nothing. It is kept
 // in this list as a deliberately conservative boundary — on foot and kitty a
@@ -1272,7 +1272,7 @@ function isTerminalExecBoundary(word) {
 // `--working-directory /x` and its `--fullscreen btop` are the same shape on the
 // way in. So each resolves that ambiguity in the direction that is safe FOR ITS
 // OWN CALLER, and the claim that early-stopping was "the safe direction for
-// every caller here" was false in one of them (tick 3bp):
+// every caller here" was false in one of them:
 //
 //   titleFromOwnArgv stops at the word and answers "". Its caller writes the
 //   answer into a titlePattern, so a lost title is a refusal the user can see
@@ -1286,7 +1286,7 @@ function isTerminalExecBoundary(word) {
 //   --working-directory /x` as hosting `/x`, and the gate trusted a title an
 //   interactive SHELL had written: `^~/proj$`, matching only while that shell
 //   sits in that directory, on an identity whose launch reopens a bare shell.
-//   The `=` spelling of the very same flag refuses it (tick q58); the space
+//   The `=` spelling of the very same flag refuses it; the space
 //   spelling wrote it.
 //
 // THE RULE, then: a flag CONSUMES the word after it unless that word is itself
@@ -1322,7 +1322,7 @@ function hostedArgvOf(argv) {
 // that matches nothing. `--title` is the one flag the whole family agrees on,
 // and it is the flag this plugin tells the user to use.
 //
-// The scan STOPS at the terminal's command boundary (tick qkz). It used to run
+// The scan STOPS at the terminal's command boundary. It used to run
 // to the end of argv, so `alacritty -e watch --title x` handed back `x` — the
 // flag of the program the terminal is RUNNING, read as the terminal's own. The
 // identity that came out promised a window title alacritty never sets: a
@@ -1356,7 +1356,7 @@ function titleFromOwnArgv(argv) {
 // terminalChildDerivation, from the best evidence available rather than from
 // the child process alone.
 //
-// The blocker this fixes (tick gpq): a window ALREADY launched the way the
+// The blocker this fixes: a window ALREADY launched the way the
 // README asks — `foot --title=herdr herdr` — has a three-word cmdline, so
 // terminalChildDerivation's "only when the terminal's own cmdline says nothing
 // but the terminal" test answered "not a terminal question", and the tick fell
@@ -1391,7 +1391,7 @@ function titleFromOwnArgv(argv) {
 // into a runnable command, and otherwise whatever terminalChildDerivation
 // refused with.
 //
-// THE INVARIANT, in both argv cases (tick cjs): a title travels only with a
+// THE INVARIANT, in both argv cases: a title travels only with a
 // command that survived dispatchableCommand — the same rule
 // terminalChildDerivation states and holds. It was not held here, and
 // `launch: ""` is the schema's NEVER-LAUNCH marker, so a refused command wrote
@@ -1419,7 +1419,7 @@ function terminalTickDerivation(className, ownArgv, node, initialTitle) {
   // of its own: only then did the terminal set the title from that command, and
   // only then is initialTitle evidence rather than whatever an interactive
   // shell renamed the window to. `argv.length > 1` was a proxy for that and it
-  // is not one (tick q58) — `foot --working-directory=/x` carries only the
+  // is not one — `foot --working-directory=/x` carries only the
   // terminal's own flags, and `foot fish` hosts a BARE SHELL, which is the
   // wrapper isShellArgv exists to see through, not a command. Both used to
   // write `^~/proj$` as a titlePattern: an identity that matches only while the
@@ -1464,7 +1464,7 @@ function tickRefusalHint(className, reason) {
   var body;
   if (why === "already-watched") {
     // The one refusal that is not about a terminal being unreadable, so it gets
-    // its own head, its own body and its own tail (tick v5c). The app is not
+    // its own head, its own body and its own tail. The app is not
     // unknown — it is on the list. What is wrong is the WINDOW: it does not
     // match the rule that claims it, which for a terminal means it was started
     // without the title that rule looks for.
@@ -1503,7 +1503,7 @@ function tickRefusalHint(className, reason) {
   return head + body + tail;
 }
 
-// THE AWAITING-TITLE QUESTION, asked once (tick 7qe).
+// THE AWAITING-TITLE QUESTION, asked once.
 //
 // Which watched TITLE identities have a live terminal window of their own class
 // on screen and nothing matching them? Two callers want two shapes of the
@@ -1528,7 +1528,7 @@ function tickRefusalHint(className, reason) {
 //   README's `--title` advice is most often used for. Nothing here is placed
 //   anywhere, so having no slot costs the window nothing.
 //
-//   THE TERMINAL FILTER, removed here and moved outward (tick s7l, finding A12).
+//   THE TERMINAL FILTER, removed here and moved outward.
 //   This used to drop every non-terminal window, defended by a comment about the
 //   ADVICE: a webapp identity whose window is closed is an ordinary not-running
 //   app, and telling that user to relaunch with `--title` would be advice about
@@ -1538,7 +1538,7 @@ function tickRefusalHint(className, reason) {
 //   So a hand-authored `^chromium$` + `^Gmail$` (the README invites the hand
 //   edit) matched nothing while an ordinary chromium window sat on screen, and
 //   had no chip, no row, and no way back except editing the state file: exactly
-//   the state tick 1m4 exists to make recoverable, one class of app further out.
+//   the state an earlier change exists to make recoverable, one class of app further out.
 //   The candidate now says whether its window is a terminal, and the two places
 //   that give advice branch on it. Note what the condition still requires — a
 //   LIVE window of the identity's own class. A closed webapp has none, so it
@@ -1609,7 +1609,7 @@ function awaitingTitleCandidates(clients, identities, resolve) {
 // screen and nothing resolves to the identity, and it CLEARS the moment one
 // does — which is exactly what relaunching with `--title` does.
 //
-// TWO KINDS OF APP, TWO SENTENCES (tick s7l). The `--title` convention is a
+// TWO KINDS OF APP, TWO SENTENCES. The `--title` convention is a
 // terminal convention, and the relaunch line is only true about a terminal. A
 // hand-authored `^chromium$` + `^Gmail$` is in exactly the same situation —
 // watched, its class on screen, matching nothing — and the honest thing to say
@@ -1689,7 +1689,7 @@ function titlePatternList(patterns) {
 // The same fact the hint states in a sentence, as a set of identity ids — so
 // the LIST can carry it too: { identityId: className }.
 //
-// Why the list needs it (tick 1m4). A title identity created for a bare
+// Why the list needs it. A title identity created for a bare
 // terminal matches no window until that terminal is relaunched with `--title`.
 // Until then it has no chip and no row, so pressing the chip again re-ticks
 // idempotently instead of unticking, and the only way back from a mis-tick was
@@ -1778,7 +1778,7 @@ function clientForTick(clients, address, className) {
 // that question against the live desktop every frame, so a refusal that was
 // only "the /proc read has not come back" clears itself the moment it does.
 //
-// This is the check that re-ask was missing (tick 8rw, finding A10). The re-ask
+// This is the check that re-ask was missing. The re-ask
 // resolves its window through clientForTick, which falls back to the first
 // window of the same CLASS when the address is gone. That fallback is correct
 // for a TICK — a list row can predate a refresh, and the class is all that is
@@ -2379,7 +2379,7 @@ function iconNameFor(index, identityId, className) {
 }
 
 // How to turn an icon NAME into something an Image can draw when the shell's
-// app library is not ours to ask (tick 0i5).
+// app library is not ours to ask.
 //
 // Omarchy 4.5 hands a third-party plugin a capability-scoped shell facade, and
 // that facade's `appLibrary` is null unless the manifest declares the `menu`
@@ -2565,7 +2565,7 @@ function identitiesNeedingLaunch(identities) {
 //
 // Returns { commands: { identityId: command }, refusals: { identityId: reason } }.
 //
-// The REFUSALS are tick dwv's half: a terminal-class window whose app cannot be
+// The REFUSALS are an earlier change's half: a terminal-class window whose app cannot be
 // named without guessing yields no command AND no desktop-file fallback. All
 // four reasons, which is the whole list terminalChildDerivation can answer
 // with: `no-child` (an empty prompt), `several-children` (two things running),
@@ -2654,7 +2654,7 @@ function launchRepairIndex(identities, launchMap) {
 // A repaired identity is the SAME identity with ONE field replaced, so it is
 // built by copying every field the identity already had rather than by listing
 // the fields the schema happens to have today. The enumerated form is what
-// dropped `titlePatterns` the moment schema v4 added it (tick h5i): a "Learn
+// dropped `titlePatterns` the moment schema v4 added it: a "Learn
 // launch" press on a title-matched app silently destroyed its title matching,
 // and the loss only showed up later, when the window stopped being recognized.
 // A copy cannot go stale when the schema grows; a field list has to be edited
@@ -2707,7 +2707,7 @@ function learnableCount(identities, launchMap) {
 }
 
 // ---------------------------------------------------------------------------
-// The half of the repair that may happen WITHOUT a press (tick i07)
+// The half of the repair that may happen WITHOUT a press
 // ---------------------------------------------------------------------------
 //
 // The bug: ticking an app writes an identity with `launch: ""` INSTANTLY, and
@@ -2825,7 +2825,7 @@ function addedIdentity(before, after) {
 //                a replacement was derived: a user whose restore does nothing
 //                needs to know WHY even when the panel cannot fix it for them.
 //   "ambiguous"  empty, and the app runs inside a terminal whose child process
-//                does not name it without guessing (tick dwv). NOT the same as
+//                does not name it without guessing. NOT the same as
 //                "missing": there is something the user can DO about it, and
 //                the hint says what — relaunch it with a `--title` of its own.
 //                NOT a window class of its own, which is the advice this epic
@@ -2837,7 +2837,7 @@ function addedIdentity(before, after) {
 //                learn that would be a repair that opens an empty prompt.
 //
 // `refusals` is optional ({ identityId: reason }, from launchDerivation);
-// without it this answers exactly what it answered before tick dwv.
+// without it this answers exactly what it answered before an earlier change.
 function launchStateIndex(identities, launchMap, refusals) {
   var list = isArray(identities) ? identities : [];
   var repairs = launchRepairIndex(list, launchMap);
@@ -2921,7 +2921,7 @@ function desktopFilesFromDump(text) {
 
 // The cmdline dump -> { pid: argv }, for the WINDOW pids only.
 //
-// Since tick dwv the same dump also carries the children of those pids, under
+// Since an earlier change the same dump also carries the children of those pids, under
 // headers that name the path down to them ("1234/1250"). They are a different
 // question and belong to a different reader (procTreeFromDump); a "/" in the
 // header is what tells the two apart.
@@ -3182,7 +3182,7 @@ function mapGeometry(monitors, targetWidth, targetHeight) {
   // hotplug). It used to be left to right, then top to bottom, because the map
   // drew the monitors side by side.
   //
-  // THE LAPTOP FIRST SINCE TICK yn6, because the map STACKS its sections now:
+  // THE LAPTOP FIRST SINCE an earlier change, because the map STACKS its sections now:
   // "I want two separated sections vertically, one section for laptop and one
   // (or more) for each external monitor" (the human, answering the gate). A
   // stack is read top to bottom, so the first section is the screen the user is
@@ -3216,7 +3216,7 @@ function mapGeometry(monitors, targetWidth, targetHeight) {
 // Why this exists at all: the map used to be ONE scaled picture of the desk —
 // every monitor at its true size, every workspace a column inside it, the whole
 // thing squeezed into a fixed 150-unit height. Live verification on a 1440×900
-// laptop with 7 occupied workspaces (docs/evidence/increment-03/m9u) showed what
+// laptop with 7 occupied workspaces (the map-layout evidence) showed what
 // that costs at real workspace counts: the fixed height bound the scale, so 70 %
 // of the map's WIDTH sat empty; each workspace came out ~42×86 — PORTRAIT, for a
 // 16:10 screen; and every chip hit its minimum width, so a 98 %-of-the-screen
@@ -3314,7 +3314,7 @@ function workspaceGridLayout(wsCount, monitorAspect, availableWidth, gap, minWid
 // watched identity with two windows is two rows and the unwatched class it
 // falls back to is one — moves a colour and a knob and nothing else. Clamping
 // the columns to the number of cells would make every tick reflow the whole
-// strip to a different cell width, which is exactly the defect tick 5jl fixed
+// strip to a different cell width, which is exactly the defect an earlier change fixed
 // on the old list and this one must not reintroduce.
 //
 // `count` is here for the empty case alone, and answers it the way
@@ -3414,7 +3414,7 @@ function monitorSectionWidths(widths, availableWidth, gap, minWidth) {
   return rounded;
 }
 
-// THE MAP'S SHAPE AND ITS ONE SCALE (ticks dmm and yn6), and the whole of two
+// THE MAP'S SHAPE AND ITS ONE SCALE, and the whole of two
 // of the human's three findings on his own desk.
 //
 // WHAT WAS WRONG, measured (eDP-1 logical 1440x900 beside DP-1 logical
@@ -4073,11 +4073,11 @@ function verdictIndexByOccurrence(verdicts) {
 // difference, said out loud, plus the reason the last cycle could not fix it
 // when there is one.
 //
-// Geometry (tick 5sc) is the one dimension whose word is read directly rather
+// Geometry is the one dimension whose word is read directly rather
 // than through `ok`. A float can be on the right monitor, on the right
 // workspace, floating exactly as recorded — and 40 px from where it was left.
-// Tick 5sc showed that row while `ok` stayed TRUE, because no op could fix it;
-// tick qkv gave floats an op, so `ok` is false for that case now and the second
+// An earlier change showed that row while `ok` stayed TRUE, because no op could fix it;
+// an earlier change gave floats an op, so `ok` is false for that case now and the second
 // half of the test below is the load-bearing one. The `geometry` check stays
 // anyway, and is not redundant: it is what keeps this function honest if the
 // fold in verdictForApp is ever narrowed again, and it costs nothing.
@@ -4122,7 +4122,7 @@ function verdictLine(verdict, rowInstances) {
 }
 
 // ---------------------------------------------------------------------------
-// One undo, for the one destructive thing this panel does (tick 7ow)
+// One undo, for the one destructive thing this panel does
 // ---------------------------------------------------------------------------
 //
 // From the sketch, twice over: "Recording OVERWRITES this topology's layout —
@@ -4161,7 +4161,7 @@ function recordUndoRestores(stash) {
   return !!(stash && stash.previousLayout && trim(stash.previousLayout.topologyKey));
 }
 
-// WHICH act the stash is a net under (tick gwa). The slot is one slot on
+// WHICH act the stash is a net under. The slot is one slot on
 // purpose — a second armer does not get a second button — but the sentence on
 // that button has to name the thing the user just did, and "Undo record" over a
 // layout the user FORGOT is a button describing somebody else's click.
@@ -4226,7 +4226,7 @@ function undoRecordTooltip(stash, topologyName) {
 }
 
 // ---------------------------------------------------------------------------
-// The failed-restore list (tick jzx)
+// The failed-restore list
 // ---------------------------------------------------------------------------
 //
 // The sketch's auto-restore flow ends with "failures: red dot on the glyph; the
@@ -4333,7 +4333,7 @@ function failedRestoreRows(verdicts, rows) {
 // says is how a user stops trusting the panel. Naming the app is still the point:
 // it is what tells them which failure they are acting on.
 //
-// `restoreRefusalReason` is optional and usually "" — an inert file (tick 66x)
+// `restoreRefusalReason` is optional and usually "" — an inert file
 // dims Retry exactly as it dims Restore now, and for the same reason: retrying
 // is the whole restore, and the whole restore is what the build has refused.
 function retryTooltip(row, restoring, restoreRefusalReason) {
@@ -4382,8 +4382,7 @@ function verdictInstanceLabel(verdict) {
 // (this file may not import Slots.js: QML .js imports cannot see each other, so
 // the twin is pinned against it by a test). Omarchy 4.5 numbers a monitor's
 // workspaces block * 10 + slot, and its bar prints the slot, so a human-facing
-// name is the slot. Slot 10 is printed "0", exactly like the bar (human,
-// 2026-11-15); that is the one constant below.
+// name is the slot. Slot 10 is printed "0", exactly like the bar; that is the one constant below.
 var SLOT_TEN_LABEL = "0";
 
 function isWholeWorkspaceId(id) {
@@ -4408,7 +4407,7 @@ function slotLabelFor(id) {
 // still unambiguous. Falls back to the recorded description when that monitor
 // is not part of the current topology, which is exactly when the user most
 // needs to be told the full name.
-function placementLabel(monitorDescription, workspaceId, monitors) {
+function placementLabel(monitorDescription, workspaceId, monitors, slot) {
   var list = isArray(monitors) ? monitors : [];
   var wanted = trim(monitorDescription);
   var name = wanted;
@@ -4420,6 +4419,12 @@ function placementLabel(monitorDescription, workspaceId, monitors) {
   }
   var workspace = (workspaceId === null || workspaceId === undefined || workspaceId === "")
     ? "?" : slotLabelFor(workspaceId);
+  // A recorded app whose monitor has no usable block row now (Slots.toLive
+  // nulls its workspaceId) still knows its slot: say that, not "ws ?".
+  if (workspace === "?" && (workspaceId === null || workspaceId === undefined || workspaceId === "")) {
+    var known = recordedSlotFor({ slot: slot, workspaceId: null });
+    if (known !== null) workspace = known === 10 ? SLOT_TEN_LABEL : String(known);
+  }
   if (!name) return "ws " + workspace;
   return name + " · ws " + workspace;
 }
@@ -4507,7 +4512,7 @@ function driftLine(drifted, driftTo) {
 }
 
 // ---------------------------------------------------------------------------
-// Chip tags: the two things a chip can say without being hovered (tick rjq)
+// Chip tags: the two things a chip can say without being hovered
 // ---------------------------------------------------------------------------
 //
 // The map had exactly one inline signal — an amber edge and an arrow glued to
@@ -4627,16 +4632,16 @@ function chipTooltipText(chip) {
 // instead.
 //
 // THE LAST LINE IS THE LAUNCH HINT, and it is here rather than in a second
-// function (tick pct). The hint used to be PRINTED on the row, in italics
+// function. The hint used to be PRINTED on the row, in italics
 // beside the placement caption; the strip has no captions — a cell is an icon,
 // a name and a switch — so "no launch cmd" has nowhere left to be, and it is
-// the one thing on that row a user cannot work out from the map. Tick 0kv could
+// the one thing on that row a user cannot work out from the map. An earlier change could
 // not put it here because the strip may not edit tests/panel.test.js, which
 // pins this function's exact lines for a watched terminal row, and every
 // WATCHED row appRows builds carries a launchHint (an identity with no launch
 // command says "no launch cmd"; an unwatched class row carries "", and gets no
-// line). So 0kv shipped a `rowHoverText` wrapper and left the fold to the tick
-// that owns both files. This is that tick: one function, one answer, and the
+// line). So 0kv shipped a `rowHoverText` wrapper and left the fold to the change
+// that owns both files. This is that change: one function, one answer, and the
 // panel.test.js pin re-stated with the hint in it.
 //
 // Empty hint, no line: joinLines drops it, so a row with nothing to say about
@@ -4669,7 +4674,7 @@ function chipFor(client, identityId, drift, monitors, verdict, monitorRect, plac
   var drifted = !!(entry && entry.status === "drifted");
   var at = place || { occurrence: 0, index: 0, instances: 1 };
   var driftTo = drifted
-    ? placementLabel(entry.recorded.monitorDescription, entry.recorded.workspaceId, monitors) : "";
+    ? placementLabel(entry.recorded.monitorDescription, entry.recorded.workspaceId, monitors, entry.recorded.slot) : "";
   // Only a WATCHED window can carry one: a refusal is a fact about a recorded
   // workspace, and an unwatched window is not part of any recording.
   var refusal = watched ? refusalOfVerdict(verdict) : "";
@@ -5016,7 +5021,14 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
     for (var a = 0; a < apps.length; a++) {
       var app = apps[a];
       if (!app || trim(app.monitorDescription) !== box.label) continue;
-      var id = app.workspaceId === null || app.workspaceId === undefined ? 0 : app.workspaceId;
+      // An app with no live workspace (its monitor has no usable block row)
+      // is keyed by its own slot, never pooled under one shared key: pooling
+      // collapsed every such app into a single workspace badged with the
+      // first app's slot.
+      var unplaced = app.workspaceId === null || app.workspaceId === undefined;
+      var ownSlot = unplaced ? recordedSlotFor(app) : null;
+      // No workspace and no slot: genuinely unknown, one pool keyed 0 ("?").
+      var id = unplaced ? (ownSlot === null ? 0 : "slot-" + ownSlot) : app.workspaceId;
       if (!byWorkspace[id]) {
         byWorkspace[id] = { id: id, name: recordedNameFor(app), slot: recordedSlotFor(app), slots: [], groups: {} };
         order.push(id);
@@ -5036,7 +5048,7 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
         // A recording has no window titles — it is a picture of where apps go,
         // not of what they had open — so the app's own name stands in.
         title: instanceNameFor(app.identityId, place.index, place.instances),
-        placement: placementLabel(app.monitorDescription, app.workspaceId, monitors),
+        placement: placementLabel(app.monitorDescription, app.workspaceId, monitors, app.slot),
         linkKey: instanceLinkKeyFor(app.identityId, "", place.occurrence, place.instances),
         name: instanceNameFor(app.identityId, place.index, place.instances),
         occurrence: place.occurrence,
@@ -5072,7 +5084,15 @@ function recordedMapModel(layout, monitors, runningIdentityIds, targetWidth, tar
       }
     }
 
-    order.sort(function (x, y) { return x - y; });
+    // Placed workspaces ascending, then the unplaced ones by slot.
+    order.sort(function (x, y) {
+      var xs = typeof x === "string", ys = typeof y === "string";
+      if (xs !== ys) return xs ? 1 : -1;
+      if (!xs) return x - y;
+      var xn = byWorkspace[x].slot === null ? 99 : byWorkspace[x].slot;
+      var yn = byWorkspace[y].slot === null ? 99 : byWorkspace[y].slot;
+      return xn - yn;
+    });
     var built = [];
     for (var o = 0; o < order.length; o++) {
       var workspace = byWorkspace[order[o]];
@@ -5134,7 +5154,7 @@ function recordedNameFor(app) {
 // rectangle through `chipRectsForCanvas` over the whole workspace, which is why
 // every entry carries its `slotIndex`: without it the consumer has to walk the
 // map a second time to find out which slot it came from, and a second walk is
-// where two answers to one question start to differ (tick 3xi).
+// where two answers to one question start to differ.
 //
 // `fallback` IS NOT "this chip has no rect". A workspace is fallback if ANY ONE
 // of its slots lacks a rect, and MapWorkspace then draws EVERY chip in it as a
@@ -5213,8 +5233,8 @@ function morphChipEntries(map) {
 // hands it to all three models precisely so they cannot spell it differently.
 // A morph asks the same question hover asks ("are these two the same app
 // instance?"), so it must ask it with the same string. Inventing a second
-// keying rule here is how the two would drift apart, and it is the defect tick
-// 3xi found in the capture path wearing different clothes.
+// keying rule here is how the two would drift apart, and it is the defect an earlier change
+// found in the capture path wearing different clothes.
 //
 // `instanceLinkKeyFor` folds occurrence into the key only when an identity has
 // several instances, so two windows of one app are told apart and a single
@@ -5337,7 +5357,7 @@ function listOf(value) {
 // signature. The panel pairs the maps ONCE and the animation, the payload and
 // this index all read that one result; a function that re-derived the pairing
 // from the maps would be the same question asked twice a frame apart, which is
-// verbatim the defect tick 3xi found in the capture path — a correct key over a
+// verbatim the defect an earlier change found in the capture path — a correct key over a
 // photograph of a different window.
 //
 // KEYED BY `key`, NEVER BY `linkKey`. `linkKey` is not unique: two unwatched
@@ -5715,7 +5735,7 @@ function comparePlacement(a, b) {
 //   awaitingTitle    — a watched TITLE identity that matches no window yet,
 //                      because the terminal it was derived from has not been
 //                      relaunched with `--title` (see awaitingTitleIndex). It
-//                      has no recorded placement either, so before tick 1m4 it
+//                      has no recorded placement either, so before an earlier change it
 //                      produced nothing at all: no chip, no row, and pressing
 //                      the chip again re-ticked idempotently rather than
 //                      unticking, which left a mis-tick recoverable only by
@@ -5917,7 +5937,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
             + (isArray(client.grouped) && client.grouped.length > 1 ? " · grouped" : ""),
           drifted: drifted,
           driftTo: drifted
-            ? placementLabel(entry.recorded.monitorDescription, entry.recorded.workspaceId, monitors) : "",
+            ? placementLabel(entry.recorded.monitorDescription, entry.recorded.workspaceId, monitors, entry.recorded.slot) : "",
           // WHAT is wrong, not just where it should be. See verdictLine — the
           // row's own instance count goes with it, so a verdict counted over a
           // different population cannot mislabel this row.
@@ -5934,7 +5954,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       // that ONE of them is not running rather than that "terminal" is fine.
       var app = instanceBucket.recordedByOccurrence[occurrence];
       if (!app) continue;
-      var where = placementLabel(app.monitorDescription, app.workspaceId, monitors);
+      var where = placementLabel(app.monitorDescription, app.workspaceId, monitors, app.slot);
       // A ghost sits where the RECORDING says it goes, resolved against the
       // monitors that are actually here — which is the only placement it has,
       // and exactly the one the recorded map draws it at.
@@ -6040,7 +6060,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
       if (own(index.byIdentity, waiting.id)) continue;
       var waitingState = own(launch, waiting.id) || "";
       // The class of the window that put this identity in the index — and so
-      // whether the `--title` sentence is true about it (tick s7l).
+      // whether the `--title` sentence is true about it.
       var waitingClass = own(awaiting, waiting.id) || "";
       entries.push({ place: UNPLACED, occurrence: 0, row: {
         // One window at most is ever waiting on one title, so this identity has
@@ -6061,7 +6081,7 @@ function appRows(clients, monitors, resolve, driftReport, layout, identities, la
         instances: 1,
         // WHY it is not running, not just that it is not: an ordinary closed app
         // comes back when it is started again, and this one will not until
-        // something about it changes. WHICH thing depends on the app (tick s7l):
+        // something about it changes. WHICH thing depends on the app:
         // a terminal needs a title of its own, and `--title` is how it gets one;
         // a chromium window has no such convention, and the true thing to say is
         // that its title patterns match nothing on screen. The exact command,
@@ -6250,7 +6270,7 @@ function learnLaunchLabel(count) {
 // button therefore goes out for the couple of seconds a cycle lasts, and says
 // why: a control that dims with no explanation reads as broken.
 //
-// `capturing` is the second reason (tick ilg), and it is the same shape of
+// `capturing` is the second reason, and it is the same shape of
 // reason: the previous Record's pictures are still being taken, one window at a
 // time over a single compositor capture session, and a second round interleaved
 // with the first would delete the first's files as it wrote them. It lasts about
@@ -6287,7 +6307,7 @@ function recordBlockedHint(restoring, capturing) {
 // maximum width, and neither is reachable from here — the footer buttons build
 // theirs inside Ui/Button.qml. Live verification caught the Record tooltip
 // running ~380 device px past the right edge of the panel and floating over the
-// desktop (docs/evidence/increment-03/m9u, Finding 2), which on a narrower
+// desktop (the map-layout evidence, Finding 2), which on a narrower
 // screen would run off it entirely.
 //
 // So the wrap happens in the STRING, where the panel still owns it. Column
@@ -6298,7 +6318,7 @@ function recordBlockedHint(restoring, capturing) {
 // tooltip's class string (e.g. "chrome-www.rememberthemilk.com__app_-Profile_1",
 // 46 chars, no spaces) has nothing else to break on, and left whole it pushed
 // the popup ~100 logical px past the panel's left edge (evidence
-// docs/evidence/increment-03/m9u/evidence.md Round 3, Finding 7). Cutting mid
+// the map-layout evidence Round 3, Finding 7). Cutting mid
 // word beats a popup that floats off the panel.
 var TOOLTIP_WRAP_COLUMNS = 56;
 
@@ -6368,13 +6388,13 @@ function badgeTooltip(glyphState, status) {
     }
     return count + (count === 1 ? " app is" : " apps are")
       + " not where the recording puts them. Restore now moves them back; Record layout files where they are instead."
-      // Both at once (tick v2p): the shapes are said too, not hidden behind the count.
+      // Both at once: the shapes are said too, not hidden behind the count.
       + (shaped ? " Some workspaces are also not in the recorded tile shape; the lines below say which and why." : "");
   }
   return "Every watched app is where the recording puts it.";
 }
 
-// May a manual restore actually FIRE? (tick 66x.)
+// May a manual restore actually FIRE?
 //
 // The one question behind every manual entry point — the footer's Restore now,
 // a failed row's Retry, and the Enter that stands in for either — so that all
@@ -6514,7 +6534,7 @@ function recordedAgeLabel(recordedAt, nowMs) {
   var days = Math.floor(age / DAY_MS);
   if (days < 30) return "recorded " + plural(days, "day") + " ago";
   // THE MONTH BUCKET IS CLAMPED AT ELEVEN, and that is the fix for a cosmetic
-  // bug the epic c7f retro caught: 360 to 364 days is `days < 365` and
+  // bug an earlier retro caught: 360 to 364 days is `days < 365` and
   // `floor(days / 30)` is 12, so the label read "12 months ago" — a unit nobody
   // uses out loud, and one the very next day replaces with "1 year ago".
   //
@@ -6561,7 +6581,7 @@ function viewToggleTooltip(showingRecorded, hasLayout) {
 }
 
 // ---------------------------------------------------------------------------
-// The header overflow menu (tick gwa)
+// The header overflow menu
 // ---------------------------------------------------------------------------
 //
 // The sketch's last unbuilt piece: "Overflow menu: list of recorded topologies
@@ -6646,7 +6666,7 @@ function overflowMenuRows(layouts, currentKey, monitors) {
 // with a sentence rather than hidden: a menu whose contents change shape
 // depending on what is recorded is a menu the user has to re-read every time.
 //
-// THE THIRD IS THE PICTURES SWITCH (schema v7, epic wau), and it is the whole
+// THE THIRD IS THE PICTURES SWITCH (schema v7), and it is the whole
 // of the affordance — there is no per-app camera and no dialogue any more. It
 // lives here rather than on the header or in the app list because it is a
 // setting rather than an act on this desk, and because the thing the old design
@@ -6755,7 +6775,7 @@ function firstEnabledActionId(actions) {
 // talking about. Without a topology (no monitors read yet, or a status file
 // from before there was one) it falls back to naming the plugin, which is at
 // least true.
-// The DEFERRED-JOINS suffix (tick 97e). The glyph does not get a state of its
+// The DEFERRED-JOINS suffix. The glyph does not get a state of its
 // own for it — the desk really is drifted, which is what `drifted` means, and a
 // fourth picture for a condition that clears itself on the next unlock would be
 // a symbol nobody learns. The words carry it instead, because "drifted (2)" on a
@@ -6843,7 +6863,7 @@ function emptyStateHint(watchedCount) {
 }
 
 // ---------------------------------------------------------------------------
-// The toplevel bridge — hyprctl address to Wayland handle (ticks o2x, w25)
+// The toplevel bridge — hyprctl address to Wayland handle
 // ---------------------------------------------------------------------------
 //
 // Everything this plugin knows about a window comes from `hyprctl clients`,
@@ -6866,20 +6886,20 @@ function emptyStateHint(watchedCount) {
 //              closed, or the model has not got to it yet — and which of those
 //              it is, is not a question this file can answer. See
 //              `classifyToplevels`.
-//   unmapped — the model HAS it, but with no Wayland handle yet. Measured, tick
-//              o2x: for ~1s after the shell starts, `Hyprland.toplevels` is
+//   unmapped — the model HAS it, but with no Wayland handle yet. Measured: for ~1s after the
+//              shell starts, `Hyprland.toplevels` is
 //              empty, then fills WITHOUT handles, then the handles arrive over
 //              hyprland-toplevel-mapping-v1. Always worth retrying.
 
 // An hyprctl address, in one spelling. Applied to BOTH sides of every
 // comparison, which is the only reason a lookup works at all: the model's
 // `HyprlandToplevel.address` has no `0x` prefix ("562be03ac9a0") where hyprctl
-// prints one ("0x562be03ac9a0"), measured in tick o2x.
+// prints one ("0x562be03ac9a0"), measured in an earlier change.
 function normalizedAddress(value) {
   // A STRING, and only a string. `trim()` stringifies whatever it is handed, so
   // without this line `normalizedAddress(1234)` answered "0x1234": a number
   // that never came from hyprctl quietly became a valid address, and the caller
-  // that passed the wrong thing was never told (tick w25).
+  // that passed the wrong thing was never told.
   if (typeof value !== "string") return "";
   var address = trim(value).toLowerCase();
   if (!address.match(/^(0x)?[0-9a-f]+$/)) return "";
@@ -6896,7 +6916,7 @@ function normalizedAddress(value) {
 // QVariant-wrapped V4Sequence: it indexes and has `.length`, but it is NOT an
 // Array to `Object.prototype`, so `isArray()` — which everything else in this
 // file guards with — would reject the only value this is ever called with
-// (.tick/learnings.md § QML/JS boundary). Anything without a usable numeric
+// (the project notes § QML/JS boundary). Anything without a usable numeric
 // length is an empty snapshot rather than a crash: the model is null for part
 // of a shell's startup.
 function toplevelSnapshot(values) {
@@ -6918,10 +6938,10 @@ function toplevelSnapshot(values) {
 
 // The `addresses` argument, checked before anything is built out of it.
 //
-// `entries` has been copied out of the QML model since o2x; this side was not
+// `entries` has been copied out of the QML model since it was measured; this side was not
 // guarded at all, and the same QVariant wrapper arriving here made a whole
 // batch read as "nothing to do, everything fine" — an empty plan with an empty
-// refusal. That is the exact failure .tick/learnings.md records as having
+// refusal. That is the exact failure the project notes records as having
 // hidden a broken model for two live rounds, and it is the opposite of what
 // this plugin does with an ambiguity (CLAUDE.md, "Refusals are a feature").
 //
@@ -6997,7 +7017,7 @@ function resolveToplevels(entries, addresses) {
 // make, and the reason `missing` used to be a lie.
 //
 // `Hyprland.toplevels` is EMPTY for about a second after a shell starts and
-// then fills INCREMENTALLY (measured, tick o2x). So a well-formed address the
+// then fills INCREMENTALLY (measured). So a well-formed address the
 // model does not have means one of two opposite things, and no pure function
 // can tell them apart, because the difference is elapsed time and this file is
 // clock-free by rule (CLAUDE.md: the brain has no clock).
@@ -7050,7 +7070,7 @@ function classifyToplevels(entries, addresses, settled) {
 
 // `decided` and `ok` are the two verdict fields that are ANSWERS ABOUT the
 // buckets rather than buckets of their own, and this is their one definition
-// (tick md1).
+//.
 //
 // They were derived twice: here, where the tests pin them, and again in
 // ToplevelBridge.evaluate — with different text — because the bridge's
@@ -7096,7 +7116,7 @@ function toplevelHandleStillValid(want, rowAddress, rowHasWayland) {
 //
 // `waitedMs`, when positive, says the pending ones ran out of time rather than
 // simply not being ready yet — the difference between "ask again in a moment"
-// and "this window is never going to answer" (tick o2x: a monitor that is not
+// and "this window is never going to answer" (an earlier change: a monitor that is not
 // rendering never delivers a frame).
 function toplevelBridgeRefusal(verdict, waitedMs) {
   if (!verdict) return "";
@@ -7215,8 +7235,7 @@ function captureFileName(identityId, occurrence, topologyKey) {
     + "-" + occurrenceOf(occurrence) + CAPTURE_SUFFIX;
 }
 
-// EVERY PICTURE OF ONE IDENTITY, ON EVERY DESK, as a `find -name` glob (tick
-// sp7).
+// EVERY PICTURE OF ONE IDENTITY, ON EVERY DESK, as a `find -name` glob.
 //
 // The other eviction key is the topology prefix, and it answers "this
 // recording". This one answers the OTHER question: UNWATCHING an app has to
@@ -7326,7 +7345,7 @@ function capturePlan(layout, identities, chosen, pictures) {
 
     // own(), never a bare lookup: for an id like "constructor" a bare read
     // answers with Object.prototype's member — truthy, and not a window list
-    // (.tick/learnings.md, tick 8hp).
+    //.
     var windows = own(byId, identityId);
     var client = (windows && windows[occurrence]) ? windows[occurrence] : null;
     var address = client ? trim(client.address) : "";
@@ -7410,7 +7429,7 @@ function captureLogLine(plan, results) {
 }
 
 // ---------------------------------------------------------------------------
-// LIVE PICTURES (tick 2zi) — the Live map draws the windows as they are NOW
+// LIVE PICTURES — the Live map draws the windows as they are NOW
 // ---------------------------------------------------------------------------
 //
 // WHICH WINDOWS THE PANEL SHOULD PHOTOGRAPH WHEN IT OPENS, and which it
@@ -7418,7 +7437,7 @@ function captureLogLine(plan, results) {
 //
 // THE PLAN CARRIES NO FILE NAME AND NO PREFIX, and that is the whole difference
 // from `capturePlan` above rather than an omission. A live picture is held in
-// memory and never written (the human's ratified choice, epic tsp), so it has no
+// memory and never written (the human's ratified choice), so it has no
 // name to be filed under, no topology to be keyed by and no eviction to be
 // named in. It is keyed by the WINDOW ADDRESS, which is what a live chip already
 // is (`chipFor` sets `key` to the address), so the lookup needs no hash.
@@ -7573,7 +7592,7 @@ if (typeof module !== "undefined") {
 
     captureFileIndex: captureFileIndex,
     // Exported for the QML side as much as for the tests: an identity-id lookup
-    // in Panel.qml has to go through this too (tick 8hp).
+    // in Panel.qml has to go through this too.
     own: own,
     escapeRegex: escapeRegex,
     titleCase: titleCase,

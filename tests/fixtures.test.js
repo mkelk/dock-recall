@@ -75,7 +75,7 @@ test("engine.js loads under node", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The non-adjacent group join (tick z0l) — the service's own forensics dump of
+// The non-adjacent group join — the service's own forensics dump of
 // the failing desktop, captured 2026-08-16T06:34:51.393Z and replayed by hand
 // dispatch by dispatch. Mechanism, live-proven: `into_group` only joins a
 // group that is the directly ADJACENT tile in the asked direction; on this
@@ -136,7 +136,7 @@ test("forensics dump: the verdict layer reproduces the dump's own verdicts from 
     ["calendar-google", "chromium", "herdr", "mail-google", "obsidian", "rememberthemilk", "telegram"]);
 });
 
-// Scratch ids live OUTSIDE every Omarchy 4.5 block (tick vp0): monitor-
+// Scratch ids live OUTSIDE every Omarchy 4.5 block: monitor-
 // workspaces.lua assigns blocks lowest-free from 0, so block 90 and up is owned
 // by nobody, and place() leaves an unowned workspace alone. See the comment on
 // engine.pickScratchWorkspace.

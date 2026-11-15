@@ -1,10 +1,10 @@
 #!/bin/bash
 # sandbox-fidelity.sh — within-workspace fidelity, in the nested compositor
-# (Tier B). Epic 9i2: does a restore put the windows of ONE workspace back where
+# (Tier B). The fidelity epic: does a restore put the windows of ONE workspace back where
 # they were — the tiling tree, the tab group beside a tiled window, the visible
 # tab — and does it say so out loud where it cannot?
 #
-# Each case is a probe of epic 0lh turned into asserted PASS/FAIL lines. The
+# Each case is a probe of the grouping probes turned into asserted PASS/FAIL lines. The
 # nested compositor carries Omarchy's own dwindle settings (tests/nested.lua), so
 # the trees built here are the ones a real Omarchy desk builds.
 #
@@ -253,12 +253,12 @@ case_F() {
 # group's place are what the cases read. build_group <ws> <a> <b> <c> — the
 # classes join in that order; sets GA GB GC.
 #
-# The member chain (tests/nested-notes.md, 9i2 (e)): each member arrives on the
+# The member chain (tests/nested-notes.md, fidelity facts (e)): each member arrives on the
 # workspace with its predecessor focused, so it splits exactly that tile, and the
 # joins run in tab order — every joiner is then next to the group whatever the
 # nested output's aspect. Three silent launches tile by the output's shape, and
 # on a wide output the second member landed beside the third, not the group: it
-# never joined, and G2 recorded a group of two beside two tiles (tick 5wo).
+# never joined, and G2 recorded a group of two beside two tiles.
 build_group() {
   local w=$1
   build_spine "$w" "$2" "$3" "$4"
@@ -273,7 +273,7 @@ case_G2() {
   local W; W=$(ws 4)
   # The groupbar is taller than the desk's 22px and the constant's guess: the
   # swap read-back must take the height from hyprctl, or the group's tile box
-  # reads ~11px off and the swap is called a miss (tick aa2).
+  # reads ~11px off and the swap is called a miss.
   nested eval "hl.config({ group = { groupbar = { height = 33 } } })" >/dev/null 2>&1; sleep 0.4
   local gbh; gbh=$(nested getoption group:groupbar:height -j | jq -r '.int // "absent"')
   [[ $gbh == 33 ]] \

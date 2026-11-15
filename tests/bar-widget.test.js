@@ -1,5 +1,5 @@
 "use strict";
-// The bar widget's host handle after the 2026-09-08 shell upgrade (tick erk).
+// The bar widget's host handle after the 2026-09-08 shell upgrade.
 //
 // Before that shell, `bar.shell` was the shell root; since it, a third-party
 // widget is handed a SCOPED plugin-shell API with summon/hide/toggle/serviceFor
@@ -65,7 +65,7 @@ test("a refused click says which half of the guard failed", () => {
   assert.doesNotMatch(src, /panel is not registered with the shell yet/, "the old one-size message hid the break");
 });
 
-test("the bar tooltip is built from the whole status, so shape lines reach it (tick u0w)", () => {
+test("the bar tooltip is built from the whole status, so shape lines reach it", () => {
   const src = read("BarWidget.qml");
   assert.match(src, /barGlyphTooltip\(root\.glyph, root\.status, root\.topologyName\)/);
   assert.match(src, /StateModel\.glyphState\(root\.status\)/);

@@ -9,9 +9,9 @@
 # or a band sweep: there are no golden images, no Pillow on host or guest, and
 # `undock-locked.sh` measured (2026-09-02) that the emulated framebuffer goes on
 # showing a normal desktop while the session is genuinely locked, so a screendump
-# here is an artifact and never evidence. Epic kw9's DoD is scoped to that limit
+# here is an artifact and never evidence. The morph's definition of done is scoped to that limit
 # in as many words — *that motion is wired, not that it looks right* — and
-# whether the morph FEELS right is the human's own gate for this epic, not
+# whether the morph FEELS right is the human's own gate for it, not
 # something any assertion below stands in for.
 #
 # So every claim here is of one of exactly three shapes:
@@ -46,7 +46,7 @@
 # measurement rather than take this paragraph on trust. What IS asserted, in
 # both directions and every time, is that the flag is DOWN once the counters
 # agree: `settled == runs and active == false` is "the morph ended and nothing
-# latched", and it is the assertion tick gox's latched counter would have failed.
+# latched", and it is the assertion an earlier change's latched counter would have failed.
 #
 # WHAT IT PINS, one line per clause of the DoD:
 #
@@ -84,7 +84,7 @@
 #                     hyprctl address on one end and by the recorded chip key on
 #                     the other, never by a count. A count cannot tell one chip
 #                     from another, and this increment has already paid for that
-#                     twice (tick m1p: `cache_is 1` accepted the wrong desk's
+#                     twice (an earlier change: `cache_is 1` accepted the wrong desk's
 #                     picture). The one-sided lists are named the same way: the
 #                     unwatched window is in `liveOnly` and the recorded app that
 #                     is not running is in `recordedOnly`.
@@ -108,7 +108,7 @@
 #                     way whichever tab the user came from, and would pass every
 #                     other clause here.
 #
-# BOTH RENDER PATHS, because `.tick/learnings.md` says so and because the project
+# BOTH RENDER PATHS, because the project notes says so and because the project
 # has been bitten: the fallback engaged silently and hid a broken model for two
 # live rounds, and a rule calibrated on positioned chips can be wrong on the
 # fallback's fixed-height rows. This file reaches both the way a user does:
@@ -769,7 +769,7 @@ if [[ $record_answer != "recorded" ]]; then
   fail "panel IPC records a layout (motion)" "record answered '$record_answer'"
 fi
 
-# NOT A POLL, for the reason tick m4s established: "recorded" is a promise that
+# NOT A POLL, for the reason an earlier change established: "recorded" is a promise that
 # the bytes are on disk (the panel state FileView declares blockWrites, so
 # writeState cannot answer true with a write still in flight), and polling would
 # turn a broken promise into a slow one.
@@ -875,13 +875,13 @@ pass "recorded for real, then placed: $IDENTITY drifted to ws $DRIFTED_WS, $GHOS
 # frame after that, and the state file was rewritten a moment ago. Waiting for
 # the PANEL's view of the recording (its own morph pair naming ws $DRIFTED_WS) is
 # the point: a record taken before the panel noticed would file itself under the
-# wrong answer, which is the mistake tick m1p paid for.
+# wrong answer, which is the mistake an earlier change paid for.
 
 if ! poll 60 capture_live_state; then
   diagnostics
   # Named per clause. capture_live_state is one predicate over chips, the morph
   # object and three lists, and a message that described only one of them sent a
-  # full gate cycle to the wrong diagnosis once already (tick sm1). If you are
+  # full gate cycle to the wrong diagnosis once already. If you are
   # reading this after a failure, replay $LIVE_JSON against each clause with jq
   # rather than assuming it is the first one listed.
   fail "panel IPC reports the live map with its motion wired" \
@@ -926,7 +926,7 @@ pass "and the three-way answer accounts for every drawn chip: $sides"
 # THE FLAG IS DOWN AND THE COUNTERS AGREE, before anything has been switched.
 # This is the only shape in which `active` can be asserted honestly, and it is
 # the half that matters: a flag that latched true would fail here, and a counter
-# that latched (tick gox) would show as settled behind runs with nothing running.
+# that latched would show as settled behind runs with nothing running.
 runs_at_rest=$(printf '%s' "$LIVE_JSON" | jq -r '.morph.runs')
 settled_at_rest=$(printf '%s' "$LIVE_JSON" | jq -r '.morph.settled')
 at_rest=$(printf '%s' "$LIVE_JSON" | jq -r '.morph.active')

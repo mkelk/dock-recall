@@ -10,7 +10,7 @@
 // plugin's main defence in a file of nearly five thousand lines. The depth had
 // become a tax on the one thing holding the file together, and the tickets that
 // followed drew window captures inside these very chips — which they now do
-// (increment 06-bwf: `chipCapture` is below). Extracted in tick xk5 with no
+// (`chipCapture` is below). Extracted with no
 // behaviour change at all: the same bindings in the same order, the same
 // comments word for word, rewrapped to a column that fits them.
 //
@@ -55,7 +55,7 @@ BorderSurface {
   // than reached for — a component that reads its parent's ids is not a
   // component.
   //
-  // THE HEIGHT IS HANDED IN TOO SINCE TICK dmm, and that is the repair rather
+  // THE HEIGHT IS HANDED IN TOO, and that is the repair rather
   // than a convenience. This tile used to take its width and work its own height
   // out from its monitor's aspect, which is only right if every tile on the map
   // is drawn at the same scale — and nothing made them. On a real two-monitor
@@ -127,8 +127,8 @@ BorderSurface {
 
   // The drawing area: the whole tile inside its padding. It used to sit UNDER
   // the workspace number badge, which took a line of the box for itself; since
-  // tick ep6 the badge is an overlay in the tile's corner (`workspaceLabel`
-  // below — tick o9o replaced the flat "ws N" caption with it, and the id
+  // an earlier change the badge is an overlay in the tile's corner (`workspaceLabel`
+  // below — an earlier change replaced the flat "ws N" caption with it, and the id
   // outlived the wording) and the canvas has the tile.
   readonly property real canvasWidth: Math.max(1, workspaceSlot.boxWidth
     - workspaceSlot.contentLeftInset - workspaceSlot.contentRightInset)
@@ -145,7 +145,7 @@ BorderSurface {
   // every tile's first row, which is a defect wearing the same clothes as the
   // feature. The first VM look found it in both tiles.
   //
-  // THIS IS THE "BOTH RENDER PATHS" RULE, AGAIN (.tick/learnings.md). A rule
+  // THIS IS THE "BOTH RENDER PATHS" RULE, AGAIN (the project notes). A rule
   // ratified against window-shaped chips has to be checked against the fixed
   // 17 px row as well, and the two answers here genuinely differ: the
   // positioned path wants the overlay, the fallback path wants the room. Not a
@@ -161,7 +161,7 @@ BorderSurface {
   // drew before rects existed, and the box grows if there are more of them than
   // the monitor's shape has room for.
   //
-  // The shape is no longer worked out here (tick dmm). It used to be
+  // The shape is no longer worked out here. It used to be
   // `canvasWidth / modelData.aspect`, which is the monitor's aspect applied to
   // whatever width this tile happened to be given — right only if every tile on
   // the map was scaled the same way, and on a two-monitor desk none of them
@@ -207,7 +207,7 @@ BorderSurface {
   // frame, never a state: naming workspaceCanvas.width/height here is what
   // makes QML re-run this the moment the layout settles.
   //
-  // THE FLOOR COMES FROM THE PANEL and is no longer spelled here (tick gug).
+  // THE FLOOR COMES FROM THE PANEL and is no longer spelled here.
   // The morph's flight resolver calls this same function to work out where the
   // map drew a chip, and two callers handed different floors would put the
   // flight beside the chip instead of on it. `panel.chipFloorWidth` /
@@ -244,7 +244,7 @@ BorderSurface {
   // INSIDE this height, so measuring the children to find it is a binding
   // loop even when the numbers happen to settle.
   //
-  // The badge is no longer a term in it on the POSITIONED path (tick ep6). It
+  // The badge is no longer a term in it on the POSITIONED path. It
   // used to sit in a label row of its own above the canvas, so every workspace
   // box was a caption stacked on a picture; it is an overlay in the tile's
   // corner now and the canvas is the whole tile. `badgeInset` is 0 there and
@@ -252,7 +252,7 @@ BorderSurface {
   // the badge would be a row of names — see badgeInset above.
   height: workspaceSlot.canvasHeight + workspaceSlot.badgeInset
     + workspaceSlot.contentTopInset + workspaceSlot.contentBottomInset
-  // A TILE, NOT A BOX (tick ep6). The outline is gone and the faint ground the
+  // A TILE, NOT A BOX. The outline is gone and the faint ground the
   // map surface gave up is here instead: five nested rectangles in the same
   // beige line gave the eye no hierarchy at all, and the one line weight the
   // map keeps is the 1-px chip edge below. A ground says "this is a workspace"
@@ -260,7 +260,7 @@ BorderSurface {
   color: Style.normalFillFor(panel.foreground, Color.accent)
   borderSpec: Border.none()
   radius: Style.cornerRadius
-  // The panel's number, not this file's (tick dmm): the map subtracts this
+  // The panel's number, not this file's: the map subtracts this
   // padding from the row before it solves for the scale every tile is drawn at,
   // so a tile padded by a different number than the scale was solved for is a
   // row that does not fit its canvas. `panel.mapTilePadding` is the one site.
@@ -278,7 +278,7 @@ BorderSurface {
     height: workspaceSlot.canvasHeight
 
     // WHERE THIS CANVAS ENDED UP, told to the panel because the panel cannot
-    // work it out (tick gug). The morph's overlay flies a chip between two drawn
+    // work it out. The morph's overlay flies a chip between two drawn
     // rectangles, and a drawn rectangle is this canvas's origin plus what
     // chipRectsForCanvas makes of the slot list inside it. The SIZE the panel
     // could almost derive; the ORIGIN it could not — it is under a
@@ -294,14 +294,14 @@ BorderSurface {
     // FOUR HANDLERS FOR FOUR VALUES, plus the two above this item: the report
     // captures an origin and a size, and the origin depends on where the WHOLE
     // workspace box landed in the Flow as much as on where the canvas sits
-    // inside it. The report-site rule (.tick/learnings.md, tick sm1) is the
+    // inside it. The report-site rule is the
     // reason they are enumerated rather than assumed to cover each other, and
     // the Flow's first pass runs before its width is known — a report taken only
     // at completion is the warm-up answer, for ever.
     // THE KEY IS FROZEN AT CREATION, and that is what makes the missing
     // `onRenderKeyChanged` here correct rather than merely absent.
     //
-    // The report-site rule (.tick/learnings.md, tick sm1) is one handler per
+    // The report-site rule is one handler per
     // captured property, and `workspaceSlot.reportRender()` above obeys it. This
     // site cannot, because `renderKey` is bound to `panel.showRecorded`: on a
     // view flip the OUTGOING delegate's key flips to the incoming view before Qt
@@ -392,7 +392,7 @@ BorderSurface {
           : (chipSlot.linkHovered ? "hover"
             : (chipSlot.anyWatched ? "watched" : "quiet"))
 
-        // THE TWO CHANNELS FADE RATHER THAN SNAP (tick fyi), and they fade
+        // THE TWO CHANNELS FADE RATHER THAN SNAP, and they fade
         // SEPARATELY because they mean separate things: a chip can become
         // drifted without becoming watched, and folding the two into one
         // animation would make the edge wait for the fill.
@@ -416,7 +416,7 @@ BorderSurface {
         Behavior on color { ColorAnimation { id: fillFade; duration: panel.motion.duration } }
         Behavior on edgeDrawColor { ColorAnimation { id: edgeFade; duration: panel.motion.duration } }
 
-        // THE DRIFT BREATHE (tick 5pu) — the epic's fourth named motion, and the
+        // THE DRIFT BREATHE — the epic's fourth named motion, and the
         // only one that is a LOOP rather than a transition.
         //
         // A drifted chip is the one thing on this map the user is meant to act
@@ -506,7 +506,7 @@ BorderSurface {
         // the fold as the footer is.
         onHasCursorChanged: if (hasCursor) panel.ensureCursorVisible(chipSlot)
 
-        // THE MORPH, PER SLOT (tick gug). Does the pure matcher say one of the
+        // THE MORPH, PER SLOT. Does the pure matcher say one of the
         // windows in this slot is on the OTHER map too?
         //
         // Per slot rather than per chip because opacity is: the slot is the
@@ -633,7 +633,7 @@ BorderSurface {
         // none still gets this, because a chip with no edge at all is a
         // photograph floating on a tile.
         //
-        // It is the PANEL's number since tick 0qd. "One line weight carries the
+        // It is the PANEL's number since an earlier change. "One line weight carries the
         // map" is the whole thesis of this redesign, and it stops being one the
         // moment the chip and the frame spell it separately.
         readonly property int edgeWidth: panel.mapLineWidth
@@ -661,7 +661,7 @@ BorderSurface {
         // and picks up the hover FILL instead, which is the same
         // separate-channels rule applied twice.
         //
-        // THE WIDTH IS FIXED AND THE STATE ONLY CHOOSES THE COLOUR (tick ep6),
+        // THE WIDTH IS FIXED AND THE STATE ONLY CHOOSES THE COLOUR,
         // because a state's width is a THEME's to set and one of them sets it
         // to nothing: `Commons/Style.qml` defaults `selected-border-width` to
         // 0. So the DRIFTED chip — the one thing on this map the user is meant
@@ -669,7 +669,7 @@ BorderSurface {
         // above spent its whole loop animating the alpha of a zero-width
         // border. `Border.withWidth` keeps the state's resolved colour and
         // replaces the widths, which is the one place this map still spends a
-        // line: after this tick the 1-px chip edge is the ONLY outline between
+        // line: after this change the 1-px chip edge is the ONLY outline between
         // the card and a picture.
         borderSpec: chipSlot.anyGhost && !chipSlot.highlighted
           ? Border.none()
@@ -771,7 +771,7 @@ BorderSurface {
               readonly property bool iconResolved: panel.iconResolvedOf(
                 chipTab.modelData.identityId, chipTab.modelData.className)
 
-              // THE STORED PICTURE, as a URL the Image below binds (tick vbh).
+              // THE STORED PICTURE, as a URL the Image below binds.
               // "" when this chip has none — pictures switched off, an app
               // recorded before there were any, a cache a cleaner has wiped —
               // and "" on the LIVE map always, because a picture out of the
@@ -785,8 +785,8 @@ BorderSurface {
               // was BOUND, not a second derivation that could agree with the
               // cache while the Image drew nothing.
               //
-              // THE SWITCH IS THE PANEL'S GATE, NOT A SECOND ONE HERE (tick
-              // sp7). `panel.captureFileFor` already answers "" when the
+              // THE SWITCH IS THE PANEL'S GATE, NOT A SECOND ONE HERE. `panel.captureFileFor`
+              // already answers "" when the
               // pictures are off, so a switched-off picture stops being drawn in
               // the same frame the flag is written — before the `find` that
               // deletes it has even been spawned. Reading `panel.picturesOn`
@@ -799,7 +799,7 @@ BorderSurface {
               readonly property string captureSource: panel.captureSourceOf(
                 chipTab.modelData.identityId, chipTab.modelData.occurrence)
 
-              // THE LIVE PICTURE (tick 2zi) — what this window looks like RIGHT
+              // THE LIVE PICTURE — what this window looks like RIGHT
               // NOW, taken when the panel opened and held in MEMORY. "" on the
               // recorded map always, "" when the pictures are switched off,
               // and "" until the grab lands.
@@ -840,7 +840,7 @@ BorderSurface {
               readonly property bool captureDrawn:
                 chipCapture.status === Image.Ready
 
-              // AND THE ICON'S QUESTION, WHICH IS NOT THE PAYLOAD'S (tick nlg).
+              // AND THE ICON'S QUESTION, WHICH IS NOT THE PAYLOAD'S.
               //
               // `captureDrawn` is an instant: is the Image Ready THIS moment.
               // That is exactly right for the payload — `captureSource` and
@@ -882,7 +882,7 @@ BorderSurface {
               // WHICH ALSO SAYS WHAT THIS DOES NOT FIX. nlg was filed from a VM
               // screenshot of the LIVE map drawing icons over pictures the same
               // payload said were drawn, and the measurement above says a live
-              // re-grab cannot be the cause of that one. It is tick omw now, and
+              // re-grab cannot be the cause of that one. It is an earlier change now, and
               // the morph is the first place omw says to look — a flying chip
               // draws an icon and never a picture.
               property bool pictureHeld: false
@@ -946,7 +946,7 @@ BorderSurface {
                   // information: the cache index says there is a picture, the
                   // chip could not draw it.
                   captureSource: chipTab.captureDrawn ? chipTab.captureSource : "",
-                  // THE LIVE MAP'S HALF OF THE SAME PAIR (tick 2zi), gated on
+                  // THE LIVE MAP'S HALF OF THE SAME PAIR, gated on
                   // the same status and for the same reason: the panel's claim
                   // is that a picture of this window is in memory, and this is
                   // the chip's claim that it DREW it. "" here becomes an ABSENT
@@ -977,7 +977,7 @@ BorderSurface {
                   // lights up as one pill.
                   linkKey: String(chipTab.modelData.linkKey || ""),
                   linked: chipSlot.linkHovered,
-                  // THAT THE TWO CHANNELS ARE ANIMATED AT ALL (tick fyi).
+                  // THAT THE TWO CHANNELS ARE ANIMATED AT ALL.
                   //
                   // Read off the ANIMATION OBJECTS, never off Motion.qml. The
                   // acceptance VM cannot see a colour move, so the most it can
@@ -991,7 +991,7 @@ BorderSurface {
                   fillMotionMs: chipTab.fillMotionMs,
                   edgeMotionMs: chipTab.edgeMotionMs,
                   motionEasing: chipTab.motionEasing,
-                  // THE DRIFT BREATHE (tick 5pu). Half a breath's duration, off
+                  // THE DRIFT BREATHE. Half a breath's duration, off
                   // the animation object, and whether it is RUNNING — which is
                   // the assertion that matters, because a loop bound to a chip
                   // that is not drifted would pulse the whole map, and a loop
@@ -1001,7 +1001,7 @@ BorderSurface {
                   breatheMs: chipTab.breatheMs,
                   breathing: chipTab.breathing,
                   drifted: chipSlot.anyDrifted,
-                  // WHICH SIDE OF THE MORPH THIS CHIP IS ON (tick gug), from
+                  // WHICH SIDE OF THE MORPH THIS CHIP IS ON, from
                   // the same lookup its slot's opacity binding reads. The
                   // panel could answer this about the chip without asking the
                   // chip — it holds the pairing — and that is exactly why the
@@ -1025,7 +1025,7 @@ BorderSurface {
               // constants once bound — Motion.qml's tokens are readonly ints —
               // so there is nothing to re-report when they "change"; the
               // handlers below exist anyway, because the report-site rule
-              // (.tick/learnings.md, tick sm1) is that a site carries an
+              // is that a site carries an
               // onXChanged for EVERY property it captures, and an exception
               // argued per property is how that rule stops being checkable.
               readonly property int fillMotionMs: fillFade.duration
@@ -1063,7 +1063,7 @@ BorderSurface {
               // move under a live delegate — a window opening on the other map
               // can turn a "live-only" chip into a "paired" one without
               // anything else about this chip changing. Per the report-site
-              // rule (.tick/learnings.md, tick sm1) it would carry a handler
+              // rule it would carry a handler
               // either way.
               onMorphRoleChanged: chipTab.reportRender()
               onRenderPathChanged: chipTab.reportRender()
@@ -1077,12 +1077,12 @@ BorderSurface {
               // without the panel closing.
               onLiveSourceChanged: chipTab.reportRender()
               // Both, per the report-site rule: a site must carry an onXChanged
-              // for EVERY property it captures (.tick/learnings.md, tick sm1).
+              // for EVERY property it captures.
               // The image load is asynchronous on the recorded map, so
               // `captureDrawn` lands after `captureSource` and nothing else
               // would report it.
               //
-              // AND THE LATCH'S RISING EDGE (tick nlg), here rather than in a
+              // AND THE LATCH'S RISING EDGE, here rather than in a
               // handler of its own because QML allows ONE handler per signal
               // per object and the report already owns this one. The report is
               // still made on every change, latch or no latch — that is the
@@ -1148,7 +1148,7 @@ BorderSurface {
               width: chipRow.width / chipSlot.modelData.chips.length
               height: chipRow.height
 
-              // THE STORED PICTURE (tick vbh), and where it sits is the whole
+              // THE STORED PICTURE, and where it sits is the whole
               // design: FIRST in document order, so it is the chip's GROUND.
               // QML paints siblings in the order they are declared, so the veil
               // below it quietens it and the icon and the name paint on top —
@@ -1160,7 +1160,7 @@ BorderSurface {
               // and the label never sees this item and its width is unchanged
               // by it. That matters here more than anywhere — the Recorded map
               // is entirely the FALLBACK path, whose 210x17 stacked rows are
-              // where names were only just restored (tick ajp), and a capture
+              // where names were only just restored, and a capture
               // that cost them their label would undo that silently.
               //
               // The pill's own translucent ground is what keeps the name
@@ -1170,7 +1170,7 @@ BorderSurface {
               // NO EMPTY-IMAGE FLASH, and no broken picture: `visible` is gated
               // on Image.Ready, so a source that is still loading, has failed,
               // or was never set draws nothing at all and the chip is what it
-              // was before this tick — its icon and its name.
+              // was before this change — its icon and its name.
               //
               // A DELETED CAPTURE, in two halves. `panel.captureSourceOf` is
               // gated on a directory listing that is re-read whenever the panel
@@ -1196,7 +1196,7 @@ BorderSurface {
               // and Qt's image cache would happily serve the old pixels for the
               // rest of the panel session.
               //
-              // AND SINCE TICK 2zi IT DRAWS EITHER KIND. The recorded map's
+              // AND SINCE an earlier change IT DRAWS EITHER KIND. The recorded map's
               // source is a `file://` URL out of the cache; the live map's is an
               // in-process image URL held in memory and never written. The two
               // arrive by different machinery and mean different things, and
@@ -1206,7 +1206,7 @@ BorderSurface {
               // getting one each. `pictureSource` is the union; the payload
               // still says which kind it is.
               //
-              // NO DOUBLE FRAME (tick ep6), in two halves that are deliberately
+              // NO DOUBLE FRAME, in two halves that are deliberately
               // not the same mechanism.
               //
               // THE INSET IS THE HALF THAT ALWAYS APPLIES, and the first VM look
@@ -1238,13 +1238,13 @@ BorderSurface {
                 // width does not ask for a 0x0 decode.
                 sourceSize.width: Math.max(1, Math.round(chipTab.width * Screen.devicePixelRatio))
                 sourceSize.height: Math.max(1, Math.round(chipTab.height * Screen.devicePixelRatio))
-                // THE LATCH'S OTHER FALLING EDGE (tick nlg): the source names a
+                // THE LATCH'S OTHER FALLING EDGE: the source names a
                 // picture that will never arrive. `pictureSource` is not "" —
                 // the panel still believes there is one — so the handler on
                 // `chipTab` cannot see this case, and without this one an
                 // externally deleted capture would leave a chip with no picture
                 // AND no icon. This is the "a grab that fails still falls back
-                // to its icon" half of the tick's acceptance, and it is why the
+                // to its icon" half of the change's acceptance, and it is why the
                 // latch reads the STATUS here rather than `captureDrawn`, which
                 // cannot tell Error from Loading.
                 onStatusChanged: {
@@ -1272,7 +1272,7 @@ BorderSurface {
                 // this. So the layer engages where it changes the picture and
                 // nowhere else — cheaper on the common theme, and it keeps the
                 // draw path on a square theme byte-for-byte the one that shipped
-                // before this tick.
+                // before this change.
                 layer.enabled: chipSlot.radius > 0
                 layer.smooth: true
                 layer.effect: MultiEffect {
@@ -1332,7 +1332,7 @@ BorderSurface {
               // over everything the chip's own rectangle draws and under
               // everything the content draws, so a centred icon reads against
               // a quietened ground. That ground is the chip's colour field, or
-              // — since tick vbh — the captured picture above, and the veil is
+              // — since an earlier change — the captured picture above, and the veil is
               // what stops a busy screenshot from swallowing the icon on the
               // one tier that has nothing else to separate them. Declared after
               // the capture and before the content so it lands between them —
@@ -1424,7 +1424,7 @@ BorderSurface {
                     // chip at any tier without a second fit test of its own.
                     // The LADDER decides whether it is drawn at all.
                     //
-                    // THE CAP IS NO LONGER THE KIT'S LARGE ICON (tick ep6). At
+                    // THE CAP IS NO LONGER THE KIT'S LARGE ICON. At
                     // `Style.font.iconLarge` — 18 px — the half-of-the-shorter-
                     // side rule stopped mattering above a 36 px chip, so a
                     // watched app with no picture drew an 18 px stamp in the
@@ -1448,14 +1448,14 @@ BorderSurface {
                       // was standing in for.
                       //
                       // AND THAT IS ALSO THE LIVE MAP'S FALLBACK, unchanged
-                      // (tick 2zi). A live picture takes a moment to arrive and
+                      //. A live picture takes a moment to arrive and
                       // can fail outright — a window on a monitor that is not
                       // rendering never delivers a frame — and for every one of
                       // those moments there is no picture, so the chip draws its
                       // icon. A chip is never blank, and no second mechanism was
                       // needed to make that true of live pictures.
                       //
-                      // `pictureHeld` AND NOT `captureDrawn` (tick nlg), and the
+                      // `pictureHeld` AND NOT `captureDrawn`, and the
                       // difference is exactly one case: a picture being
                       // REPLACED. `captureDrawn` is "the Image is Ready right
                       // now", so it goes false for the length of any reload —
@@ -1662,7 +1662,7 @@ BorderSurface {
   // otherwise — one filled badge on the whole map, so it reads as a position
   // rather than as a fifth state to decode.
   //
-  // IT IS AN OVERLAY NOW, AND THAT IS WHY IT IS DECLARED LAST (tick ep6). It
+  // IT IS AN OVERLAY NOW, AND THAT IS WHY IT IS DECLARED LAST. It
   // used to own a label row above the canvas, which cost every workspace a
   // caption's height and made the tile a caption stacked on a picture. On the
   // tile's own corner it costs nothing and the pictures have the whole box —

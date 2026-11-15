@@ -2,7 +2,7 @@
 # dock-recall-appid-migration-test.sh — the v3 `--app-id` upgrade, end to end
 # in a real Omarchy VM (Tier C).
 #
-# THE FINDING THIS PROVES (increment 05-dtp, A1). A 0.2.0 state file carries
+# THE FINDING THIS PROVES (finding A1). A 0.2.0 state file carries
 # launch commands the retired backfill wrote:
 #
 #     <terminal> --app-id=<identity-id> <command>
@@ -422,7 +422,7 @@ after_control=$(launch_json "$CONTROL_ID")
 
 pass "migrated on disk: v$SEED_VERSION -> v$CURRENT_VERSION, subject launch $SEED_SUBJECT_LAUNCH -> $after_subject, control launch $after_control unchanged"
 
-# AND THE PICTURE GENERATION, on the same persisted file (epic wau, schema v7).
+# AND THE PICTURE GENERATION, on the same persisted file (schema v7).
 #
 # The DoD's second clause — "a v6 file carrying `pictured` flags and any
 # `pictureConsent` value reads clean, its identities and layouts intact, and its

@@ -122,7 +122,7 @@ test("every client's monitor index round-trips through a label", () => {
   }
 });
 
-// --- twin identical monitors (tick ojr) --------------------------------------
+// --- twin identical monitors --------------------------------------
 //
 // TWO OUTPUTS, ONE LABEL. A monitor's identity in this schema IS its
 // description (monitorLabel), and a matched pair of the same model reports the
@@ -218,7 +218,7 @@ test("twin monitors: both apps land on the FIRST twin — the documented v2 refu
   // own, which IS a label the comparison can see — so both drift, and both
   // plan a destination. (Had they stayed on ws 3 and 4 with those workspaces
   // carried onto the laptop, it would be workspace-elsewhere: a refusal, since
-  // tick 7ph moves no existing workspace between monitors.)
+  // an earlier change moves no existing workspace between monitors.)
   const liveClients = recordedClients.map((c, i) =>
     Object.assign({}, c, { monitor: 2, workspace: { id: 7 + i, name: String(7 + i) } }));
   const report = engine.driftOf(liveClients, monitors, layout, IDENTITIES);

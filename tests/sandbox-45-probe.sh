@@ -1,8 +1,8 @@
 #!/bin/bash
-# sandbox-45-probe.sh — tick zf6: what Omarchy 4.5's per-monitor workspaces do
+# sandbox-45-probe.sh — an earlier change: what Omarchy 4.5's per-monitor workspaces do
 # to the moves Dock Recall makes, measured in the nested compositor.
 #
-# Since tick zf6 the nested compositor runs the real
+# Since an earlier change the nested compositor runs the real
 # default/hypr/monitor-workspaces.lua (see tests/nested.lua). Every monitor owns
 # a block of ten ids — block 0 = 1..10, block 1 = 11..20 — and a reconcile on
 # each monitor add/remove and config reload moves and RENUMBERS workspaces to
@@ -316,7 +316,7 @@ note "WAYLAND output: $BASE identity '$(identity_of_conn "$BASE")'"
 
 # ----------------------------------------------------------------- answers
 
-echo "=== ANSWERS (tick zf6) ==="
+echo "=== ANSWERS ==="
 for k in a b c d e; do
   echo "($k) ${ANSWER[$k]:-unanswered}"
 done

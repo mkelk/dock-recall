@@ -7,7 +7,7 @@
 // through the terminal proposal, names derived from a window's own TITLE, which
 // is a string an application picks for itself and can put anything in.
 //
-// `textFormat` appeared ZERO times in Panel.qml before tick bbu.
+// `textFormat` appeared ZERO times in Panel.qml before an earlier change.
 //
 // WHY EVERY Text AND NOT ONLY THE TITLE-DERIVED ONES. Deciding which bindings
 // can reach a title is an argument, and it would have to be re-made correctly
@@ -17,14 +17,14 @@
 // `Text { }` to Panel.qml without `textFormat: Text.PlainText` and this fails,
 // naming the line.
 //
-// SCOPE: EVERY QML FILE THIS REPOSITORY SHIPS, from a glob (tick md1).
+// SCOPE: EVERY QML FILE THIS REPOSITORY SHIPS, from a glob.
 //
 // It was a hand-maintained list of three, in a file whose own thesis two
 // paragraphs up is that "all of them" is a rule a machine can check and "it
-// cannot rot into a stale whitelist". It was exactly that whitelist. Tick xk5
+// cannot rot into a stale whitelist". It was exactly that whitelist. An earlier change
 // extracted the map into MapWorkspace.qml carrying `chipLabel` — the one binding
 // that renders a window title an application chose for itself — OUTSIDE both
-// guards, and tick y4y spent a whole tick retro-fitting them. Coverage was
+// guards, and an earlier change spent a whole change retro-fitting them. Coverage was
 // complete only because the three files that contained a `Text` happened to be
 // the three named; the moment a fourth grew one, the whitelist rotted silently
 // and the failure was an HTML-injection hole.
@@ -61,7 +61,7 @@ const QML_FILE_COUNT = 9;   // AppStrip, BarWidget, CaptureStore,
                             // Service, ToplevelBridge. (ConsentPrompt was a
                             // tenth, deleted with the first-Record dialogue;
                             // AppStrip is the flat list, extracted out of
-                            // Panel.qml in tick kex.)
+                            // Panel.qml in an earlier change.)
                             //
                             // Spelled ONCE. It was spelled three times with two
                             // different numbers, two of them stale, in the file
@@ -86,7 +86,7 @@ function qmlFiles() {
 // is not a close, and neither is a brace somebody drew in prose.
 //
 // The element name is a parameter because there is more than one thing to ask
-// about a QML tree (tick md1): the PanelHero guard at the bottom used to walk
+// about a QML tree: the PanelHero guard at the bottom used to walk
 // braces with its own eight-line loop that skipped neither strings nor comments
 // and found its element with `indexOf("PanelHero {")` — exactly one space, where
 // the regex beside it allowed any. `PanelHero{` made all three of its assertions
@@ -236,7 +236,7 @@ test("a brace inside a comment does not swallow the rest of the file", () => {
   assert.ok(!/textFormat/.test(blocks[1].body));
 });
 
-test("the element scanner cannot be dodged by writing the brace without a space (tick md1)", () => {
+test("the element scanner cannot be dodged by writing the brace without a space", () => {
   // The PanelHero guard at the bottom used to find its element with
   // `indexOf("PanelHero {")` — exactly one space — while the regex beside it
   // allowed any. Written like this, the slice started at -1, the walk produced
@@ -258,7 +258,7 @@ test("the element scanner cannot be dodged by writing the brace without a space 
 });
 
 // ONE TEST OVER THE GLOB, not one per named file. A per-file test needs a
-// per-file name, and a per-file name is a list — the thing this tick removed.
+// per-file name, and a per-file name is a list — the thing this change removed.
 // The failure message names the file and the line anyway, which is what a
 // per-file test was ever for.
 test("every Text in every QML file this plugin ships declares textFormat: Text.PlainText", () => {
@@ -338,7 +338,7 @@ test("the shell components the panel draws untrusted strings through are plain t
 });
 
 // ---------------------------------------------------------------------------
-// THE HEADER IS A PanelHero (tick 05q)
+// THE HEADER IS A PanelHero
 // ---------------------------------------------------------------------------
 //
 // The payload proves the header reports the right strings — `headerTitle` and
@@ -368,7 +368,7 @@ test("the panel's header is the shell's PanelHero, and it is what reports the he
   assert.ok(!fs.existsSync(path.join(REPO_ROOT, "PanelHero.qml")),
     "a local PanelHero.qml would shadow the shell's component of the same name");
 
-  // THE SAME HARDENED SCANNER the Text guard uses (tick md1). This walked
+  // THE SAME HARDENED SCANNER the Text guard uses. This walked
   // braces with a loop of its own that skipped neither strings nor comments, and
   // found its element with `indexOf("PanelHero {")` — exactly one space, where
   // the regex on the line above allowed any. Written `PanelHero{`, the slice
@@ -397,7 +397,7 @@ test("the panel's header is the shell's PanelHero, and it is what reports the he
 });
 
 // ---------------------------------------------------------------------------
-// Motion: one statement of how long things take (tick oas)
+// Motion: one statement of how long things take
 // ---------------------------------------------------------------------------
 //
 // Omarchy's theme has colour, spacing and radius tokens and NO animation tokens,
@@ -409,7 +409,7 @@ test("the panel's header is the shell's PanelHero, and it is what reports the he
 // nominate ONE normative site. Motion.qml is that site, and this is the guard
 // that keeps it one.
 //
-// Same glob discipline as everything above it, and for the reason tick md1
+// Same glob discipline as everything above it, and for the reason an earlier change
 // established: a hand-written list of files rots silently the moment somebody
 // adds a fifth.
 
@@ -463,7 +463,7 @@ test("Motion.qml states the tokens the rest of the plugin reads", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A Behavior cannot animate a readonly property (tick w7x)
+// A Behavior cannot animate a readonly property
 // ---------------------------------------------------------------------------
 //
 // WHAT THIS COST. `Behavior on edgeColor` was written against a property
@@ -517,7 +517,7 @@ test("no Behavior animates a property its own file declares readonly", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Service.qml dispatch and log wording (tick jvk)
+// Service.qml dispatch and log wording
 // ---------------------------------------------------------------------------
 test("Service.qml: float is absolute on/off, never toggle; swap read-back compares tile boxes; status line carries shapes", () => {
   const source = fs.readFileSync(path.join(REPO_ROOT, "Service.qml"), "utf8");

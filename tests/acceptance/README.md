@@ -23,7 +23,6 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
 | `undock-locked.sh` | the locked scenario's host half — QMP keyboard and screendumps |
-| `reenable-rehearsal.sh` | the 4.5 re-enable migration, rehearsed on a guest in the desk's old state — host-driven, run by hand |
 | `vm-lib.sh` | reaching a VM the harness left running (sourced, not run) |
 | `stage.sh` | builds the directory the harness pushes into the guest |
 | `PROVISIONING.md` | what has to exist on the host, and where |
@@ -179,7 +178,7 @@ so a stale number would quietly change what the test believes it seeded.
 
 ## What the v3 `--app-id` upgrade test asserts
 
-`dock-recall-appid-migration-test.sh` is the end-to-end proof of finding A1. A
+`dock-recall-appid-migration-test.sh` is the end-to-end proof of. A
 0.2.0 state file carries launch commands the retired backfill wrote —
 `<terminal> --app-id=<identity-id> <command>` — which force a window class the
 identity's own patterns can never claim. Restoring one spawns a stray window per
@@ -238,7 +237,7 @@ the migration is auditable after the VM is gone.
 ## What the captures test asserts
 
 `dock-recall-captures-test.sh` is the one test here whose evidence is **files**.
-Everything else in increment 06-bwf is proven at bind level, because this venue
+Everything else here is proven at bind level, because this venue
 cannot show a pixel was rasterized — but a picture on disk is a real artifact. It
 can be counted, named, opened and shown to be a JPEG, which is strictly stronger
 than any payload field, so the claim is made against the guest filesystem rather
@@ -389,7 +388,7 @@ who finds it has no way to know it is the old one.
 Here, and nowhere else. Add a field to the payload and this is the paragraph to
 extend.
 
-The fields the rest of increment 06-bwf fills in — `fillState`, `treatment`,
+The fields the rest of the map chrome fills in — `fillState`, `treatment`,
 `badgeValue` — are **not in the payload at all** until the tick that computes
 them lands. They are not there as `null`. The convention, settled before the
 first consumer:
@@ -594,7 +593,7 @@ glance uses. The six are enumerated in `tests/panel.test.js`; the VM drives
 
 `overflowLayouts` is reported by the menu's row **delegates**. A shut menu lists
 nothing however many layouts are on disk — the delegates outlive the popup being
-closed (tick `be1`), so it is `panelState()` that gates on `overflowOpen` — and a
+closed, so it is `panelState()` that gates on `overflowOpen` — and a
 non-empty list is evidence that rows were drawn rather than that a model could
 have produced them.
 
@@ -648,7 +647,7 @@ the one place that re-reads the file, writes the one field, and only then evicts
 both stores on the way off or restarts the live round on the way on. An IPC path
 that set the flag directly would switch the pictures off without deleting one.
 
-**Why one switch and not eleven.** Increment 06 shipped a per-app camera on every
+**Why one switch and not eleven.** The first version shipped a per-app camera on every
 row plus a three-answer dialogue on the first Record. The person who commissioned
 it could not find the camera on his own desk, and the dialogue — a modal
 offering to delete the pictures it had just taken — talked him out of the feature
@@ -939,7 +938,7 @@ which *is* delegate-reported and therefore `null` until the chip has drawn.
 `root.morph`, and the fade, the per-chip `morphRole` and this key all read that
 one object — the epic's own DoD is that the pair set in the payload is the only
 evidence the right chips morphed, so a second pairing computed for the report
-would be evidence of nothing (tick 3xi). Both ends of a pair are named by `key`
+would be evidence of nothing. Both ends of a pair are named by `key`
 (`liveKey`, `recordedKey`) rather than by `linkKey` alone, because `linkKey` is
 not unique: two unwatched windows of one class share `class:<cls>`. `geometry`
 is the only thing said about rectangles — *could this pair be translated at
@@ -957,7 +956,7 @@ mid-morph restarts the one animation rather than starting a second one.
 so that assertion is a race whichever way it comes out. `runs` and `settled` are
 the same fact in a form a poll can catch: both are written by the animation's own
 `started` and `finished` signals, so `runs` going up proves a morph began and
-`settled` catching up proves it **ended** — which is the half of this tick that
+`settled` catching up proves it **ended** — which is the half of this change that
 matters, a flag that latches true proving nothing. A mid-flight reversal leaves
 `runs` one ahead of `settled` for ever after; that is the truthful record that
 one morph was abandoned rather than finished, not a defect.
@@ -1082,7 +1081,7 @@ exists and a layout with no geometry do not leak into the next test in the boot.
 
 ## What the motion test asserts
 
-`dock-recall-motion-test.sh` is epic kw9's gate, and its DoD is deliberately
+`dock-recall-motion-test.sh` is an earlier epic's gate, and its DoD is deliberately
 narrow: **that the motion is wired, not that it looks right.** Whether the morph
 *reads* as a morph is the human's own `--awaiting` gate, not something any
 assertion here stands in for.
@@ -1157,7 +1156,7 @@ test ends.
 
 ## What the fidelity test asserts
 
-Epic 9i2's Tier C case: the shapes `tests/sandbox-fidelity.sh` pins under
+The Tier C case for within-workspace fidelity: the shapes `tests/sandbox-fidelity.sh` pins under
 Hyprland's own settings, run on a real 4.5 install, where a workspace can be put
 in scrolling or floating mode by Omarchy's `omarchy-hyprland-workspace-layout-toggle`
 (it acts on the *active* workspace and cycles dwindle, scrolling, floating; the
@@ -1180,8 +1179,8 @@ The `ok - dock-recall fidelity: …` line is in `run.sh`'s `REQUIRED_OK`.
 
 ## What the undock-while-locked scenario asserts
 
-This is the one `tests/nested-notes.md` left open. Tick sug closed
-DONE_WITH_CONCERNS: the undock focus failover's *detection* reads the right
+This is the one `tests/nested-notes.md` left open. That check ended
+with a concern: the undock focus failover's *detection* reads the right
 thing and its *repair dispatch* works, but the repair branch has never fired,
 because the state it targets — a lock surface holding keyboard focus on an
 output that is disappearing — cannot be reproduced in a nested compositor. The
@@ -1254,42 +1253,6 @@ step gave up. The `[dock-recall]` log is copied out beside them as
 The VM that `--keep-running` leaves behind is stopped by `run.sh`'s EXIT trap on
 every path out — `vm-lib.sh` owns that, and is a library rather than a copy in
 each caller precisely so the teardown cannot drift.
-
-## What the re-enable rehearsal asserts
-
-`reenable-rehearsal.sh` is the VM rehearsal of omarchy-fast's migration
-`0000000123_dock_recall_reenable_45.sh` before it meets the desk. The migration's
-stub test (`cutover/test-reenable-45.sh` in the records repo) fakes `omarchy
-plugin add`, the shell and Hyprland; this proves the two things stubs cannot: the
-real `omarchy plugin add` succeeds after the old directory is moved aside, and
-the restarted shell keeps the jq-written `plugins[]` record.
-
-It is **not** part of `run.sh`. It drives a VM someone left running
-(`omarchy-iso-test ... --keep-running`; pin it with `DR_RUN_DIR_OVERRIDE`), and it
-needs the guest to reach github.com, because the migration installs GitHub
-master and defers (exit 75) until master is the 0.4.0 build. Run it only after
-that build is published. A 75 is reported as "deferred", not as a failure.
-
-```
-DR_RUN_DIR_OVERRIDE=<run dir> ./tests/acceptance/reenable-rehearsal.sh
-```
-
-It builds the desk's state in the guest: the old plugin (a `git archive` of
-`DR_OLD_REF`, default `c8c2748`, manifest 0.3.0, no `Slots.js`), no `plugins[]`
-record, no bar entry, `SUPER+SHIFT+L` commented out under migration 118's two
-note lines, `tests/fixtures/state-v7.json` as the recordings, and a real shell
-restart so the shell's memory matches. Then it runs the migration (read from the
-`dock-recall-reenable-45` branch of `~/git/omarchy-fast`, or `DR_MIGRATION`) and
-asserts: exit 0; the `plugins[]` record and the bar entry in `shell.json` *and*
-in the running shell's `listShellConfig` after a settle; the bind live in
-Hyprland (modmask 65, key `l`, description) and active in `bindings.lua`; the
-manifest at `DR_EXPECT_VERSION` (0.4.0) in a git clone; the old plugin tarred and
-the v7 recordings kept; a *new* `[dock-recall] service-ready` log line; the
-recordings file at v9 after `scripts/record-current` writes it, with the v7
-layouts intact. A second run must exit 0 with `shell.json`, `bindings.lua`, the
-manifest, `.installed-from` and the backups byte-identical and no shell restart.
-The two run logs land in the run directory as
-`dock-recall-reenable-rehearsal-run1.log` and `-run2.log`.
 
 ## Guest packages
 

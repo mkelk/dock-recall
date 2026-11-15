@@ -51,7 +51,7 @@ Item {
   // The loader assigns `service` AFTER creation (shell.qml's onLoaded), so the
   // open edge is the assignment, not Component.onCompleted; the close edge is
   // destruction, because a panel without keepLoaded is torn down on hide.
-  // Service.panelOpen is what the bar widget's `opened` reads (tick erk).
+  // Service.panelOpen is what the bar widget's `opened` reads.
   onServiceChanged: if (root.service) root.service.panelOpen = true
   Component.onDestruction: if (root.service) root.service.panelOpen = false
 
@@ -64,7 +64,7 @@ Item {
   readonly property string statusPath: root.stateDir + "/dock-recall.status.json"
   readonly property string triggerPath: root.stateDir + "/dock-recall.trigger"
 
-  // WHERE THE PICTURES GO, and it is a CACHE and not state (tick sz6). A cache
+  // WHERE THE PICTURES GO, and it is a CACHE and not state. A cache
   // is a directory a cleaner is allowed to wipe, and the correct behaviour when
   // it does is that the Recorded map falls back to icons — so nothing here ever
   // joins the atomic state write, and the README's "writes one state file"
@@ -258,7 +258,7 @@ Item {
 
   readonly property var badge: PanelModel.badgeFor(StateModel.glyphState(root.badgeStatus), root.badgeStatus)
 
-  // Which watched apps have a window on screen. Pure since tick v29: the loop
+  // Which watched apps have a window on screen. Pure since an earlier change: the loop
   // that used to live here deduped on a bare `{}` keyed by identity id, so an
   // app whose class is `Constructor` (id `constructor`) was discarded as a
   // duplicate the first time it was seen and its chip read "not running" with
@@ -280,7 +280,7 @@ Item {
   // logicalWidth/logicalHeight/sizeLabel/name/label/workspaces off the model
   // and never touches those scaled fields, a leftover from when the map WAS
   // one scaled picture (see the "why this exists" comment on mapGeometry).
-  // (The map has a shared scale again since tick dmm — but it is the RENDERED
+  // (The map has a shared scale again since an earlier change — but it is the RENDERED
   // one, solved from the panel's own width in mapSectionLayout, and these
   // fields are still not what it reads.)
   // Left in rather than trimmed: mapGeometry.label is still what
@@ -293,7 +293,7 @@ Item {
   readonly property int mapMinHeight: Style.space(60)
   // The gap between workspace tiles.
   readonly property int mapGap: Style.space(6)
-  // And between MONITOR SECTIONS, which stack since tick yn6 — so this is the
+  // And between MONITOR SECTIONS, which stack since an earlier change — so this is the
   // vertical gap between the laptop's section and each external screen's. Its
   // own number rather than `mapGap` reused, and that is load-bearing: the map
   // solves for a scale that FITS, and a gap widened after the fact is a stack
@@ -311,7 +311,7 @@ Item {
   // edge and the canvas its chips are drawn on. It is MapWorkspace that spends
   // it, and it is stated HERE for the same reason `chipFloorWidth` is: the map's
   // shared scale has to subtract it from the row before it can solve for a scale
-  // (PanelModel.mapSectionLayout, tick dmm), and a tile padded by one number
+  // (PanelModel.mapSectionLayout), and a tile padded by one number
   // while the scale was solved for another is a row that does not fit its
   // canvas. Two readers, one number.
   readonly property int mapTilePadding: Style.space(4)
@@ -320,7 +320,7 @@ Item {
   // the panel's right edge and Ui/Button builds its own ToolTip centred on the
   // button, so nothing clamps the popup to the card: at the default 56 columns
   // the Record tooltip measured ~390 logical px wide and ended ~95 logical px
-  // outside the panel, floating over the desktop (evidence increment-03/m9u,
+  // outside the panel, floating over the desktop (the map-layout evidence,
   // round 2, Finding 5). The string is the only lever the panel still owns, so
   // the footer's tooltips wrap to a narrower box than the ones further left.
   //
@@ -338,7 +338,7 @@ Item {
   // spaces, so the default greedy wrap never breaks it. At the default 56
   // columns a 46-char class string ("chrome-www.rememberthemilk.com__app_-
   // Profile_1") pushed the popup ~100 logical px past the panel's left edge
-  // (evidence increment-03/m9u, round 3, Finding 7). PanelModel.wrapTooltip
+  // (the map-layout evidence, round 3, Finding 7). PanelModel.wrapTooltip
   // now hard-breaks an overlong word, so the narrower budget here shrinks
   // the popup instead of relying on that alone.
   readonly property int chipTooltipColumns: 40
@@ -398,7 +398,7 @@ Item {
   // WHICH CHIPS ARE THE SAME THING ON BOTH MAPS, computed HERE and nowhere
   // else. The animation reads it, the per-chip role index reads it, and
   // panelState() reads it — three consumers, one value, which is the whole
-  // shape of the rule tick 3xi paid for: the same question asked twice, a turn
+  // shape of the rule an earlier change paid for: the same question asked twice, a turn
   // apart, filed a screenshot under a correct key that was a photograph of a
   // different window. `morphRoles` and `morphPayload` both take this OBJECT
   // rather than the two maps, so neither of them can pair anything a second
@@ -435,7 +435,7 @@ Item {
   //   chip is PAIRED it is held at full opacity on both maps (`morphContinuous`
   //   in MapWorkspace.qml), so it cuts rather than fading. That is deliberate:
   //   a chip that was already on screen must not blink. It is not a cross-fade,
-  //   and calling it one was wrong in five places until the kw9 review.
+  //   and calling it one was wrong in five places until the review.
   //
   //   A ONE-SIDED CHIP is entering, and fades in from nothing.
   //
@@ -443,7 +443,7 @@ Item {
   // than an economy. A per-chip animation would need a count of the ones still
   // running to answer "is a morph in flight", and a delegate destroyed
   // mid-flight (which is precisely what a switch back does) can leave that count
-  // standing for ever — a latched store, which is tick gox exactly. One
+  // standing for ever — a latched store, which is an earlier change exactly. One
   // panel-owned progress value that everything BINDS to cannot strand anything:
   // wherever the animation stops, that is where every chip and every flying
   // rectangle is, and the animation only ever stops at 1.0 or is restarted.
@@ -593,11 +593,11 @@ Item {
   // `morph.active` after a `setView` would be asserting a race. These two are
   // the same fact stated in a form a poll can actually catch — `runs` went up,
   // so a morph started; `settled` caught up with it, so it ENDED. "The flag went
-  // down again" is the hard half of this tick and it deserves evidence that does
+  // down again" is the hard half of this change and it deserves evidence that does
   // not depend on catching a 120 ms window.
   //
   // COUNTS, NOT A FLAG, and that is the point: a counter never claims something
-  // is true right now, so there is nothing here to latch (tick gox). They also
+  // is true right now, so there is nothing here to latch. They also
   // say what a mid-flight reversal did, in the only way the payload can — a
   // reversal leaves `runs` one ahead of `settled` for ever after, which is the
   // truthful record that one morph was abandoned rather than finished.
@@ -698,7 +698,7 @@ Item {
   // schema is read and shown, but never written back (StateModel.writeRefusal
   // owns the rule and the reason).
   //
-  // A PERSISTENT line rather than a message on the click that failed (tick sma).
+  // A PERSISTENT line rather than a message on the click that failed.
   // The condition is a property of the file, not of the moment, and every
   // affordance in the panel is dead while it holds; the only other place it was
   // ever said out loud is the service's notify-send at load time, possibly hours
@@ -708,7 +708,7 @@ Item {
     return refusal ? String(refusal) : ""
   }
 
-  // And why nothing will be RESTORED from it either (tick t03). The same
+  // And why nothing will be RESTORED from it either. The same
   // question with the other consequence: the same file the panel may not write
   // is also one the service may not act on, because the fields a newer schema
   // used to narrow an identity are stripped on the way in. Said next to the
@@ -753,7 +753,7 @@ Item {
   // child, and this is the only place the panel can see it.
   property var procTree: ({})
 
-  // The last PUBLISHED value of each, serialized (tick zkb).
+  // The last PUBLISHED value of each, serialized.
   //
   // The /proc read lands roughly every four seconds while the panel is open —
   // a terminal's answer expires after 3 s by design, because what runs inside
@@ -800,7 +800,7 @@ Item {
   readonly property var windowsByPid: PanelModel.windowCountByPid(root.liveClients)
 
   // Both halves of the derivation, computed once: what could be learned, and
-  // what was REFUSED because naming it would mean guessing (tick dwv).
+  // what was REFUSED because naming it would mean guessing.
   readonly property var launchDerivation: PanelModel.launchDerivation(
     root.launchRequests, root.desktopFiles, root.windowsByPid, root.procTree)
   readonly property var derivedLaunch: root.launchDerivation.commands
@@ -822,7 +822,7 @@ Item {
   // resolving to an action icon instead of the app. We do not reimplement
   // either half.
   //
-  // EXCEPT WHERE THE SHELL WILL NOT LEND IT (tick 0i5). Omarchy 4.5 gives a
+  // EXCEPT WHERE THE SHELL WILL NOT LEND IT. Omarchy 4.5 gives a
   // third-party plugin a capability-scoped facade whose `appLibrary` is null
   // unless the manifest declares the `menu` kind, and Dock Recall is not a menu.
   // Asking a null library left every chip and row with iconSource "" — the
@@ -1169,7 +1169,7 @@ Item {
   // it can never drift apart from each other (they are one signal: "a restore
   // would move this, and here is where to").
   //
-  // ---- documented gap (tick wgj, finding F1) -------------------------------
+  // ---- documented gap -------------------------------
   // The UX sketch calls this amber. An Omarchy theme has no amber and no way to
   // acquire one: Color.qml's palette is foreground / background / accent /
   // urgent / muted, its colors.toml reader only ever looks at foreground,
@@ -1234,7 +1234,7 @@ Item {
     // this panel holds belongs to the last time it was open. Both are dropped
     // here, so a summon cannot build a tick on a stale picture of the desk.
     //
-    // This used to say "the panel object outlives open and close" (tick md1).
+    // This used to say "the panel object outlives open and close".
     // IT DOES NOT — the shell destroys the panel's Loader on hide, and two
     // things in this epic's blast radius depend on that as load-bearing fact:
     // CaptureStore's "the pictures die with the panel, because this component
@@ -1418,7 +1418,7 @@ Item {
   //
   // The exception is a TERMINAL's process tree, which answers "what is running
   // inside this window" — a question whose answer changes under a stable pid
-  // (tick gpq). That one expires; see cmdlineMaxAgeMs.
+  //. That one expires; see cmdlineMaxAgeMs.
 
   readonly property string desktopDumpScript:
     'for f in "$HOME"/.local/share/applications/*.desktop'
@@ -1463,7 +1463,7 @@ Item {
   //
   //   1. the watched identities that still need a launch command, through the
   //      ONE matcher, as everywhere else;
-  //   2. every live TERMINAL window, watched or not (tick 1uz). A terminal's
+  //   2. every live TERMINAL window, watched or not. A terminal's
   //      class names no app, so ticking one has to propose the app INSIDE it,
   //      and that proposal is built synchronously at the moment of the click.
   //      An unwatched terminal is in neither half of source 1 — it is not
@@ -1507,7 +1507,7 @@ Item {
         // once is asked for good. A TERMINAL's does not change either — but the
         // question asked about a terminal is what is RUNNING INSIDE it, and that
         // changes under a stable pid every time the user quits one program and
-        // starts another. Tick gpq: a tree read when the panel opened said
+        // starts another. A tree read when the panel opened said
         // "herdr", btop was running by the time the user ticked, and the panel
         // wrote herdr's identity and herdr's launch command. So a terminal's
         // answer expires; everything else is read once per panel opening.
@@ -1566,7 +1566,7 @@ Item {
     id: cmdlineProc
     // The pid list travels as $1 rather than being spliced into the script, so
     // even a pid that somehow got past the digits check cannot become code.
-    // Two levels of children as well as the window pid itself (tick dwv): a
+    // Two levels of children as well as the window pid itself: a
     // terminal's own cmdline is just the terminal, the app is its child, and an
     // interactive shell sits between them often enough that the grandchild has
     // to be reachable too. Same one Process, same marker protocol; the header
@@ -1594,7 +1594,7 @@ Item {
       // later read asks only about the pids it does not know yet, and QML only
       // notices a whole new object.
       //
-      // But the pids this read ASKED about are dropped first (tick gpq). A
+      // But the pids this read ASKED about are dropped first. A
       // terminal that has stopped running anything answers with no children at
       // all, and a merge would leave the previous answer standing — the panel
       // would keep proposing an app that is no longer there.
@@ -1661,7 +1661,7 @@ Item {
     root.stateModel = result.state
     root.stateLoaded = true
     // THE FOURTH PRECONDITION IS A TRIGGER TOO, for the reason `haveLiveData`
-    // is one (tick 2zi, second pass): a function guarded on four facts has to
+    // is one: a function guarded on four facts has to
     // be fired by whichever of them lands last, and on a panel opened over a
     // desk that is already quiet this is it. The latch inside makes the extra
     // call free.
@@ -1669,18 +1669,18 @@ Item {
   }
 
   // Persist. Atomic, because the service watches this file and a truncating
-  // write is observable (see the state-file rule in .tick/learnings.md), and
+  // write is observable (see the state-file rule in the project notes), and
   // round-tripped through StateModel so what the panel shows after a click is
   // literally what the file now says — normalization included.
   //
   // THE ONE PLACE THE PANEL TOUCHES THE STATE FILE. Every action above and below
   // — tick a chip, learn a launch, Record, undo, Forget, pause — arrives here,
   // which is why the read-only check for a newer-schema file sits here and
-  // nowhere else (tick 291). Such a file is read and shown, but writing it would
+  // nowhere else. Such a file is read and shown, but writing it would
   // strip whatever a later version added and stamp the newer number back on the
   // remains; StateModel.writeRefusal owns that rule and the service asks it too.
   //
-  // RETURNS whether the file now says what the caller asked for (tick sma).
+  // RETURNS whether the file now says what the caller asked for.
   // Every caller gates its success log on that, because the alternative is what
   // this repo exists not to do: the refusal below was a console.warn and the
   // next line of the caller logged "recorded 7 apps" regardless, so the panel
@@ -1704,7 +1704,7 @@ Item {
     return true
   }
 
-  // THE WRITE BLOCKS, AND THAT IS THE WHOLE POINT (tick m4s).
+  // THE WRITE BLOCKS, AND THAT IS THE WHOLE POINT.
   //
   // `setText` schedules an asynchronous write job by default, so `writeState`
   // returned true — and `recordLayout` returned true, and the IPC answered
@@ -1815,7 +1815,7 @@ Item {
     logPrefix: root.logPrefix
     hostScreen: root.focusedScreen
     hostMapped: root.opened
-    // THE SWITCH, RE-ASKED AT THE INSTANT OF THE WRITE (tick zxg). The store
+    // THE SWITCH, RE-ASKED AT THE INSTANT OF THE WRITE. The store
     // calls this just before saving, so pictures switched off while a round is
     // in flight cannot have one written back after the switch has already
     // deleted them all. `root.picturesOn` reads the CURRENT state model, which
@@ -1846,7 +1846,7 @@ Item {
   // ------------------------------------------------------- the live pictures
   //
   // WHAT THE WINDOWS LOOK LIKE RIGHT NOW, held in memory and nowhere else (epic
-  // tsp, tick 2zi). The whole rationale — why it is a separate component, why it
+  // tsp). The whole rationale — why it is a separate component, why it
   // may never write a file, and why it stands aside for Record — is at the top
   // of LiveCaptureStore.qml. This is the instance and the two questions the
   // panel asks it.
@@ -1860,7 +1860,7 @@ Item {
     hostMapped: root.opened
     // RECORD COMES FIRST, AND THIS ONE BINDING IS THE WHOLE ANSWER TO IT.
     //
-    // `captureStore.busy` dims Record (tick ilg) so a second round cannot
+    // `captureStore.busy` dims Record so a second round cannot
     // interleave with the first. If a live round shared that flag, Record would
     // go dim for a moment EVERY time the panel opened — a new defect, and a
     // worse one than the one ilg fixed. So the dependency runs one way only:
@@ -1872,7 +1872,7 @@ Item {
     yielding: captureStore.busy
     // THE SWITCH AND THE WATCH, RE-ASKED AT THE INSTANT THE PICTURE WOULD BE
     // KEPT — the same two questions the recorded store's predicate asks first,
-    // for the same reason (tick zxg): the round's plan is older than the
+    // for the same reason: the round's plan is older than the
     // answer, and unticking an app mid-round is exactly the interleave that
     // reason was written about. There is no THIRD half here, because a live
     // picture belongs to no recording.
@@ -1889,7 +1889,7 @@ Item {
   // alone is too early to plan from.
   //
   // AND IT IS TRIGGERED FROM ALL THREE OF ITS PRECONDITIONS, WHICH IS THE
-  // REPAIR (tick 2zi, second pass — one whole acceptance VM cycle).
+  // REPAIR.
   //
   // The first VM run drew no live picture at all and left NO LINE in the log,
   // because this function was called exactly once, at the only moment it could
@@ -1924,7 +1924,7 @@ Item {
 
   function startLiveRound() {
     // AND THE STATE FILE, which is the precondition `canRecord` already carries
-    // and this path did not (review z4b). `stateModel` starts life as
+    // and this path did not. `stateModel` starts life as
     // StateModel.defaultState(), whose `pictures` is TRUE, and the desktop read
     // is two processes that can land before the FileView does — so on a file
     // that says false a first open would photograph every watched window into
@@ -1950,7 +1950,7 @@ Item {
   // go, would answer a question nobody asked.
   //
   // THE SWITCH IS READ HERE AND NOWHERE ELSE ON THIS PATH, exactly as
-  // `captureFileFor` reads it for the recorded one (tick sp7): switching the
+  // `captureFileFor` reads it for the recorded one: switching the
   // pictures off stops the drawing in the same frame the flag is written,
   // without a panel reopen and without waiting for anything asynchronous —
   // because there is nothing asynchronous to wait for. `liveCaptures.clear()`
@@ -1958,7 +1958,7 @@ Item {
   // on again cannot show a frame from before the switch.
   //
   // THE MAP IS PASSED IN, for the reason `captureFileFor` passes the listing in
-  // (tick md1): a QML binding re-evaluates when a property it READ changes, and
+  //: a QML binding re-evaluates when a property it READ changes, and
   // `liveCaptures.pictures` read inside the store's own function is a dependency
   // nobody can see at this call site. Handing it to `urlIn` cannot be tidied
   // away, because without it there is no map to look in.
@@ -1983,7 +1983,7 @@ Item {
   // does.
   //
   // THE LISTING IS PASSED IN, and that is what makes every chip's picture
-  // refresh after an eviction (tick md1). A QML binding re-evaluates when a
+  // refresh after an eviction. A QML binding re-evaluates when a
   // property it READ changes, and `captureStore.files` read inside the store's
   // own `has()` is invisible at this call site. It used to be declared by a
   // `if (captureStore.generation < 0) return ""` — a branch that can never be
@@ -1993,7 +1993,7 @@ Item {
   // `captureStore.files` to `hasIn` cannot be tidied away, because without it
   // there is no listing to look in.
   //
-  // AND GATED ON THE SWITCH (tick sp7, now the one switch). Switching the
+  // AND GATED ON THE SWITCH. Switching the
   // pictures off deletes every one of them on every desk, but a `find` is a
   // process and a listing is another, and until both have come back
   // `captureStore.has()` still answers yes. Two frames of a photograph the user
@@ -2022,7 +2022,7 @@ Item {
     return name ? captureStore.pathFor(name) : ""
   }
 
-  // The same picture as a URL an Image can be bound to, or "" (tick vbh).
+  // The same picture as a URL an Image can be bound to, or "".
   //
   // Util.fileUrl, not a hand-built "file://" + path: it percent-encodes each
   // segment, and a home directory with a space in it is the ordinary case that
@@ -2077,7 +2077,7 @@ Item {
   // What terminalChildDerivation answers about the window a chip (or a list
   // row) points at, or null when there is nothing to ask.
   //
-  // This is the panel's half of the title-identity rule (tick 1uz): a plain
+  // This is the panel's half of the title-identity rule: a plain
   // `foot` window running `herdr` must not be watched as "every foot window",
   // and the only thing that can name the app inside it is the child process.
   // The read is already here — `argvByPid` and `procTree` come from the one
@@ -2085,8 +2085,8 @@ Item {
   // time and must never touch /proc.
   //
   // Untick asks nothing (the identity is already known), and a window whose
-  // cmdline has not come back yet answers "not-read" — a REFUSAL since tick
-  // gpq, not the class-only catch-all it used to fall back to.
+  // cmdline has not come back yet answers "not-read" — a REFUSAL since an earlier change, not the
+  // class-only catch-all it used to fall back to.
   //
   // The window's `initialTitle` travels with the question: a terminal already
   // launched `foot --title=herdr herdr` carries the answer on its own window,
@@ -2113,7 +2113,7 @@ Item {
   // does, and one that was "this terminal runs two things" stays up for as long
   // as that is true.
   //
-  // It also dies with its window (tick 8rw). The re-ask alone could not do
+  // It also dies with its window. The re-ask alone could not do
   // that: it resolves through PanelModel.clientForTick, whose class fallback
   // would re-derive the hint against a DIFFERENT foot window, or — with no
   // window of the class left — leave the reason at "not-read" and offer "press
@@ -2143,7 +2143,7 @@ Item {
   readonly property string tickRefusalHint: {
     var pending = root.refusedTick
     if (!pending) return ""
-    // Belt to the handler's braces (tick 8rw): the clear above is what removes
+    // Belt to the handler's braces: the clear above is what removes
     // the state, and this is what keeps a sentence about a closed window off
     // the screen in whatever frame sits between the two.
     if (!PanelModel.refusalStillLive(root.liveClients, pending)) return ""
@@ -2160,7 +2160,7 @@ Item {
   // Evidence-based and self-clearing, like shadowHint: it is gone the moment a
   // window matches.
   //
-  // Since tick s7l this covers a hand-authored non-terminal title identity too
+  // Since an earlier change this covers a hand-authored non-terminal title identity too
   // (`^chromium$` + `^Gmail$`), with a sentence that names its title patterns
   // instead of claiming a `--title` relaunch it has no convention for. The
   // inputs are unchanged: the same client list, identity list and matcher this
@@ -2191,7 +2191,7 @@ Item {
     }
     var derivation = root.tickDerivation(chip)
 
-    // ONE question, asked once (tick zkb). This used to ask suggestIdentity
+    // ONE question, asked once. This used to ask suggestIdentity
     // twice — through tickRefusalReason and again inside
     // toggleWatchedIdentities — and then diff the two lists with addedIdentity
     // to recover the identity the second call had already built. tickOutcome
@@ -2201,7 +2201,7 @@ Item {
       derivation, Engine.couldShadow)
 
     // A tick that cannot produce a working identity says so rather than writing
-    // the `^foot$` catch-all (tick gpq). The reason is kept, not the sentence:
+    // the `^foot$` catch-all. The reason is kept, not the sentence:
     // the hint re-asks the question every frame and clears itself.
     var refusal = chip.identityId ? "" : outcome.refusal
     if (refusal) {
@@ -2217,7 +2217,7 @@ Item {
 
     var next = outcome.identities
 
-    // DERIVE BEFORE THE WRITE (tick i07). A tick creates an identity with an
+    // DERIVE BEFORE THE WRITE. A tick creates an identity with an
     // empty launch, and "" means never start this one — so if the panel can
     // already answer for the app in front of it (its .desktop file is in the
     // scan, or its argv is in the cmdline map), the launch goes into the SAME
@@ -2235,7 +2235,7 @@ Item {
       var derived = PanelModel.launchDerivation(request ? [request] : [],
         root.desktopFiles, root.windowsByPid, root.procTree).commands
       var fills = PanelModel.launchAutofillIndex(next, derived)
-      // `own`, never `fills[added.id]` (tick 8hp, and the one lookup its sweep
+      // `own`, never `fills[added.id]` (and the one lookup its sweep
       // missed): for an id like "constructor" a bare read answers with
       // Object.prototype's member — truthy, and a native function where a
       // command belongs, which the log line would then print. The WRITE was
@@ -2249,12 +2249,12 @@ Item {
     }
 
     if (root.writeState(StateModel.setIdentities(root.stateModel, next))) {
-      // Name the identity the write actually created (tick l97), not the class
+      // Name the identity the write actually created, not the class
       // that was clicked — a title identity (foot hosting btop) creates an id
       // unrelated to the class ticked, and even the ordinary case (ticking
       // md.obsidian.Obsidian creates id "obsidian") reads clearer this way.
       //
-      // THE SUCCESS LINE IS FOR A LIST THAT CHANGED (tick v5c). It used to fall
+      // THE SUCCESS LINE IS FOR A LIST THAT CHANGED. It used to fall
       // back to `chip.className` when `added` was null, which is how a duplicate
       // tick came to log `watching "foot" — 3 identities` about an identity
       // nobody created: the refusal above now catches that case, and this branch
@@ -2262,7 +2262,7 @@ Item {
       // "the write succeeded" has never been the same claim as "something
       // changed", and only `added` can tell them apart.
       if (chip.identityId) {
-        // UNWATCHING TAKES THE PICTURES WITH IT (tick sp7), on every desk — and
+        // UNWATCHING TAKES THE PICTURES WITH IT, on every desk — and
         // the global switch does not change that. Watching is still per app, so
         // "stop watching this" is still an act about ONE app's pictures: an app
         // the tool no longer knows about must not leave photographs behind on
@@ -2318,7 +2318,7 @@ Item {
   // write it alone or together with a layout, so a Record is still ONE atomic
   // write and not two.
   //
-  // The line travels back rather than being logged here (tick sma): this ran
+  // The line travels back rather than being logged here: this ran
   // before the write was even attempted, so a refused Record still announced
   // that it had learned three launch commands.
   function withLearnedLaunches(base) {
@@ -2341,7 +2341,7 @@ Item {
     }
   }
 
-  // What a finished scan is allowed to write on its own (tick i07).
+  // What a finished scan is allowed to write on its own.
   //
   // The bug this closes: ticking an app writes `launch: ""` instantly — "" means
   // NEVER START THIS ONE — and the scan that could have filled it finishes a
@@ -2399,7 +2399,7 @@ Item {
   // the id `constructor` on a KEY MISS — which is exactly when a row offers a
   // repair — a bare bracket lookup answers with the `Object` constructor rather
   // than undefined. `if (!command)` let it past, and the state file gained
-  // `"launch": "function Object() { [native code] }"` (tick tnm). Both halves of
+  // `"launch": "function Object() { [native code] }"`. Both halves of
   // the answer are pure now: the guarded lookup and the check on the value.
   function learnLaunchFor(identityId) {
     var one = PanelModel.singleLaunchRepair(root.derivedLaunch, identityId)
@@ -2551,12 +2551,12 @@ Item {
     // reason to keep offering an undo of a record the file may no longer hold.
     root.recordUndo = null
 
-    // The slot is shared with Forget (tick gwa), and the log line names the act
+    // The slot is shared with Forget, and the log line names the act
     // it is undoing: a line reading "undid the record" after a Forget describes
     // a click the user never made.
     var act = PanelModel.undoStashAction(stash) === "forget" ? "forget" : "record"
 
-    // THE PICTURES FOLLOW THE LAYOUT, in both branches (tick sz6). The files on
+    // THE PICTURES FOLLOW THE LAYOUT, in both branches. The files on
     // disk belong to the record this press is undoing, and the layout being put
     // back is one whose own pictures were overwritten the moment that record
     // ran. Leaving them would draw photographs of windows at positions the
@@ -2589,7 +2589,7 @@ Item {
   // pictures all failed is still a good record.
   function recordLayout() {
     if (!root.canRecord) return false
-    // ONE WINDOW INDEX, TWO USES (tick 3xi). `chosen` numbers every watched
+    // ONE WINDOW INDEX, TWO USES. `chosen` numbers every watched
     // identity's windows in placement order, and it is what makes "occurrence 1"
     // mean a particular window. The layout is built from it and the pictures are
     // taken of it, so both are talking about the same desk read at the same
@@ -2610,7 +2610,7 @@ Item {
       root.warn("record refused: the monitor list resolves to no topology at all")
       return false
     }
-    // READ before the write, ARMED after it (tick sma). The layout this record
+    // READ before the write, ARMED after it. The layout this record
     // is about to replace has to be read from the state the write will replace
     // — but the undo BUTTON is the panel's one positive confirmation that a
     // record happened, and arming it before the write meant a refused write
@@ -2631,7 +2631,7 @@ Item {
     if (learned) root.log(learned.line)
     root.log("recorded " + recorded.apps.length + " apps for topology \"" + layout.topologyKey + "\"")
     // A short recording says why it is short. `excluded` is the engine's
-    // structured note (tick pqv): apps deliberately left out of the layout, not
+    // structured note: apps deliberately left out of the layout, not
     // apps that failed to record. Today the only reason is a scratchpad
     // workspace, whose negative id no dispatch can act on.
     var excluded = (layout.excluded || []).concat(converted.excluded)
@@ -2648,7 +2648,7 @@ Item {
       }
     }
 
-    // THE PICTURES, LAST AND OFF THIS STACK (tick sz6).
+    // THE PICTURES, LAST AND OFF THIS STACK.
     //
     // A SCREENSHOT MUST NEVER BE ABLE TO FAIL A RECORD, and this is where that
     // is enforced rather than intended. Three things make it true:
@@ -2670,7 +2670,7 @@ Item {
 
   // Take the pictures the layout just committed asks for.
   //
-  // THE WINDOW EACH PICTURE IS OF IS HANDED IN (tick 3xi). `chosen` is the very
+  // THE WINDOW EACH PICTURE IS OF IS HANDED IN. `chosen` is the very
   // index recordLayout built this layout from — the same object, not a second
   // computation — so a file stored under occurrence 1 is a photograph of the
   // window the recording calls occurrence 1.
@@ -2686,7 +2686,7 @@ Item {
   // could ever show it.
   //
   // No index, no pictures. Building one here would be exactly the second opinion
-  // this tick removed, and this codebase refuses rather than guesses.
+  // this change removed, and this codebase refuses rather than guesses.
   //
   // THE SWITCH is passed in, once, and it is the only gate there is: with
   // pictures on every watched window in the layout is photographed, and with
@@ -2753,7 +2753,7 @@ Item {
   // that had BOUND that property would be left holding a menu it can no longer
   // reopen. `overflowOpen` is this object's truth; the popup follows it.
   function openOverflow() {
-    // NOT reset here (tick be1): the row delegates are declared directly as
+    // NOT reset here: the row delegates are declared directly as
     // Popup.contentItem children, so QML instantiates them once, the moment
     // the Repeater's model first goes non-empty — the SAME instant on every
     // panel session, whether or not the menu has ever been opened — and they
@@ -2839,7 +2839,7 @@ Item {
       return false
     }
     root.recordUndo = stash
-    // THE PICTURES GO WITH THE RECORDING (tick sz6). Forgetting a layout is the
+    // THE PICTURES GO WITH THE RECORDING. Forgetting a layout is the
     // delete point, and a photograph of a window kept after the arrangement it
     // belonged to was deleted is exactly the thing this feature must not leave
     // lying around. AFTER the write, like the log line: a
@@ -2860,11 +2860,11 @@ Item {
   // follows the same signal the bar glyph's sweep does, and recordHint says out
   // loud why it went dim.
   //
-  // A read-only file dims it too (tick sma): the button's whole act is a write,
+  // A read-only file dims it too: the button's whole act is a write,
   // and an enabled button for a write that will be refused is the affordance
   // lying about what it does. writeRefusalReason says why, in the hint stack.
   //
-  // AND A CAPTURE ROUND IN FLIGHT DIMS IT TOO (tick ilg). `captureStore.busy`
+  // AND A CAPTURE ROUND IN FLIGHT DIMS IT TOO. `captureStore.busy`
   // existed and was read nowhere, so the ONLY thing standing between a second
   // Record and two interleaved capture queues over one compositor session was
   // the store refusing — and that refusal ran on top of the live round's own
@@ -2878,7 +2878,7 @@ Item {
     && root.writeRefusalReason === "" && !captureStore.busy
     && root.needsOmarchyReason === ""
 
-  // The same shape for the OTHER footer action (tick 66x). Restore now and a
+  // The same shape for the OTHER footer action. Restore now and a
   // failed row's Retry were lit while `restoreRefusalReason` held: the click
   // wrote the trigger, the panel dismissed itself, and the service refused the
   // cycle into its log — a dead end the user could only find by reading a log
@@ -2906,8 +2906,8 @@ Item {
   // written so the surface is already gone by the time the service's first
   // settle delay expires.
   //
-  // THIS IS NO LONGER THE ONLY PLACE THE RULE LIVES (tick eqb). A manual
-  // restore is not the only cycle that needs the keyboard: tick 35n's placement
+  // THIS IS NO LONGER THE ONLY PLACE THE RULE LIVES. A manual
+  // restore is not the only cycle that needs the keyboard: an earlier change's placement
   // choreography focuses the split parent before each move, and an AUTO cycle
   // — a dock, an undock — runs that with whatever is on screen, this panel
   // included. So the service closes this panel itself before executing any plan
@@ -2916,7 +2916,7 @@ Item {
   // because a manual restore should get out of the way whether or not the plan
   // turns out to need the focus.
   function restoreNow() {
-    // The inert file, LAST LINE OF DEFENCE (tick 66x). Both buttons that reach
+    // The inert file, LAST LINE OF DEFENCE. Both buttons that reach
     // here are already dim while `restoreRefusalReason` holds, but this function
     // is the thing that writes the trigger and then dismisses the panel, and a
     // dismissed panel is a refusal the user can only read in a log file. So the
@@ -3047,14 +3047,14 @@ Item {
   //     }
   //   }
   //
-  // THE MORPH (tick gug), and it is the epic's only evidence that the right
+  // THE MORPH, and it is the epic's only evidence that the right
   // chips morphed — nothing in the acceptance venue can watch a chip move, so
   // the pair set has to be readable instead. Four things about it:
   //
   //   `pairs` is PanelModel.mapMorphPairs's own answer, projected by
   //   PanelModel.morphPayload and NOT recomputed here. The panel pairs the two
   //   maps once, into `root.morph`, and the fade, the per-chip `morphRole` and
-  //   this key all read that one object (tick 3xi).
+  //   this key all read that one object.
   //
   //   `active` is `morphFade.running` — the animation's own property, not a
   //   flag the panel raises and lowers. It cannot latch: there is no store to
@@ -3101,7 +3101,7 @@ Item {
   // point the panel cannot see into, and reports through its own read-only
   // `dock-recall-bar` handler.
   //
-  // THE STRIP'S SHAPE (tick 0kv), and it is the whole of what this venue can
+  // THE STRIP'S SHAPE, and it is the whole of what this venue can
   // ask about a redesign. `strip` is always present and its three numbers are
   // read off the strip as it was LAID OUT — `columns` is how many cells share
   // its first line, `rowHeight` is a cell's actual height, `height` is the
@@ -3140,7 +3140,7 @@ Item {
   // delegate that actually drew the chip, from the same `positioned` flag and
   // the same resolved rect its x/y/width/height branch on. The map has two
   // layouts and the fallback one has hidden a broken model before
-  // (.tick/learnings.md, "QML/JS boundary"), so a second derivation from the
+  // (the project notes, "QML/JS boundary"), so a second derivation from the
   // model would be able to agree with the model while the screen did something
   // else.
   //
@@ -3184,7 +3184,7 @@ Item {
       + "/" + String(monitorName) + "/" + String(workspaceId)
   }
 
-  // Merge rather than replace, so a later tick can report its own fields from
+  // Merge rather than replace, so a later report can report its own fields from
   // its own handler without knowing who else reports on the same chip.
   function mergeRenderReport(store, key, report) {
     if (!key) return
@@ -3230,7 +3230,7 @@ Item {
   // construction and already on the row.
   //
   // Unlike the chip/row registries this is NOT scoped to "while the popup is
-  // up" (tick be1 found that assumption false: the delegates are declared as
+  // up" (an earlier change found that assumption false: the delegates are declared as
   // direct Popup.contentItem children, so QML creates them once, whenever the
   // Repeater's model first goes non-empty, and never destroys them merely
   // because the popup closes). Same discipline as chipRenderReports/rowReports
@@ -3247,13 +3247,13 @@ Item {
     root.mergeRenderReport(root.workspaceRenderReports, key, report)
   }
 
-  // The first-Record dialogue's two registries (tick y28): the answer buttons by
+  // The first-Record dialogue's two registries: the answer buttons by
   // CHOICE ID, and the thumbnails by identity-and-occurrence.
   //
   // Same discipline as every registry above — written by the delegate, never
   // reset, and panelState() iterates the MODEL and looks entries up. That is
   // what makes "a shut prompt reports no answers" true without a wipe, and it is
-  // the lesson tick be1 paid for: a Repeater's delegates are created once and
+  // the lesson an earlier change paid for: a Repeater's delegates are created once and
   // are not destroyed by the surface they sit on going away.
   // One field of a render report, as `null` rather than as nothing when the
   // delegate has not reported it. The distinction is the payload's whole
@@ -3306,8 +3306,8 @@ Item {
           for (var c = 0; c < members.length; c++) {
             var chip = members[c]
             var report = root.chipRenderReports[chip.key] || null
-            // THE STORED PICTURE, if the cache holds one for this chip (tick
-            // sz6). Panel-computed rather than delegate-reported, and named
+            // THE STORED PICTURE, if the cache holds one for this chip. Panel-computed rather than
+            // delegate-reported, and named
             // `capturePath` for exactly that reason: it is the claim "the cache
             // has a file for this identity, occurrence and topology", not the
             // claim "the chip drew it". The second claim is `captureSource`,
@@ -3325,7 +3325,7 @@ Item {
             var capturePath = root.showRecorded
               ? root.capturePathFor(chip.identityId, chip.occurrence) : ""
 
-            // THE LIVE PICTURE, as the PANEL's claim (tick 2zi) — "a photograph
+            // THE LIVE PICTURE, as the PANEL's claim — "a photograph
             // of this window, taken when the panel opened, is in memory right
             // now". The mirror of `capturePath` on the other map, and a BOOLEAN
             // rather than a location because there is no location: a live
@@ -3354,11 +3354,11 @@ Item {
               // delegate, for the reason the four above are.
               iconSource: root.reported(report, "iconSource"),
               iconResolved: root.reported(report, "iconResolved"),
-              // IS A LIVE PICTURE IN MEMORY FOR THIS CHIP (tick 2zi)? Always
+              // IS A LIVE PICTURE IN MEMORY FOR THIS CHIP? Always
               // present and always a boolean, unlike `capturePath`: "no" is a
               // fact this key always has to state, and a key that vanished when
               // the answer was no would make "the live map draws nothing"
-              // indistinguishable from "this tick is not deployed".
+              // indistinguishable from "this change is not deployed".
               liveCapture: liveCapture,
               // The two colour channels, independently readable. A drifted chip
               // is fillState "watched" and edgeTone "drift" at once.
@@ -3372,7 +3372,7 @@ Item {
               // the one that decides — which is what makes a disagreement here
               // a real finding rather than two guesses.
               treatment: root.reported(report, "treatment"),
-              // THAT THE CHIP'S TWO COLOUR CHANNELS ARE ANIMATED (tick fyi),
+              // THAT THE CHIP'S TWO COLOUR CHANNELS ARE ANIMATED,
               // read off the animation objects themselves rather than off the
               // token they were bound from — see the comment at the report site
               // in MapWorkspace.qml for why that distinction is the whole
@@ -3380,14 +3380,14 @@ Item {
               fillMotionMs: root.reported(report, "fillMotionMs"),
               edgeMotionMs: root.reported(report, "edgeMotionMs"),
               motionEasing: root.reported(report, "motionEasing"),
-              // THE DRIFT BREATHE (tick 5pu), reported with the fact it must
+              // THE DRIFT BREATHE, reported with the fact it must
               // agree with. `breathing` alone could be a loop pulsing the whole
               // map; `drifted` alone says nothing about motion. The pair is the
               // assertion, and neither half carries it.
               breatheMs: root.reported(report, "breatheMs"),
               breathing: root.reported(report, "breathing"),
               drifted: root.reported(report, "drifted"),
-              // WHICH SIDE OF THE MORPH THIS CHIP IS ON (tick gug), as the
+              // WHICH SIDE OF THE MORPH THIS CHIP IS ON, as the
               // CHIP was told it — the slot's opacity binding reads the same
               // property. Reported rather than looked up here for the reason
               // every draw-time field is: `root.morphRoleOf(chip.key)` would
@@ -3415,7 +3415,7 @@ Item {
             if (capturePath) chips[chips.length - 1].capturePath = capturePath
             var drawnCapture = root.reported(report, "captureSource")
             if (drawnCapture) chips[chips.length - 1].captureSource = drawnCapture
-            // AND THE LIVE MAP'S HALF OF THE SAME PAIR (tick 2zi): the in-process
+            // AND THE LIVE MAP'S HALF OF THE SAME PAIR: the in-process
             // image URL the delegate bound and DREW. Added rather than assigned
             // for the reason `captureSource` is — a chip with no live picture has
             // nothing to say here, and "" would be a second spelling of that.
@@ -3448,7 +3448,7 @@ Item {
         linkKey: root.reported(rowReport, "linkKey"),
         linked: rowLinked
       })
-      // WHAT THE CELL'S TOOLTIP IS SAYING (tick 0kv), and only while the cell is
+      // WHAT THE CELL'S TOOLTIP IS SAYING, and only while the cell is
       // lit. ADDED rather than assigned, because the payload's rule is that a
       // key the panel has nothing to say about is ABSENT — a cell nobody is
       // hovering is showing no tooltip, and "" would be a second spelling of
@@ -3496,7 +3496,7 @@ Item {
     }
 
     // The overflow menu's rows, and ONLY while it is open — the store itself
-    // (tick be1) is never cleared, since its delegates outlive the popup being
+    // is never cleared, since its delegates outlive the popup being
     // closed, so visibility here is what keeps a shut menu reporting nothing.
     // Iterated from the MODEL, same discipline chips/rows use above: a layout
     // the current overflowModel.rows does not carry (a forgotten one whose
@@ -3531,7 +3531,7 @@ Item {
       badgeTone: root.reported(header, "badgeTone"),
       overflowOpen: root.overflowOpen,
       overflowLayouts: layouts,
-      // THE ONE SWITCH (schema v7, epic wau). ALWAYS PRESENT and always a
+      // THE ONE SWITCH (schema v7). ALWAYS PRESENT and always a
       // boolean: whether this tool may photograph is a fact the panel has, not
       // a value it is waiting for a delegate to report, and a key that vanished
       // when the answer was "off" would make "the pictures are off" and "this
@@ -3550,7 +3550,7 @@ Item {
       workspaces: workspaces,
       chips: chips,
       rows: rows,
-      // THE STRIP AS IT WAS LAID OUT (tick 0kv), always present: how many cells
+      // THE STRIP AS IT WAS LAID OUT, always present: how many cells
       // share its first line, how tall one of them ended up, and how much of the
       // card the whole thing takes. Read off the component rather than
       // recomputed from PanelModel.stripLayout — the redesign's claim is about
@@ -3673,7 +3673,7 @@ Item {
       return "no-row"
     }
 
-    // THE PICTURES SWITCH (schema v7, epic wau), driven the way the overflow
+    // THE PICTURES SWITCH (schema v7), driven the way the overflow
     // menu drives it. Through root.setPictures and nothing else — that function
     // is the one place that re-reads the state file before writing, evicts both
     // stores on the way off, restarts the live round on the way on, and gates
@@ -3715,7 +3715,7 @@ Item {
     }
 
     // THE THREE ACTS ON A RECORDING, driven the way their buttons drive them
-    // (tick sz6). Through root.recordLayout / undoRecord / forgetLayout and
+    //. Through root.recordLayout / undoRecord / forgetLayout and
     // nothing else: those three own the fresh read, the atomic write, the
     // one-shot undo stash and the picture cache's eviction, and an IPC path
     // that wrote a layout directly would be a second recorder with none of it.
@@ -3849,7 +3849,7 @@ Item {
         // Esc backs out ONE LEVEL AT A TIME: the menu if it is open, then the
         // panel itself. There is no third level — the first-Record dialogue was
         // the one surface that ever took the keyboard away from the panel, and
-        // it is gone (epic wau).
+        // it is gone.
         onCloseRequested: root.overflowOpen ? root.closeOverflow() : root.dismiss()
         onMoveRequested: function (dx, dy) { root.handleMove(dx, dy) }
         // Space and Enter both land here (PanelKeyCatcher emits
@@ -4098,7 +4098,7 @@ Item {
               }
 
               // The overflow menu: recorded topologies, forget this layout,
-              // re-record (tick gwa).
+              // re-record.
               //
               // A QtQuick.Controls Popup dressed in the kit's own surface
               // tokens, which is the shell's own idiom for a menu that lives
@@ -4341,7 +4341,7 @@ Item {
               // the numbers happen to settle.
               height: Math.max(root.mapMinHeight, mapCanvas.height)
                 + mapSurface.contentTopInset + mapSurface.contentBottomInset
-              // THE CARD IS THE FRAME (tick ep6). This surface drew a filled,
+              // THE CARD IS THE FRAME. This surface drew a filled,
               // outlined box inside the card's own 2-px outline, and the monitor
               // box drew a third inside that — five nested rectangles in the
               // same beige line, from the card down to a window's picture, with
@@ -4363,7 +4363,7 @@ Item {
                 width: Math.max(1, mapSurface.width - mapSurface.contentLeftInset - mapSurface.contentRightInset)
                 height: childrenRect.height
 
-                // HOW BIG EVERY TILE ON THE MAP IS, at ONE scale (tick dmm).
+                // HOW BIG EVERY TILE ON THE MAP IS, at ONE scale.
                 //
                 // The monitors arrive already ordered left to right (mapGeometry
                 // sorts them by their place on the desk), so the row below IS the
@@ -4382,7 +4382,7 @@ Item {
                 // THE COPY IS NOT CEREMONY. `monitors` reaches this binding as a
                 // property var, so its members are QVariant-wrapped on the way
                 // in and a model function that type-checks arrays would reject
-                // them (.tick/learnings.md, the QML/JS boundary). Plain objects
+                // them (the project notes, the QML/JS boundary). Plain objects
                 // in a plain array is what the pure function is handed.
                 readonly property var layout: {
                   var monitors = root.mapModel.monitors
@@ -4433,7 +4433,7 @@ Item {
                 // rectangle, because a workspace you cannot read is not a truer
                 // picture than a section that is a little too tall.
                 //
-                // THEY STACK SINCE TICK yn6, in the human's own words answering
+                // THEY STACK SINCE an earlier change, in the human's own words answering
                 // his gate: "I want two separated sections vertically, one
                 // section for laptop and one (or more) for each external
                 // monitor". Side by side, two labels and two runs of tiles six
@@ -4466,7 +4466,7 @@ Item {
                       required property int index
 
                       // THIS SECTION'S PLACE ON THE MAP, at the map's one scale
-                      // (ticks dmm, yn6): how wide the section is — the whole
+                      //: how wide the section is — the whole
                       // map, since they stack — how wide a tile in it is, and
                       // how tall that tile's canvas is. All three come from the
                       // same pure answer, so a section cannot be laid out to a
@@ -4489,7 +4489,7 @@ Item {
                       height: monitorColumn.implicitHeight
                         + monitorRect.contentTopInset + monitorRect.contentBottomInset
                       // THE MONITOR BOX IS GONE ON A LAPTOP, AND BACK ON A DESK
-                      // (ticks ep6, then 0qd). ep6 removed it on every monitor
+                      //. ep6 removed it on every monitor
                       // count; the definition of done had only asked for "no
                       // monitor box on a single monitor", and the human's look
                       // on a real two-monitor desk found what that cost — two
@@ -4586,7 +4586,7 @@ Item {
                         // many rows as the section's width needs. The packing
                         // (how many columns, how big a tile) is a pure function
                         // so it can be argued with in a test rather than in a
-                        // screenshot — and since tick dmm it is the SAME answer
+                        // screenshot — and since an earlier change it is the SAME answer
                         // for every section, which is what makes two monitors'
                         // rows line up.
                         Flow {
@@ -4604,7 +4604,7 @@ Item {
                             // levels down, where a comment had about
                             // twenty-eight usable columns and a two-line
                             // binding therefore cost thirty-six lines of
-                            // it. Moved out whole in tick xk5 — same
+                            // it. Moved out whole in an earlier change — same
                             // bindings, same words, no behaviour change,
                             // and both render paths went with it.
                             //
@@ -4619,7 +4619,7 @@ Item {
                               monitorName: monitorRect.modelData.name
                               boxWidth: monitorRect.section.tileWidth
                               // AND ITS HEIGHT, handed in rather than derived
-                              // (tick dmm). A tile that worked its own height out
+                              //. A tile that worked its own height out
                               // from its own width and its monitor's aspect is
                               // exactly how two monitors of equal logical height
                               // ended up with tiles of different heights.
@@ -4706,7 +4706,7 @@ Item {
                       // first, and it is on screen for 120 ms. What has to be
                       // recognisable while it moves is which app it is.
                       //
-                      // BUT IT WEARS WHAT THE CHIP WEARS (tick ep6). The edge's
+                      // BUT IT WEARS WHAT THE CHIP WEARS. The edge's
                       // width is the chip's `edgeWidth` said again here —
                       // `Math.max(1, Style.normalBorderWidth)`, so a theme moves
                       // both together — and the icon follows the chip's rule
@@ -4803,7 +4803,7 @@ Item {
             // The file is read-only, so nothing in this panel can change it.
             // Said once, persistently, in the urgent colour — the alternative
             // was a Record that logged success and grew an Undo button for a
-            // write that never happened (tick sma).
+            // write that never happened.
             Text {
               textFormat: Text.PlainText
               width: parent.width
@@ -4816,12 +4816,12 @@ Item {
             }
 
             // ...and the other half of the same condition: no restore will run
-            // from it either (tick t03). Separate line, because "read-only"
+            // from it either. Separate line, because "read-only"
             // reads as "your layouts are safe, you just cannot change them" —
             // and the user needs to know the dock has stopped acting.
             //
             // Named, because restoreNow scrolls it into view when a manual
-            // restore is refused (tick 66x): the line is always on screen while
+            // restore is refused: the line is always on screen while
             // the file is inert, but on a long panel "on screen" can mean below
             // the fold, and a dim button the user just pressed deserves to point
             // at the sentence that explains it.
@@ -4894,8 +4894,8 @@ Item {
             //
             // 277 lines used to end here, six levels down with the row
             // delegate at eight — half of them comment, in a column of about
-            // fifty-five characters. Moved out whole in tick kex: same
-            // bindings, same words, no behaviour change. Tick 0kv then
+            // fifty-five characters. Moved out whole in an earlier change: same
+            // bindings, same words, no behaviour change. An earlier change then
             // replaced what was inside it — ten bordered 54-px form rows
             // became a grid of compact cells, several to a line.
             //
@@ -4913,7 +4913,7 @@ Item {
             // ------------------------------- workspaces not in their shape
             //
             // Tiled workspaces a restore did not or could not bring back to the
-            // recorded tile shape (status.shapes, epic 9i2). Same glyph as window
+            // recorded tile shape (status.shapes). Same glyph as window
             // drift; THIS is where the reason lives. It sits below the map and
             // the list, so both render paths (tiled and stacked) show it, and it
             // is invisible when there are none: a status with shapeCount 0
@@ -4983,7 +4983,7 @@ Item {
 
                   // The same cursor question the chips and the footer buttons
                   // ask, asked here for the same reason: this row's Retry is in
-                  // the Tab chain now (tick wgj / finding F4), and a section the
+                  // the Tab chain now (an earlier change / finding F4), and a section the
                   // keyboard can reach has to SHOW where the keyboard is.
                   readonly property bool hasCursor: root.focusSection === "failed"
                     && root.failedCursorKey === failedRow.modelData.key
@@ -5113,8 +5113,8 @@ Item {
                   onHasCursorChanged: if (hasCursor) root.ensureCursorVisible(restoreButton)
                   // Nothing recorded for this topology means nothing to
                   // restore; the sketch's empty state leaves Record as the
-                  // only lit action. An INERT state file dims it too (tick
-                  // 66x) — the service will refuse the cycle, and a lit button
+                  // only lit action. An INERT state file dims it too — the service will refuse the
+                  // cycle, and a lit button
                   // for a refused cycle is the affordance lying about what it
                   // does. Both reasons live in canRestore; the tooltip and the
                   // panel's own Inert line say which one holds.

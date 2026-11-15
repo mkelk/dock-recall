@@ -20,7 +20,7 @@
 #        skipped by not calling this library at all: the launch wrapper below
 #        stamps DR_NESTED_SANDBOX_PID and tests/nested.lua refuses to configure
 #        without it, so a bare `Hyprland -c tests/nested.lua` aborts instead of
-#        opening a window on the user's desk (tick n1s;
+#        opening a window on the user's desk (an earlier change;
 #        sandbox_probe_unmarked_start proves it, tests/sandbox-nested-guard.sh
 #        runs it);
 #     2. nothing steals focus — the live `activewindow` is compared
@@ -30,7 +30,7 @@
 #     3. nothing writes live state — ~/.local/state/omarchy/dock-recall.json is
 #        compared byte-for-byte, the desk's monitor-workspaces{,-merged} by
 #        mtime (the nested compositor runs Omarchy 4.5's monitor-workspaces.lua,
-#        tick zf6), and the sandbox's HOME is a mktemp dir.
+#        an earlier change), and the sandbox's HOME is a mktemp dir.
 #
 # Usage, from a script in tests/:
 #
@@ -60,7 +60,7 @@ SHELL_DIR="${OMARCHY_PATH:-/usr/share/omarchy}/shell"
 LIVE_SIG="${HYPRLAND_INSTANCE_SIGNATURE:-}"
 LIVE_STATE="$HOME/.local/state/omarchy/dock-recall.json"
 
-# Omarchy 4.5's per-monitor workspace state on the DESK (tick zf6). The nested
+# Omarchy 4.5's per-monitor workspace state on the DESK. The nested
 # compositor now runs default/hypr/monitor-workspaces.lua, which writes these two
 # files under $XDG_STATE_HOME — the sandbox's, because the launch wrapper exports
 # it. Should that redirect ever slip, the module would rewrite the human's block
@@ -80,7 +80,7 @@ mtime_of() {
 # here ever does. `[workspace <name> silent]` on the exec keeps the launch from
 # taking focus as well (learnings § QML/JS boundary).
 SPECIAL_WS="special:dr-sandbox"
-# The nested output size every case runs on (tick 5wo); override only to probe.
+# The nested output size every case runs on; override only to probe.
 # Narrow on purpose: sandbox-fidelity's Q case builds its designed tree (qa over
 # qb | (qc / qd)) here, and on 1000 or 1400 wide it builds three stacked rows,
 # which fit two trees and are refused as ambiguous-tree.
@@ -91,7 +91,7 @@ NESTED_OUTPUT_H="${NESTED_OUTPUT_H:-850}"
 # seeded identity matches and the class `foot --app-id=…` produces, so the two
 # move together.
 #
-# NAMESPACED, and the plain names are IGNORED (tick 66x). These four used to
+# NAMESPACED, and the plain names are IGNORED. These four used to
 # read `${APP_ID:-dr-sim}` straight from the environment, and `APP_ID` is a name
 # half the world exports — an Android build, a Flatpak helper, a shell rc. An
 # ambient one silently reconfigured the gate: the seeded identity would match a
@@ -295,7 +295,7 @@ owned_by_nested() {
 
 # ----------------------------------------------------------------- config check
 
-# The four knobs, validated before anything is built out of them (tick 66x).
+# The four knobs, validated before anything is built out of them.
 #
 # They are not just labels: APP_ID is interpolated into a JSON state file AND
 # into the anchored regex that identity matches on (`"^$APP_ID$"`), OUTPUT names
@@ -361,7 +361,7 @@ sandbox_check_config() {
 
 # --------------------------------------------- within-workspace fidelity helpers
 #
-# Lifted from the throwaway probes of epic 0lh (probe-grouping-tiling,
+# Lifted from the throwaway probes of the grouping probes (probe-grouping-tiling,
 # probe-group-position, probe-active-tab) once they became asserted cases
 # (tests/sandbox-fidelity.sh). They drive the NESTED compositor only — every one
 # goes through `nested`, which is pinned to $NESTED_SIG — so they are usable only
@@ -706,7 +706,7 @@ LAUNCH
   # showing that workspace.
   # POLLED: the window maps a moment after the compositor answers hyprctl, and a
   # single read in that gap sees no client at all ("none"), which is what the
-  # first 4.5 run saw (tick eth). Only a window that is mapped can be misparked.
+  # first 4.5 run saw. Only a window that is mapped can be misparked.
   local nested_window_ws special_open
   _nested_window_ws() { live clients -j | jq -r --argjson p "$NESTED_PID" 'first(.[]|select(.pid==$p)|.workspace.name)//"none"'; }
   _nested_window_mapped() { [[ $(_nested_window_ws) != none ]]; }
@@ -719,7 +719,7 @@ LAUNCH
     fail "nested compositor window is on '$nested_window_ws' (special open: $special_open)"
   fi
 
-  # A FIXED OUTPUT SIZE (tick 5wo). The nested output is the size of the nested
+  # A FIXED OUTPUT SIZE. The nested output is the size of the nested
   # compositor's window, and a parked window takes the size the live desk gives a
   # tiled client: 701x850 undocked, 2126x850 docked. Dwindle builds a different
   # tree on each, so the same case ran on different scenarios by desk. Float the
@@ -741,7 +741,7 @@ LAUNCH
     fail "nested output is $(nested monitors all -j | jq -r 'first(.[]|select(.id==0)|"\(.width)x\(.height)")'), wanted ${NESTED_OUTPUT_W}x${NESTED_OUTPUT_H}"
   fi
 
-  # NO persistent workspace rules (tick zf6). Up to 4.0 this loop pinned 1..10
+  # NO persistent workspace rules. Up to 4.0 this loop pinned 1..10
   # as persistent so a `workspace.move` to a not-yet-launched window's workspace
   # found one. On 4.5 the nested compositor runs monitor-workspaces.lua (see
   # tests/nested.lua), which gives every monitor its own block of ten and

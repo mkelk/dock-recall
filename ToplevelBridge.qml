@@ -14,7 +14,7 @@
 // tests. What is here is what cannot be pure: turning an index back into a live
 // QObject, and THE CLOCK.
 //
-// THE CLOCK IS THE POINT (tick w25). `Hyprland.toplevels` is empty for about a
+// THE CLOCK IS THE POINT. `Hyprland.toplevels` is empty for about a
 // second after a shell starts and then fills incrementally, so "the model does
 // not have this address" means *the window closed* or *the model has not got
 // there yet*, and the two are the same sentence. Nothing pure can tell them
@@ -35,8 +35,8 @@
 // wait, built once here so the capture ticks do not each invent a timeout and
 // one of them forget.
 //
-// WHAT WAS MEASURED (tick o2x, nested sandbox, quickshell 0.3.1, Hyprland 0.56;
-// re-measured for the timing claims in tick w25):
+// WHAT WAS MEASURED (nested sandbox, quickshell 0.3.1, Hyprland 0.56;
+// re-measured for the timing claims in an earlier change):
 //
 //   · The model fills ASYNCHRONOUSLY. For roughly the first second of a shell's
 //     life `Hyprland.toplevels` is empty; `refreshToplevels()` posts a request
@@ -125,7 +125,7 @@ QtObject {
   // QVariant-wrapped V4Sequence, which indexes and has `.length` but is NOT an
   // Array to `Object.prototype`, so a pure function's `isArray()` would
   // silently reject it and every lookup would come back "missing" with nothing
-  // in the log to say why (.tick/learnings.md § QML/JS boundary).
+  // in the log to say why (the project notes § QML/JS boundary).
   function snapshot() {
     var model = Hyprland.toplevels;
     var entries = PanelModel.toplevelSnapshot(model ? model.values : null);
@@ -200,7 +200,7 @@ QtObject {
 
     // `decided` and `ok` are RE-derived, because the handle re-check above can
     // have moved a resolved entry into `pending` since classifyToplevels
-    // answered — but they are derived by the SAME function it used (tick md1).
+    // answered — but they are derived by the SAME function it used.
     // This was a second spelling of the rule, in different text, right beside
     // the one the tests pin: the tested source and the running source could
     // differ, and nothing would say so.
@@ -254,7 +254,7 @@ QtObject {
   // This is the wait every capture needs, written once. Without it each capture
   // tick builds its own timer, and the one that forgets hangs the whole cycle
   // on a monitor that is asleep — the handle resolves, `hasContent` never
-  // arrives, and nothing times out (measured, tick o2x).
+  // arrives, and nothing times out (measured).
   //
   // Returns false when the call itself was wrong (no callback, a QML sequence
   // for `addresses`); the callback still fires for the latter, with the refusal.

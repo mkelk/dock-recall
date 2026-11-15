@@ -18,7 +18,7 @@
 -- drags in the exec-once storm (bar, shell, agents) and a second omarchy-shell
 -- fighting over the same state files. No exec-once at all — the test drives
 -- everything through hyprctl. The ONE exception is Omarchy 4.5's per-monitor
--- workspaces module, loaded on its own below the park guard (tick zf6): it
+-- workspaces module, loaded on its own below the park guard: it
 -- renumbers workspaces on every monitor change, and a sandbox without it would
 -- prove the plugin against a desk that no longer exists.
 
@@ -144,19 +144,19 @@ hl.config({
   -- window the desktop's user opens splits to the right/bottom (force_split = 2)
   -- and a split keeps its orientation when a sibling closes (preserve_split).
   -- Without them the sandbox tiled under Hyprland defaults, which is not the
-  -- tree a real Omarchy desk builds (tick 4qb, epic 9i2).
+  -- tree a real Omarchy desk builds.
   dwindle = {
     force_split = 2,
     preserve_split = true,
   },
 
   misc = {
-    -- `disable_logo` used to sit here and is gone (tick n1s). It is not a key
+    -- `disable_logo` used to sit here and is gone. It is not a key
     -- this Hyprland has: `misc:disable_hyprland_logo` just below is the real
     -- spelling, and `misc:disable_logo` appears nowhere in 0.56.2's config
     -- table. What it did NOT do — measured both ways in the nested sandbox,
     -- with the key in and out — is produce the red "Your config has errors"
-    -- overlay .tick/learnings.md blames it for: `hyprctl configerrors` comes
+    -- overlay the project notes blames it for: `hyprctl configerrors` comes
     -- back blank either way, because the LUA config manager ignores an unknown
     -- table key silently (only the hyprlang parser errors on one). So this was
     -- a line that did nothing and claimed to do something, which is reason
@@ -178,7 +178,7 @@ hl.bind("SUPER + SHIFT + Q", hl.dsp.exit())
 
 -- ============================================ OMARCHY 4.5 PER-MONITOR WORKSPACES
 --
--- default/hypr/monitor-workspaces.lua, loaded in isolation (tick zf6). On a 4.5
+-- default/hypr/monitor-workspaces.lua, loaded in isolation. On a 4.5
 -- desk every monitor owns a block of ten workspace ids (block 0 = 1..10, block 1
 -- = 11..20, …), and a reconcile on every monitor add/remove and config reload
 -- moves and RENUMBERS workspaces to keep it so. That is the behaviour the plugin

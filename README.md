@@ -357,37 +357,11 @@ after one fails**: the point of a pre-release pass is to learn everything that i
 wrong in one sitting, not one thing per run. It prints a table and exits nonzero
 if anything did.
 
-**A HISTORICAL TRANSCRIPT follows** — a real run of 2026-09-02, kept verbatim as
-evidence that the summary reads the suite's own footer. Its numbers are that
-day's and are deliberately NOT refreshed: a transcript edited to match today is
-no longer evidence of anything. The count to trust is the one in the command
-block above, which is quoted in exactly one place for that reason.
-
-```
-#  STEP                                             RESULT   SECONDS
------------------------------------------------------------------
-1  node --test 'tests/**/*.test.js'                 PASS           0
-2  omarchy plugin validate .                        PASS           0
-3  qmllint (syntax) on the seven QML files          PASS           0
-4  tests/sandbox-dock.sh                            PASS          31
-5  tests/sandbox-future-version.sh --both           PASS          65
-6  tests/sandbox-reserved-id.sh                     PASS          35
-7  tests/acceptance/run.sh                          PASS         329
------------------------------------------------------------------
-   TOTAL                                            PASS         460
-
-node suite: 835 tests passed, 0 failed
-dock-recall full stack: PASS
-```
-
-That last line is why the count above is quotable at all: the summary reads the
-suite's own footer, so the number in this file and the number the tests report
-can be compared rather than trusted. It is quoted in exactly ONE place —
-the command block above — because it has now drifted three times in one
-increment, every time because two paragraphs said it. (The transcript is from
-2026-09-02: it says 835, and its step 3 still names a hand-written file list,
-which is now a glob.) About eight minutes, all of it headless. Per-step logs land in a directory the summary names —
-`DR_RUN_ALL_LOG_DIR` picks it, `DR_RUN_ALL_SKIP="4 5"` skips tiers that are
+The summary prints one line per step with its result and time, then reads the
+suite's own footer for the node test count, so the number it reports is the
+number the tests report. It takes about eight minutes, all of it headless.
+Per-step logs land in a directory the summary names: `DR_RUN_ALL_LOG_DIR`
+picks it, `DR_RUN_ALL_SKIP="4 5"` skips tiers that are
 known-unavailable on a machine (a skipped step reports SKIP and never a pass).
 
 What it deliberately does **not** run is `tests/sim-dock.sh`, or anything else

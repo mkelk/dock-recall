@@ -117,7 +117,7 @@ test("a recorded layout survives the round trip unchanged", () => {
   const layout = sampleLayout();
   const parsed = state.parseState(state.serializeState(state.upsertLayout(state.defaultState(), layout)));
   // The stored shape is topologyKey/recordedAt/apps. buildLayout also returns
-  // `excluded` (tick pqv) — its report of apps deliberately left out — which
+  // `excluded` — its report of apps deliberately left out — which
   // normalizeLayout drops on the way in and nothing reads back off the file.
   assert.deepStrictEqual(state.layoutFor(parsed.state, LAPTOP_KEY), {
     topologyKey: layout.topologyKey,
@@ -389,7 +389,7 @@ test("normalizing a layout preserves placement fields this version does not know
 
 // ------------------------------------------- schema v2: geometry and paused
 
-// The contract added in tick xz9: every app entry carries `at`/`size` (or an
+// The contract added in an earlier change: every app entry carries `at`/`size` (or an
 // explicit null), the root carries `paused`, and a v1 file becomes a v2 file on
 // the way in without losing a byte of what it said.
 
@@ -588,7 +588,7 @@ test("a version from the FUTURE keeps its number; an older one does not", () => 
 
 // ------------------------------------ a file from the FUTURE is READ-ONLY
 //
-// Tick 291. The read of a newer-schema file is sound; the ROUND TRIP is not.
+// The read of a newer-schema file is sound; the ROUND TRIP is not.
 // normalizeIdentity is a whitelist (that is the junk repair a hand-editable file
 // needs) so it drops every identity field a newer version added, and
 // migrateVersion keeps the newer number — so a write persists stripped content
@@ -700,7 +700,7 @@ test("a Record, a panel edit and a pause toggle each leave a v10 file byte-ident
 
   // The file is still READ correctly — the identity it names is materialized in
   // memory and the panel can show it. What it may no longer do is DRIVE the
-  // desktop; see the restoreRefusal block below (tick t03).
+  // desktop; see the restoreRefusal block below.
   assert.strictEqual(state.identities(loaded).length, 1);
   assert.deepStrictEqual(state.identities(loaded)[0].titlePatterns, ["^scratch$"]);
 });
@@ -799,7 +799,7 @@ test("Service.qml gates every restore path on restoreRefusal", () => {
     "flushPendingRestore replays a held request against a file that may not be acted on");
 });
 
-// The panel's half of the same contract (tick 66x). Service.requestRestore
+// The panel's half of the same contract. Service.requestRestore
 // refuses an inert file, but it refuses it into a log — and the panel had
 // already written the trigger and DISMISSED ITSELF by then, so the user's click
 // vanished with no sentence attached to it. The refusal has to happen before
@@ -897,7 +897,7 @@ test("a refused write can never look like it worked", () => {
   assert.ok(occurrences(body, "return true") >= 1, "and true when the file says what was asked");
 
   // 2. EVERY caller gates on the answer. A bare `root.writeState(...)` followed
-  //    by a log line is exactly the shape this tick removed.
+  //    by a log line is exactly the shape this change removed.
   const calls = source.split("\n").filter((line) => line.indexOf("root.writeState(") !== -1);
   assert.ok(calls.length >= 7, "the whole family is here: " + calls.length);
   for (const line of calls) {
@@ -959,7 +959,7 @@ test("every writer of the state file consults writeRefusal before touching the d
 
 // --------------------------------------- schema v3: the occurrence index
 
-// Tick xjb. `occurrence` says WHICH window of an identity an entry describes.
+// `occurrence` says WHICH window of an identity an entry describes.
 // It ships here as schema and migration only: nothing yet writes anything but
 // 0, and the point of these tests is that turning the number on cost no file
 // anything it used to say.
@@ -1096,10 +1096,10 @@ test("the recorder writes an occurrence on every entry it produces", () => {
 
 // ------------------------------------------ schema v4: identity titles
 
-// Tick cag. `titlePatterns` is a second regex list on an identity, matched
+// `titlePatterns` is a second regex list on an identity, matched
 // against a client's `initialTitle` — the field that tells `foot --title herdr`
 // from a plain foot terminal, which class alone cannot. It ships HERE as schema
-// and migration only: the matching itself lives in engine.js (tick 3e7), and
+// and migration only: the matching itself lives in engine.js, and
 // nothing in this file compiles or applies a pattern.
 
 // Exactly the four fields an identity has had since v7 removed v5's `pictured`,
@@ -1213,7 +1213,7 @@ test("the upgraded v3 file plans and scores exactly as it did before", () => {
 
 // ------------------------- schema v4: neutralizing the retired --app-id launch
 
-// Tick j8o. v3's launch backfill wrote terminal launches as
+// v3's launch backfill wrote terminal launches as
 // `<terminal> --app-id=<identity-id> <command>` — it forced a window class per
 // identity so a class pattern could claim the window. The mechanism is retired
 // (see TERMINAL_FAMILY in PanelModel.js: no terminal family agrees on the flag,
@@ -1281,7 +1281,7 @@ test("a hand-written --app-id launch the identity's patterns DO claim survives",
 });
 
 test("an --app-id that is not the retired backfill's survives the migration", () => {
-  // Tick bcc. The detector asked one question — "does this command spell
+  // The detector asked one question — "does this command spell
   // `--app-id` anywhere?" — and the retired backfill was not the only thing that
   // does. Two ordinary launches were EMPTIED on the way to v4:
   //
@@ -1366,7 +1366,7 @@ test("the version bump is unchanged for a v3 file whose launches are clean", () 
 
 test("the launch subtraction belongs to v3 -> v4, not to \"older than today\"", () => {
   // THE BUG THIS CLOSES, and it shipped with the v5 -> v6 bump and survived to
-  // v7 (review z4b). normalizeState handed normalizeIdentities `isOlderVersion`,
+  // v7. normalizeState handed normalizeIdentities `isOlderVersion`,
   // which is "older than whatever STATE_VERSION is now" — so the moment the
   // number moved past 4, v4's one deliberate subtraction started re-running on
   // every file below the current generation. A v6 identity carrying a hand-typed
@@ -1506,7 +1506,7 @@ test("a v6 file reads as v9: one switch on, both consents gone, nothing else mov
   }
 });
 
-// ------------------------------------------ schema v8: slots (tick ucu)
+// ------------------------------------------ schema v8: slots
 //
 // v7 recorded a LIVE workspace id (global numbering); Omarchy 4.5 gives every
 // monitor its own block of ten, so v8 records the SLOT (1..10) and Slots.toLive
@@ -1743,7 +1743,7 @@ test("setPictures writes the boolean and touches nothing else", () => {
 });
 
 test("every top-level setter carries the switch through", () => {
-  // THE BUG THIS CLOSES, and it is the one .tick/learnings.md already names:
+  // THE BUG THIS CLOSES, and it is the one the project notes already names:
   // four setters used to END with an enumerated `{version, paused, identities,
   // layouts}` literal, so a new top-level field would survive the setter that
   // wrote it and be silently dropped by the first Record. Here that would mean
@@ -1931,7 +1931,7 @@ test("an empty monitor list has nothing to focus", () => {
   assert.deepStrictEqual(state.pickFailoverTarget(null, "eDP-1"), { kind: "none", name: "" });
 });
 
-// ------------------------------------ failover plan: the locked re-assert (s58)
+// ------------------------------------ failover plan: the locked re-assert
 
 const MON = (name, focused, extra) => Object.assign(
   { name, focused, x: 0, y: 0, width: 1920, height: 1080, scale: 1 }, extra || {});
@@ -2044,7 +2044,7 @@ test("a default status says nothing is known yet", () => {
     unsupportedReason: "",
     restoring: false,
     paused: false,
-    // v2 (tick 97e). Nothing is waiting on an unlock until a cycle says so.
+    // v2. Nothing is waiting on an unlock until a cycle says so.
     deferredLocked: false,
     lastResult: null,
     // An empty table, not a missing one: "no app has a verdict yet" is a
@@ -2445,7 +2445,7 @@ test("locked cursor centre swaps width and height on an odd transform", () => {
   }
 });
 
-// ------------------------------- schema v9: active tab and layout mode (9i2)
+// ------------------------------- schema v9: active tab and layout mode 
 //
 // Two recorded facts per entry: the workspace's `layoutMode` and, on a group
 // membership, `active` — whether this member was the group's visible tab. v8 ->
@@ -2596,7 +2596,7 @@ test("group.active and layoutMode survive parse -> serialize -> parse and Slots.
   ]);
 });
 
-// Epic 9i2 (tick zuz): an unmet tiled shape is the same drifted glyph.
+// The fidelity epic: an unmet tiled shape is the same drifted glyph.
 const SHAPE_ROW = { workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: "ambiguous-tree" };
 const ALL_OK = { summary: { ok: 1, drifted: 0, missing: 0, skipped: 0 } };
 

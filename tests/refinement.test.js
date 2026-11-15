@@ -1,6 +1,6 @@
-// Tiled refinement — tick pyo.
+// Tiled refinement — an earlier change.
 //
-// Tick 35n put the right windows on the right workspace in the right tree, and
+// An earlier change put the right windows on the right workspace in the right tree, and
 // closed nothing at all for the case the user reported: a redock that re-tiled
 // workspace 8 IN PLACE. Nothing had to move, `planRestore` said "nothing to do",
 // and the desktop scored 0.782 with every verdict green. Two defects live in
@@ -24,7 +24,7 @@ const assert = require("node:assert");
 const engine = require("../engine.js");
 const { makeClient } = require("./helpers.js");
 
-// The 3-window spine tree the or5 probe built, and the same tree with both
+// The 3-window spine tree the probe built, and the same tree with both
 // dividers dragged somewhere else — the exact pair § 9 of the state matrix
 // measured being repaired in two dispatches.
 const RECORDED3 = [
@@ -106,7 +106,7 @@ test("the swap dispatch names BOTH windows and uses target, never direction", ()
     'hyprctl dispatch \'hl.dsp.window.swap({ window = "address:0xa", target = "address:0xb" })\''
   ]);
   // `direction` resolves from the ACTIVE window and not from the selector
-  // (or5 § 7), so a restore using it would swap whatever the user is looking at.
+  //, so a restore using it would swap whatever the user is looking at.
   assert.ok(commands[0].indexOf("direction") === -1);
 });
 
@@ -122,7 +122,7 @@ test("a swap names two windows, and every consumer sees both", () => {
 // -------------------------------------------------------------------- ratios
 
 test("a scrambled two-divider tree is repaired one nudge at a time, outer first", () => {
-  // Exactly the sequence docs/state-matrix.md § Tiled placement § 9 measured.
+  // Exactly the sequence the state matrix § Tiled placement § 9 measured.
   const first = engine.planWorkspaceTiling(RECORDED3, SCRAMBLED3);
   assert.deepEqual(first.swaps, []);
   assert.equal(first.dividers.length, 1, "one nudge per plan");
@@ -131,7 +131,7 @@ test("a scrambled two-divider tree is repaired one nudge at a time, outer first"
   assert.equal(first.dividers[0].size[0], 701);
 
   // After that nudge the compositor gives 'a' its 701 and hands the rest to the
-  // far side, which is what or5 measured. The next plan takes the inner cut.
+  // far side, which is what the placement probe measured. The next plan takes the inner cut.
   const afterOuter = [
     { key: "a", at: [12, 38], size: [701, 850] },
     { key: "b", at: [727, 38], size: [701, 250] },
@@ -150,7 +150,7 @@ test("a scrambled two-divider tree is repaired one nudge at a time, outer first"
 test("THE SIGN LAW: the far side of a divider is never nudged, so nothing can fight", () => {
   // 'b' is the right-hand window: its far edge on x IS the edge of the tiling,
   // so a resize at it lands on 2*current - asked and walks AWAY from the target
-  // (or5 § 8, measured). Both windows are the wrong width here — the classic
+  // (measured). Both windows are the wrong width here — the classic
   // two-windows-one-divider fight — and only the left one may be asked.
   const recorded = [
     { key: "a", at: [12, 38], size: [900, 850] },
@@ -200,7 +200,7 @@ test("SIGN LAW: touching a divider is not the same as being able to push it", ()
 });
 
 test("NO OSCILLATION: a target the divider cannot reach is asked for once and then stopped", () => {
-  // 62 px is the minimum tile width this compositor will give (or5 § 8: asked
+  // 62 px is the minimum tile width this compositor will give (asked
   // for 30 it answers "ok" and gives 62). A recording made at a width the
   // divider can no longer reach — a smaller monitor, say — asks once.
   const recorded = [
@@ -327,7 +327,7 @@ const RECORDED_RECTS = RECORDED3.map((i) => ({ at: i.at, size: i.size }));
 
 test("the ws-8 case end to end: a plan that used to be empty is now one swap", () => {
   // Windows one and two have traded slots and nothing else is wrong. Before
-  // this tick planRestore returned [] for exactly this desktop.
+  // this change planRestore returned [] for exactly this desktop.
   const live = clients3([RECORDED3[1], RECORDED3[0], RECORDED3[2]].map((i) => ({ at: i.at, size: i.size })));
   const plan = engine.planRestore(live, MONITORS, layout3(RECORDED_RECTS), IDS);
   assert.deepEqual(plan.map((op) => op.kind), ["swap"]);
@@ -411,7 +411,7 @@ test("refinement moves no verdict: tiled stays measured, never graded", () => {
 });
 
 // ======================================================================
-// Tick eqb — the ambiguity refusal, the choreography contract, and the
+// The ambiguity refusal, the choreography contract, and the
 // refinement's own iteration budget.
 // ======================================================================
 
@@ -479,7 +479,7 @@ test("a 2x2 grid is ambiguous too, and it is ambiguous in the OTHER way", () => 
 
 test("the unambiguous shapes still refine — the guard is a scalpel, not a shutdown", () => {
   // The two trees the whole epic is built on: the spine and the fan. If the
-  // ambiguity guard caught either of these, tick pyo's 60-for-60 would be gone.
+  // ambiguity guard caught either of these, an earlier change's 60-for-60 would be gone.
   assert.equal(engine.layoutIsAmbiguous(RECORDED3), false);
   assert.equal(engine.layoutIsAmbiguous(SCRAMBLED3), false);
   const program = engine.planWorkspaceTiling(RECORDED3, SCRAMBLED3);
@@ -604,7 +604,7 @@ test("PLACEMENT is ambiguity-safe, and keeps its choreography on an ambiguous la
   // The distinction the whole guard rests on: building from empty is judged by
   // the rects it produces, and every valid tree produces these. So an ambiguous
   // recording is still ordered and still stamped with split parents — refusing
-  // it would throw away tick 35n's 1.000 for a risk that does not exist here.
+  // it would throw away an earlier change's 1.000 for a risk that does not exist here.
   const order = engine.placementOrderOf(THREE_COLUMNS);
   assert.equal(order.length, 3);
   assert.equal(order[0].parentKey, null);
@@ -648,7 +648,7 @@ test("a plain move dispatches no focus, so there is nothing to verify or hand ba
 // A dwindle tree of n windows has n − 1 cuts and the planner emits ONE divider
 // nudge per workspace per plan, so a seven-window workspace needs six
 // plan/execute iterations — every one of them progress. Service.maxIterations
-// is 5, and before tick eqb those six spent that budget: the pass warned
+// is 5, and before an earlier change those six spent that budget: the pass warned
 // GIVE-UP and counted a failure on iteration six, the cycle converged on its
 // next settle pass anyway, and the user got "1 failed" for a restore that
 // worked. The fix is a second budget, and this is the fixture that proves the
@@ -681,7 +681,7 @@ function spineTiling(count, box, ratio) {
 // near side to the asked-for extent, and RESCALE both subtrees into their new
 // boxes. That last part is what the property test's simulator cannot do and
 // what makes this fixture worth having — a nudge here disturbs everything under
-// the divider it moves, exactly as or5 § 8 measured.
+// the divider it moves, exactly as the probe measured.
 function boxOfKeys(keys, byKey) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const key of keys) {
@@ -848,7 +848,7 @@ test("…and the sentence comes back the moment that workspace drifts", () => {
   assert.equal(drifted.tilingRefusals[0].reason, "ambiguous-tree");
 });
 
-// ------------------------------------------------- one flip, one dispatch (uk5)
+// ------------------------------------------------- one flip, one dispatch
 //
 // `different-shape` used to be the end of the conversation: no sequence of
 // divider moves turns one split tree into another, so the workspace was left as
@@ -1007,14 +1007,14 @@ test("planHasFocusOps names BOTH ops that need the keyboard, and no others", () 
   assert.deepEqual(engine.planWithoutFocusOps(null), []);
 });
 
-// ------------------------------------------------ a tab group is ONE tile (9i2)
+// ------------------------------------------------ a tab group is ONE tile 
 //
 // A group holds one rect of the split tree, shared by every tab. Before epic
-// 9i2 the planner saw N identical rects — no guillotine tiling — and refused a
+// the grouped-tile change the planner saw N identical rects — no guillotine tiling — and refused a
 // group beside anything else as `not-a-tree` for ever (finding-grouping-tiling,
 // probe G2: IoU 0.000 with a green bar). Now the group is one tile, keyed by
 // its tab-0 window, and the swap / divider ops name that key: a swap or a
-// resize at any member moves the whole tile (tests/nested-notes.md 9i2 (c),
+// resize at any member moves the whole tile (tests/nested-notes.md, fidelity facts (c),
 // (d)).
 
 const GIDS = [
@@ -1051,14 +1051,14 @@ function refinementOps(plan) {
   return plan.filter((op) => op.kind === "swap" || op.kind === "divider" || op.kind === "split");
 }
 
-test("9i2: the recording keeps the group's tab order and one shared rect", () => {
+test("the recording keeps the group's tab order and one shared rect", () => {
   const byId = {};
   for (const app of GROUP_LAYOUT.apps) byId[app.identityId] = app;
   assert.deepEqual([byId.ga.group.index, byId.gc.group.index, byId.gb.group.index], [0, 1, 2]);
   assert.equal(byId.gd.group, null);
 });
 
-test("9i2: a group recorded on top and living at the bottom is ONE swap, addressed to its leader", () => {
+test("a group recorded on top and living at the bottom is ONE swap, addressed to its leader", () => {
   const live = groupDesk(GROUP_BOTTOM, TILE_TOP);
   const report = engine.driftOf(live, MONITORS, GROUP_LAYOUT, GIDS);
   assert.deepEqual(report.tilingRefusals, [], "a group beside a tile is a tree, not a refusal");
@@ -1068,7 +1068,7 @@ test("9i2: a group recorded on top and living at the bottom is ONE swap, address
     "the group is named by its tab-0 window and by nothing else");
 });
 
-test("9i2: a dragged divider beside a group is one nudge, on the NEAR side", () => {
+test("a dragged divider beside a group is one nudge, on the NEAR side", () => {
   // Group on top (near side of the one divider), dragged up to 300.
   const draggedNear = groupDesk({ at: [12, 59], size: [1416, 279] }, { at: [12, 352], size: [1416, 536] });
   const near = refinementOps(engine.planRestore(draggedNear, MONITORS, GROUP_LAYOUT, GIDS));
@@ -1083,7 +1083,7 @@ test("9i2: a dragged divider beside a group is one nudge, on the NEAR side", () 
   assert.deepEqual(far.map((op) => [op.kind, op.address, op.axis]), [["divider", "0xd", 1]]);
 });
 
-test("9i2: a group still to be built is PENDING — no refinement, and no refusal either", () => {
+test("a group still to be built is PENDING — no refinement, and no refusal either", () => {
   // Taken apart and re-tiled: the group op will change every rect here.
   const apart = [
     makeClient({ address: "0xa", class: "app-ga", workspace: 5, at: [12, 38], size: [701, 418] }),
@@ -1102,7 +1102,7 @@ test("9i2: a group still to be built is PENDING — no refinement, and no refusa
   assert.deepEqual(engine.driftOf(wrongOrder, MONITORS, GROUP_LAYOUT, GIDS).tilingRefusals, []);
 });
 
-test("9i2: an unwatched tab inside the group is not a stranger", () => {
+test("an unwatched tab inside the group is not a stranger", () => {
   const ring = GROUP_ORDER.concat(["0x99"]);
   const tab = makeClient({ address: "0x99", class: "nobody-watches-this", workspace: 5,
     at: GROUP_BOTTOM.at.slice(), size: GROUP_BOTTOM.size.slice(), grouped: ring.slice() });
@@ -1116,16 +1116,16 @@ test("9i2: an unwatched tab inside the group is not a stranger", () => {
     MONITORS, GROUP_LAYOUT, GIDS), []);
 });
 
-test("9i2: a settled group-and-tile workspace plans nothing", () => {
+test("a settled group-and-tile workspace plans nothing", () => {
   assert.deepEqual(engine.planRestore(groupDesk(GROUP_TOP, TILE_BOTTOM), MONITORS, GROUP_LAYOUT, GIDS), []);
 });
 
-// ------------------------------------------- layout-mode refusals (9i2, §2.4)
+// ------------------------------------------- layout-mode refusals (§2.4)
 //
 // Omarchy 4.5 gives every workspace a mode: dwindle, scrolling, or floating (a
 // floating workspace is a dwindle one whose windows 4.5 floated and tagged).
 // On scrolling, `swap` and `resize` answer "ok" and really do rearrange — only
-// togglesplit errors (tests/nested-notes.md 9i2 (g)) — so no error will ever
+// togglesplit errors (tests/nested-notes.md, fidelity facts (g)) — so no error will ever
 // catch a split-tree op aimed at one. The refusal is named instead.
 
 const DWINDLE5 = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
@@ -1139,7 +1139,7 @@ function tagged(clients, tag) {
   return clients.map((c) => Object.assign({}, c, { floating: true, tags: [tag] }));
 }
 
-test("9i2 modes: moves into a SCROLLING workspace keep their moves and lose every splitParent", () => {
+test("modes: moves into a SCROLLING workspace keep their moves and lose every splitParent", () => {
   const away = clients3(RECORDED_RECTS).map((c) => Object.assign({}, c, { workspace: { id: 9, name: "9" } }));
   const layout = layout3(RECORDED_RECTS);
   const dwindle = engine.planRestore(away, MONITORS, layout, IDS, DWINDLE5);
@@ -1152,7 +1152,7 @@ test("9i2 modes: moves into a SCROLLING workspace keep their moves and lose ever
   assert.deepEqual(engine.driftOf(away, MONITORS, layout, IDS, SCROLLING5).tilingRefusals, []);
 });
 
-test("9i2 modes: a finished SCROLLING workspace plans no swap, divider or split, and says why", () => {
+test("modes: a finished SCROLLING workspace plans no swap, divider or split, and says why", () => {
   const live = clients3(SCRAMBLED_RECTS);
   const layout = layout3(RECORDED_RECTS);
   assert.ok(refinementOps(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5)).length > 0,
@@ -1177,7 +1177,7 @@ test("9i2 modes: a finished SCROLLING workspace plans no swap, divider or split,
   assert.equal(ambiguous.tilingRefusals[0].reason, "layout-scrolling");
 });
 
-test("9i2 modes: a FLOATING workspace is read off the tag, and gets no float toggle and no tiled op", () => {
+test("modes: a FLOATING workspace is read off the tag, and gets no float toggle and no tiled op", () => {
   const layout = layout3(RECORDED_RECTS);
   // 4.5 floated every window and placed it itself.
   const placed = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }, { at: [218, 131], size: [1100, 612] }];
@@ -1196,7 +1196,7 @@ test("9i2 modes: a FLOATING workspace is read off the tag, and gets no float tog
   }
 });
 
-test("9i2 modes: a float's GEOMETRY op on a floating workspace is unaffected", () => {
+test("modes: a float's GEOMETRY op on a floating workspace is unaffected", () => {
   const layout = layout3(RECORDED_RECTS);
   layout.apps[0] = Object.assign({}, layout.apps[0], { floating: true, at: [300, 200], size: [800, 500] });
   const live = tagged(clients3([{ at: [310, 200], size: [800, 500] }, RECORDED_RECTS[1], RECORDED_RECTS[2]]),
@@ -1205,7 +1205,7 @@ test("9i2 modes: a float's GEOMETRY op on a floating workspace is unaffected", (
   assert.deepEqual(plan.map((op) => op.kind), ["geometry"], JSON.stringify(plan));
 });
 
-test("9i2 modes: a STALE floating tag reads as floating, and the plan does less for one pass", () => {
+test("modes: a STALE floating tag reads as floating, and the plan does less for one pass", () => {
   // 4.5 drops the tag one timer tick after a window leaves a floating
   // workspace. A read in between sees it on the (dwindle) destination: the
   // safe misreading — no float toggle and no tiled op — and the next read,
@@ -1219,7 +1219,7 @@ test("9i2 modes: a STALE floating tag reads as floating, and the plan does less 
     [{ kind: "floating", address: "0x3", value: false }]);
 });
 
-test("9i2 modes: a workspace recorded in another mode gets no tiled op, and says so", () => {
+test("modes: a workspace recorded in another mode gets no tiled op, and says so", () => {
   const live = clients3(SCRAMBLED_RECTS);
   const scrolled = withMode(layout3(RECORDED_RECTS), "scrolling");
   assert.deepEqual(engine.planRestore(live, MONITORS, scrolled, IDS, DWINDLE5), []);
@@ -1233,7 +1233,7 @@ test("9i2 modes: a workspace recorded in another mode gets no tiled op, and says
   assert.ok(refinementOps(engine.planRestore(live, MONITORS, scrolled, IDS, DWINDLE5)).length > 0);
 });
 
-test("9i2 modes: recorded FLOATING, live dwindle: no float toggle, and no geometry op at a tiled window", () => {
+test("modes: recorded FLOATING, live dwindle: no float toggle, and no geometry op at a tiled window", () => {
   const floats = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }, { at: [218, 131], size: [1100, 612] }];
   const layout = layout3(floats);
   layout.apps = layout.apps.map((a) => Object.assign({}, a, { floating: true, layoutMode: "floating" }));
@@ -1242,7 +1242,7 @@ test("9i2 modes: recorded FLOATING, live dwindle: no float toggle, and no geomet
     ["floating", "floating", "floating", "geometry", "geometry", "geometry"], "the context-free control");
 
   assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [],
-    "a resize at a tiled window moves the split (tick y29) — so nothing at all");
+    "a resize at a tiled window moves the split — so nothing at all");
   const report = engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5);
   for (const app of report.apps) {
     assert.equal(app.drift.floating, false);
@@ -1251,7 +1251,7 @@ test("9i2 modes: recorded FLOATING, live dwindle: no float toggle, and no geomet
   assert.ok(engine.geometrySkipPhrase("layout-mode-differs").indexOf("different layout mode") >= 0);
 });
 
-test("9i2 modes: no context, or a context that reads nothing, is the plan without one, byte for byte", () => {
+test("modes: no context, or a context that reads nothing, is the plan without one, byte for byte", () => {
   const away = clients3(RECORDED_RECTS).map((c) => Object.assign({}, c, { workspace: { id: 9, name: "9" } }));
   const desks = [
     [clients3(SCRAMBLED_RECTS), layout3(RECORDED_RECTS), IDS],
@@ -1272,7 +1272,7 @@ test("9i2 modes: no context, or a context that reads nothing, is the plan withou
   }
 });
 
-// ------------------------------------------- the known tree (9i2 §2.5)
+// ------------------------------------------- the known tree (§2.5)
 //
 // A workspace this restore BUILT, every arrival's focus and axis read back
 // (context.built), holds the tree its program was read from — whatever else
@@ -1296,7 +1296,7 @@ const T_BUILT = [
 ];
 const KNOWN = { treeKnown: true };
 
-test("9i2 known tree: probe T's three rows get one divider op on ta, the near side of the inner cut", () => {
+test("known tree: probe T's three rows get one divider op on ta, the near side of the inner cut", () => {
   assert.equal(engine.layoutIsAmbiguous(T_RECORDED), true, "the fixture must be the ambiguous case");
   const program = engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, KNOWN);
   assert.deepEqual(program.swaps, [], "the program put everyone in their slot: nothing to swap");
@@ -1305,7 +1305,7 @@ test("9i2 known tree: probe T's three rows get one divider op on ta, the near si
   assert.equal(engine.tilingRefusalOf(T_RECORDED, T_BUILT, KNOWN), null);
 });
 
-test("9i2 known tree: probe T converges in at most two simulated plans", () => {
+test("known tree: probe T converges in at most two simulated plans", () => {
   const tree = engine.splitTreeOf(T_RECORDED);
   let current = T_BUILT.map((i) => ({ key: i.key, at: i.at.slice(), size: i.size.slice() }));
   let plans = 0;
@@ -1320,7 +1320,7 @@ test("9i2 known tree: probe T converges in at most two simulated plans", () => {
   assert.deepEqual(current.find((i) => i.key === "ta").size, [691, 136]);
 });
 
-test("9i2 known tree: the same rects WITHOUT the flag stay refused as ambiguous, with no op", () => {
+test("known tree: the same rects WITHOUT the flag stay refused as ambiguous, with no op", () => {
   const refusal = {};
   assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, refusal), null);
   assert.equal(refusal.reason, "ambiguous-tree");
@@ -1330,7 +1330,7 @@ test("9i2 known tree: the same rects WITHOUT the flag stay refused as ambiguous,
   assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, {}), null);
 });
 
-test("9i2 known tree: a 2x2 grid recorded horizontal-first nudges the recorded tree's divider", () => {
+test("known tree: a 2x2 grid recorded horizontal-first nudges the recorded tree's divider", () => {
   // The two rows were recorded with their dividers at different x — only a
   // horizontal root fits that. Built 50/50 it is a perfect grid, which fits
   // both trees, so the rects alone cannot say which column divider is a's.
@@ -1368,7 +1368,7 @@ test("9i2 known tree: a 2x2 grid recorded horizontal-first nudges the recorded t
   assert.equal(engine.planWorkspaceTiling(recorded, after, null, KNOWN), null, "converged in one nudge");
 });
 
-test("9i2 known tree: a recording that is not a tree is still not-a-tree", () => {
+test("known tree: a recording that is not a tree is still not-a-tree", () => {
   const pinwheel = [
     { key: "a", at: [0, 0], size: [60, 40] },
     { key: "b", at: [60, 0], size: [40, 60] },
@@ -1382,7 +1382,7 @@ test("9i2 known tree: a recording that is not a tree is still not-a-tree", () =>
   assert.equal(engine.tilingRefusalOf(pinwheel, pinwheel, KNOWN), "not-a-tree");
 });
 
-test("9i2 known tree: through the planner, context.built for the workspace lifts the refusal and nothing else", () => {
+test("known tree: through the planner, context.built for the workspace lifts the refusal and nothing else", () => {
   const ids = ["one", "two", "three"];
   const classes = ["app-one", "app-two", "app-three"];
   const layout = layoutN(T_RECORDED, ids);
@@ -1409,7 +1409,7 @@ test("9i2 known tree: through the planner, context.built for the workspace lifts
   assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, scrolled), []);
 });
 
-// Tick 5wo — sandbox-fidelity Q and G2 went red at the wave-5 gate with no code
+// An earlier change — sandbox-fidelity Q and G2 went red at the wave-5 gate with no code
 // change behind it: the same two cases fail the same way on the W2 commit that
 // passed them, once the nested output is wide. The nested output is as big as
 // the parked window the live desk gave it (701x850 on the W2 day, 2126x850 on
@@ -1482,7 +1482,7 @@ test("5wo: G2's intended shape — a group of three as one tile beside gd — sw
   assert.equal(program.swaps.length, 1, JSON.stringify(program));
 });
 
-// ------------------------------------------- a split on a group tile (tick v2p)
+// ------------------------------------------- a split on a group tile
 //
 // `togglesplit` flips the node of the FOCUSED window, and focusing a member of
 // a group that is not its visible tab makes it the visible tab (§2 amendment).

@@ -1,5 +1,5 @@
 // strip.test.js — the app strip: how it packs, what it says on hover, and what
-// its cells report (tick 0kv).
+// its cells report.
 //
 // TWO KINDS OF ASSERTION, and the split is the same one the rest of this suite
 // makes. `stripLayout` and `rowTooltipText` are pure functions with right answers,
@@ -7,14 +7,14 @@
 // and not the 54-px `Ui/Toggle` it replaced, that the switch is at the right
 // edge, that the report carries `hoverText` only while the cell is lit — can
 // only be checked by reading the tree, because node cannot instantiate QML and
-// `qmllint -I "$OMARCHY_PATH/shell" *.qml` is syntax-only here (measured in
-// 06-bwf: it exits 0 on an unknown id and on a handler for a signal that does
+// `qmllint -I "$OMARCHY_PATH/shell" *.qml` is syntax-only here (measured once:
+// it exits 0 on an unknown id and on a handler for a signal that does
 // not exist). Same tactic as tests/qml-plaintext.test.js and
 // tests/qml-interface.test.js: the scan IS the assertion, so every scanner
 // below carries a vacuity guard that fails when it stops matching.
 //
 // WHAT IT IS PROTECTING. The strip replaced a list whose right edge moved every
-// time an app was unticked (tick 5jl, found live), and the redesign's own
+// time an app was unticked, and the redesign's own
 // checklist item 5 is that the right edge holds. That is an arithmetic claim
 // about `stripLayout` and a structural claim about the cell, and both are here.
 
@@ -56,7 +56,7 @@ function codeOf(source) {
 // here are inside the block rather than on it — the learn-launch MouseArea is
 // found by the sibling it anchors to, and a scanner that started counting from
 // THAT line would return two lines that contain nothing and pass every
-// assertion made about them. That is tick md1's lesson in this file's own
+// assertion made about them. That is an earlier change's lesson in this file's own
 // currency: an opener that matches the wrong thing is an assertion that ran
 // over an empty string.
 function blockAround(source, inside) {
@@ -165,7 +165,7 @@ test("THE RIGHT EDGE HOLDS: how many apps there are cannot change the grid", () 
   // number of rows — a watched identity with two windows is two rows, and the
   // unwatched class it falls back to is one — so if the count narrowed the
   // grid, every tick would reflow the whole strip to a different cell width.
-  // That is the defect tick 5jl fixed on the old list's caption, and this is
+  // That is the defect an earlier change fixed on the old list's caption, and this is
   // the shape it would come back in.
   const one = panel.stripLayout(1, 628, MIN_CELL, GAP);
   for (const count of [2, 3, 4, 5, 9, 40]) {
@@ -212,7 +212,7 @@ test("a cell's hover text is the row tooltip, and its last line is what Restore 
   // where the app is, and the hint says what can be done about starting it.
   assert.strictEqual(lines[lines.length - 1], "learn launch");
 
-  // IFF present. A row with no hint says exactly what it said before tick pct
+  // IFF present. A row with no hint says exactly what it said before an earlier change
   // folded the two functions together — not a longer string that happens to
   // render the same, because a trailing blank line is a popup with a hole in it.
   const noHint = Object.assign({}, DRIFTED_ROW, { launchHint: "" });
@@ -236,16 +236,16 @@ test("a cell's hover text is the row tooltip, and its last line is what Restore 
 });
 
 test("there is ONE row tooltip function, and the strip calls it", () => {
-  // Tick 0kv shipped `rowHoverText` — rowTooltipText plus the hint — because
+  // An earlier change shipped `rowHoverText` — rowTooltipText plus the hint — because
   // the strip wave was forbidden tests/panel.test.js, which pins this
-  // function's exact lines for a watched terminal row. Tick pct owns both
-  // files, so the fold happened and the wrapper is gone. Two functions where
+  // function's exact lines for a watched terminal row. Both files are
+  // editable now, so the fold happened and the wrapper is gone. Two functions where
   // one caller needs one answer is how the two drift apart, so this asserts the
   // wrapper stays gone rather than merely that the fold happened once.
   assert.strictEqual(typeof panel.rowTooltipText, "function");
   assert.strictEqual(panel.rowHoverText, undefined,
     "PanelModel exports rowHoverText again — the strip needs ONE row tooltip,"
-    + " and tests/panel.test.js pins that one's lines (tick pct)");
+    + " and tests/panel.test.js pins that one's lines");
   assert.ok(codeOf(APP_STRIP).indexOf("rowHoverText") === -1,
     "AppStrip.qml still calls rowHoverText");
 });
@@ -434,7 +434,7 @@ test("hoverText is reported only while the cell is lit, and never as a caption k
     "hoverText is assigned inside the report literal, so it is present on every"
     + " row whether or not the cell is lit:\n" + report);
 
-  // The seven fields that were there before this tick are still there.
+  // The seven fields that were there before this change are still there.
   for (const field of ["name", "watched", "ghost", "iconSource", "iconResolved",
     "linkKey", "linked"]) {
     assert.ok(new RegExp("\\b" + field + ":").test(report),
@@ -449,7 +449,7 @@ test("hoverText is reported only while the cell is lit, and never as a caption k
 });
 
 test("every property the report captures has a handler that re-runs it", () => {
-  // THE REPORT-SITE RULE, and it is in .tick/learnings.md because this exact
+  // THE REPORT-SITE RULE, and it is in the project notes because this exact
   // shape shipped once: the row reported `iconResolved: false` for a whole
   // session although the icon had resolved, because `reportRender()` re-ran on
   // `iconSource` and nothing told it to re-run when `iconResolved` changed.
@@ -522,7 +522,7 @@ test("a row's hoverText is gated again where the payload is built", () => {
   // The registry MERGES and is never pruned (see rowReports in Panel.qml), so
   // the text of the last cell hovered outlives the hover. Gating at READ time,
   // on the delegate's own reported `linked`, is what keeps a stale entry out of
-  // the payload — the same discipline tick be1 paid for with the overflow menu.
+  // the payload — the same discipline an earlier change paid for with the overflow menu.
   const code = codeOf(PANEL_QML);
   assert.match(code, /if\s*\(\s*rowLinked\s*===\s*true\s*\)/,
     "panelState() no longer gates hoverText on the row's reported `linked`");

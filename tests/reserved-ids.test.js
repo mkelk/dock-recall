@@ -1,6 +1,6 @@
 // An identity id that collides with an Object.prototype key.
 //
-// The bug (tick 8hp, found by epic 4gz's correctness review): every index in
+// The bug: every index in
 // this project is a bare `{}` keyed by an identity id, and `map[id]` on a bare
 // object ANSWERS for `constructor`, `toString`, `valueOf`, `hasOwnProperty` and
 // the rest whether or not anything was ever put there. So a dedupe map said
@@ -235,7 +235,7 @@ test("matchLayout pairs a reserved id's recorded entry to its live window", () =
 
 // ----------------------------------------------- the maps that were still QML
 //
-// Tick v29 / finding A8. The 8hp sweep fixed every map node could reach and
+// The 8hp sweep fixed every map node could reach and
 // stopped at the QML boundary, so three bare-object dedupes keyed by exactly
 // these strings survived in Panel.qml and Service.qml — where a node test
 // cannot see them and `own()` was never called:
@@ -250,7 +250,7 @@ test("matchLayout pairs a reserved id's recorded entry to its live window", () =
 //   Service.qml launchedClassesSince   `seen[name]` — window CLASS names, which
 //     are whatever the app calls itself. A launch that timed out reported "no
 //     new window appeared at all" while a `constructor`-classed one was there.
-//     (That caller folded into engine.launchTimeoutDiagnosis in tick ql5; the
+//     (That caller folded into engine.launchTimeoutDiagnosis in an earlier change; the
 //     dedupe it reads is still engine.newClassesSince, pinned below.)
 //
 // The fix is not another guard in QML: none of this was QML's to decide. Each
@@ -349,7 +349,7 @@ test("the QML sites are wired to the pure answers and keep no map of their own",
     "Panel.qml still builds its own running-identity dedupe");
   assert.ok(/Engine\.identityIdsForAddresses\(/.test(serviceSource),
     "Service.qml still builds its own address→identity dedupe");
-  // Since tick ql5 the launched-class list reaches Service.qml inside
+  // Since an earlier change the launched-class list reaches Service.qml inside
   // engine.launchTimeoutDiagnosis, which is where the class dedupe now runs.
   assert.ok(/Engine\.launchTimeoutDiagnosis\(/.test(serviceSource),
     "Service.qml still builds its own launched-class dedupe");
@@ -374,7 +374,7 @@ test("the QML sites are wired to the pure answers and keep no map of their own",
 // built on identity ids hand that to code expecting a window list.
 //
 // Pinned rather than fixed, and pinned as a LIMIT: the same call throws
-// identically on the pre-8hp code, so this is not a regression, and nothing
+// identically on the earlier code, so this is not a regression, and nothing
 // derives the id `__proto__` — PanelModel.identityIdFromTitle and
 // deriveIdentityId both strip the underscores. Reaching it takes a hand-written
 // layout entry. If a future change makes these calls survive, this test is the

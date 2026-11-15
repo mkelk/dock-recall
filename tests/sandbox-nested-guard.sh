@@ -1,5 +1,5 @@
 #!/bin/bash
-# sandbox-nested-guard.sh — tick n1s: the nested sandbox refuses to start
+# sandbox-nested-guard.sh — an earlier change: the nested sandbox refuses to start
 # unparked.
 #
 # THE HOLE THIS CLOSES. `sandbox_up` parks the nested compositor by dispatching
@@ -75,9 +75,9 @@ fi
 #   - `hyprctl configerrors` on a clean instance answers BLANK — two newlines,
 #     not the string "no errors". Comparing against that string fails always.
 #
-# And the finding that made this check what it is rather than what tick n1s
-# expected: `misc:disable_logo` — the key removed from nested.lua in this tick,
-# and the one .tick/learnings.md blames for the banner — produces NO config
+# And the finding that made this check what it is rather than what an earlier change
+# expected: `misc:disable_logo` — the key removed from nested.lua in this change,
+# and the one the project notes blames for the banner — produces NO config
 # error on 0.56.2. Measured both ways, with the key in and out: `configerrors`
 # is blank either time. The Lua config manager IGNORES an unknown table key
 # silently; only the hyprlang parser errors on one. The key was dead weight and

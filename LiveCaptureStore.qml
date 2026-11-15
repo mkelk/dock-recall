@@ -6,7 +6,7 @@
 // as long as this component lives. It has no directory, no listing, no eviction
 // and no file name, and that absence is not an omission — it IS the design.
 //
-// MEMORY ONLY, AND IT IS THE HUMAN'S RATIFIED CHOICE (epic tsp), made after
+// MEMORY ONLY, AND IT IS THE HUMAN'S RATIFIED CHOICE, made after
 // being shown an on-disk cache as the alternative. `grabToImage` hands the
 // callback a QQuickItemGrabResult whose `url` an `Image` can use as its source
 // directly, valid for as long as a JS reference to the result is held — so a
@@ -32,7 +32,7 @@
 // WHAT IS SHARED is the part with no file in it: ToplevelBridge (an hyprctl
 // address to a Wayland handle) and the 1x1 host window pattern, both of which
 // are read straight from CaptureStore.qml — its comments carry four measurements
-// from spike o2x and several defects that cost VM cycles, and they apply here
+// from the spike and several defects that cost VM cycles, and they apply here
 // word for word:
 //
 //   1. A FRESH VIEW PER WINDOW, destroyed after the grab.
@@ -41,14 +41,14 @@
 //   4. A DEADLINE ON EVERY STEP — a window on a non-rendering monitor never
 //      delivers `hasContent` and its handle resolves perfectly.
 //
-// And the step TOKEN, which is tick 070's repair: `Component.createObject` passes
+// And the step TOKEN, which is an earlier change's repair: `Component.createObject` passes
 // its property map through a QVariantMap, so an object handed to a view comes
 // back a DEEP COPY and can never be compared by identity. The subject of a step
 // is a NUMBER.
 //
 // ------------------------------------------------------------- RECORD COMES FIRST
 //
-// `captureStore.busy` gates `canRecord` (tick ilg), deliberately, so a Record
+// `captureStore.busy` gates `canRecord`, deliberately, so a Record
 // cannot interleave with a capture round. A live round on every panel open would
 // therefore make Record refuse for a moment every single time the panel appeared
 // — a new defect, and a worse one than ilg fixed.
@@ -69,8 +69,8 @@
 // ------------------------------------------------------------ best-effort only
 //
 // A window that will not answer costs its step's deadline and nothing else. A
-// chip with no live picture draws its icon, which is what it drew before this
-// tick and is the honest fallback — see `captureDrawn` in MapWorkspace.qml,
+// chip with no live picture draws its icon, which is what it drew before live
+// pictures existed and is the honest fallback — see `captureDrawn` in MapWorkspace.qml,
 // where the icon steps aside only for a picture that actually arrived.
 //
 // The pictures die with the panel, because this component does: the shell
@@ -117,8 +117,8 @@ Item {
   // Supplied by the panel, which owns the identity list; a store with no
   // predicate answers yes, so this component is still usable on its own.
   //
-  // The same shape as CaptureStore's `stillOwed` and for the same reason (tick
-  // zxg): a round can be perfectly healthy while the user UNTICKS the very app
+  // The same shape as CaptureStore's `stillOwed` and for the same reason: a round can be perfectly
+  // healthy while the user UNTICKS the very app
   // it is photographing — or switches the pictures off under it — and the plan
   // is older than either question. The panel asks both; the second is the one a
   // global switch cannot ask, because watching stayed per app.
@@ -131,7 +131,7 @@ Item {
   //
   // REASSIGNED on every change, never mutated: a fresh object is what makes a
   // binding that read it re-evaluate. `urlIn` below takes the map as an ARGUMENT
-  // for the reason CaptureStore.hasIn does (tick md1) — a binding re-evaluates
+  // for the reason CaptureStore.hasIn does — a binding re-evaluates
   // when a property it READ changes, and `liveStore.pictures` read inside a function
   // is a dependency nobody can see at the call site.
   property var pictures: ({})
@@ -158,7 +158,7 @@ Item {
 
   // The live picture for this window, out of THIS map. `own`, not a bare lookup:
   // an address that collided with an Object.prototype key would otherwise answer
-  // truthy for a picture that is not there (.tick/learnings.md, tick 8hp).
+  // truthy for a picture that is not there.
   function urlIn(pictures, address) {
     if (!address || !pictures) return ""
     var key = String(address)
@@ -174,7 +174,7 @@ Item {
   property var _current: null
   property var _plan: null
 
-  // WHICH STEP IS IN FLIGHT, AS A NUMBER (tick 070). An entry handed to
+  // WHICH STEP IS IN FLIGHT, AS A NUMBER. An entry handed to
   // `createObject` arrives in the view as a DEEP COPY and can never be compared
   // back, so the thing both sides agree on is an integer — and the token is
   // BURNT when a step ends, or the second answer for a step lands on the item
@@ -186,7 +186,7 @@ Item {
   // The plan is PanelModel.liveCapturePlan's: `{ captures: [{ address,
   // identityId, occurrence }], skipped: [...] }`. It carries no prefix and no
   // file names, because there is no file.
-  // A ROUND THAT DOES NOTHING SAYS SO, AND THIS IS WHY (tick 2zi, second pass).
+  // A ROUND THAT DOES NOTHING SAYS SO, AND THIS IS WHY.
   //
   // The first VM run of this feature failed with NO LINE FROM THIS FILE ANYWHERE
   // in a 400-line log, and that absence was the whole diagnosis — because three
@@ -206,7 +206,7 @@ Item {
   function start(plan) {
     if (liveStore.busy) {
       // One round at a time, exactly as the recorded store has one: two queues
-      // over one compositor session is the interleave tick ilg exists to stop.
+      // over one compositor session is the interleave an earlier change exists to stop.
       // Said out loud even though no user pressed anything, per the bracket rule
       // above: a round that does not happen must not be silent.
       liveStore.warn("a live picture round is already running — this one took no pictures")
@@ -275,7 +275,7 @@ Item {
       var owner = entry ? String(entry.identityId) : ""
       // `own`, not a bare lookup: an identity id that collides with an
       // Object.prototype key would otherwise keep a picture of an app nobody
-      // watches (.tick/learnings.md, tick 8hp).
+      // watches.
       if (!owner || !Object.prototype.hasOwnProperty.call(keep, owner)) {
         dropped += 1
         continue
@@ -354,7 +354,7 @@ Item {
     liveStore._current = view
     guard.restart()
     // NOT captureFrame(): with live:false, assigning captureSource has already
-    // started the capture and a second call errors (spike o2x, measured).
+    // started the capture and a second call errors (measured).
   }
 
   function _isCurrentStep(step) {
@@ -373,8 +373,7 @@ Item {
 
   // Record one answer and move on. The only way out of a step, and idempotent
   // per step: the token is burnt here, so the grab callback a guard outlived
-  // cannot be accepted against the entry that has just become the head (tick
-  // ilg, tick 070).
+  // cannot be accepted against the entry that has just become the head.
   function _settle(step, ok, reason) {
     if (!liveStore._isCurrentStep(step)) return
     var entry = liveStore._currentEntry()
@@ -398,14 +397,14 @@ Item {
     var step = view.step
     if (!liveStore._isCurrentStep(step)) return
     var entry = liveStore._currentEntry()
-    // THE PER-WINDOW DEADLINE ENDS HERE (tick ilg): it measures one thing —
+    // THE PER-WINDOW DEADLINE ENDS HERE: it measures one thing —
     // "does this window ever deliver a frame" — and the frame has arrived. Left
     // running it could fire while `grabToImage` was still on the render thread.
     // The whole-queue deadline below is what still bounds the grab.
     guard.stop()
     var width = view.sourceSize.width
     var height = view.sourceSize.height
-    // FROM sourceSize, never from hyprctl — the two disagree (spike o2x).
+    // FROM sourceSize, never from hyprctl — the two disagree.
     if (!(width > 0) || !(height > 0)) {
       liveStore._settle(step, false, "empty-source")
       return
@@ -421,7 +420,7 @@ Item {
       // step is over keeps nothing and says nothing.
       if (!liveStore._isCurrentStep(step)) return
       // AND THE GATE IS RE-ASKED AT THE MOMENT THE PICTURE WOULD BE KEPT
-      // (tick zxg's rule, in memory rather than on disk). `_isCurrentStep` only
+      //. `_isCurrentStep` only
       // says the step is still the one in flight; it says nothing about whether
       // this app is still owed a picture at all — an untick, or the pictures
       // switched off, and it is not.
@@ -503,7 +502,7 @@ Item {
     repeat: false
     onTriggered: {
       var step = liveStore._current ? liveStore._current.step : 0
-      // NOT THE STEP IN FLIGHT: AN IMPOSSIBLE STATE, AND IT SAYS SO (tick 070).
+      // NOT THE STEP IN FLIGHT: AN IMPOSSIBLE STATE, AND IT SAYS SO.
       // `_next()` arms this for the step it has just claimed, `_onContent` stops
       // it when a frame arrives, and `_park()` stops it too — so this branch
       // cannot be reached by any sequence the round can perform. A round that
@@ -584,7 +583,7 @@ Item {
     id: viewComponent
 
     ScreencopyView {
-      // THE STEP THIS VIEW IS FOR, and deliberately an `int` (tick 070): a JS
+      // THE STEP THIS VIEW IS FOR, and deliberately an `int`: a JS
       // object assigned through `createObject`'s property map arrives here as a
       // copy, so the round could never recognise its own answers.
       property int step: 0

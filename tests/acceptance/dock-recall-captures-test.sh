@@ -4,7 +4,7 @@
 # Runs INSIDE a disposable Omarchy VM booted by omarchy-iso's harness, in a real
 # Hyprland session with a real Quickshell shell.
 #
-# WHY THIS ONE ASSERTS ON FILES. The rest of increment 06-bwf is proven at
+# WHY THIS ONE ASSERTS ON FILES. The rest of the map chrome is proven at
 # bind level — the panel reports what it computed and bound, and this venue
 # cannot show a pixel was rasterized. Captures are the exception, and the reason
 # this test exists as its own file: a picture on disk is a real artifact. It can
@@ -150,7 +150,7 @@ TALL_IDENTITY="dr-tall"
 # The two of them as the recording will list them. Every "which apps does the
 # layout name" check below reads the file through jq's `sort`, so the expected
 # side is sorted by the SAME tool — "dr-tall" sorts before "dr-wide", and the
-# first remote gate run (j18) failed on a literal written in declaration order
+# first remote gate run failed on a literal written in declaration order
 # against a list jq had sorted. Like with like, computed once.
 EXPECTED_APPS=$(jq -rn --arg a "$WIDE_IDENTITY" --arg b "$TALL_IDENTITY" '[$a, $b] | sort | join(",")')
 APP_CLASS="foot"
@@ -158,7 +158,7 @@ APP_CLASS="foot"
 PANEL_NAMESPACE="mkelk-dock-recall"
 IPC_TARGET="dock-recall"
 
-# A SECOND DESK, for the assertions that are about "every desk" (tick sp7). The
+# A SECOND DESK, for the assertions that are about "every desk". The
 # fake dock is `hyprctl output create headless`, the same trick the roundtrip
 # test docks with — a second monitor changes the topology key, so a Record on
 # each side of it stores its picture under a different prefix. One desk cannot
@@ -168,7 +168,7 @@ DOCK_OUTPUT="dr-cap-dock"
 
 GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 
-# HOW LONG A CAPTURE ROUND IS GIVEN, READ OUT OF THE STORE ITSELF (tick 070).
+# HOW LONG A CAPTURE ROUND IS GIVEN, READ OUT OF THE STORE ITSELF.
 #
 # Every wait below that is really a wait on a capture round used to be a flat
 # `poll 40`, and CaptureStore's own whole-queue deadline is 45 s. Those two
@@ -176,7 +176,7 @@ GUEST_PASSWORD="${GUEST_PASSWORD:-omarchy}"
 # SLOW is failed here five seconds before the store would have said a word about
 # it, so the diagnostics dump lands on a log that is still legitimately quiet and
 # the reader is left with "the round went silent" for something that had not
-# finished. That is exactly how tick 070's real bug was first mis-read.
+# finished. That is exactly how an earlier change's real bug was first mis-read.
 #
 # So the number is the store's, plus headroom for the record, the mkdir, the
 # eviction `find` and the listing that bracket the round — and it is READ from
@@ -200,7 +200,7 @@ as_root() { echo "$GUEST_PASSWORD" | sudo -S "$@" 2>/dev/null; }
 shell_log() { qs log -p "${OMARCHY_PATH:-/usr/share/omarchy}/shell" --tail 3000 2>/dev/null; }
 dr_log() { shell_log | grep -F "[dock-recall]"; }
 service_ready() { dr_log | grep -qF "service-ready"; }
-# WORD FOR WORD the other four copies of this in this directory (tick md1).
+# WORD FOR WORD the other four copies of this in this directory.
 # This one had drifted into an UNANCHORED regex over the whole line, inferring
 # the state from a substring — and `PLUGIN_ID` contains a `.`, so the pattern
 # matched more than it meant to; a format change that moved the word "enabled"
@@ -324,7 +324,7 @@ cache_is() { [[ $(cache_count) -eq "$1" ]]; }
 # just went away, and a count-only check cannot see it, because one file is one
 # file whichever desk it belongs to.
 #
-# Tick m1p fixed exactly this at ONE of the six desk changes in this file and
+# An earlier change fixed exactly this at ONE of the six desk changes in this file and
 # left a learning saying the siblings were "a defect waiting for the first run
 # that reaches it". The first run that reached one failed here. So it is fixed
 # as a CLASS: every transition below waits for the panel, not for hyprctl.
@@ -486,7 +486,7 @@ wait_until "the wide app's window appeared (captures)" 30 window_here "$WIDE_TIT
 wait_until "the tall app's window appeared (captures)" 30 window_here "$TALL_TITLE"
 pass "two windows on the desk, both to be watched and both to be photographed"
 
-# --------------------------------- 2b. TWO DELIBERATELY DIFFERENT SHAPES (3xi)
+# --------------------------------- 2b. TWO DELIBERATELY DIFFERENT SHAPES
 #
 # Both windows are class `foot` from the same binary, so their PIXELS cannot tell
 # them apart — and a test that only checks the file name, the JPEG header and a
@@ -500,7 +500,7 @@ pass "two windows on the desk, both to be watched and both to be photographed"
 # width), so the ratio survives the resize; only the absolute pixels do not,
 # which is why nothing below compares those.
 #
-# THE PROOF IS DOUBLED SINCE v7 (epic wau). Both apps are photographed now, so
+# THE PROOF IS DOUBLED SINCE v7. Both apps are photographed now, so
 # there are two files and the question can be asked BOTH WAYS ROUND: the wide
 # app's picture has to be wide and not tall, and the tall app's has to be tall
 # and not wide. A store that photographed one window twice, or that swapped the
@@ -511,7 +511,7 @@ pass "two windows on the desk, both to be watched and both to be photographed"
 # a run where the resize did not take is a run where this proves nothing, and it
 # says so rather than passing.
 #
-# DISPATCH FORM (tick z65) — MEASURED, in the nested sandbox, both ways.
+# DISPATCH FORM — MEASURED, in the nested sandbox, both ways.
 #
 # The three plain dispatchers this used to send — setfloating /
 # resizewindowpixel / movewindowpixel — do nothing at all on an Omarchy Quattro
@@ -533,14 +533,14 @@ pass "two windows on the desk, both to be watched and both to be photographed"
 # tick: nothing here swallows an answer any more.
 #
 # The working spelling is the one engine.js's own restore executor uses and
-# live-verified against the real session (ticks 8t4/y29), and the one every
+# live-verified against the real session (an earlier change), and the one every
 # other script in this directory reaches for (dock-recall-roundtrip-test.sh,
 # undock-locked.sh): `hl.dsp.window.float` / `.resize` / `.move`, each naming
 # its subject with `window = "address:0x…"`. Verified end to end in the nested
 # sandbox before this was written — two tiled 700x840 foot windows came out
 # 900x340 at 20,20 and 340x700 at 20,400, every dispatch answering `ok`, aspect
 # 2.647 vs 0.486, 81.7% apart against a 40% floor. Both landed on the window
-# they NAMED, which is the selector trap in .tick/learnings.md: an unrecognised
+# they NAMED, which is the selector trap in the project notes: an unrecognised
 # selector key acts silently on the ACTIVE window, so "one window carries the
 # other's numbers" is a real failure mode and the check below would catch it.
 #
@@ -588,7 +588,7 @@ shape_window "the tall window" "$(window_address "$TALL_TITLE")" 340 700 20 400
 # else in this suite, and `sleep 0.3` inside a deadline loop is the poll, not a
 # sleep-then-assert. Each `hyprctl dispatch` above is a synchronous round trip
 # that commits before the next is parsed (engine.js geometry-actuator notes,
-# tick y29), and in the sandbox the new sizes were already readable on the first
+# an earlier change), and in the sandbox the new sizes were already readable on the first
 # sample — so this waits for `hyprctl clients` to be QUIET, not for the resize.
 #
 # It deliberately decides nothing. If the dispatches were accepted and then
@@ -731,7 +731,7 @@ if [[ $record_answer != "recorded" ]]; then
   fail "panel IPC records a layout (captures)" "record answered '$record_answer'"
 fi
 
-# THIS READ IS DELIBERATELY NOT A POLL (tick m4s). "recorded" is a promise that
+# THIS READ IS DELIBERATELY NOT A POLL. "recorded" is a promise that
 # the bytes are on disk, and the promise is what is under test here: the panel's
 # state FileView declares blockWrites, so writeState cannot answer true with a
 # write still in flight. Polling would turn a broken promise into a slow one and
@@ -780,7 +780,7 @@ fi
 
 # BY NAME AND NOT BY COUNT, both of them. A count of two is satisfied by two
 # pictures of one window, and the two windows are the same binary — this is the
-# assertion .tick/learnings.md's "a COUNT cannot distinguish" was written about.
+# assertion the project notes's "a COUNT cannot distinguish" was written about.
 want_both=$(printf '%s\n%s\n' "$WIDE_FILE" "$TALL_FILE" | sort)
 stored=$(cache_files)
 [[ $stored == "$want_both" ]] ||
@@ -805,7 +805,7 @@ for d in "$WIDE_DIMENSIONS" "$TALL_DIMENSIONS"; do
 done
 pass "Record stored two pictures, $WIDE_FILE ($WIDE_DIMENSIONS) and $TALL_FILE ($TALL_DIMENSIONS) — both decodable JPEGs"
 
-# AND EACH IS A PICTURE OF ITS OWN WINDOW (tick 3xi, doubled by epic wau).
+# AND EACH IS A PICTURE OF ITS OWN WINDOW.
 #
 # Everything above this line — the names, the SOF walks, the width caps, the
 # non-emptiness — passes unchanged on a store that photographed one window twice
@@ -816,7 +816,7 @@ pass "Record stored two pictures, $WIDE_FILE ($WIDE_DIMENSIONS) and $TALL_FILE (
 # question is asked BOTH WAYS ROUND: each stored JPEG's aspect has to be its own
 # window's and NOT the other's. Compared with a tolerance rather than an equality
 # on purpose: the compositor's captured size and the geometry hyprctl reports
-# disagree about borders and scale (spike o2x, and it is why CaptureStore sizes
+# disagree about borders and scale (and it is why CaptureStore sizes
 # from sourceSize), so the honest claim is "these proportions, not those".
 aspect_of() {
   node -e '
@@ -846,7 +846,7 @@ tall_verdict=$(aspect_of "$TALL_DIMENSIONS" "$TALL_SIZE" "$WIDE_SIZE") || {
 }
 pass "each picture's proportions are its own window's: wide [$wide_verdict], tall [$tall_verdict]"
 
-# ------------------------------------------ 5a. NO PROMPT, EVER (epic wau)
+# ------------------------------------------ 5a. NO PROMPT, EVER
 #
 # This step used to be the first-Record dialogue: a modal that showed the
 # pictures it had just taken and offered three answers, one of which deleted
@@ -1175,7 +1175,7 @@ if ! poll 30 icons_only; then
 fi
 pass "the whole cache deleted: every chip reports an icon source, none reports a capture path, nothing errored"
 
-# ------------- 8b. THE LIVE MAP DRAWS THE WINDOWS AS THEY ARE NOW (tick 2zi)
+# ------------- 8b. THE LIVE MAP DRAWS THE WINDOWS AS THEY ARE NOW
 #
 # AND WRITES NOTHING. This step is placed exactly here on purpose: the cache
 # directory has just been deleted, and step 9 below refuses to run unless it is
@@ -1246,7 +1246,7 @@ fi
 [[ ! -e $CACHE_DIR ]] ||
   fail "a live picture reached the disk" \
     "$CACHE_DIR exists after the Live map drew its pictures — live pictures are memory only"
-# The shot waits for the MORPH to land (tick omw). `setView live` above flies
+# The shot waits for the MORPH to land. `setView live` above flies
 # every chip from its recorded place to its live one over Motion.sweepDuration,
 # and a flying chip draws an icon on the selected fill with a full-strength
 # accent edge — never a picture. A screenshot inside the sweep therefore shows
@@ -1267,7 +1267,7 @@ pass "the Live map drew both windows from memory, one picture each: nothing was 
 # in flight and what it goes back to when one fails, through exactly the
 # mechanism the recorded map already used.
 #
-# ---------------- THE SWITCH, WITHOUT A PANEL REOPEN (epic wau)
+# ---------------- THE SWITCH, WITHOUT A PANEL REOPEN
 #
 # The whole affordance, driven end to end in the panel that is on screen. OFF
 # has to do three things at once and every one of them is asserted: the live
@@ -1331,7 +1331,7 @@ pass "pictures off: the live ones stopped in the open panel, every stored one de
 # caught; the PAIR is not, and a pair is what a single missing `if` produces.
 #
 # LiveCaptureStore opens every round with a line naming what it is about to do
-# (the bracket rule, tick 070) — the same line 10b waits on — so a round that
+# (the bracket rule) — the same line 10b waits on — so a round that
 # genuinely ran is a round that COUNTED, and that is a fact no draw-time gate
 # can fake.
 rounds_before_on=$(dr_log | grep -c "live picture round:")
@@ -1417,7 +1417,7 @@ pass "a record whose pictures cannot be stored is still a complete record — la
 
 # ------------------ 9b. a failed round must not disable every Record after it
 
-# THE REAL PROPERTY (tick gox). The mkdir failure above filled the store's
+# THE REAL PROPERTY. The mkdir failure above filled the store's
 # queue before it aborted; if the teardown after that abort left the queue
 # non-empty, the guard in the store's capture() reads it as "a round is
 # already running" and every Record from here on refuses silently, having
@@ -1459,7 +1459,7 @@ forgotten=$(jq -r --arg k "$TOPOLOGY_KEY" '(.layouts|has($k))|tostring' "$STATE"
     "the state file still has a layout for '$TOPOLOGY_KEY'"
 pass "forgetting the layout deleted both the recording and its pictures"
 
-# ------------------ 10b. THE SWITCH SURVIVES A SHELL RESTART (epic wau)
+# ------------------ 10b. THE SWITCH SURVIVES A SHELL RESTART
 #
 # The switch is in the state file rather than in the panel, so a restart is what
 # proves it: the shell process that held it in memory is gone, and the panel
@@ -1558,7 +1558,7 @@ if ! poll 60 panel_ready; then
     "no payload with chips and pictures == true"
 fi
 
-# ---------- 10d. THE SWITCH REACHES EVERY DESK (tick sp7, epic wau)
+# ---------- 10d. THE SWITCH REACHES EVERY DESK
 #
 # EVERYTHING ABOVE THIS LINE IS ONE TOPOLOGY, and that is exactly how the
 # original bug survived a whole epic: an eviction keyed on the desk you happen to
@@ -1605,7 +1605,7 @@ await_panel_docked "two desks"
 # insurance by leaving a round in flight for the untick and the switch below.
 record_once "the second desk"
 
-# NOT A POLL, for the reason step 5 spells out (tick m4s): "recorded" is a
+# NOT A POLL, for the reason step 5 spells out: "recorded" is a
 # promise that the bytes are on disk, and polling would turn a broken promise
 # into a slow one.
 layouts_are 2 || {
@@ -1660,7 +1660,7 @@ if ! poll 30 capture_gone; then
 fi
 pass "one switch thrown: BOTH desks' pictures deleted, and the map stopped drawing them"
 
-# ------------- 10f. UNTICKING AN APP TAKES ITS PICTURES WITH IT (tick sp7)
+# ------------- 10f. UNTICKING AN APP TAKES ITS PICTURES WITH IT
 #
 # THE ONE PER-APP ACT LEFT, and the switch does not change it. Watching is still
 # per app, so "stop watching this" is still a statement about ONE app's

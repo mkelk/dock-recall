@@ -72,7 +72,7 @@ Item {
   // bar widget reads it for its `opened` contract, because the 2026-09-08 shell
   // hands third-party widgets a SCOPED shell API with no notifying open-state
   // (`isPluginOpen` is a plain function) — this service is the one object both
-  // halves of the plugin can see on every shell contract (tick erk).
+  // halves of the plugin can see on every shell contract.
   property bool panelOpen: false
 
   property var state: StateModel.defaultState()
@@ -91,7 +91,7 @@ Item {
   // fires at LOAD time, possibly hours before the user presses anything, and
   // notify-send needs a notification daemon to land anywhere at all. The panel
   // carries a persistent line for the same condition (Panel.qml's
-  // writeRefusalReason, tick sma).
+  // writeRefusalReason).
   property bool futureVersionAnnounced: false
 
   // ------------------------------------------------------------ cycle state
@@ -109,7 +109,7 @@ Item {
   readonly property int maxIterations: 5
 
   // …and the SECOND budget, which is not a second opinion about the first one
-  // (tick eqb). A plan made only of tiled refinement ops is one deliberate step
+  //. A plan made only of tiled refinement ops is one deliberate step
   // of a bounded walk down a split tree: one divider nudge per workspace per
   // plan, n − 1 cuts in a tree of n windows. Seven windows therefore need six
   // iterations, all of them progress, and the general cap of five turned that
@@ -174,7 +174,7 @@ Item {
   property int opsUngrouped: 0
   property int opsFloated: 0
   property int opsPlaced: 0
-  // Tiled refinement (tick pyo): swaps and divider nudges together, because
+  // Tiled refinement: swaps and divider nudges together, because
   // they are two halves of one act — putting a workspace's tiling back — and a
   // toast that said "1 swapped, 2 nudged" would be describing the mechanism
   // rather than the outcome.
@@ -216,7 +216,7 @@ Item {
 
   // The apps behind an op's window addresses — what turns an op ("move these
   // two addresses") into the verdict a user reads ("Slack could not join its
-  // group"). Pure since tick v29, for the reason the panel's chip list is: the
+  // group"). Pure since an earlier change, for the reason the panel's chip list is: the
   // dedupe here was a bare `{}` keyed by identity id, so an app whose id is an
   // Object.prototype key was dropped and its own restore verdict named nothing.
   function identitiesForAddresses(addresses) {
@@ -232,7 +232,7 @@ Item {
   //
   // There is deliberately NO `if (op.kind === …)` ladder here any more.
   //
-  // This function used to enumerate the kinds, and tick qkv's new `geometry` op
+  // This function used to enumerate the kinds, and an earlier change's new `geometry` op
   // was not added to the single-window branch: it fell through to the
   // multi-address one, resolved to an EMPTY identity list, and an empty
   // identity list is invisible to engine.blockedByIndex. A geometry op the
@@ -355,13 +355,13 @@ Item {
   // recorded app is running at all.
   //
   // GEOMETRY IS THE ONE IT CANNOT COVER, and the reason is that no event for it
-  // exists. Probed live on Hyprland 0.56.2 (tick ae1, raw socket2 tap on a
+  // exists. Probed live on Hyprland 0.56.2 (raw socket2 tap on a
   // scratch float on an invisible workspace): an absolute move, an absolute
   // resize, six relative moves and six relative resizes produced ZERO socket2
   // lines between them, in a run where the same tap saw openwindow,
   // windowtitle/v2, activewindow/v2, changefloatingmode, movewindow/v2 and
   // create/destroyworkspace. The compositor announces where a window LIVES, not
-  // where it SITS. See docs/state-matrix.md § 4b.
+  // where it SITS. See the state matrix § 4b.
   //
   // activewindowv2 is deliberately NOT listed as a proxy for a mouse drag. It
   // fires when the click SELECTS the window — before the drag — so a refresh
@@ -391,7 +391,7 @@ Item {
     "togglegroup": true,
     "moveintogroup": true,
     "moveoutofgroup": true,
-    // Floating became a drift dimension in tick 8t4 (engine.driftOf compares
+    // Floating became a drift dimension in an earlier change (engine.driftOf compares
     // it, the "floating" op restores it), so SUPER+T on a watched window has
     // to reach the badge the same way a drag does.
     "changefloatingmode": true
@@ -467,7 +467,7 @@ Item {
 
   // ------------------------------------------- config reload: restore or not
   //
-  // Human decision 2026-11-14, "restore only if monitors changed" (epic 9i2).
+  // Human decision 2026-11-14, "restore only if monitors changed".
   // A burst of topology events made only of configreloaded starts NO restore
   // cycle by itself: the check below waits out the reload on a gate of its own
   // (same rules as the cycle's — hold, settle, 4.5 re-sort), reads once, and
@@ -484,7 +484,7 @@ Item {
   // A check that found a cycle running waits for its end: the cycle owns the
   // read machinery, and its last pass may have planned before the reload.
   property bool reloadCheckAfterCycle: false
-  // Which snapshot the check is waiting on (tick v2p). The check shares the read
+  // Which snapshot the check is waiting on. The check shares the read
   // machinery's one callback slot per Process, and a cycle or a status refresh
   // that starts a read in between takes that slot: the check's callback is then
   // never called, and reloadPending would stay set with no timer for ever. So
@@ -616,7 +616,7 @@ Item {
 
   // The SLOW POLL — the one thing in this plugin that is not event-driven, and
   // the reason is a compositor limitation rather than a design choice
-  // (docs/state-matrix.md §4b, live-proven in tick ae1): Hyprland announces
+  // (the state matrix §4b, live-proven in an earlier change): Hyprland announces
   // where a window LIVES, never where it SITS. An absolute move, an absolute
   // resize, six relative moves and six relative resizes emitted ZERO events in
   // a run where the same socket tap saw six other event families. So a user who
@@ -680,7 +680,7 @@ Item {
       return
     }
 
-    // Locked or not decides what "intact" is worth (tick s58): under the session
+    // Locked or not decides what "intact" is worth: under the session
     // lock hyprctl keeps reporting focus on the survivor while keyboard input
     // reaches no lock surface, so the plan re-asserts focus and moves the cursor.
     root.queryLocked(function (locked) {
@@ -782,7 +782,7 @@ Item {
 
     root.stateReadRetries = 0
 
-    // ONE question about this state, asked once (tick zkb). It used to be asked
+    // ONE question about this state, asked once. It used to be asked
     // twice — here for the notice, and again at the bottom to rearm the toast —
     // about the same object, which is one place too many for a rule this file
     // does not own.
@@ -796,7 +796,7 @@ Item {
       root.warn("state: " + result.error)
       // The only `error` that is not a recovery is a version from the future,
       // and it has two consequences worth spelling out: nothing may write the
-      // file (tick 291), and — since tick t03 — nothing may restore from it
+      // file, and — since an earlier change — nothing may restore from it
       // either. Both said in the same words the refusals themselves use, so the
       // log reads as one story.
       if (refusal) {
@@ -913,7 +913,7 @@ Item {
     root.pendingRestoreReason = ""
     root.pendingRestoreManual = false
     // The file that finally loaded may be the one this build must not act on
-    // (tick t03). Dropped here rather than replayed into requestRestore's gate,
+    //. Dropped here rather than replayed into requestRestore's gate,
     // so the log says "held request dropped" once instead of announcing a replay
     // and refusing it on the next line.
     var inert = StateModel.restoreRefusal(root.state)
@@ -939,7 +939,7 @@ Item {
   // atomic writes replace the file, which wakes the watcher, which reloads —
   // harmless but noisy, and pointless.
   //
-  // A state from a NEWER schema than this build is never written (tick 291): the
+  // A state from a NEWER schema than this build is never written: the
   // reader strips the fields it does not know and keeps the newer version
   // number, so a write here would quietly delete a later generation's data.
   // Refused out loud, with the reason, exactly as every other refusal in this
@@ -1203,10 +1203,10 @@ Item {
 
   // `hyprctl workspaces -j`, verbatim — the planner reads each workspace's
   // tiledLayout mode from it. null = unknown (never read, or the last read
-  // failed): modes unknown is the pre-9i2 behaviour, not an abandoned pass.
+  // failed): modes unknown is the earlier behaviour, not an abandoned pass.
   property var liveWorkspaces: null
   // Workspaces whose live tree is the recorded tree, because this cycle built
-  // it (epic 9i2 §2.5). Keyed by String(workspaceId). Set by settleBuilt only
+  // it. Keyed by String(workspaceId). Set by settleBuilt only
   // when, in ONE plan, every `sequenced` move to the workspace executed, every
   // focus read-back landed and every axis read-back ended right. Cleared at
   // cycle start — never per pass: the known tree lives for one restore, and a
@@ -1289,9 +1289,19 @@ Item {
     gateTimer.stop()
     passTimer.stop()
     root.warn("not restoring (" + root.cycleReason + ") — " + root.unsupportedLine())
+    root.gateArgs = null
+    root.builtWorkspaces = ({})
     root.cycleActive = false
     root.rerunQueued = false
-    root.publishStatus({ restoring: false }, "unsupported system")
+    // The latches finishCycle clears, cleared here too (nothing will ever
+    // service them on a system that stands down): a config-reload check that
+    // waited for this cycle, and a deferred-join poll.
+    if (root.reloadCheckAfterCycle) root.endReloadCheck()
+    if (root.pendingJoins) {
+      root.pendingJoins = false
+      unlockPollTimer.stop()
+    }
+    root.publishStatus({ restoring: false, deferredLocked: false }, "unsupported system")
   }
 
   function readBlocks(done) {
@@ -1305,7 +1315,7 @@ Item {
       "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/omarchy\"; cat \"$d/monitor-workspaces\" 2>/dev/null; "
       + "printf '\\n@@MERGED@@\\n'; cat \"$d/monitor-workspaces-merged\" 2>/dev/null; "
       + "printf '\\n@@PROBE@@\\n'; [ -e \"$d/monitor-workspaces\" ] && printf 'block '; "
-      + "[ -e /usr/share/omarchy/default/hypr/monitor-workspaces.lua ] && printf 'lua'; true"]
+      + "[ -e \"${OMARCHY_PATH:-/usr/share/omarchy}/default/hypr/monitor-workspaces.lua\" ] && printf 'lua'; true"]
     stdout: StdioCollector { id: blocksOut; waitForEnd: true }
     onExited: function (exitCode) {
       var probed = String(blocksOut.text).split("\n@@PROBE@@\n")
@@ -1406,9 +1416,9 @@ Item {
 
   // ------------------------------------------------------- the user's focus
   //
-  // Tick 35n's placement choreography focuses a window on the destination
+  // An earlier change's placement choreography focuses a window on the destination
   // workspace before each move, because that is the only thing that decides
-  // which tile the arrival splits (docs/state-matrix.md § Tiled placement § 4).
+  // which tile the arrival splits (the state matrix § Tiled placement § 4).
   // The probe also measured the price: focusing a window on a HIDDEN workspace
   // pulls that workspace onto the monitor (§ 5). So every one of those focuses
   // has to be given back, and this is where the service remembers to whom.
@@ -1439,7 +1449,7 @@ Item {
   // Keyed by workspace id, filled in by the focus read-back below, cleared at
   // the start of every pass. Per pass and not per cycle on purpose: the usual
   // reason a focus does not land is that something else holds the keyboard, and
-  // the two things this tick does about that — closing the panel before a
+  // the two things this change does about that — closing the panel before a
   // choreographed plan, and standing the shape down when the focus misses — are
   // both allowed to have worked by the time the next settle pass runs.
   property var shapeAbandoned: ({})
@@ -1470,7 +1480,7 @@ Item {
   // focus that did not arrive means the arrival splits whatever tile the mouse
   // pointer happens to be over — the pointer fallback the whole mechanism
   // exists to remove — and the workspace is built in a shape nobody chose. That
-  // was unverified until tick eqb: every dispatch answered "ok" (the focus verb
+  // was unverified until an earlier change: every dispatch answered "ok" (the focus verb
   // answers "ok" whether or not a layer surface is holding the keyboard) and
   // the only symptom was a score.
   //
@@ -1740,7 +1750,7 @@ Item {
       // built before the moves and the float toggle ran, and the one thing the
       // read has to establish is that the window is still FLOATING — the resize
       // half aimed at a tiled window rearranges the dwindle split and answers
-      // "ok" (tick y29). See executeGeometry.
+      // "ok". See executeGeometry.
       return [{ kind: "fn", fn: function (done) { root.executeGeometry(op, outcome, done) } }]
     }
     if (op.kind === "swap") {
@@ -1758,8 +1768,8 @@ Item {
       return root.stepsForSplit(op, outcome)
     }
     if (op.kind === "tab") {
-      // `group.active` names its window and needs no focus (nested-notes 9i2
-      // (b)), so this is NOT a focus op: it is not deferred while locked and
+      // `group.active` names its window and needs no focus (nested-notes
+      // fidelity facts (b)), so this is NOT a focus op: it is not deferred while locked and
       // borrows no keyboard, and there is nothing to hand back. It is decided at
       // execution time all the same, because the tab ring it indexes into is
       // whatever the joins of this very plan have just made it.
@@ -1812,14 +1822,14 @@ Item {
     // is visible: the focus dispatch pulled the destination workspace onto the
     // monitor, and holding it there for the length of a plan is the difference
     // between a flicker and the user's screen being taken away for a second.
-    // Measured either way in tick or5: bracketing each move changed no tree.
+    // Measured either way in an earlier change: bracketing each move changed no tree.
     //
     // The refocus is attributed to no op. It is not work the recording asked
     // for, and a failure to hand the keyboard back is not the move failing —
     // the window did land where the plan said. The focus dispatch IN FRONT of
     // the move is attributed to the op, because a focus that did not land means
-    // the arrival split the wrong tile, and that is exactly the fidelity tick
-    // 35n exists to buy — and since tick eqb it is READ BACK rather than
+    // the arrival split the wrong tile, and that is exactly the fidelity work
+    // 35n exists to buy — and since an earlier change it is READ BACK rather than
     // assumed (verifyFocusStep, just above).
     //
     // …and it is handed back only when a focus was actually sent. A workspace
@@ -1830,12 +1840,12 @@ Item {
     return steps
   }
 
-  // ARRIVAL ORIENTATION (epic 9i2 §2.5) and the bookkeeping of a built tree.
+  // ARRIVAL ORIENTATION and the bookkeeping of a built tree.
   //
   // Dwindle does not take an arrival's axis from anything this plugin says: it
   // splits the focused tile along its LONGER side (wider: side by side,
   // taller: stacked) and puts the arrival on the far side — tests/nested-notes.md
-  // 9i2 (f). The recording's cut may be the other one. So after every leader
+  // Fidelity fact (f). The recording's cut may be the other one. So after every leader
   // arrival that carries `splitAxis` the clients are read, and an arrival that
   // sits on the other axis from its split parent gets exactly ONE togglesplit,
   // aimed by focusing the arrival right after it arrived — which flips only the
@@ -1872,7 +1882,7 @@ Item {
         }
         var observed = root.arrivalAxisOf(op)
         if (observed === op.splitAxis) { landed(); done(); return }
-        // The mode is read AGAIN before anything is said or toggled (tick v2p):
+        // The mode is read AGAIN before anything is said or toggled:
         // a destination that did not exist at plan time had no readable mode,
         // and on one that came up scrolling or floating an arrival has no axis
         // to correct — togglesplit errors there and swap/resize rearrange. Not
@@ -2045,7 +2055,7 @@ Item {
     root.planBuild = ({})
   }
 
-  // ONE FLIP of one dwindle node (tick uk5).
+  // ONE FLIP of one dwindle node.
   //
   // The whole safety of this op is in the focus. `togglesplit` names no window —
   // it flips the parent node of whatever is focused — so a dispatch sent while
@@ -2053,7 +2063,7 @@ Item {
   // workspace the user may not even be looking at. That is a shape nobody
   // recorded, produced silently, and it is the one failure mode this op has.
   //
-  // So the focus is READ BACK before the toggle goes out, exactly as tick eqb
+  // So the focus is READ BACK before the toggle goes out, exactly as an earlier change
   // made the placement choreography do, and a focus that did not land stands the
   // flip down for this pass with a counted failure rather than dispatching
   // anyway. The plan is idempotent: the next pass asks again, and if the panel
@@ -2239,7 +2249,7 @@ Item {
   // match is engine.clientsFor, so launch-detection and record-time matching
   // can never disagree.
   //
-  // EXPECTED-COUNT semantics (tick l64). `expected` defaults to 1, which is
+  // EXPECTED-COUNT semantics. `expected` defaults to 1, which is
   // "any window of this app exists" — exactly what this did before schema v3,
   // and what every deficit-of-one launch still asks for. A deficit of two asks
   // for 2 on the second launch, so the two dispatches cannot collapse into one
@@ -2274,7 +2284,7 @@ Item {
         return
       }
       if (waitedMs >= root.launchTimeoutMs) {
-        // WHAT DID APPEAR, and what that means for THIS identity (tick ql5).
+        // WHAT DID APPEAR, and what that means for THIS identity.
         // The wording used to be assembled here out of class names alone, which
         // reported "saw foot instead" about a `{^foot$ + ^herdr$}` identity
         // whose launch had merely lost its `--title` — the right program, in
@@ -2479,7 +2489,7 @@ Item {
 
       // Blamed on the window that would not take its place, not on the whole
       // group: the other members are exactly where the recording asks, and a
-      // toast naming four apps for one refusal is the imprecision this tick is
+      // toast naming four apps for one refusal is the imprecision this change is
       // about. The two failures the user can tell apart are told apart — a
       // window that never joined at all, and one that joined in the wrong slot.
       //
@@ -2735,7 +2745,7 @@ Item {
   // Put one floating window back on its recorded pixels, against a FRESH read.
   //
   // Two dispatches, resize then move, both naming the window — the spelling and
-  // the order are live-proven (tick y29, FLOAT ACTUATOR SEMANTICS in engine.js).
+  // the order are live-proven.
   // Unlike executeFloating the dispatches are idempotent and could survive a
   // stale plan, so the read here is not protecting the window from the op. It is
   // protecting it from ONE thing:
@@ -2848,7 +2858,7 @@ Item {
 
   // Exchange two tiles.
   //
-  // The dispatch is exact and focus-free (tick or5 § Tiled placement § 7), so
+  // The dispatch is exact and focus-free (an earlier change § Tiled placement § 7), so
   // the read here is not protecting the windows from the op. It establishes the
   // three things that make the op MEAN anything, all of which the plan could
   // only assert about a desktop that has since been moved:
@@ -2963,7 +2973,7 @@ Item {
   // and the loop around it is the pass's own re-plan.
   //
   // THE AXIS THE OP IS NOT MOVING comes from THIS read and not from the plan.
-  // `resize` requires both x and y (or5's method notes), so the op carries the
+  // `resize` requires both x and y (the probe's method notes), so the op carries the
   // window's other dimension as the planner last saw it — and a nudge earlier
   // in the same pass, on a neighbouring divider, may have changed it since.
   // Dispatching the stale number would move a second divider nobody asked
@@ -2973,7 +2983,7 @@ Item {
   //
   // NO-PROGRESS, per window, here rather than in the planner: an unreachable
   // target is not a refused dispatch. Hyprland answers "ok" and CLAMPS — asked
-  // for 30 px it gives 62, asked for 1400 it gives 1340 (or5 § 8) — so the only
+  // for 30 px it gives 62, asked for 1400 it gives 1340 — so the only
   // instrument that can tell "moved a little" from "will not move" is the rect
   // before against the rect after. Identical means this line is against its
   // stop, and asking again is how a refinement pass turns into an oscillation.
@@ -3165,6 +3175,13 @@ Item {
   // churn the user watches. `home` is the anchor's CURRENT workspace, read
   // now — the moves phase has already put the anchor on its recorded one.
   function scratchJoin(address, predecessor, anchor, outcome, done) {
+    // Same stand-down as every other entry to a dispatch: no 4.5 blocks, no join.
+    if (root.unsupportedReason !== "") {
+      root.failOp(outcome, "unsupported system — the scratch-workspace join was not attempted",
+        root.identitiesForAddresses([address]))
+      done()
+      return
+    }
     // A join must never straddle a 4.5 reconcile (a scratch workspace is
     // renumbered by merge() on a reload): gate it on a full snapshot first.
     // The detour itself never needs viaMonitor: the scratch workspace is empty
@@ -3203,7 +3220,7 @@ Item {
       var home = anchorClient.workspace.id
       // The detour takes the group out of home's tree and puts it back as a
       // new arrival, wherever dwindle drops it: whatever tree home was built as
-      // is gone (tick v2p), this plan's and any earlier plan's this cycle.
+      // is gone, this plan's and any earlier plan's this cycle.
       if (root.builtWorkspaces[String(home)] === true) {
         delete root.builtWorkspaces[String(home)]
         root.log("built: workspace " + home + " is no longer a known tree — a group is being"
@@ -3388,7 +3405,7 @@ Item {
     var byHand = manual === true
 
     // THE INERT CONTRACT, and it sits ABOVE the pause contract because it is the
-    // stronger of the two (tick t03, finding A6). A state file from a schema
+    // stronger of the two. A state file from a schema
     // generation this build does not understand is read, shown and never
     // written — and, from here on, never acted on either. The read is lossy by
     // construction: normalizeIdentity is a whitelist, so every field the newer
@@ -3713,7 +3730,7 @@ Item {
         // which. This is the signature of a wrong verb spelling.
         //
         // Counted in GENERAL iterations (total minus refinement ones), which is
-        // the whole of tick eqb's fix for the spurious GIVE-UP: a workspace of
+        // the whole of an earlier change's fix for the spurious GIVE-UP: a workspace of
         // seven windows spends six iterations converging its dividers, and
         // those six must not exhaust the budget that exists for dispatches
         // nobody is honouring.
@@ -3746,7 +3763,7 @@ Item {
         iteration: root.iteration,
         ops: plan
       }])
-      // THE LOCK GATE (tick 97e). Only a plan that carries group JOINS asks the
+      // THE LOCK GATE. Only a plan that carries group JOINS asks the
       // question — the probe is a shell-out, and a desk that is merely moving
       // windows has no reason to pay for it. Everything else in a plan names
       // its subject and runs the same whether the screen is locked or not.
@@ -3800,7 +3817,7 @@ Item {
   //
   // The panel already closes itself before a MANUAL restore (Panel.restoreNow),
   // for the group rebuild's sake: `into_group` ignores a window selector and
-  // acts on the active window, so a focused panel surface breaks it. Tick 35n
+  // acts on the active window, so a focused panel surface breaks it. An earlier change
   // then gave the plan a second thing that needs the keyboard — the placement
   // choreography's focus at the split parent — and that one runs on AUTO cycles
   // too, where nobody pressed a button and the panel may be sitting open on the
@@ -3818,7 +3835,7 @@ Item {
   // panel that closed itself behind the shell's back leaves the next summon
   // toggling the wrong way), and `hide` on a plugin that is not open is a no-op
   // the shell answers for itself.
-  // Tick uk5 added the second op that borrows the keyboard on an AUTO cycle: a
+  // An earlier change added the second op that borrows the keyboard on an AUTO cycle: a
   // `split` flip is a focus plus a `togglesplit`, and a panel holding the
   // keyboard makes the focus read-back fail and stands the flip down every pass
   // for as long as the panel is open. Same rule, same reason, so the same
@@ -3954,11 +3971,11 @@ Item {
 
     root.cycleActive = false
     // A known tree is for the cycle that built it and no longer (human
-    // decision, epic 9i2): a drift refresh between cycles must plan from what
+    // decision): a drift refresh between cycles must plan from what
     // is live, never from a tree somebody may have dragged apart since.
     root.builtWorkspaces = ({})
 
-    // Stale-latch clear (tick co9 nit): pendingJoins/deferredLocked can only be
+    // Stale-latch clear: pendingJoins/deferredLocked can only be
     // set by noteJoinsDeferred, which also flips lockDeferralLogged — reset to
     // false at the top of THIS cycle (see requestRestore). If the latch is
     // still up here but no pass of this cycle ever deferred a join, the group
@@ -4036,7 +4053,7 @@ Item {
       root.requestRestore("queued rerun", wasManual)
       // A rerun that started owns the reload check: its own end runs it. One
       // that was refused (paused, inert) ends nothing, so the check runs now
-      // rather than being left pending with no timer (tick v2p).
+      // rather than being left pending with no timer.
       if (root.cycleActive || !root.reloadCheckAfterCycle) return
     }
     if (root.reloadCheckAfterCycle) {

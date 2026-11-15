@@ -146,7 +146,7 @@ test("placement stores workspace id and floating", () => {
   assert.strictEqual(appsById(engine.buildLayout(floated, monitorsLaptop, IDENTITIES, AT)).editor.floating, true);
 });
 
-// --- special workspaces are refused at the door (tick pqv) -------------------
+// --- special workspaces are refused at the door -------------------
 //
 // Live evidence: docs/thoughts/2026-08-17-special-ws-probe.md. A negative
 // workspace id is a RELATIVE selector to every Hyprland dispatcher, so
@@ -176,7 +176,7 @@ test("an app parked on a special workspace is NOT recorded, and the result says 
   assert.deepStrictEqual(engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT).excluded, []);
 
   // And the note never reaches the file: the layout the state model stores is
-  // topologyKey/recordedAt/apps, exactly as it was before this tick.
+  // topologyKey/recordedAt/apps, exactly as it was before this change.
   const stored = state.upsertLayout(state.defaultState(), layout).layouts[layout.topologyKey];
   assert.ok(!("excluded" in stored), "the note is a report, not a schema field");
 });
@@ -504,7 +504,7 @@ test("the record round-trips through JSON unchanged", () => {
   const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
   assert.deepStrictEqual(JSON.parse(JSON.stringify(layout)), layout);
 
-  // And carries exactly the documented fields. `excluded` (tick pqv) is the
+  // And carries exactly the documented fields. `excluded` is the
   // recorder's REPORT — apps deliberately left out, with the reason — and is
   // not part of the stored layout; the test above pins that it never reaches
   // the file.
@@ -581,7 +581,7 @@ test("geometry comes back byte-identical through the state file", () => {
   const layout = engine.buildLayout(clientsLaptop, monitorsLaptop, IDENTITIES, AT);
   const stored = state.parseState(state.serializeState(state.upsertLayout(state.defaultState(), layout))).state;
   // Everything the file actually holds. `excluded` is the recorder's report and
-  // is dropped on the way in (tick pqv) — deliberately, so the round trip stays
+  // is dropped on the way in — deliberately, so the round trip stays
   // byte-identical rather than growing a field a re-read would strip anyway.
   assert.deepStrictEqual(state.layoutFor(stored, LAPTOP_DESC), {
     topologyKey: layout.topologyKey,
@@ -598,7 +598,7 @@ test("buildLayout tolerates missing inputs", () => {
   assert.deepStrictEqual(engine.buildLayout(clientsLaptop, monitorsLaptop, null, AT).apps, []);
 });
 
-// ------------------------------------ schema v3: occurrences (tick s8b)
+// ------------------------------------ schema v3: occurrences
 
 // A desktop where every watched identity has exactly ONE window: the shape of
 // the overwhelming majority of records, and the one that must not have moved.
@@ -704,7 +704,7 @@ test("chosenWindows indexes every window of an identity, both ways round", () =>
   assert.strictEqual(engine.windowForOccurrence(chosen, "spotify", 0), null);
 });
 
-// ------------------------- schema v9: active tab and layout mode (epic 9i2)
+// ------------------------- schema v9: active tab and layout mode
 
 test("the visible tab is recorded active, the others false", () => {
   // The real capture: obsidian is the visible tab of the four-window group on

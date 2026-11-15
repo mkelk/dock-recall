@@ -406,7 +406,7 @@ test("every entry carries its address in the map, so nobody walks it twice", () 
   // workspace before anything reaches the screen. A consumer therefore has to
   // resolve the drawn rectangle through that function, which needs the slot
   // index — and re-deriving it by searching the map is the class of defect
-  // tick 3xi already cost this project.
+  // an earlier change already cost this project.
   const live = mapOf([{ name: "eDP-1", workspaces: [
     { id: 1, chips: [chip("id:terminal")] },
     { id: 2, chips: [chip("id:obsidian")] }
@@ -454,7 +454,7 @@ test("the rect handed out is a copy, not the one the panel is drawing from", () 
 // polls. Both functions below take the MORPH and not the two maps, and these
 // tests exist as much to pin that signature as to pin the values — a function
 // here that could see a map could pair a second time, and a second pairing a
-// turn later is verbatim the defect tick 3xi cost this project.
+// turn later is verbatim the defect an earlier change cost this project.
 
 test("every chip on both maps gets exactly one role, and a paired chip gets it at both ends", () => {
   const live = mapOf([{ name: "eDP-1", workspaces: [{ id: 1, chips: [

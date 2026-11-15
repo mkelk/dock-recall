@@ -73,7 +73,7 @@ BarWidget {
   // distinctions the two dots need to carry.
   //
   // Panel.qml's `driftTone` is this line's twin — the drift chip edge and its
-  // `→ target` pill — and carries the gap in full (tick wgj, finding F1). The
+  // `→ target` pill — and carries the gap in full. The
   // bar and the panel are two views of one state; if a warning role ever
   // reaches the shell's Color singleton, both change together or neither does.
   readonly property color glyphColor: root.bar ? root.bar.barForeground : Color.foreground
@@ -139,7 +139,7 @@ BarWidget {
   // the manifest has not been rescanned. Asking the shell which way it will
   // route means a click is simply inert until the panel is really there.
   //
-  // TWO HOST CONTRACTS (tick erk). Before the 2026-09-08 shell, `bar.shell` was
+  // TWO HOST CONTRACTS. Before the 2026-09-08 shell, `bar.shell` was
   // the shell root: it carries `isBarWidgetPanelPlugin`, and asking it is the
   // recursion guard above. Since that upgrade a third-party widget is handed a
   // SCOPED plugin-shell API (shell.pluginShellForId → PluginShellApi): it
@@ -242,10 +242,10 @@ BarWidget {
     onFileChanged: reload()
   }
 
-  // A SECOND IPC TARGET, AND WHY IT IS JUSTIFIED (tick fyi).
+  // A SECOND IPC TARGET, AND WHY IT IS JUSTIFIED.
   //
   // The panel's `dock-recall` handler is the plugin's one reporting surface, and
-  // adding another is not free — epic f22's review flagged a single extra verb
+  // adding another is not free — a review once flagged a single extra verb
   // as "beyond the authorised list" and made it argue for itself. This one has
   // an argument the panel cannot make: the bar widget is a SEPARATE top-level
   // entry point, loaded by the bar and not by the panel loader, so nothing in

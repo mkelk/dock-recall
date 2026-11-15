@@ -184,7 +184,7 @@ test("an app recorded on a monitor that is gone is skipped, and said so", () => 
 });
 
 test("a LEGACY entry recorded on a special workspace is skipped, and never planned", () => {
-  // buildLayout has refused to write this since tick pqv, so the only way it
+  // buildLayout has refused to write this since an earlier change, so the only way it
   // exists is a file recorded before the filter. The number must not reach a
   // dispatch: the live probe (docs/thoughts/2026-08-17-special-ws-probe.md)
   // watched `workspace.move({ workspace = "-98" })` answer "ok" and drag a
@@ -262,7 +262,7 @@ test("an app whose identity is no longer watched is skipped", () => {
 // Under Omarchy 4.5 a workspace id belongs to one monitor's block, and which
 // monitor shows a workspace is 4.5's decision: its config reconciles them on
 // every monitor event and reload. The planner therefore never moves an EXISTING
-// workspace between monitors (the old `workspace-monitor` op is gone, tick 7ph).
+// workspace between monitors (the old `workspace-monitor` op is gone).
 // A recorded workspace that lives on another monitor is refused out loud.
 
 test("a window on its recorded workspace but another monitor is refused as workspace-elsewhere", () => {
@@ -416,7 +416,7 @@ test("a destination an earlier move in the same plan empties is created again �
 });
 
 test("a shown, empty destination stops being shown once an earlier move sends a new workspace to its monitor — viaMonitor", () => {
-  // tick fz5, from tests/sandbox-slots.sh step 1 DOCK. The external monitor
+  // an earlier change, from tests/sandbox-slots.sh step 1 DOCK. The external monitor
   // has just come back SHOWING an empty ws 14 (4.5's restore() renumbered the
   // primary's emptied ws 4 back to 14 and moved it home). The plan: two windows
   // to ws 19, which does not exist (window move + workspace move onto the
@@ -638,7 +638,7 @@ test("an ungrouped pair plans the moves first, then the group in tab order", () 
   // (foot, then chromium) — not the order the moves happened in.
   assert.deepStrictEqual(ops[2], { kind: "group", addresses: ["0xaaa", "0xbbb"], missing: [], active: null });
 
-  // And on a REAL plan, the lock gate (tick 97e) sees the join and defers only
+  // And on a REAL plan, the lock gate sees the join and defers only
   // it: a group join needs the keyboard focus, and under an ext-session-lock
   // there is no window to focus. The predicates' own edge cases are pinned in
   // tests/refinement.test.js.
@@ -962,7 +962,7 @@ test("a group left with one present member asks for nothing and reports no drift
   assert.deepStrictEqual(groups, []);
 });
 
-// --- ungroup: recorded ungrouped, live grouped (tick 8t4, user live finding) --
+// --- ungroup: recorded ungrouped, live grouped --
 //
 // The state this op was born from, byte for byte off the user's machine: the
 // docked recording carries group:null for all four ws-10 apps, while the live
@@ -1110,7 +1110,7 @@ test("an ungroup op maps to no static commands — the service owns the dissolve
   assert.deepStrictEqual(engine.opToCommand({ kind: "ungroup", addresses: ["0xa", "0xb"] }), []);
 });
 
-// --- floating (tick 8t4) ------------------------------------------------------
+// --- floating ------------------------------------------------------
 //
 // Restorable since the live verification of hl.dsp.window.float: the verb is
 // address-targeted and focus-independent, but it TOGGLES whatever `action`
@@ -1148,7 +1148,7 @@ test("a window recorded floating but live tiled plans a floating op, and back", 
 
 test("the floating op is one absolute dispatch, and the signature says the direction", () => {
   const op = { kind: "floating", address: "0xaaa", value: true };
-  // Absolute on/off (nested-notes 9i2 (g)): the command names the state wanted,
+  // Absolute on/off (nested-notes, fidelity facts (g)): the command names the state wanted,
   // so a re-dispatch cannot invert a window that is already right.
   assert.deepStrictEqual(engine.opToCommand(op), [
     "hyprctl dispatch 'hl.dsp.window.float({ window = \"address:0xaaa\", action = \"on\" })'"
@@ -1196,11 +1196,11 @@ test("a skipped app never plans a floating op", () => {
   assert.deepStrictEqual(engine.planRestore(live, monitorsLaptop, layout, IDENTITIES), []);
 });
 
-// --- floating geometry (tick qkv) ---------------------------------------------
+// --- floating geometry ---------------------------------------------
 //
 // The op that puts a float back on its recorded pixels. Two dispatches, resize
 // then move, both naming the window — the ordering and the absolute-vs-delta
-// spelling are live-proven in tick y29 (see the FLOAT ACTUATOR SEMANTICS block
+// spelling are live-proven in an earlier change (see the FLOAT ACTUATOR SEMANTICS block
 // in engine.js). The precondition that keeps it safe is enforced HERE, in the
 // planner: a recorded FLOAT, both rects known, outside the ±2px band. Aimed at
 // a tiled window the resize half silently rearranges the dwindle split and
@@ -1300,7 +1300,7 @@ test("a skipped app never plans a geometry op", () => {
 
 test("a float that is BOTH tiled and misplaced plans the toggle, then the pixels", () => {
   // The float op assigns a fresh compositor-chosen rect, so pixels placed
-  // before it would be placed twice (tick y29). Order is the assertion.
+  // before it would be placed twice. Order is the assertion.
   const layout = geometryLayout();
   const live = [makeClient({
     address: "0xfoot", class: "foot", workspace: 7, monitor: 0,
@@ -1312,7 +1312,7 @@ test("a float that is BOTH tiled and misplaced plans the toggle, then the pixels
 
 test("geometry runs LAST, after the groups", () => {
   // A workspace move re-clamps a float against the new workspace's reserved
-  // area (live-measured, tick y29), so geometry cannot precede the moves; and
+  // area (live-measured), so geometry cannot precede the moves; and
   // it sits after the groups too, because "last" is a rule that needs no
   // per-op reasoning to stay true.
   const recordClients = [
@@ -1340,7 +1340,7 @@ test("the geometry restore converges, and a converged float plans nothing", () =
 
   // Apply what the dispatches would do, in the order opToCommand emits them:
   // resize to `size`, then move to `at`. Both absolute, both exact on live
-  // hardware (tick y29 row 15), so the result is the recorded rect exactly.
+  // hardware (an earlier change row 15), so the result is the recorded rect exactly.
   const after = floatAt(plan[0].at, plan[0].size);
   assert.deepStrictEqual(engine.planRestore(after, monitorsLaptop, layout, IDENTITIES), []);
 
@@ -1362,8 +1362,8 @@ test("a REFUSED geometry op names the app whose row it blocked", () => {
   // singular, exactly like `move` and `floating`, and Service.beginOp did not
   // know it: the op fell through to the `addresses` branch, resolved to an
   // EMPTY identity list, and a loudly-refused geometry op left the row saying
-  // nothing at all. Caught in tick qkv by reading this path rather than the op;
-  // the list of kinds that made it possible was deleted in tick ae1 (see "a
+  // nothing at all. Caught in an earlier change by reading this path rather than the op;
+  // the list of kinds that made it possible was deleted in an earlier change (see "a
   // future op kind…" below), so this test now guards the outcome rather than
   // the branch.
   const layout = geometryLayout();
@@ -1393,7 +1393,7 @@ test("a REFUSED geometry op names the app whose row it blocked", () => {
 test("the geometry op is TWO dispatches, resize then move, both naming the window", () => {
   const op = { kind: "geometry", address: "0xaaa", at: [1700, 400], size: [1000, 700] };
 
-  // Live-proven spelling, tick y29. Resize FIRST: a resize keeps the window's
+  // Live-proven spelling, an earlier change. Resize FIRST: a resize keeps the window's
   // centre fixed and therefore moves its `at`, so move→resize misses by exactly
   // half the size change. No `relative` key: x/y are the TARGET width/height on
   // resize and the TARGET position on move.
@@ -1431,7 +1431,7 @@ test("a geometry op never touches the focus, and a malformed one dispatches noth
   assert.deepStrictEqual(engine.opToCommand({ kind: "geometry", address: "0xa", at: [1, 2] }), []);
 });
 
-// --- the planner gate: coordinates, and rects (tick ae1) ---------------------
+// --- the planner gate: coordinates, and rects ---------------------
 //
 // A geometry op is the only op in the plan that carries RAW GLOBAL COORDINATES
 // out of the recording and into a dispatch. Everything else names a window, a
@@ -1518,7 +1518,7 @@ test("a corrupt recorded size can never dispatch, and never churns", () => {
   // The scenario: a hand-edited or damaged v2 file carries size [0, 0]. It is a
   // pair of finite numbers, so the readers pass it through (they coerce, they
   // never invent), it is recorded floating, and the live rect is nowhere near
-  // it — every precondition the op had before this tick.
+  // it — every precondition the op had before this change.
   const layout = geometryLayout();
   layout.apps[0].size = [0, 0];
   const live = floatAt([400, 300], [800, 600]);
@@ -1577,7 +1577,7 @@ test("the gate leaves every other reason a float is not planned exactly as it wa
   assert.strictEqual(engine.driftOf(far, monitorsLaptop, skipped, IDENTITIES).apps[0].geometry.skip, null);
 });
 
-// --- what an op touches: one answer, one place (tick ae1) --------------------
+// --- what an op touches: one answer, one place --------------------
 
 // Service.beginOp's body, as it now stands: three engine calls and not one
 // mention of a kind. Mirrored here because the QML cannot be run under node —
@@ -1606,7 +1606,7 @@ function ledgerRecord(op, clients, identities) {
 test("a future op kind that names a window is resolved by SHAPE, not by a list of kinds", () => {
   // The trap this retires: "which windows does this op touch" was answered by
   // three separate kind ladders (planAddresses, the snapshot check through it,
-  // and beginOp's ledger). Tick qkv added an op and updated two of them, and
+  // and beginOp's ledger). Adding the float op updated two of them, and
   // the third failed silently — an empty identity list is invisible to
   // blockedByIndex, so every refused geometry op left the user's row blank.
   //
@@ -1676,7 +1676,7 @@ test("opAddressesOf agrees with every op the planner actually emits", () => {
   assert.strictEqual(engine.opSubjectOf({ kind: "mystery" }), "");
 });
 
-// --- one op, one failure, first reason wins (tick ae1) -----------------------
+// --- one op, one failure, first reason wins -----------------------
 
 test("the FIRST reason wins: a diagnosis is not overwritten by its own symptom", () => {
   // The sequence this comes from: a geometry op's resize is rejected, hyprctl
@@ -1778,7 +1778,7 @@ test("a move op does not touch the focus at all", () => {
 });
 
 test("a move to a workspace that does not exist yet: window.move, then the workspace onto its owner", () => {
-  // tests/nested-notes.md 2026-11-14 (zf6): a window.move to a missing id
+  // tests/nested-notes.md 2026-11-14: a window.move to a missing id
   // creates the workspace on the FOCUSED monitor, window.move ignores
   // `monitor`, and a workspace rule would outlive the move. So: the window
   // moves without the focus, then the new workspace goes to the monitor whose
@@ -1846,7 +1846,7 @@ test("a group op names the window it toggles, and focuses only for into_group", 
 });
 
 test("no dispatch that can name its window is left to act on the focus", () => {
-  // The regression guard for the whole tick. A dispatch that CAN be targeted
+  // The regression guard for the whole change. A dispatch that CAN be targeted
   // and is not is the silent failure: the compositor answers "ok" and moves
   // whatever happens to be active, which under an open panel is nothing.
   const targetable = [
@@ -2018,7 +2018,7 @@ test("describeOp names the subject of every op kind", () => {
 
 // --- multi-window restore: matching, per-occurrence drift, launch deficit ----
 //
-// Tick 9sl. The record can now name several windows of one identity, so restore
+// The record can now name several windows of one identity, so restore
 // has to decide WHICH live window each recorded occurrence is about. The three
 // passes are exact placement agreement, then best geometry overlap, then the
 // remainder in the shared placement order (engine.matchOccurrences).
@@ -2181,7 +2181,7 @@ test("a verdict sentence names the instance only when there is more than one", (
   assert.ok(summary.text.indexOf("terminal (window 2 of 3)") !== -1, summary.text);
 });
 
-// --- the launch deficit, as pure numbers (tick l64) --------------------------
+// --- the launch deficit, as pure numbers --------------------------
 //
 // The service's serial launch coordination is QML, but what it counts is not:
 // how many windows of an identity are open, and how many more the plan wants.
@@ -2242,7 +2242,7 @@ test("filling the deficit one window at a time converges", () => {
 
 // -------------------------------- what a launch that produced nothing may claim
 //
-// Tick ql5 / finding A11. When a launch's 10s wait gives up, the service says
+// When a launch's 10s wait gives up, the service says
 // what DID appear instead. The sentence was built out of class names alone:
 //
 //     launch of "herdr" produced no window within 10s — continuing without it
@@ -2354,9 +2354,9 @@ test("Service.qml renders the pure diagnosis rather than assembling one", () => 
     "Service.qml still concatenates the class-only 'saw X instead' reason");
 });
 
-// ------------------------------------------------- the G2 probe desk (epic 9i2)
+// ------------------------------------------------- the G2 probe desk
 //
-// The rects the 0lh probe recorded and then restored to IoU 0.000 with a green
+// The rects the grouping probe recorded and then restored to IoU 0.000 with a green
 // bar: a tab group ga,gc,gb (tab order) above a tiled gd, in the nested
 // compositor's 701x850 output. The restore built the tiles the wrong way up,
 // and the planner, seeing three identical member rects, refused the workspace
@@ -2379,7 +2379,7 @@ const G2_RECORDED = engine.buildLayout(g2Desk([5, 26], [5, 428]), G2_MONITORS, G
 // What the probe's restore left: gd on top, the group below.
 const G2_LIVE = g2Desk([5, 449], [5, 5]);
 
-test("9i2 G2: a group beside a tile is a tree — no 'not-a-tree', and one swap fixes it", () => {
+test("G2: a group beside a tile is a tree — no 'not-a-tree', and one swap fixes it", () => {
   const report = engine.driftOf(G2_LIVE, G2_MONITORS, G2_RECORDED, G2_IDS);
   assert.deepEqual(report.tilingRefusals, []);
   for (const app of report.apps) {
@@ -2390,11 +2390,11 @@ test("9i2 G2: a group beside a tile is a tree — no 'not-a-tree', and one swap 
   assert.deepEqual(engine.opAddressesOf(plan[0]).sort(), ["0xa", "0xd"]);
 });
 
-test("9i2 G2: the recorded desk itself plans nothing", () => {
+test("G2: the recorded desk itself plans nothing", () => {
   assert.deepEqual(engine.planRestore(g2Desk([5, 26], [5, 428]), G2_MONITORS, G2_RECORDED, G2_IDS), []);
 });
 
-// ------------------------------------------------ unmet shapes (9i2, §2.7)
+// ------------------------------------------------ unmet shapes (§2.7)
 //
 // A tiled rect is never drift, so a workspace whose tiles are wrong read
 // drift=0 and a green bar (finding-grouping-tiling, probe G2). report.shapes is
@@ -2431,7 +2431,7 @@ const COLUMNS3 = [
   { at: [12, 38], size: [467, 850] }, { at: [485, 38], size: [467, 850] }, { at: [958, 38], size: [470, 850] }
 ];
 
-test("9i2 shapes: a dragged divider is a shape a restore would fix — reason null", () => {
+test("shapes: a dragged divider is a shape a restore would fix — reason null", () => {
   const dragged = [{ at: [12, 38], size: [400, 850] }, { at: [426, 38], size: [1002, 850] }];
   const report = engine.driftOf(shapeClients(dragged), SHAPE_MONITORS, shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS);
   assert.equal(report.summary.drifted, 0, "a tiled rect is never drift — which is why this row exists");
@@ -2443,7 +2443,7 @@ test("9i2 shapes: a dragged divider is a shape a restore would fix — reason nu
     .some((op) => op.kind === "divider"), "null means a restore acts");
 });
 
-test("9i2 shapes: three columns are a shape a restore refuses — reason ambiguous-tree", () => {
+test("shapes: three columns are a shape a restore refuses — reason ambiguous-tree", () => {
   const scrambled = [
     { at: [12, 38], size: [300, 850] }, { at: [318, 38], size: [628, 850] }, { at: [952, 38], size: [476, 850] }
   ];
@@ -2456,7 +2456,7 @@ test("9i2 shapes: three columns are a shape a restore refuses — reason ambiguo
   assert.deepEqual(scrolling.shapes.map((r) => r.reason), ["layout-scrolling"]);
 });
 
-test("9i2 shapes: a settled workspace and a pending one are not shapes", () => {
+test("shapes: a settled workspace and a pending one are not shapes", () => {
   const settled = engine.driftOf(shapeClients(TWO_SIDE_BY_SIDE), SHAPE_MONITORS, shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS);
   assert.deepEqual(settled.shapes, []);
   // Settled and ambiguous: the tree word is never said about a settled shape.
@@ -2470,10 +2470,10 @@ test("9i2 shapes: a settled workspace and a pending one are not shapes", () => {
     shapeLayout(TWO_SIDE_BY_SIDE), SHAPE_IDS).shapes, []);
 });
 
-// --- schema v9: the visible tab (epic 9i2, §2.6) -----------------------------
+// --- schema v9: the visible tab (§2.6) -----------------------------
 
 // The messenger group with ONE member showing — `visible` is the compositor's
-// per-group "current tab" flag (nested-notes 9i2 (a)). `tabs` is the live ring.
+// per-group "current tab" flag (nested-notes, fidelity facts (a)). `tabs` is the live ring.
 function messengersShowing(address, tabs) {
   const ring = tabs || ["0xtele", "0xslackgrouped", "0xwhats"];
   return [
@@ -2501,7 +2501,7 @@ function applyTab(clients, op) {
     : Object.assign({}, c, { visible: c.address === op.address })));
 }
 
-test("9i2 tab: the wrong tab in front plans exactly one tab op, and converges", () => {
+test("tab: the wrong tab in front plans exactly one tab op, and converges", () => {
   const layout = slackInFrontLayout();
   const live = messengersShowing("0xtele");
 
@@ -2540,7 +2540,7 @@ test("9i2 tab: the wrong tab in front plans exactly one tab op, and converges", 
   assert.strictEqual(engine.driftOf(after, monitorsLaptop, layout, IDENTITIES).summary.drifted, 0);
 });
 
-test("9i2 tab: the recorded tab in front plans nothing and reports nothing", () => {
+test("tab: the recorded tab in front plans nothing and reports nothing", () => {
   const layout = slackInFrontLayout();
   const live = messengersShowing("0xslackgrouped");
   const report = engine.driftOf(live, monitorsLaptop, layout, IDENTITIES);
@@ -2549,7 +2549,7 @@ test("9i2 tab: the recorded tab in front plans nothing and reports nothing", () 
   assert.deepStrictEqual(engine.planRestore(live, monitorsLaptop, layout, IDENTITIES), []);
 });
 
-test("9i2 tab: a read that cannot name one tab is not drift", () => {
+test("tab: a read that cannot name one tab is not drift", () => {
   const layout = slackInFrontLayout();
   for (const live of [messengersShowing(null),
     messengersShowing("0xtele").map((c) => Object.assign(c, { visible: true }))]) {
@@ -2560,7 +2560,7 @@ test("9i2 tab: a read that cannot name one tab is not drift", () => {
   }
 });
 
-test("9i2 tab: an unwatched tab in front is the wrong tab, and the index counts it", () => {
+test("tab: an unwatched tab in front is the wrong tab, and the index counts it", () => {
   const layout = slackInFrontLayout();
   const ring = ["0xtele", "0xddd", "0xslackgrouped", "0xwhats"];
   const live = messengersShowing("0xddd", ring);
@@ -2572,7 +2572,7 @@ test("9i2 tab: an unwatched tab in front is the wrong tab, and the index counts 
   assert.deepStrictEqual(engine.planRestore(applyTab(live, ops[0]), monitorsLaptop, layout, IDENTITIES), []);
 });
 
-test("9i2 tab: a rebuild carries the recorded tab, and plans no tab op beside it", () => {
+test("tab: a rebuild carries the recorded tab, and plans no tab op beside it", () => {
   const layout = slackInFrontLayout();
   // Wrong order AND the wrong tab: the group op is the one instruction.
   const live = messengersShowing("0xtele", ["0xtele", "0xwhats", "0xslackgrouped"]);
@@ -2602,7 +2602,7 @@ test("9i2 tab: a rebuild carries the recorded tab, and plans no tab op beside it
     ["tab"]);
 });
 
-test("9i2 tab: the recorded tab closed, or recorded behind an unwatched tab, never drifts", () => {
+test("tab: the recorded tab closed, or recorded behind an unwatched tab, never drifts", () => {
   const layout = slackInFrontLayout();
   // Slack is not running: the two that are here stand, and nobody is owed the front.
   const withoutSlack = messengersShowing("0xtele", ["0xtele", "0xwhats"])
@@ -2620,7 +2620,7 @@ test("9i2 tab: the recorded tab closed, or recorded behind an unwatched tab, nev
   assert.deepStrictEqual(engine.planRestore(messengersShowing("0xwhats", ring), monitorsLaptop, behind, IDENTITIES), []);
 });
 
-test("9i2 tab: a migrated v8 record (active null) plans no tab op and reports no drift", () => {
+test("tab: a migrated v8 record (active null) plans no tab op and reports no drift", () => {
   const layout = slackInFrontLayout();
   const v8 = Object.assign({}, layout, {
     apps: layout.apps.map((a) => Object.assign({}, a, { group: Object.assign({}, a.group, { active: null }) }))
@@ -2638,7 +2638,7 @@ test("9i2 tab: a migrated v8 record (active null) plans no tab op and reports no
   assert.strictEqual(engine.opSignature(ops[0]), "group:0xtele+0xslackgrouped+0xwhats");
 });
 
-test("9i2 tab: the tab op sits after the groups and before the geometry, and refuses a bad index", () => {
+test("tab: the tab op sits after the groups and before the geometry, and refuses a bad index", () => {
   const layout = slackInFrontLayout();
   // Telegram's group is intact but showing telegram, and the stranger moved
   // the whole group to ws 4: moves, then the tab.
@@ -2655,7 +2655,7 @@ test("9i2 tab: the tab op sits after the groups and before the geometry, and ref
     "index 0 would select the LAST tab");
 });
 
-// --- placeable entries pick their live window first (4wf) --------------------
+// --- placeable entries pick their live window first --------------------
 // Two entries of one identity: #0 cannot be placed (slot-unknown), #1 can. An
 // unplaceable entry must only take a window a placeable one has left over.
 {

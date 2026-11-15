@@ -15,9 +15,9 @@
 // It is also the future acceptance gate: `scripts/verify && echo clean` is a
 // truthful pass/fail for a desktop, which is what a live round has never had.
 //
-// GEOMETRY (schema v2, tick 5sc) is PRINTED, and since tick qkv exactly ONE of
+// GEOMETRY (schema v2) is PRINTED, and exactly ONE of
 // its four answers moves the exit code: `off-by` on a FLOATING window. That is
-// the answer that now has an op behind it (epic yyz added the resize+move pair),
+// the answer that now has an op behind it (the resize+move pair),
 // so a float off its recorded pixels is a restore that has not finished, and a
 // gate that stayed green over it would be the gate lying. The other three
 // answers cannot move the exit code and are not allowed to:
@@ -44,13 +44,13 @@
 //                failure.
 //
 // So `scripts/verify && echo clean` got STRICTER for floats and did not move at
-// all for anything else. Checked rather than assumed at the top of tick qkv:
+// all for anything else. Checked rather than assumed when float enforcement was added:
 // the user's own state file is v2 and does carry rects, but all 18 of its
 // entries across both layouts are recorded TILED, so not one of them can
 // produce a geometry failure here.
 //
 // The per-workspace mean-IoU lines under the table are the tiled-similarity
-// baseline epic b9m has to move; --json carries the numbers as data.
+// baseline later tiled-placement work has to move; --json carries the numbers as data.
 //
 // Usage:
 //   scripts/verify                         # the live desktop, human table
@@ -383,7 +383,7 @@ function main() {
     pad(r.floating, widths.floating),
     pad(r.group, widths.group),
     // GEOMETRY sits after the four placement dimensions and before the
-    // where-columns. Since tick qkv it is not purely informational: `off-by`
+    // where-columns. Since an earlier change it is not purely informational: `off-by`
     // on a FLOAT moves the exit code. A tiled window's score still cannot, so
     // the column is read by its word and never by its position.
     pad(r.geometry, widths.geometry),

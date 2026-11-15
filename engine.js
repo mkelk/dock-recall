@@ -76,13 +76,13 @@ function monitorByIndex(monitorsJson, idx) {
 //
 // TWIN IDENTICAL MONITORS: a matched pair reports the SAME description on both
 // connectors, and this answers with the FIRST one in the list. That is schema
-// v2's documented refusal rather than an oversight (tick ojr, state-matrix §3):
+// v2's documented refusal rather than an oversight:
 // AppPlacement carries `monitorDescription` and nothing else about the output,
 // so a record cannot say which twin it meant and this cannot invent it. The
 // consequences are pinned by tests rather than left to be discovered — a window
 // moved between twins is not drift (the labels are equal, so the comparison
 // sees nothing), and a workspace recorded on the second twin is restored onto
-// the first. Fixing it is a SCHEMA question, deferred to epic 69b's v3.
+// the first. Fixing it is a SCHEMA question, deferred to an earlier epic's v3.
 function monitorByDescription(monitorsJson, desc) {
   var monitors = monitorsJson || [];
   var wanted = (desc || "").trim();
@@ -205,7 +205,7 @@ function patternList(value) {
 // A map lookup Object.prototype cannot answer — see the long note above
 // `own` in StateModel.js. Every index in this file keyed by an identity id, a
 // group id or a member key reads through this, because `map["constructor"]` on
-// a bare object is truthy whether or not anything was put there (tick 8hp).
+// a bare object is truthy whether or not anything was put there.
 function own(map, key) {
   if (!map) return undefined;
   return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
@@ -273,7 +273,7 @@ function matchClient(client, identities) {
 // says so.
 //
 // The panel used to MANUFACTURE that list by prepending every new identity;
-// since tick gpq an addition is inserted behind whatever it would shadow, so
+// since an earlier change an addition is inserted behind whatever it would shadow, so
 // reaching this state takes a hand edit or a file written by an older build.
 // Which is exactly why the detector stays: the file is user-editable, and the
 // panel is not the only thing that writes it.
@@ -325,7 +325,7 @@ function matchClient(client, identities) {
 // says a working rule is broken is the same class of wrong answer this is
 // supposed to remove.
 //
-// THE AXIS TEST IS NOT ENOUGH ON ITS OWN (tick ytt). It fixed the wolf-cry
+// THE AXIS TEST IS NOT ENOUGH ON ITS OWN. It fixed the wolf-cry
 // across axes and cannot see breadth WITHIN one, so the same false alarm came
 // back class-against-class:
 //
@@ -375,7 +375,7 @@ function matchClient(client, identities) {
 //   claimed    how many of them a NAMED claimant took. Lower than `windows`
 //              when an earlier identity that failed the tests above took the
 //              rest — which is why it is counted separately: the sentence names
-//              the claimants, so its number has to be theirs (tick ytt).
+//              the claimants, so its number has to be theirs.
 //   claimedBy  the earlier identities that took them AND could shadow it, in
 //              LIST order rather than the order hyprctl listed the windows, so
 //              two reads of one unchanged desktop agree.
@@ -557,7 +557,7 @@ function clientsFor(clientsJson, identity, identities) {
 // THE QUESTIONS THE SHELL USED TO ANSWER ITSELF
 // ---------------------------------------------------------------------------
 //
-// Tick v29 / finding A8. Each of these was a loop with a bare-object dedupe map
+// Each of these was a loop with a bare-object dedupe map
 // inside a QML file, and each map was keyed by exactly the strings the 8hp
 // sweep exists for — an identity id, or a window's class name. `seen[id]` on a
 // bare object is truthy for `constructor`, `toString`, `valueOf`,
@@ -691,7 +691,7 @@ function newAddressSince(clientsJson, before) {
   return "";
 }
 
-// WHAT A LAUNCH THAT PRODUCED NOTHING MAY CLAIM (tick ql5, finding A11).
+// WHAT A LAUNCH THAT PRODUCED NOTHING MAY CLAIM.
 //
 // When the 10s wait gives up, the service says what DID appear instead. That
 // sentence used to be built out of class names alone:
@@ -1040,7 +1040,7 @@ function memberOccurrenceOf(key) {
 // `chosen.byId[id]` answers with Object.prototype's own member for an id like
 // "constructor" or "toString" — a native function where a window list belongs,
 // which is truthy, and which is how "not running" became a TypeError in the
-// middle of a restore plan (tick 8hp). Every consumer here uses own().
+// middle of a restore plan. Every consumer here uses own().
 function chosenWindows(clientsJson, identities, monitorsJson) {
   var list = identities || [];
   var byId = {};
@@ -1350,7 +1350,7 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //                                 // monitor index — indices renumber on
 //                                 // hotplug. "" when it could not be resolved.
 //     workspaceId:       number   // client.workspace.id. Always POSITIVE in a
-//                                 // record written since tick pqv: a special
+//                                 // record written since an earlier change: a special
 //                                 // workspace's negative id is not a workspace
 //                                 // identity to any dispatcher, so an app
 //                                 // parked in a scratchpad is refused at record
@@ -1370,7 +1370,7 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 // GEOMETRY (schema v2) — what it is and, just as importantly, what it is not.
 //
 // `at`/`size` are RECORDED and MEASURED, and for entries recorded
-// `floating: true`, planRestore also ACTS on them (since tick qkv): a float
+// `floating: true`, planRestore also ACTS on them (since an earlier change): a float
 // outside GEOMETRY_TOLERANCE_PX of its recorded rect is drift and plans a
 // `geometry` op that resizes and moves it back — see the "Floating geometry"
 // block below and geometryPlanSkip for the one thing that can veto it. For
@@ -1423,7 +1423,7 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 // what enforces it (one entry per live window, group membership filtered to
 // recorded windows); tests/record.test.js asserts it over every fixture.
 //
-// MULTI-WINDOW, schema v3 (epic 69b): the schema no longer says "one entry per
+// MULTI-WINDOW, schema v3: the schema no longer says "one entry per
 // identity". `occurrence` is the field that lifted that limitation and it
 // shipped WITH v3 — every read migrates a v2 entry to `occurrence: 0` — and the
 // machinery that PRODUCES more than one entry per identity (the placement
@@ -1727,7 +1727,7 @@ function dissolveTargets(addresses, clientsJson) {
 // special workspace (moving windows through a visible workspace is churn the
 // user watches happen).
 //
-// WHERE the scratch ids live — OUTSIDE EVERY BLOCK (tick vp0). Under Omarchy
+// WHERE the scratch ids live — OUTSIDE EVERY BLOCK. Under Omarchy
 // 4.5 every monitor owns a block of ten ids (block B = B*10+1 .. B*10+10), and
 // /usr/share/omarchy/default/hypr/monitor-workspaces.lua reconciles them. The
 // old base, 31, is block 3 — a real monitor's slot 1 on a desk with four
@@ -1746,7 +1746,7 @@ function dissolveTargets(addresses, clientsJson) {
 //   - merge() (622-647) is the one that acts: at a RECONCILE (a monitor event
 //     or a config reload) a workspace with windows and no owner is a guest, and
 //     it is renumbered into the block of the monitor it sits on, with no merged
-//     record (block 90 has no identity to remember). Probed nested in tick zf6
+//     record (block 90 has no identity to remember). Probed nested in an earlier change
 //     (tests/nested-notes.md, 2026-11-14, answer (c)): a window on 901 sat
 //     there untouched until `hyprctl reload`, then landed on ws 2.
 // So a scratch join must NOT straddle a reconcile: a reload or hotplug in the
@@ -1819,7 +1819,7 @@ function geometryPair(value) {
 
 // Does this workspace id name a SPECIAL workspace (a scratchpad)?
 //
-// Hyprland hands special workspaces NEGATIVE ids, and tick pqv's live probe
+// Hyprland hands special workspaces NEGATIVE ids, and an earlier change's live probe
 // (docs/thoughts/2026-08-17-special-ws-probe.md, Hyprland 0.56.2) established
 // that such an id is worse than useless in a dispatch: to every dispatcher a
 // bare negative number is a RELATIVE workspace selector, not an identity.
@@ -1833,7 +1833,7 @@ function geometryPair(value) {
 //
 // So the number is refused at both doors — at record time (buildLayout, below)
 // so it never enters a new file, and at restore time (driftOf's
-// "workspace-special" skip) so a file recorded before this tick cannot reach a
+// "workspace-special" skip) so a file recorded before this change cannot reach a
 // dispatch either. Coerced the way normalizeWorkspaceId coerces, because a
 // hand-edited file may carry "-98" as a string.
 function isSpecialWorkspaceId(value) {
@@ -1846,7 +1846,7 @@ function isSpecialWorkspaceId(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Planning context, layout modes and the visible tab (schema v9, epic 9i2)
+// Planning context, layout modes and the visible tab
 // ---------------------------------------------------------------------------
 //
 //   context = { workspaces: Array | null     // `hyprctl workspaces -j`, verbatim
@@ -1951,7 +1951,7 @@ function groupMemberClients(client, clientsJson) {
 // that the count it just printed is short, and why. A silently short recording
 // is exactly the "windows out of sync" report this project exists to answer.
 //
-// `chosenIndex` is the LAST parameter and the newest (tick 3xi): the window
+// `chosenIndex` is the LAST parameter and the newest: the window
 // index the occurrences are numbered from, when the caller has already built one
 // and needs to keep it. It is not an optimisation. A caller that has to name the
 // window an entry describes — the capture pipeline is the only one — cannot
@@ -2115,7 +2115,7 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIn
 //                                     // and the UI must not blame the cable
 //               | "workspace-special" // recorded workspace id is NEGATIVE — a
 //                                     // scratchpad. buildLayout has refused to
-//                                     // write these since tick pqv, so this is
+//                                     // write these since an earlier change, so this is
 //                                     // the legacy-file door: the id cannot be
 //                                     // dispatched (it reads as a RELATIVE
 //                                     // selector and moves the wrong workspace
@@ -2134,7 +2134,7 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIn
 //                                     // booleans; all false unless drifted.
 //                                     // `floating` compares the live window's
 //                                     // floating state against the recorded
-//                                     // one — restorable since tick 8t4 via
+//                                     // one — restorable since an earlier change via
 //                                     // the "floating" op (see the op list).
 //     recorded:   { monitorDescription, workspaceId, group, floating }
 //     current:    null | { address, monitorDescription, workspaceId, floating, group }
@@ -2278,10 +2278,10 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
       occurrence: occurrenceOf(recorded.occurrence),
       status: "ok",
       reason: null,
-      // `geometry` is the FLOAT-ONLY pixel dimension (tick qkv). A tiled
+      // `geometry` is the FLOAT-ONLY pixel dimension. A tiled
       // window never sets it — its rect is an outcome of the dwindle tree, not
       // a promise anything can keep, and `resize` aimed at one silently
-      // rearranges the split (tick y29 evidence). See the geometry block below.
+      // rearranges the split (an earlier change evidence). See the geometry block below.
       // `activeTab` (schema v9) is set in pass 2, on the one member of an
       // intact group that was recorded as its visible tab and is not in front.
       drift: { monitor: false, workspace: false, group: false, floating: false, geometry: false, activeTab: false },
@@ -2312,7 +2312,7 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
       entry.reason = "identity-unknown";
     } else if (isSpecialWorkspaceId(recorded.workspaceId)) {
       // A LEGACY entry: the record names a special workspace by its negative
-      // id. buildLayout has refused to write one since tick pqv, so this can
+      // id. buildLayout has refused to write one since an earlier change, so this can
       // only come off a file recorded before it — and it must never reach
       // opToCommand, where the number would be read as a relative selector and
       // move a workspace nobody asked about (the probe's row (c), silent and
@@ -2372,7 +2372,7 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
           entry.drift.floating = false;
         }
         // Recorded ungrouped: being in a WATCHED group now IS drift, and since
-        // tick 8t4 the plan fixes it with an "ungroup" op — the recording is
+        // an earlier change the plan fixes it with an "ungroup" op — the recording is
         // the statement "these windows stand alone", and a restore that cannot
         // say so leaves an amber badge no button can clear (the user's live
         // ws-10 finding). A group of purely-unwatched windows around this
@@ -2399,11 +2399,11 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
       (entry.status === "ok" || entry.status === "drifted") ? entry.current : null
     );
 
-    // A recorded FLOAT that is outside the tolerance band is DRIFT as of tick
-    // qkv, where it was measurement-only before (tick 5sc). What changed is not
+    // A recorded FLOAT that is outside the tolerance band is DRIFT as of an earlier change, where
+    // it was measurement-only before. What changed is not
     // the opinion, it is the capability: planRestore now emits a geometry op
     // for exactly this case, so the badge is pointing at something a button can
-    // fix. The rule tick 5sc wrote — "geometry is a measurement, not a promise"
+    // fix. The rule an earlier change wrote — "geometry is a measurement, not a promise"
     // — still holds for everything it was written about, because
     // `geometry-off` is a verdict geometryScoreFor only ever reaches in FLOAT
     // mode; a tiled window scores `scored`/`not-scored` and can never land
@@ -2424,7 +2424,7 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
       entry.geometry.skip = geometryPlanSkip(entry.recorded, monitors);
       // A recorded float whose float toggle the layout mode took away (§2.4),
       // and whose window is TILED now: the geometry op would run against a
-      // tiled window, where `resize` silently moves the split (tick y29). The
+      // tiled window, where `resize` silently moves the split. The
       // mode's refusal word is the reason the planner leaves it.
       if (!entry.geometry.skip && entry.current && !entry.current.floating
         && modeRefusalBlocksFloating(modeRefusalFor(recorded), recorded)) {
@@ -2445,11 +2445,11 @@ function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   }
 
   // Pass 3: which finished workspaces the tiled refinement will not touch, and
-  // why (tick eqb). Computed here rather than in the planner because this is
+  // why. Computed here rather than in the planner because this is
   // the report every reader already has — `scripts/verify` never builds a plan
   // — and because a ceiling that is only visible to whoever runs a restore is a
   // ceiling the person looking at the amber number cannot find.
-  // Handed the group verdicts from pass 2 (epic 9i2): a tab group is one tile
+  // Handed the group verdicts from pass 2: a tab group is one tile
   // only while its group is intact, and only `groups` can say that.
   var tiledWorkspaces = tiledWorkspacesOf(recordedApps, apps, clients, groups, context);
   var tilingRefusals = tilingRefusalsFrom(tiledWorkspaces);
@@ -2651,7 +2651,7 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
 //     text:       string    // the same verdict as one human phrase, "" when ok
 //     geometry:   "ok" | "geometry-off" | "scored" | "not-scored"
 //                           // Measured for every recorded app; ENFORCED for
-//                           // floats only (tick qkv). `geometry-off` is a float
+//                           // floats only. `geometry-off` is a float
 //                           // verdict, it is drift, it plans an op and it makes
 //                           // `ok` false. `scored` is the tiled measurement and
 //                           // stays inert: no drift, no op, no effect on `ok`.
@@ -2683,13 +2683,13 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
 // Geometry scoring (schema v2) — MEASURED for all, ENFORCED for FLOATS
 // ---------------------------------------------------------------------------
 //
-// Tick 5sc wrote this block as measurement-only: nothing in it could change a
+// An earlier change wrote this block as measurement-only: nothing in it could change a
 // verdict, `verdict.ok`, `driftCountOf`, a plan or scripts/verify's exit code.
 // The stated reason was not caution but honesty — `planRestore` had no op that
 // moved a window by pixels, so a geometry miss was something the tool could
 // report and not something it could be blamed for.
 //
-// TICK qkv BUILT THAT OP, FOR FLOATS, and the rule split along the line its own
+// THE OP EXISTS NOW, FOR FLOATS, and the rule split along the line its own
 // reasoning drew. So, precisely:
 //
 //   a recorded FLOAT is measured AND ENFORCED. `geometry-off` sets
@@ -2744,7 +2744,7 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
 // nothing at ±2 can hide a deliberate move. Two pixels is the widest band that
 // still contains only noise.
 //
-// The number is one constant, exported, so a future tick can move it in one
+// The number is one constant, exported, so a later change can move it in one
 // place and every consumer — verdicts, verify, the panel — moves with it.
 var GEOMETRY_TOLERANCE_PX = 2;
 
@@ -2910,7 +2910,7 @@ function geometryScoreFor(recordedApp, currentPlacement) {
     // Stamped by driftOf, which has the live monitor list this function does
     // not. Always present so the shape is one shape.
     skip: null,
-    // Likewise stamped by driftOf (tick eqb): the word for why the tiled
+    // Likewise stamped by driftOf: the word for why the tiled
     // refinement will not touch this window's workspace, or null when it will.
     // A tiled window's IoU is a measurement with no complaint attached, and
     // this is the field that says whether anything is going to be done about
@@ -3117,8 +3117,8 @@ function geometrySummaryOf(apps, refusalByWorkspace) {
     // the same rule planRestore's wsKey states, for the same reason: one
     // literal NUL anywhere in this file makes the WHOLE file "binary" to grep,
     // which then answers "binary file matches" and nothing else for every other
-    // line in it. It WAS a literal byte from tick 5sc until tick y29, which is
-    // the tick that paid the cost; the string it builds is byte-for-byte the
+    // line in it. It WAS a literal byte from an earlier change until an earlier change, which is
+    // the change that paid the cost; the string it builds is byte-for-byte the
     // same either way.
     var key = String(recorded.monitorDescription || "") + "\u0000" + String(workspaceId);
     if (!byWorkspace[key]) {
@@ -3214,14 +3214,14 @@ var VERDICT_PHRASES = {
 // separately, in verdictForApp, on the ONE word that is a complaint —
 // `geometry-off`, which geometryScoreFor only ever reaches in FLOAT mode.
 //
-// That fold is new in tick qkv and it reverses tick 5sc's rule for floats only.
+// That fold is new in an earlier change and it reverses an earlier change's rule for floats only.
 // The reason is the one 5sc gave for the rule in the first place: a geometry
 // miss was not something the tool could be blamed for because it had no op that
 // moved a window by pixels. It has one now, for floats, so a float that is off
 // is a restore that did not finish — and scripts/verify going red on it is the
 // gate doing its job rather than an unactionable complaint. Tiled geometry is
 // unchanged: still measured, still never enforced, still nothing an exit code
-// can be built on until epic b9m says otherwise.
+// can be built on until an earlier epic says otherwise.
 var VERDICT_DIMENSIONS = ["monitor", "workspace", "floating", "group"];
 
 function verdictPhrase(word) {
@@ -3391,7 +3391,7 @@ function verdictForApp(app, groupsById, blocked, instance) {
     if (phrase && phrases.indexOf(phrase) === -1) phrases.push(phrase);
   }
 
-  // Geometry joins the sentence, and since tick qkv it joins the verdict too —
+  // Geometry joins the sentence, and since an earlier change it joins the verdict too —
   // but only on `geometry-off`, and `geometry-off` is a word geometryScoreFor
   // only reaches for a recorded FLOAT. A tiled window's `scored`/`not-scored`
   // leaves `ok` exactly where the loop above left it, so no tiled desktop is
@@ -3561,13 +3561,13 @@ function verdictSummary(verdicts) {
 // ---------------------------------------------------------------------------
 //
 // Hyprland exposes no split-tree API — that sentence has been in this project
-// since tick 5sc and it is still true. What tick or5's probe found is that the
+// since an earlier change and it is still true. What an earlier change's probe found is that the
 // tree does not have to be READ, because it can be RECONSTRUCTED: dwindle is a
 // guillotine layout, so every tiling it produces is a binary tree of straight
 // cuts, and a set of recorded rects determines such a tree (up to ambiguities
 // that do not matter — see below).
 //
-// Three live facts hold this up, all in docs/state-matrix.md § Tiled placement:
+// Three live facts hold this up, all in the state matrix § Tiled placement:
 //
 //   1. arrival order fixes occupancy — the k-th window to arrive takes the k-th
 //      slot, byte-identically across repeats;
@@ -3582,8 +3582,8 @@ function verdictSummary(verdicts) {
 //
 // So: cut the recorded rects into a tree, then read an insertion program off it.
 //
-// AMBIGUITY IS HARMLESS *WHEN BUILDING FROM EMPTY* — and that qualifier is tick
-// eqb's, because the sentence was written without it and it is only half true.
+// AMBIGUITY IS HARMLESS *WHEN BUILDING FROM EMPTY* — and that qualifier is a later correction,
+// because the sentence was written without it and it is only half true.
 // A 2×2 grid can be cut vertically-then-horizontally or horizontally-then-
 // vertically, and the two trees are different programs — but they lay out the
 // SAME FOUR RECTS, and a program that fills an empty workspace is judged by
@@ -3732,7 +3732,7 @@ function placementOrderOf(items) {
   while (queue.length) {
     var node = queue.shift();
     if (node.key !== undefined) continue;
-    // `axis` is the cut this arrival makes (epic 9i2 §2.5): 0 when it lands
+    // `axis` is the cut this arrival makes: 0 when it lands
     // beside its parent, 1 when it lands below. The arrival always takes the
     // far side, so the axis is the whole of what the service has to check.
     order.push({ key: firstKeyOf(node.far), parentKey: firstKeyOf(node.near), axis: node.axis });
@@ -3750,7 +3750,7 @@ function placementOrderOf(items) {
 // always takes the far side (right/below), and a togglesplit keeps it there, so
 // an arrival found left of or above its parent is not "the other axis": it
 // landed somewhere the program did not put it, and no toggle can make that the
-// recorded tree (tick v2p — an axis-only check read it as right and built on it).
+// recorded tree (an earlier change — an axis-only check read it as right and built on it).
 // `parent`, `arrival`: { at, size } tile boxes.
 function arrivalAxisBetween(parent, arrival) {
   if (!parent || !arrival) return null;
@@ -3765,10 +3765,10 @@ function arrivalAxisBetween(parent, arrival) {
 
 // ---------------------------------------------------------------------------
 // Tiled refinement: the two things left over once the windows are on the
-// workspace (tick pyo)
+// workspace
 // ---------------------------------------------------------------------------
 //
-// Tick 35n closed the case where a workspace is BUILT by the restore: the moves
+// An earlier change closed the case where a workspace is BUILT by the restore: the moves
 // go in tree order, each naming the tile it splits, and the recorded tiling
 // comes back exactly. It closed nothing at all for the case the user actually
 // reported, because in that one nothing has to move. A redock re-tiled
@@ -3783,7 +3783,7 @@ function arrivalAxisBetween(parent, arrival) {
 //               `hl.dsp.window.swap({ window, target })` does exactly —
 //               address-targeted on both ends, focus-independent, safe on a
 //               hidden workspace, loud about every way it can fail, and it
-//               moves no divider (tick or5, § Tiled placement § 7).
+//               moves no divider.
 //   RATIO       the right windows in the right slots, with the dividers in the
 //               wrong places. The user's `herdr` case at 0.497 — composition
 //               dependent sizing, which is what a split ratio is. Fixed by
@@ -3794,7 +3794,7 @@ function arrivalAxisBetween(parent, arrival) {
 // who is where first, then where the lines between them are.
 //
 // THE SIGN LAW is the reason this converges instead of running away, and it is
-// measured rather than reasoned (or5 § 8):
+// measured rather than reasoned:
 //
 //   `resize` at a tiled window is EXACT if and only if the window is the
 //   LEFT/TOP child of the divider being moved. Aimed at the right/bottom child
@@ -3816,7 +3816,7 @@ function arrivalAxisBetween(parent, arrival) {
 // pretending otherwise would burn a plan's iterations distorting a layout it
 // cannot fix. That case belongs to 35n's placement, or to nothing.
 //
-// AND THE SECOND PRECONDITION, added in tick eqb: the reconstruction has to be
+// AND THE SECOND PRECONDITION, added in an earlier change: the reconstruction has to be
 // the ONLY one. Placement can shrug at an ambiguous set of rects because it is
 // building from empty and every valid tree builds the same desktop; refinement
 // cannot, because it is aiming a dispatch at a divider it has inferred. On an
@@ -3849,7 +3849,7 @@ function leafKeysOf(node, out) {
 }
 
 // ---------------------------------------------------------------------------
-// ONE FLIP: the shape difference that IS reachable (tick uk5)
+// ONE FLIP: the shape difference that IS reachable
 // ---------------------------------------------------------------------------
 //
 // "No sequence of divider moves turns one split tree into another" is true, and
@@ -4014,7 +4014,7 @@ var TILED_REFINEMENT_TARGET_IOU = 0.95;
 // refinement iterations against instead of counting them against the general
 // iteration cap.
 //
-// Why the two caps had to be separated (tick eqb): a dwindle tree of n windows
+// Why the two caps had to be separated: a dwindle tree of n windows
 // has n − 1 cuts, so a workspace of seven windows can need six nudges — six
 // plan/execute iterations, every one of them making real progress — and the
 // general cap is five. The pass gave up on iteration six with a GIVE-UP warning
@@ -4065,7 +4065,7 @@ var TILING_REFUSAL_PHRASES = {
 };
 
 // ---------------------------------------------------------------------------
-// Tiles (epic 9i2)
+// Tiles
 // ---------------------------------------------------------------------------
 //
 //   Tile = { key, at, size, members, groupId }
@@ -4262,7 +4262,7 @@ function tilingRefusalOf(recordedItems, liveItems, opts) {
 // richer return value because every caller and every test of this function
 // reads "null means nothing to do", and a refusal IS nothing to do.
 //
-// `opts.treeKnown` (epic 9i2 §2.5): THE KNOWN TREE. Set by the planner only for
+// `opts.treeKnown`: THE KNOWN TREE. Set by the planner only for
 // a workspace whose `context.built[workspaceId]` is true, and then the recorded
 // tree — splitTreeOf(recorded), the very tree placementOrderOf read the arrival
 // program from — IS the live tree. No live reconstruction, no ambiguity
@@ -4405,7 +4405,7 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
       }
     }
     // Outer dividers first, because an outer nudge rescales every ratio below
-    // it (or5 § 9: the outer-then-inner pair restored a two-divider tree
+    // it (the outer-then-inner pair restored a two-divider tree
     // exactly, and the other order would have had the outer move undo the inner
     // one). "Outer" is read off the tree, not guessed at from the rects — see
     // cutDepthFor. Ties break on slot position and then axis, so the choice is
@@ -4416,7 +4416,7 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
       return a.axis - b.axis;
     });
 
-    // ONE NUDGE PER WORKSPACE PER PLAN, and this is the hard cap the tick asks
+    // ONE NUDGE PER WORKSPACE PER PLAN, and this is the hard cap the change asks
     // for — expressed as a rate rather than a total, which is what makes it
     // both bounded and read-gated.
     //
@@ -4470,7 +4470,7 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
 //            //   owner. See opToCommand.
 //      | { kind: "floating", address, value }
 //            // value: the recorded floating state. Dispatched as an ABSOLUTE
-//            //   `action = "on"|"off"` (nested-notes 9i2 (g)); the service
+//            //   `action = "on"|"off"` (nested-notes, fidelity facts (g)); the service
 //            //   still reads the window first — see the floating verb
 //            //   evidence above opToCommand.
 //      | { kind: "split",  address, workspaceId }
@@ -4489,7 +4489,7 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
 //            // An INTACT group showing the wrong tab: bring `address` to the
 //            //   front. index: its 0-based position in the live tab ring;
 //            //   anchor: the group's tile key. Dispatched by selector,
-//            //   focus-independent (nested-notes 9i2 (b)).
+//            //   focus-independent (nested-notes, fidelity facts (b)).
 //
 // Order is launches, then ungroups, then moves, then floatings, then groups,
 // then tabs (a tab is chosen inside a group that stands), then geometry and the
@@ -4504,7 +4504,7 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
 //   - a group can only be formed once its members are on the right workspace.
 //
 // There is no op that moves an EXISTING workspace to another monitor (the
-// `workspace-monitor` op is gone, tick 7ph). Under Omarchy 4.5 every monitor
+// `workspace-monitor` op is gone). Under Omarchy 4.5 every monitor
 // owns a block of ten workspace ids and its config reconciles them on every
 // monitor event and reload, so a workspace sitting on the "wrong" monitor is
 // 4.5's arrangement, and moving it would be undone or renumbered. driftOf
@@ -4600,13 +4600,13 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
       });
     }
 
-    // Floating geometry (tick qkv). driftOf has already established every
+    // Floating geometry. driftOf has already established every
     // precondition this op needs and there is deliberately no second opinion
     // formed here: the record says floating, both rects are non-null, and the
     // live rect is outside the ±2px band. A tiled record can never set this
     // flag, which is the whole safety property — `resize` aimed at a tiled
     // window answers "ok" and silently moves the dwindle divider instead
-    // (tick y29), so the planner is the only place that mistake can be caught.
+    //, so the planner is the only place that mistake can be caught.
     //
     // The rect carried is the RECORDED one, coerced (entry.recorded.at/size
     // are geometryPair'd), so the op is a destination and never a delta — which
@@ -4668,7 +4668,7 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   }
 
   // Geometry runs LAST, after everything else in the plan, and that ordering is
-  // live evidence rather than tidiness (tick y29): moving a float to another
+  // live evidence rather than tidiness: moving a float to another
   // workspace RE-CLAMPS it against that workspace's reserved area — the probe
   // watched a float go from [1500,400] to [1500,198] on a bare workspace move —
   // and the floating toggle hands the window a fresh compositor-chosen rect.
@@ -4710,7 +4710,7 @@ function planRestore(clientsJson, monitorsJson, layout, identities, context) {
 // turns it into the dispatcher's 1-based index. `anchor` is the group's tile
 // key (its first present recorded member), named for the ledger and the
 // read-back; the dispatch itself names `address`, which picks the group just
-// as well (nested-notes 9i2 (b)). A window that is not in its own ring — a read
+// as well (nested-notes, fidelity facts (b)). A window that is not in its own ring — a read
 // that cannot place it — plans nothing rather than a guessed index.
 function tabOpFor(group, clientsJson) {
   if (!group || !group.activeDrift || !group.activeRecorded) return null;
@@ -4755,7 +4755,7 @@ function tabOpFor(group, clientsJson) {
 // Launches land wherever the compositor puts them and are not counted on.
 //
 // "Shown" is modelled per monitor, and it does not outlast a move that changes
-// what that monitor shows (tick fz5). Two kinds of move do: a viaMonitor move,
+// what that monitor shows. Two kinds of move do: a viaMonitor move,
 // whose workspace move makes the new workspace the one its monitor shows; and
 // a choreographed move (splitParent), whose focus dispatch pulls the
 // destination onto its monitor. After either, the monitor's previous workspace
@@ -4833,7 +4833,7 @@ function stampViaMonitor(moves, clientsJson, monitorsJson) {
 // distinction is why this returns only the workspaces that passed — nothing may
 // report a refusal about a workspace nobody put the question to.
 //
-// TILES, NOT WINDOWS (epic 9i2). A tab group holds ONE rect of the split tree,
+// TILES, NOT WINDOWS. A tab group holds ONE rect of the split tree,
 // so `items` and `live` are tiles (tilesOf): the recorded members of one group
 // are one item, keyed by the live address of its lowest-index present member
 // and carrying that member's rect. Before this a group was N identical rects —
@@ -5088,7 +5088,7 @@ function planTiledRefinements(recordedApps, report, clients, context) {
   var swaps = [];
   var dividers = [];
   // Ops name TILE keys: a swap or a divider at a group's leader moves the whole
-  // group (nested-notes 9i2 (c), (d)), so the leader stands for the tile.
+  // group (nested-notes, fidelity facts (c), (d)), so the leader stands for the tile.
   var groups = tiledWorkspacesOf(recordedApps, report.apps, clients, report.groups, context);
 
   for (var k = 0; k < groups.length; k++) {
@@ -5117,7 +5117,7 @@ function planTiledRefinements(recordedApps, report, clients, context) {
       if (own(groupKeys, program.swaps[s].address) || own(groupKeys, program.swaps[s].target)) swapsAGroup = true;
     }
     // A swap that moves a GROUP takes the ratios to the next plan. A group's
-    // member rect is its tile minus the groupbar (nested-notes 9i2 (c)), and a
+    // member rect is its tile minus the groupbar (nested-notes, fidelity facts (c)), and a
     // plain window's is the whole tile, so the slot a group is about to leave
     // or enter measures 21px differently once the swap has run — and every
     // divider below was computed against the slots as they are now. The
@@ -5136,7 +5136,7 @@ function planTiledRefinements(recordedApps, report, clients, context) {
   return { splits: splits, swaps: swaps, dividers: dividers };
 }
 
-// The window a `split` op on a tile focuses (tick v2p). `togglesplit` flips
+// The window a `split` op on a tile focuses. `togglesplit` flips
 // the node of whatever is focused, and any member of a group stands for its
 // tile — but focusing a member that is not the visible tab MAKES it the visible
 // tab (§2 amendment), so a split aimed at the tile key (tab 0) would flip the
@@ -5172,7 +5172,7 @@ function splitAddressOf(key, reportGroups, clientsJson) {
 // Ordering the moves, and naming the tile each one has to split
 // ---------------------------------------------------------------------------
 //
-// Tick or5's baseline said the defect precisely: a restore's move ops already
+// An earlier change's baseline said the defect precisely: a restore's move ops already
 // put the right window in the right SLOT — occupancy follows arrival order and
 // the plan is already in a deterministic order — and still scored 0.328 for
 // three windows and 0.184 for four, because the SHAPE of the tree was wrong.
@@ -5198,7 +5198,7 @@ function splitAddressOf(key, reportGroups, clientsJson) {
 // Because the program placementOrderOf produces is only valid against an EMPTY
 // workspace filled in that exact order. Any of them failing is not an error: it
 // leaves the moves in recorded order with no focus at all, which is exactly the
-// behaviour tick or5 measured, and the workspace scores whatever it scores.
+// behaviour an earlier change measured, and the workspace scores whatever it scores.
 //
 //   1. at least two windows are being moved onto that workspace — one window
 //      splits nothing, and the focus flicker would buy nothing;
@@ -5255,7 +5255,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   if (workspaceModeRefusalOf(recordedApps, context, clients, workspaceId, monitorDescription)) return group;
   // A destination that does not exist yet has no readable mode (null), so the
   // refusal above cannot see it — but one RECORDED scrolling or floating stands
-  // down as well (tick v2p): nothing says it will come up tiled, and an arrival
+  // down as well: nothing says it will come up tiled, and an arrival
   // order is no shape on either mode. The service re-reads the mode before any
   // axis correction for the case left over (recorded dwindle or unrecorded).
   if (context) {
@@ -5273,13 +5273,13 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   // the user hit SUPER+T, or it came back from a hotplug floating — and the
   // plan does fix that, with a `floating` op that runs AFTER the moves,
   // because a workspace move re-clamps a float and the ordering was settled in
-  // tick y29. So at the moment the choreography runs, that window is still a
+  // an earlier change. So at the moment the choreography runs, that window is still a
   // float: it holds NO TILE. Focusing it splits nothing and the arrival lands
   // wherever dwindle falls back to; being it, it takes no slot and every other
   // window in the tree shifts up one. Every dispatch answers "ok" throughout.
   //
   // Reordering the plan to float them first would trade this for the
-  // re-clamping bug y29 measured. Standing the choreography down costs one
+  // re-clamping bug measured earlier. Standing the choreography down costs one
   // cycle: the floats are fixed by the end of this pass, and the next settle
   // pass plans against a workspace where everybody holds a tile.
   var liveByAddress = {};
@@ -5322,7 +5322,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
     return group;
   }
 
-  // (5) the rects have to be a tree — of TILES (epic 9i2). A tab group is one
+  // (5) the rects have to be a tree — of TILES. A tab group is one
   // rect of the split tree, so its recorded members are one tile, keyed and
   // placed by the lowest-index member (tilesOf). N identical member rects are
   // no tree at all, which is why a group beside anything else used to leave the
@@ -5364,7 +5364,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   // The program: every tile's LEADER in placement order, each splitting the
   // tile placementOrderOf names; then every group's other members in tab
   // order, each splitting the member before it. The member chain was measured
-  // in the nested compositor (tests/nested-notes.md, 9i2 (e)): every member
+  // in the nested compositor (tests/nested-notes.md, fidelity facts (e)): every member
   // arrival lands beside its predecessor, every join in tab order is adjacent,
   // and the joined group sits exactly on the leader's arrival rect — so the
   // group op that follows the moves folds the chain back into the leader's
@@ -5437,7 +5437,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
 // Which windows does this op act on? Three separate places used to answer it
 // with three separate `if (op.kind === …)` ladders — planAddresses here, the
 // snapshot check through it, and Service.beginOp's ledger — and every one of
-// them had to be edited by hand when tick qkv added the `geometry` op. One of
+// them had to be edited by hand when an earlier change added the `geometry` op. One of
 // them was not. The op fell through beginOp's ladder onto the multi-address
 // branch, resolved to an EMPTY identity list, and a loudly-REFUSED geometry op
 // left the app's row saying nothing at all: the warning went to the log, the
@@ -5454,7 +5454,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
 function opAddressesOf(op) {
   if (!op) return [];
   if (typeof op.address === "string" && op.address) {
-    // A THIRD convention, added by tick pyo's swap op and spelled here rather
+    // A THIRD convention, added by an earlier change's swap op and spelled here rather
     // than branched on by kind, which is the whole point of this function: an
     // op may name a second window it acts WITH. `target` is that window — a
     // real subject, present in the dispatch, and one whose disappearance would
@@ -5657,7 +5657,7 @@ function isRefinementPlan(plan) {
 // Two op kinds do. `group`: the rebuild runs through `into_group`, which
 // IGNORES its window selector and acts on the focused window (live-verified,
 // learnings § Dispatch selector traps), so the service focuses each member in
-// turn and reads the tab order back. `split` (tick uk5): `togglesplit` takes no
+// turn and reads the tab order back. `split`: `togglesplit` takes no
 // window selector at all — it flips the FOCUSED window's parent node, so a
 // locked session would flip whatever the compositor was left holding, on a
 // workspace the user cannot see. Every other op names its subject and is
@@ -5665,9 +5665,9 @@ function isRefinementPlan(plan) {
 // `ungroup` dispatches, the float toggle, resize/move, swaps — and the `tab`
 // op (schema v9): `group.active` honours its window selector on shown, hidden
 // and never-shown workspaces alike and moves neither the focus nor the shown
-// workspace (nested-notes 9i2 (b)), so it runs while the session is locked.
+// workspace (nested-notes, fidelity facts (b)), so it runs while the session is locked.
 //
-// The service asks because of the LOCKED SESSION (state-matrix §7, tick 97e):
+// The service asks because of the LOCKED SESSION (state-matrix §7):
 // under an ext-session-lock there is no window to focus, so a rebuild attempted
 // there assembles in whatever order the compositor was left in. Those ops are
 // deferred to the unlock instead, replayed by the same idempotent re-plan, and
@@ -5825,7 +5825,7 @@ function failOutcome(record, reason, identityIds) {
 //                                                    into_group always acts on
 //                                                    the ACTIVE window.       NO
 //
-// The FLOATING verb, live-verified 2026-08-16 (tick 8t4) against a scratch
+// The FLOATING verb, live-verified 2026-08-16 against a scratch
 // `foot --app-id=mw-8t4` parked on a scratch workspace while the keyboard
 // focus sat on ANOTHER window the whole time:
 //
@@ -5846,8 +5846,8 @@ function failOutcome(record, reason, identityIds) {
 // `hyprctl clients -j` read between dispatches, because two back-to-back
 // toggles read once look exactly like an idempotent set).
 //
-// SUPERSEDED for the spelling opToCommand emits (epic 9i2, tests/nested-notes.md
-// 9i2 (g), the sandbox's Hyprland under Omarchy 4.5): `action = "on"` and
+// SUPERSEDED for the spelling opToCommand emits
+// tests/nested-notes.md fidelity (g), the sandbox's Hyprland under Omarchy 4.5): `action = "on"` and
 // `action = "off"` are ABSOLUTE and idempotent — "on","on","off","off" read
 // back floating true,true,false,false — and 4.5's own workspace-modes.lua
 // floats and tiles with exactly that spelling. So the floating op now names
@@ -5872,7 +5872,7 @@ function failOutcome(record, reason, identityIds) {
 // help here; only `hyprctl clients -j` before and after is.
 
 // ---------------------------------------------------------------------------
-// FLOAT ACTUATOR SEMANTICS — the geometry pair (tick y29, evidence only)
+// FLOAT ACTUATOR SEMANTICS — the geometry pair
 // ---------------------------------------------------------------------------
 //
 // Live-probed 2026-08-16 on the real session (Hyprland 0.56.2 / Omarchy 4,
@@ -5880,7 +5880,7 @@ function failOutcome(record, reason, identityIds) {
 // workspace: `mw-float` as the subject and `mw-sacrifice` holding the keyboard
 // focus for EVERY dispatch, so a selector that is silently dropped resizes the
 // sacrifice instead of the subject and says so in the read-back. Nothing here
-// changes a code path — this tick establishes the contract that tick qkv
+// changes a code path — this change establishes the contract that an earlier change
 // implements. Verb evidence for the spelling: `resize` is listed on
 // HL.DspWindowNamespace in /usr/share/hypr/stubs/hl.meta.lua, and Omarchy's own
 // /usr/share/omarchy/default/hypr/bindings/tiling.lua binds SUPER+<->
@@ -5898,7 +5898,7 @@ function failOutcome(record, reason, identityIds) {
 //      { x = 800, y = 500 } read back exactly [800, 500]. `relative = true`
 //      (tiling.lua's form) is the delta form and is NOT what a restore wants.
 //      Same for move: { x, y } is an absolute layout position (already known
-//      from tick 5sc, re-verified here).
+//      from an earlier change, re-verified here).
 //
 //   2. IDEMPOTENT. The identical resize dispatched twice left the window
 //      unchanged the second time; likewise move. A converged geometry op is a
@@ -5958,7 +5958,7 @@ function failOutcome(record, reason, identityIds) {
 //      geometry pair has to run AFTER the moves and after the floating toggle: it is the LAST thing in a plan, or
 //      it is restoring a position something later will move.
 //
-// THE TILED BLAST RADIUS (tick y29 question 3), and it is the reason
+// THE TILED BLAST RADIUS (an earlier change question 3), and it is the reason
 // planRestore must never plan geometry for a tiled record:
 //
 //   - `hl.dsp.window.move({ window, x, y })` at a TILED window is a clean
@@ -6008,7 +6008,7 @@ function opToCommand(op) {
     // the move still lands; it lands in the wrong tile, which is the score, not
     // a wrong window.
     //
-    // Live-proven in tick or5 (state-matrix § Tiled placement § 4): naming the
+    // Live-proven in an earlier change (state-matrix § Tiled placement § 4): naming the
     // split parent before each move makes the resulting tree an input rather
     // than a function of where the mouse was. The service adds the step that
     // puts the user's own focus back — see Service.stepsForOp; a pure function
@@ -6021,7 +6021,7 @@ function opToCommand(op) {
     //
     // viaMonitor (the destination does not exist yet) adds ONE dispatch after
     // the move, and it is the only `hl.dsp.workspace.move` this planner ever
-    // emits. Measured nested in tick zf6 (tests/nested-notes.md, 2026-11-14):
+    // emits. Measured nested in an earlier change (tests/nested-notes.md, 2026-11-14):
     //   - a window.move to a missing id creates the workspace on the FOCUSED
     //     monitor — not the window's, not the block owner's — and 4.5's next
     //     reconcile ADOPTS it into that monitor's block, renumbering it;
@@ -6129,7 +6129,7 @@ function opToCommand(op) {
 
   if (op.kind === "swap") {
     // ONE dispatch, naming BOTH windows, and it is the only op in this plan
-    // that needs neither focus nor a settle. Live-verified in tick or5
+    // that needs neither focus nor a settle. Live-verified in an earlier change
     // (§ Tiled placement § 7): the two windows exchange rects exactly, the
     // user's focused window and visible workspace are untouched, it works on a
     // workspace nobody can see, and it is LOUD about every way it can fail —
@@ -6153,12 +6153,12 @@ function opToCommand(op) {
 
   if (op.kind === "divider") {
     // ONE dispatch — the same verb the geometry op's first half uses, aimed at
-    // a TILED window on purpose, which is the thing tick y29 spent a whole
+    // a TILED window on purpose, which is the thing an earlier change spent a whole
     // section warning against.
     //
     // What makes it safe here is not that the warning was wrong. It was right:
     // a resize at a tiled window moves the dwindle divider and drags the
-    // neighbour, and it answers "ok" either way. What changed is that or5
+    // neighbour, and it answers "ok" either way. What changed is that the probe
     // measured the rule that makes the outcome predictable — the ask lands
     // EXACTLY when the window is the left/top child of the divider it moves,
     // and lands on `2 × current − asked` when it is not — and the planner only
@@ -6182,7 +6182,7 @@ function opToCommand(op) {
 
   if (op.kind === "tab") {
     // ONE dispatch, naming the window, and it needs no focus: measured nested
-    // (tests/nested-notes.md 9i2 (b)) — `group.active` honours its `window`
+    // (tests/nested-notes.md, fidelity facts (b)) — `group.active` honours its `window`
     // selector on a shown, a hidden and a never-shown workspace, the named
     // member only picks the group, and neither `activewindow` nor the shown
     // workspace moves (unless the focus is already inside that group, where it
@@ -6299,7 +6299,7 @@ if (typeof module !== "undefined") {
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
     // The four the QML files used to answer with a bare-object dedupe of their
-    // own (tick v29). Exported for the shell as much as for the tests.
+    // own. Exported for the shell as much as for the tests.
     runningIdentityIds: runningIdentityIds,
     identityIdsForAddresses: identityIdsForAddresses,
     addressesOf: addressesOf,

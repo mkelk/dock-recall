@@ -1,4 +1,4 @@
-// groupbar.test.js — the swap read-back's tile box (tick aa2).
+// groupbar.test.js — the swap read-back's tile box.
 //
 // The desk's group:groupbar:height is 22, not the 21 the code once assumed, and
 // the read can land mid-animation: a false "Restore failed" came from a 7px miss

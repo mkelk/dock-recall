@@ -22,7 +22,7 @@
 #      tests/sandbox-slots.sh             Tier B, Omarchy 4.5: three apps on two
 #                                         slots, dock -> undock -> dock, each
 #                                         window on its recorded (monitor, slot).
-#      tests/sandbox-fidelity.sh          Tier B, epic 9i2: within-workspace
+#      tests/sandbox-fidelity.sh          Tier B, the fidelity epic: within-workspace
 #                                         fidelity, seven cases — the tiling
 #                                         tree, the tab group beside a tiled
 #                                         window, the visible tab, the refusals
@@ -127,10 +127,10 @@ step "node --test 'tests/**/*.test.js'" \
 step "omarchy plugin validate ." \
   omarchy plugin validate .
 
-# EVERY QML FILE, FROM A GLOB (tick md1). This was a hand-maintained argument
+# EVERY QML FILE, FROM A GLOB. This was a hand-maintained argument
 # list, and it is the same class of guard as tests/qml-plaintext.test.js's scan
-# targets: tick xk5 shipped MapWorkspace.qml outside BOTH of them and tick y4y
-# spent a whole tick retro-fitting them. A file the linter is never handed is a
+# targets: an earlier change shipped MapWorkspace.qml outside BOTH of them and an earlier change
+# spent a whole change retro-fitting them. A file the linter is never handed is a
 # file whose syntax nothing checks, and the omission is silent.
 #
 # The plugin installs its clone root and its QML sits at the top level (see
