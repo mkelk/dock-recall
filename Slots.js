@@ -165,6 +165,20 @@ function isLiveMonitor(monitor) {
   return mirror === undefined || mirror === null || mirror === "" || mirror === "none";
 }
 
+// Connector -> block for every live monitor whose row blockForMonitor accepts.
+// A stale or missing row leaves the connector absent: the map then falls back
+// to what it knows without the table.
+function blocksByConnector(table, monitors) {
+  var out = {};
+  var list = monitors || [];
+  for (var i = 0; i < list.length; i++) {
+    if (!isLiveMonitor(list[i])) continue;
+    var found = blockForMonitor(table, list[i]);
+    if (found) out[list[i].name] = found.block;
+  }
+  return out;
+}
+
 // Every live monitor recorded under this label, in list order. More than one
 // means twins; the first is the one engine.monitorByDescription answers with.
 function liveMonitorsFor(monitors, description) {
@@ -343,6 +357,7 @@ if (typeof module !== "undefined") {
     blockForIdentity: blockForIdentity,
     blockForDescription: blockForDescription,
     isLiveMonitor: isLiveMonitor,
+    blocksByConnector: blocksByConnector,
     toLive: toLive,
     toRecorded: toRecorded,
     workspaceMonitors: workspaceMonitors

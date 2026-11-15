@@ -444,3 +444,19 @@ for (const [file, probe] of [["engine.js", "buildLayout"], ["StateModel.js", "pa
     assertEs5(source);
   });
 }
+
+test("blocksByConnector: every live monitor whose row is accepted", () => {
+  assert.deepStrictEqual(slots.blocksByConnector(docked, [laptop, aoc]), { "eDP-1": 0, "DP-1": 1 });
+  assert.deepStrictEqual(slots.blocksByConnector(undocked, [laptop]), { "eDP-1": 0 });
+});
+
+test("blocksByConnector: stale, missing, disabled and mirroring monitors are absent", () => {
+  const stranger = { id: 2, name: "DP-9", description: "Nobody", activeWorkspace: { id: 21, name: "21" } };
+  const stale = { id: 3, name: "DP-1", description: "Somebody Else", activeWorkspace: { id: 31, name: "31" } };
+  assert.deepStrictEqual(slots.blocksByConnector(docked, [laptop, stranger]), { "eDP-1": 0 });
+  assert.deepStrictEqual(slots.blocksByConnector(docked, [laptop, stale]), { "eDP-1": 0 });
+  assert.deepStrictEqual(slots.blocksByConnector(docked, [Object.assign({}, aoc, { disabled: true })]), {});
+  assert.deepStrictEqual(slots.blocksByConnector(docked, [Object.assign({}, aoc, { mirrorOf: "eDP-1" })]), {});
+  assert.deepStrictEqual(slots.blocksByConnector(null, [laptop]), {});
+  assert.deepStrictEqual(slots.blocksByConnector(docked, null), {});
+});

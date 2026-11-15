@@ -1046,6 +1046,14 @@ live_badges=$(printf '%s' "$LIVE_JSON" | jq -r \
   '[.workspaces[]|"\(.monitorName)/\(.badgeValue)\(if .badgeFocused then " (focused)" else "" end)"]|join(", ")')
 pass "POSITIONED workspace badges: $live_badges"
 
+# 4.5's slot label, end to end: workspace id N reads ((N-1)%10)+1, so slot 10 is
+# "0" for slot 10 (the human's decision: labelled like the bar).
+if ! printf '%s' "$LIVE_JSON" | jq -e \
+    '[.workspaces[]|select(.id >= 1 and .badgeValue != (((.id - 1) % 10) + 1 | if . == 10 then "0" else tostring end))]|length == 0' >/dev/null; then
+  fail "every workspace badge reads its slot (panel IPC)" "badges: $live_badges"
+fi
+pass "every workspace badge reads its slot, ((id-1)%10)+1 (10 shown as 0)"
+
 # The app strip. All three of appRows' row states are required by the poll; this
 # says which cell came out as which, so a run in which one state never appeared
 # would be visible rather than merely passing a ">= 1".
