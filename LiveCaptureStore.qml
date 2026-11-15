@@ -344,6 +344,29 @@ Item {
       return
     }
 
+    // THE CAPTURE GUARD, ASKED AGAIN AT THE GRAB. The plan said this window
+    // was safe when it was made; an undock since then can have left it pinned
+    // on a dead monitor, and a capture of that crashes Hyprland 0.56.2 (see
+    // PanelModel.captureGuardReason). So a FRESH hyprctl read decides, and only
+    // a yes gets a view. The step token is what makes a late answer harmless:
+    // a step that was parked, abandoned or settled meanwhile ignores it.
+    bridge.recheck(entry.address, function (verdict) {
+      if (!liveStore._isCurrentStep(step)) return
+      if (!verdict || verdict.ok !== true) {
+        liveStore._settle(step, false, verdict ? verdict.reason : "recheck-failed")
+        return
+      }
+      liveStore._createView(step, handle)
+    })
+  }
+
+  // The view for a step the guard has just cleared. Split out of `_next` only
+  // because the guard's answer is asynchronous.
+  function _createView(step, handle) {
+    if (!handle) {
+      liveStore._settle(step, false, "no-handle")
+      return
+    }
     // `step`, not `entry`: a JS object handed to createObject arrives in the
     // view as a COPY and can never be compared back (see `_step`).
     var view = viewComponent.createObject(stage, { captureSource: handle, step: step })

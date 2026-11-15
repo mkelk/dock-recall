@@ -54,7 +54,9 @@
 
 import QtQuick
 import Quickshell.Hyprland
+import Quickshell.Io
 import "PanelModel.js" as PanelModel
+import "StateModel.js" as StateModel
 
 QtObject {
   id: bridge
@@ -355,5 +357,99 @@ QtObject {
   // updated when this returns.
   function refresh() {
     Hyprland.refreshToplevels();
+  }
+
+  // ------------------------------------------------------- the grab-time guard
+
+  // recheck(address, callback) — is this window STILL safe to capture, by a
+  // FRESH `hyprctl clients` and `hyprctl monitors all`? Calls
+  // `callback({ ok, reason })` exactly once, with PanelModel.captureGrabCheck's
+  // answer.
+  //
+  // WHY A FRESH READ AND NOT THE TOPLEVEL MODEL. Hyprland 0.56.2 crashes on a
+  // toplevel capture of a window whose monitor is dead (see
+  // PanelModel.captureGuardReason), and the plan that named this window can be
+  // seconds old by the time its turn in the queue comes — an undock in between
+  // is exactly the moment that matters. `lastIpcObject` on the model is a cache
+  // of an earlier read, so it has the same problem the plan has. Both stores
+  // call this immediately before a ScreencopyView gets its captureSource.
+  //
+  // ONE READ AT A TIME, and a request that arrives while one is running does
+  // not take that read's answer: the read started before it was asked for. It
+  // is marked, and the read is run again when the first one lands. Only the
+  // latest request is answered; a store has one step in flight, and a step it
+  // has moved past ignores its answer through its own token anyway.
+  //
+  // NO DEADLINE OF ITS OWN: an hyprctl that never answers is bounded by the
+  // calling round's whole-queue deadline, which already covers every step.
+  property var _recheckCallback: null
+  property string _recheckAddress: ""
+  property bool _recheckAgain: false
+  property var _recheckClients: null
+
+  function recheck(address, callback) {
+    if (typeof callback !== "function") return false;
+    bridge._recheckCallback = callback;
+    bridge._recheckAddress = String(address || "");
+    if (bridge._recheckClientsProc.running || bridge._recheckMonitorsProc.running) {
+      bridge._recheckAgain = true;
+      return true;
+    }
+    bridge._startRecheck();
+    return true;
+  }
+
+  function _startRecheck() {
+    bridge._recheckAgain = false;
+    bridge._recheckClients = null;
+    bridge._recheckClientsProc.running = true;
+  }
+
+  function _answerRecheck(clients, monitors) {
+    if (bridge._recheckAgain) {
+      bridge._startRecheck();
+      return;
+    }
+    var callback = bridge._recheckCallback;
+    var address = bridge._recheckAddress;
+    bridge._recheckCallback = null;
+    bridge._recheckAddress = "";
+    if (typeof callback !== "function") return;
+    var verdict = PanelModel.captureGrabCheck(clients, monitors, address);
+    if (!verdict.ok) {
+      console.log(bridge.logPrefix, "capture guard: not capturing " + address
+        + " (" + verdict.reason + ")");
+    }
+    callback(verdict);
+  }
+
+  property Process _recheckClientsProc: Process {
+    command: ["hyprctl", "clients", "-j"]
+    stdout: StdioCollector { id: recheckClientsOut; waitForEnd: true }
+    stderr: StdioCollector { id: recheckClientsErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var read = StateModel.parseHyprctlArray(String(recheckClientsOut.text || ""),
+        exitCode, recheckClientsErr.text);
+      if (!read.ok) {
+        // A failed read REFUSES; captureGrabCheck says "recheck-failed".
+        bridge._answerRecheck(null, null);
+        return;
+      }
+      bridge._recheckClients = read.value;
+      bridge._recheckMonitorsProc.running = true;
+    }
+  }
+
+  // `all`, the same list the panel's topology is read from, so a monitor the
+  // plan judged alive is judged by the same list here.
+  property Process _recheckMonitorsProc: Process {
+    command: ["hyprctl", "monitors", "all", "-j"]
+    stdout: StdioCollector { id: recheckMonitorsOut; waitForEnd: true }
+    stderr: StdioCollector { id: recheckMonitorsErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var read = StateModel.parseHyprctlArray(String(recheckMonitorsOut.text || ""),
+        exitCode, recheckMonitorsErr.text);
+      bridge._answerRecheck(bridge._recheckClients, read.ok ? read.value : null);
+    }
   }
 }

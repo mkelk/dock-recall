@@ -6527,7 +6527,7 @@ test("every picture of one recording shares the topology prefix, which is what e
 
 test("a capture plan takes one picture per WATCHED window, and every one of them", () => {
   const desk = captureDesk();
-  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, true);
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, true, monitorsLaptop);
 
   assert.strictEqual(plan.topologyKey, desk.layout.topologyKey);
   assert.strictEqual(plan.prefix, panel.captureTopologyPrefix(desk.layout.topologyKey));
@@ -6560,7 +6560,7 @@ test("a capture plan takes one picture per WATCHED window, and every one of them
 
 test("with the pictures off the plan is empty, and every app says why", () => {
   const desk = captureDesk();
-  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, false);
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, false, monitorsLaptop);
   assert.deepStrictEqual(plan.captures, []);
   assert.strictEqual(plan.skipped.length, desk.layout.apps.length,
     "every app in the layout is accounted for, not silently absent");
@@ -6573,7 +6573,7 @@ test("with the pictures off the plan is empty, and every app says why", () => {
   // Only the literal false is off — StateModel.picturesOn's rule, applied at
   // the one other place the switch is read.
   for (const junk of [true, undefined, "false", 0, null, {}]) {
-    assert.strictEqual(panel.capturePlan(desk.layout, desk.identities, desk.chosen, junk)
+    assert.strictEqual(panel.capturePlan(desk.layout, desk.identities, desk.chosen, junk, monitorsLaptop)
       .captures.length, 3, JSON.stringify(junk) + " read as off");
   }
 });
@@ -6583,7 +6583,7 @@ test("a layout entry whose identity has gone is not photographed", () => {
   // and a recorded ghost, whose identity the file no longer carries, is not.
   const desk = captureDesk();
   const fewer = desk.identities.filter((i) => i.id !== "browser");
-  const plan = panel.capturePlan(desk.layout, fewer, desk.chosen, true);
+  const plan = panel.capturePlan(desk.layout, fewer, desk.chosen, true, monitorsLaptop);
   assert.deepStrictEqual(plan.captures.map((c) => c.identityId), ["terminal", "terminal"]);
   assert.deepStrictEqual(plan.skipped,
     [{ identityId: "browser", occurrence: 0, reason: "not-watched" }]);
@@ -6594,7 +6594,7 @@ test("a recorded app whose window has gone is skipped, not guessed at", () => {
   // The layout still names both terminals; the desk no longer has the second.
   const fewer = desk.clients.filter((c) => c.address !== "0xbbb");
   const chosen = engine.chosenWindows(fewer, desk.identities, monitorsLaptop);
-  const plan = panel.capturePlan(desk.layout, desk.identities, chosen, true);
+  const plan = panel.capturePlan(desk.layout, desk.identities, chosen, true, monitorsLaptop);
 
   assert.deepStrictEqual(
     plan.captures.filter((c) => c.identityId === "terminal").map((c) => c.occurrence), [0]);
@@ -7017,10 +7017,14 @@ test("no answer for a capture step is carried in a QML property as a JS object",
 
   // 2. AND THAT IS WHAT createObject IS HANDED. A properties map carrying the
   //    entry is the crossing itself.
+  //    The view is built in `_createView`, which `_next` reaches only through
+  //    the grab-time capture guard's asynchronous answer.
   const nextAt = store.indexOf("function _next()");
   const nextBody = store.slice(nextAt, store.indexOf("\n  }\n", nextAt));
-  assert.ok(nextBody.indexOf("createObject(stage, { captureSource: handle, step: step })") !== -1,
-    "the view is created with something other than the step number:\n" + nextBody);
+  const viewAt = store.indexOf("function _createView(step, handle)");
+  const viewBody = store.slice(viewAt, store.indexOf("\n  }\n", viewAt));
+  assert.ok(viewBody.indexOf("createObject(stage, { captureSource: handle, step: step })") !== -1,
+    "the view is created with something other than the step number:\n" + viewBody);
   assert.ok(nextBody.indexOf("store._step = store._step + 1") !== -1,
     "_next() no longer claims a step number for the window it is about to start");
 
@@ -7495,8 +7499,8 @@ test("a SECOND window index is a second opinion, and it can photograph the wrong
   assert.notStrictEqual(honest.byId.terminal[0].address, second.byId.terminal[0].address,
     "the two reads agree, so this fixture cannot demonstrate anything");
 
-  const fromRecord = panel.capturePlan(layout, identities, honest);
-  const fromSecondOpinion = panel.capturePlan(layout, identities, second);
+  const fromRecord = panel.capturePlan(layout, identities, honest, undefined, monitorsLaptop);
+  const fromSecondOpinion = panel.capturePlan(layout, identities, second, undefined, monitorsLaptop);
 
   // BOTH PLANS ARE FILED UNDER THE SAME NAMES. That is the whole danger: the
   // key is (identity, occurrence, topology), it is right either way, and no map
@@ -7774,13 +7778,17 @@ function liveDesk() {
       { id: "terminal" },
       { id: "browser" },
       { id: "editor" }
-    ]
+    ],
+    // The reads the index was built from: the capture guard judges each window
+    // by its client entry and the monitor list.
+    clients: ["0xaa", "0xbb", "0xcc", "0xdd"].map((address) => makeClient({ address, monitor: 0 })),
+    monitors: monitorsLaptop
   };
 }
 
 test("a live plan photographs one window per WATCHED live window, and names no file", () => {
   const desk = liveDesk();
-  const plan = panel.liveCapturePlan(desk.instances, desk.identities, true);
+  const plan = panel.liveCapturePlan(desk.instances, desk.identities, true, desk.clients, desk.monitors);
 
   // Ordered by identity, then occurrence: an object's key order is an accident
   // of insertion, and a round that walked two identical desks in two different
@@ -7810,21 +7818,21 @@ test("the live plan obeys the same switch Record obeys, by the same rule", () =>
 
   // OFF: nothing planned, and every window REPORTED so the log can say what the
   // round did not do rather than only what it did.
-  const off = panel.liveCapturePlan(desk.instances, desk.identities, false);
+  const off = panel.liveCapturePlan(desk.instances, desk.identities, false, desk.clients, desk.monitors);
   assert.deepStrictEqual(off.captures, []);
   assert.strictEqual(off.skipped.length, 4);
   assert.ok(off.skipped.every((s) => s.reason === "pictures-off"), JSON.stringify(off.skipped));
 
   // Only the literal false is off — StateModel.picturesOn's rule again.
   for (const junk of [true, undefined, "false", 0, null, {}]) {
-    assert.strictEqual(panel.liveCapturePlan(desk.instances, desk.identities, junk)
+    assert.strictEqual(panel.liveCapturePlan(desk.instances, desk.identities, junk, desk.clients, desk.monitors)
       .captures.length, 4, JSON.stringify(junk) + " read as off");
   }
 
   // A window whose identity the file no longer carries is not photographed, and
   // says so — the live half of "a WATCHED app is pictured".
   const fewer = desk.identities.filter((i) => i.id !== "browser");
-  const some = panel.liveCapturePlan(desk.instances, fewer, true);
+  const some = panel.liveCapturePlan(desk.instances, fewer, true, desk.clients, desk.monitors);
   assert.deepStrictEqual(some.captures.map((c) => c.identityId),
     ["editor", "terminal", "terminal"]);
   assert.deepStrictEqual(some.skipped,
@@ -7833,7 +7841,7 @@ test("the live plan obeys the same switch Record obeys, by the same rule", () =>
   // An app nobody watches is not in the index to be asked at all: the index is
   // built from resolved identities only.
   assert.strictEqual(
-    panel.liveCapturePlan(desk.instances, desk.identities, true).captures
+    panel.liveCapturePlan(desk.instances, desk.identities, true, desk.clients, desk.monitors).captures
       .filter((c) => c.address === "0xee").length, 0);
 
   // Nothing at all is not a failure — it is a desk with no windows on it.
@@ -7846,7 +7854,7 @@ test("the live round's log line says the pictures were never written", () => {
   const desk = liveDesk();
   // The browser unwatched, so the line has a skip to report as well as takes.
   const plan = panel.liveCapturePlan(desk.instances,
-    desk.identities.filter((i) => i.id !== "browser"), true);
+    desk.identities.filter((i) => i.id !== "browser"), true, desk.clients, desk.monitors);
 
   const all = plan.captures.map((c) => ({ ok: true, reason: "" }));
   const line = panel.liveCaptureLogLine(plan, all);
@@ -8037,7 +8045,7 @@ test("ONE ROUND PER PANEL SESSION, started by the first client list and discarde
   assert.ok(body.indexOf("if (!root.opened || !root.haveLiveData) return") !== -1, body);
   assert.ok(body.indexOf("if (root.liveRoundStarted) return") !== -1, body);
   assert.ok(body.indexOf("PanelModel.liveCapturePlan(") !== -1
-    && body.indexOf("root.instanceIndex, root.identities, root.picturesOn") !== -1,
+    && body.indexOf("root.instanceIndex, root.identities, root.picturesOn, root.liveClients, root.liveMonitors") !== -1,
     "the plan is derived a second time instead of coming from the index the map is built from,"
     + " or it no longer consults the switch:\n" + body);
 

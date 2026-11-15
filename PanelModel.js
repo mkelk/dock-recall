@@ -7284,6 +7284,87 @@ function captureIdentityPatterns(identityIds) {
   return out;
 }
 
+// A WINDOW NO CAPTURE MAY TOUCH, and why — "" when a capture is safe.
+//
+// THIS IS A CRASH GUARD, NOT A PREFERENCE. Hyprland 0.56.2 segfaults in
+// CScreenshareSession::init() when it is asked for a toplevel-export capture of
+// a window whose monitor is dead: init() scales by monitor()->m_scale with no
+// null check. It reproduces on a real DRM unplug in an Omarchy 4.5 VM, with the
+// same frame real undocks crash in. A ScreencopyView with a Toplevel source
+// makes exactly that request, and so do both of this plugin's capture rounds.
+//
+// Two shapes, and both are refused:
+//
+//   · "pinned". moveWorkspaceToMonitor skips pinned windows when an output goes
+//     away, so a pinned window on the unplugged monitor keeps a dead m_monitor.
+//     It is refused even on a live monitor, because the undock that kills its
+//     monitor lands before the event that would tell us so: Hyprland sends the
+//     events that rebuild the desk BEFORE monitorremoved. Omarchy pins windows on
+//     its own (picture-in-picture, a Meet call, the webcam overlay, Super+O
+//     pop-outs), so this is not an exotic case.
+//   · "no-monitor". hyprctl says `"monitor": -1` for such a window, or names an
+//     id the monitor list no longer has. Either way there is no monitor to scale
+//     by.
+//
+// `monitors` is the list the caller ALREADY HOLDS, and a list that is not an
+// array refuses every window: without it nothing can say a monitor is alive, and
+// a capture that can take the compositor down is not one to guess about. A
+// skipped window costs a picture; its chip draws its icon, which is what it drew
+// before pictures existed.
+//
+// "no-window" is the caller's own gap (no client, or one with no address), named
+// so it is not mistaken for either of the two above.
+function captureGuardReason(client, monitors) {
+  if (!client || !trim(client.address)) return "no-window";
+  if (client.pinned === true) return "pinned";
+  var id = client.monitor;
+  if (typeof id !== "number" || !(id >= 0)) return "no-monitor";
+  var list = isArray(monitors) ? monitors : [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].id === id) return "";
+  }
+  return "no-monitor";
+}
+
+// The reasons captureGuardReason gives, as a set: the log lines name them rather
+// than folding them into "not pictured", because a window refused for safety is
+// a fact about the DESK and the one thing a reader of the log will want to know.
+var CAPTURE_GUARD_REASONS = { "pinned": true, "no-monitor": true };
+
+function isCaptureGuardReason(reason) {
+  return typeof reason === "string" && own(CAPTURE_GUARD_REASONS, reason) === true;
+}
+
+// THE SAME QUESTION, ASKED AGAIN AT THE INSTANT OF THE GRAB, over a FRESH read.
+//
+// A plan is a snapshot: the live round's is built when the panel opens, the
+// recorded round's when Record commits, and an undock can land between that and
+// the grab of the third window in the queue. So each store re-reads `hyprctl
+// clients` and `hyprctl monitors` immediately before it hands a ScreencopyView
+// its captureSource, and asks this.
+//
+// `clients` and `monitors` are the parsed reads, or anything else when a read
+// failed — and a failed read REFUSES ("recheck-failed"): the grab is the step
+// that can crash the compositor, so it is the one step that must not proceed on
+// "probably still fine". A window the fresh list no longer has is "no-window".
+//
+// Addresses are compared through normalizedAddress, because the plan's spelling
+// and hyprctl's may differ in case or leading zeros.
+//
+// Returns { ok, reason } with reason "" when ok.
+function captureGrabCheck(clients, monitors, address) {
+  if (!isArray(clients) || !isArray(monitors)) return { ok: false, reason: "recheck-failed" };
+  var want = normalizedAddress(typeof address === "string" ? address : "");
+  if (!want) return { ok: false, reason: "no-window" };
+  for (var i = 0; i < clients.length; i++) {
+    var client = clients[i];
+    if (!client || normalizedAddress(client.address) !== want) continue;
+    var reason = captureGuardReason(client, monitors);
+    return { ok: reason === "", reason: reason };
+  }
+  return { ok: false, reason: "no-window" };
+}
+
 // WHICH PICTURES A RECORD SHOULD TAKE, and which it deliberately will not.
 //
 // One entry per app in the layout that was just committed, so the pictures and
@@ -7309,7 +7390,14 @@ function captureIdentityPatterns(identityIds) {
 //
 // A layout with no topologyKey plans nothing: without one there is no prefix,
 // and a picture with no prefix could not be evicted with the recording.
-function capturePlan(layout, identities, chosen, pictures) {
+//
+// AND A WINDOW NO CAPTURE MAY TOUCH IS SKIPPED with captureGuardReason's
+// reason ("pinned", "no-monitor"), judged against `monitors`, the list the
+// layout was recorded from. The client the guard reads is the one `chosen`
+// carries, so it is the same window the picture would be of. The store asks the
+// same question again over a fresh read at the grab (captureGrabCheck), because
+// this plan can be stale by then.
+function capturePlan(layout, identities, chosen, pictures, monitors) {
   var topologyKey = (layout && typeof layout.topologyKey === "string") ? layout.topologyKey : "";
   if (!topologyKey) return { topologyKey: "", prefix: "", captures: [], skipped: [] };
 
@@ -7351,6 +7439,12 @@ function capturePlan(layout, identities, chosen, pictures) {
     var address = client ? trim(client.address) : "";
     if (!address) {
       skipped.push({ identityId: identityId, occurrence: occurrence, reason: "no-window" });
+      continue;
+    }
+
+    var unsafe = captureGuardReason(client, monitors);
+    if (unsafe) {
+      skipped.push({ identityId: identityId, occurrence: occurrence, reason: unsafe });
       continue;
     }
 
@@ -7414,8 +7508,11 @@ function captureLogLine(plan, results) {
   var skippedCount = 0;
   var gone = 0;
   var skipped = (plan && isArray(plan.skipped)) ? plan.skipped : [];
+  var unsafe = captureGuardSummary(skipped);
   for (var s = 0; s < skipped.length; s++) {
-    if (skipped[s] && skipped[s].reason === "no-window") gone++; else skippedCount++;
+    var why = skipped[s] ? skipped[s].reason : "";
+    if (why === "no-window") gone++;
+    else if (!isCaptureGuardReason(why)) skippedCount++;
   }
 
   var parts = [taken + " picture(s) stored"];
@@ -7425,7 +7522,30 @@ function captureLogLine(plan, results) {
   // from here.
   if (skippedCount) parts.push(skippedCount + " not pictured");
   if (gone) parts.push(gone + " no longer open");
+  if (unsafe) parts.push(unsafe);
   return parts.join(", ");
+}
+
+// The windows a plan refused for the compositor's sake, as one phrase for a log
+// line: "1 not captured to keep Hyprland up (pinned)", or "" when there were
+// none. Named, unlike the other skips, because it is a fact about the desk that
+// nobody can see on their own screen — the chip just shows its icon.
+function captureGuardSummary(skipped) {
+  var list = isArray(skipped) ? skipped : [];
+  var count = 0;
+  var reasons = [];
+  var seen = {};
+  for (var i = 0; i < list.length; i++) {
+    var why = list[i] ? list[i].reason : "";
+    if (!isCaptureGuardReason(why)) continue;
+    count++;
+    if (!own(seen, why)) {
+      seen[why] = true;
+      reasons.push(why);
+    }
+  }
+  if (!count) return "";
+  return count + " not captured to keep Hyprland up (" + reasons.join(", ") + ")";
 }
 
 // ---------------------------------------------------------------------------
@@ -7455,13 +7575,25 @@ function captureLogLine(plan, results) {
 //
 // `skipped` is not an error list: "pictures-off" is every window on the desk
 // when the switch is off, said out loud rather than left as an empty plan.
-function liveCapturePlan(instances, identities, pictures) {
+//
+// A WINDOW NO CAPTURE MAY TOUCH is skipped with captureGuardReason's reason
+// ("pinned", "no-monitor"). The index carries no window, so `clients` and
+// `monitors` are the same two reads the index was built from, and the window is
+// looked up by its address; one the client list does not have is "no-window".
+// The store re-asks over a fresh read at the grab (captureGrabCheck).
+function liveCapturePlan(instances, identities, pictures, clients, monitors) {
   var byAddress = (instances && instances.byAddress) ? instances.byAddress : {};
   var list = isArray(identities) ? identities : [];
   var on = pictures !== false;
   var watched = {};
   for (var i = 0; i < list.length; i++) {
     if (list[i] && typeof list[i].id === "string") watched[list[i].id] = true;
+  }
+  var clientList = isArray(clients) ? clients : [];
+  var clientByAddress = {};
+  for (var c = 0; c < clientList.length; c++) {
+    var key = clientList[c] ? normalizedAddress(clientList[c].address) : "";
+    if (key && !own(clientByAddress, key)) clientByAddress[key] = clientList[c];
   }
 
   var captures = [];
@@ -7483,6 +7615,13 @@ function liveCapturePlan(instances, identities, pictures) {
     }
     if (!own(watched, identityId)) {
       entry.reason = "not-watched";
+      skipped.push(entry);
+      continue;
+    }
+    var unsafe = captureGuardReason(own(clientByAddress, normalizedAddress(entry.address)) || null,
+      monitors);
+    if (unsafe) {
+      entry.reason = unsafe;
       skipped.push(entry);
       continue;
     }
@@ -7535,13 +7674,19 @@ function liveCaptureLogLine(plan, results) {
     }
   }
   var planned = (plan && isArray(plan.captures)) ? plan.captures.length : 0;
-  var skippedCount = (plan && isArray(plan.skipped)) ? plan.skipped.length : 0;
+  var skippedList = (plan && isArray(plan.skipped)) ? plan.skipped : [];
+  var unsafe = captureGuardSummary(skippedList);
+  var skippedCount = 0;
+  for (var s = 0; s < skippedList.length; s++) {
+    if (!isCaptureGuardReason(skippedList[s] ? skippedList[s].reason : "")) skippedCount++;
+  }
   var unreached = Math.max(0, planned - taken - failed);
 
   var parts = [taken + " live picture(s) held in memory, never written to disk"];
   if (failed) parts.push(failed + " could not be taken (" + reasons.join(", ") + ")");
   if (unreached) parts.push(unreached + " not reached");
   if (skippedCount) parts.push(skippedCount + " not pictured");
+  if (unsafe) parts.push(unsafe);
   return parts.join(", ");
 }
 
@@ -7575,6 +7720,9 @@ if (typeof module !== "undefined") {
     captureFileName: captureFileName,
     captureIdentityPattern: captureIdentityPattern,
     captureIdentityPatterns: captureIdentityPatterns,
+    captureGuardReason: captureGuardReason,
+    captureGrabCheck: captureGrabCheck,
+    captureGuardSummary: captureGuardSummary,
     capturePlan: capturePlan,
     captureLogLine: captureLogLine,
     liveCapturePlan: liveCapturePlan,

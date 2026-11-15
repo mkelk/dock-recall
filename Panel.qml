@@ -1937,9 +1937,12 @@ Item {
     root.liveRoundStarted = true
     // FROM THE INSTANCE INDEX, which is what the live map itself is built from —
     // so the plan cannot name a window the map does not draw. PanelModel owns
-    // the decision; this hands it the two values and passes the answer on.
+    // the decision; this hands it the values and passes the answer on. The
+    // client and monitor lists are the reads the index was built from, and they
+    // are what the capture guard judges a window by: a pinned window, or one
+    // whose monitor is gone, is never captured (PanelModel.captureGuardReason).
     liveCaptures.start(PanelModel.liveCapturePlan(
-      root.instanceIndex, root.identities, root.picturesOn))
+      root.instanceIndex, root.identities, root.picturesOn, root.liveClients, root.liveMonitors))
   }
 
   // The live picture this chip is drawing, as a URL its Image can bind, or "".
@@ -2698,7 +2701,12 @@ Item {
         + " picture whose window was matched a second time could be of a different window")
       return
     }
-    var plan = PanelModel.capturePlan(layout, root.identities, chosen, root.picturesOn)
+    // `liveMonitors` is what the capture guard judges a monitor alive by. It
+    // may be a read newer than `chosen` (this runs a turn after Record), and
+    // that errs the safe way: a monitor gone since then refuses its windows.
+    // The stores re-check every window over a fresh read at the grab anyway.
+    var plan = PanelModel.capturePlan(layout, root.identities, chosen, root.picturesOn,
+      root.liveMonitors)
     if (!plan.captures.length) {
       // Still an eviction: a re-record with the pictures since switched off has
       // to drop the ones the previous record took, or the map would go on
