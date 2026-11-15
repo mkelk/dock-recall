@@ -11,6 +11,10 @@ you spend the first minute of the session dragging them back and arranging it
 Dock Recall records how you like each situation set up, and your windows
 auto-arrange to your preferred setup the moment the cable changes.
 
+**Requires Omarchy 4.5 or newer.** On an older Omarchy the plugin detects it,
+restores and records nothing, and the bar tooltip and panel say "Needs Omarchy 4.5
+or newer".
+
 ![The Dock Recall panel: the topology name and its in-sync state, the workspace map with each app drawn at its true proportions, the watched app list, and Record / Restore now](preview.png)
 
 ## Why you will want it
@@ -44,6 +48,10 @@ auto-arrange to your preferred setup the moment the cable changes.
   slot) rather than a global workspace number, and leaves moving workspaces
   between monitors to Omarchy. A recording made on an earlier Omarchy is
   upgraded on first read.
+
+  **Upgrading from an earlier Dock Recall:** recordings made before 0.4.0
+  (state schema v7 and v8, workspace ids) migrate to the current schema (v9,
+  monitor plus slot) when they are first read. Nothing needs to be re-recorded.
 - No AUR package, no runtime network dependency, no privileged helper
 
 ## Install

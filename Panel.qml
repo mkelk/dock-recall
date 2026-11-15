@@ -714,6 +714,12 @@ Item {
   // used to narrow an identity are stripped on the way in. Said next to the
   // read-only line, because a user who only reads "read-only" will reasonably
   // expect their dock to keep putting windows back.
+  // A system older than Omarchy 4.5 (status.unsupportedReason, from the
+  // service): nothing is restored and nothing is recorded, and the panel says so.
+  readonly property string needsOmarchyReason: PanelModel.needsOmarchyText(root.statusModel)
+  onNeedsOmarchyReasonChanged: if (root.needsOmarchyReason !== "")
+    root.warn("record and restore refused: " + root.needsOmarchyReason + " — a recording without slots would be wrong")
+
   readonly property string restoreRefusalReason: {
     var refusal = root.stateLoaded ? StateModel.restoreRefusal(root.stateModel) : null
     return refusal ? String(refusal) : ""
@@ -2870,6 +2876,7 @@ Item {
   readonly property bool canRecord: root.stateLoaded && root.haveLiveData
     && root.liveMonitors.length > 0 && !root.statusModel.restoring
     && root.writeRefusalReason === "" && !captureStore.busy
+    && root.needsOmarchyReason === ""
 
   // The same shape for the OTHER footer action (tick 66x). Restore now and a
   // failed row's Retry were lit while `restoreRefusalReason` held: the click
@@ -2882,7 +2889,7 @@ Item {
   // three call sites share it (the two buttons and the keyboard's Enter) and
   // three copies of the condition is how they drift apart.
   readonly property bool canRestore: PanelModel.mayManualRestore(
-    !!root.recordedLayout, root.restoreRefusalReason)
+    !!root.recordedLayout, root.restoreRefusalReason || root.needsOmarchyReason)
 
   // Ask the service to restore, and GET OUT OF THE WAY first.
   //
@@ -2917,6 +2924,10 @@ Item {
     // and the Inert line — which says the whole reason, and is already on screen
     // — is scrolled to. Refusals are a feature, and a feature has to be visible
     // at the moment it costs the user their click.
+    if (root.needsOmarchyReason !== "") {
+      root.log("manual restore REFUSED — " + root.needsOmarchyReason)
+      return
+    }
     if (root.restoreRefusalReason !== "") {
       root.log("manual restore REFUSED — " + root.restoreRefusalReason)
       root.ensureCursorVisible(inertLine)
@@ -4815,6 +4826,18 @@ Item {
             // the fold, and a dim button the user just pressed deserves to point
             // at the sentence that explains it.
             Text {
+              id: needsOmarchyLine
+              textFormat: Text.PlainText
+              width: parent.width
+              visible: root.needsOmarchyReason !== ""
+              text: root.needsOmarchyReason + " — Dock Recall restores and records nothing on this system."
+              color: Color.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
               id: inertLine
               textFormat: Text.PlainText
               width: parent.width
@@ -5110,7 +5133,7 @@ Item {
                   // overwrites, and why it is dim when it is.
                   tooltipText: PanelModel.wrapTooltip(
                     PanelModel.recordTooltip(root.watchedCount, root.topologyName,
-                      root.statusModel.restoring, captureStore.busy),
+                      root.statusModel.restoring, captureStore.busy, root.statusModel),
                     root.footerTooltipColumns)
                   bordered: true
                   hasCursor: root.focusSection === "record"
