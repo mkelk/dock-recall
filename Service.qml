@@ -1323,6 +1323,26 @@ Item {
   }
 
   Process {
+    id: groupbarProc
+    command: ["hyprctl", "getoption", "group:groupbar:height", "-j"]
+    stdout: StdioCollector { id: groupbarOut; waitForEnd: true }
+    onExited: function (exitCode) {
+      var height = exitCode === 0 ? Engine.parseGroupbarHeight(groupbarOut.text) : null
+      if (height !== null) {
+        root.groupbarPx = height
+        root.groupbarRead = true
+        root.log("groupbar height " + height + "px (read from hyprctl)")
+      } else {
+        root.warn("READ-FAILED hyprctl getoption group:groupbar:height — using "
+          + Engine.GROUPBAR_FALLBACK_PX + "px")
+      }
+      var done = root.groupbarCallback
+      root.groupbarCallback = null
+      if (done) done()
+    }
+  }
+
+  Process {
     id: clientsProc
     command: ["hyprctl", "clients", "-j"]
     stdout: StdioCollector { id: clientsOut; waitForEnd: true }
@@ -1606,6 +1626,18 @@ Item {
     }
 
     root.nextStep()
+  }
+
+  // One short settle for the swap read-back's second look.
+  property var settleCallback: null
+  Timer {
+    id: settleTimer
+    repeat: false
+    onTriggered: {
+      var cb = root.settleCallback
+      root.settleCallback = null
+      if (cb) cb()
+    }
   }
 
   Timer {
@@ -2675,12 +2707,16 @@ Item {
   // The tile a client occupies, as geometryText. A grouped window's rect is its
   // tile minus the groupbar on top (groupbarPx), so the box adds it back;
   // a plain window's rect is its tile.
-  readonly property int groupbarPx: 21
-  function tileBox(client) {
-    var rect = root.tileRect(client)
-    return root.geometryText(rect.at, rect.size)
+  // The height comes from `hyprctl getoption group:groupbar:height`, read once
+  // per cycle (readGroupbar); the engine's fallback stands until it has been.
+  property int groupbarPx: Engine.GROUPBAR_FALLBACK_PX
+  property bool groupbarRead: false
+  property var groupbarCallback: null
+  function readGroupbar(done) {
+    if (root.groupbarRead) { if (done) done(); return }
+    root.groupbarCallback = done || null
+    groupbarProc.running = true
   }
-
   // The tile a window occupies: its rect, plus the groupbar for a group member.
   function tileRect(client) {
     var at = (client.at || []).slice()
@@ -2828,6 +2864,10 @@ Item {
   // do with a `warning:` line rather than a failure, and a warning is not
   // something the step queue's VERB-ERROR check sees.
   function executeSwap(op, outcome, done) {
+    root.readGroupbar(function () { root.executeSwapRead(op, outcome, done) })
+  }
+
+  function executeSwapRead(op, outcome, done) {
     root.readClients(function (ok) {
       if (!ok) {
         root.warn("clients read failed before swapping " + op.address + " — leaving it")
@@ -2858,7 +2898,8 @@ Item {
         return
       }
 
-      var wantedA = root.tileBox(b)
+      var wantedRect = root.tileRect(b)
+      var wantedA = root.geometryText(wantedRect.at, wantedRect.size)
       root.noteEffect("swap", op.address + "+" + op.target)
       var commands = Engine.opToCommand(op)
       if (!commands.length) {
@@ -2877,22 +2918,35 @@ Item {
       steps.push({
         kind: "fn",
         fn: function (next) {
-          root.readClients(function (okAfter) {
-            if (!okAfter) { next(); return }
-            var after = root.clientByAddress(op.address)
-            // Tile boxes, not raw rects: a group member's rect is its tile
-            // minus the groupbar, so a swap into or out of a group lands on the
-            // right tile and still reads 21px different.
-            var afterBox = after ? root.tileBox(after) : ""
-            if (after && afterBox !== wantedA) {
-              root.failAndCount(outcome, "the swap did not land (" + op.address + " reads "
-                + afterBox + ", wanted " + wantedA + ")")
-              root.warn("swap: " + op.address + " reads " + afterBox
-                + " after the swap (wanted " + wantedA + ") — not retrying here,"
-                + " the next re-plan asks again and the no-progress check names it")
-            }
-            next()
-          })
+          // Read once, and once more after a short settle if it misses: the
+          // first read can land mid-animation.
+          var check = function (attempt) {
+            root.readClients(function (okAfter) {
+              if (!okAfter) { next(); return }
+              var after = root.clientByAddress(op.address)
+              // Tile boxes, not raw rects: a group member's rect is its tile
+              // minus the groupbar (the real height, read from hyprctl), so a
+              // swap into or out of a group lands on the right tile. The band
+              // is Engine.TILE_BOX_TOLERANCE_PX per edge.
+              var afterRect = after ? root.tileRect(after) : null
+              if (afterRect && !Engine.tileBoxesMatch(wantedRect, afterRect, Engine.TILE_BOX_TOLERANCE_PX)) {
+                if (attempt === 0) {
+                  root.settleCallback = function () { check(1) }
+                  settleTimer.interval = 250
+                  settleTimer.restart()
+                  return
+                }
+                var afterBox = root.geometryText(afterRect.at, afterRect.size)
+                root.failAndCount(outcome, "the swap did not land (" + op.address + " reads "
+                  + afterBox + ", wanted " + wantedA + ")")
+                root.warn("swap: " + op.address + " reads " + afterBox
+                  + " after the swap (wanted " + wantedA + ") — not retrying here,"
+                  + " the next re-plan asks again and the no-progress check names it")
+              }
+              next()
+            })
+          }
+          check(0)
         }
       })
       root.prependSteps(steps)
@@ -3396,6 +3450,7 @@ Item {
     root.cycleReason = reason
     root.passIndex = 0
     root.cycleEffects = ({})
+    root.groupbarRead = false
     root.builtWorkspaces = ({})
     root.launchSerial = 0
     // The previous cycle's ledger is retired HERE and not at its own end: the

@@ -271,6 +271,14 @@ build_group() {
 case_G2() {
   case_begin "G2: group ga,gc,gb beside tiled gd"
   local W; W=$(ws 4)
+  # The groupbar is taller than the desk's 22px and the constant's guess: the
+  # swap read-back must take the height from hyprctl, or the group's tile box
+  # reads ~11px off and the swap is called a miss (tick aa2).
+  nested eval "hl.config({ group = { groupbar = { height = 33 } } })" >/dev/null 2>&1; sleep 0.4
+  local gbh; gbh=$(nested getoption group:groupbar:height -j | jq -r '.int // "absent"')
+  [[ $gbh == 33 ]] \
+    && pass "G2: the nested groupbar height now reads 33 through hyprctl getoption" \
+    || fail "G2: could not override group:groupbar:height (getoption says '$gbh')"
   build_group "$W" dr-ga dr-gc dr-gb     # tab order ga,gc,gb
   focus "$ANCHOR"
   launch dr-gd "$SCRATCH"; local GD; GD=$(addr_of dr-gd)
@@ -310,6 +318,15 @@ case_G2() {
     [[ $(group_order "$GA") == "$order" ]] \
       && pass "G2 group order kept after in-place swap ($order)" \
       || fail "G2 group order after the swap restore is '$(group_order "$GA")', recorded '$order'"
+  fi
+  grep -qE "groupbar height 33px \(read from hyprctl\)" <<<"$(case_log)" \
+    && pass "G2: the service read the groupbar height (33px) from hyprctl" \
+    || fail "G2: no 'groupbar height 33px' line in the cycle's log"
+  if grep -qE "swap did not land|swap: .* reads .* after the swap" <<<"$(case_log)"; then
+    fail "G2: the swap read-back called a landed swap a miss"
+    case_log | grep -E "swap did not land|after the swap" | sed 's/^/        /'
+  else
+    pass "G2: the swap read-back accepted the swap against the real groupbar"
   fi
   if case_log | grep -qE "REFUSED workspace $W .*not-a-tree"; then
     fail "G2: the log refuses workspace $W as not-a-tree"
