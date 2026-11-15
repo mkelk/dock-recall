@@ -8444,6 +8444,16 @@ test("shapeLinesFor: one line per unmet shape, and nothing when there are none",
   assert.strictEqual(out.summary.indexOf("\n"), -1);
 });
 
+test("shapeLinesFor: the score is floored, never rounded up to the threshold (0.9496 is not 0.95)", () => {
+  const line = (iou) => panel.shapeLinesFor({ shapeCount: 1, shapes: [
+    { workspaceId: 12, monitorDescription: "", meanIou: iou, reason: null }] }).lines[0];
+  assert.ok(line(0.9496).indexOf(": 0.94 of its recorded shape") !== -1, line(0.9496));
+  assert.ok(line(0.9999).indexOf(": 0.99 of") !== -1, line(0.9999));
+  assert.ok(line(0.95).indexOf(": 0.95 of") !== -1, line(0.95));
+  assert.ok(line(0.29).indexOf(": 0.29 of") !== -1, "float dust must not drop 0.29 to 0.28: " + line(0.29));
+  assert.ok(line(0.55).indexOf(": 0.55 of") !== -1);
+});
+
 test("the bar tooltip and badge tooltip carry the shape summary only when there is one", () => {
   const withShape = statusOf({ recorded: true, shapeCount: 1,
     shapes: [{ workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: "layout-floating" }] });

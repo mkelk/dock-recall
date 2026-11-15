@@ -6791,7 +6791,9 @@ function shapeLinesFor(status) {
     var reason = trim(row.reason);
     var desc = trim(row.monitorDescription);
     var where = desc ? " on " + shortMonitorLabel(desc, null) : "";
-    lines.push("workspace " + slotLabelFor(row.workspaceId) + where + ": " + iou.toFixed(2)
+    // Floored, never rounded: 0.9496 must not read as the 0.95 it is short of.
+    var shown = (Math.floor(iou * 100 + 1e-9) / 100).toFixed(2);
+    lines.push("workspace " + slotLabelFor(row.workspaceId) + where + ": " + shown
       + " of its recorded shape - "
       + (reason ? refusalSentenceFor(reason) : "not yet in that shape"));
     tags.push(slotLabelFor(row.workspaceId) + " (" + (reason ? refusalTagFor(reason) : "shape differs") + ")");
