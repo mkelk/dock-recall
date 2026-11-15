@@ -1093,6 +1093,7 @@ Item {
       if (Object.prototype.hasOwnProperty.call(source, key)) stamped[key] = source[key]
     }
     stamped.paused = StateModel.isPaused(root.state)
+    stamped.unsupportedReason = root.unsupportedReason
 
     var next = StateModel.mergeStatus(root.statusModel, stamped)
 
@@ -1272,6 +1273,26 @@ Item {
   property string mergedText: ""
   property var blockTable: Slots.parseBlocks("")
   property var blocksCallback: null
+  // "" on Omarchy 4.5 and newer; "needs-omarchy-4.5" when neither the block file
+  // nor the lua that writes it exists (Slots.unsupportedReason). Read with the
+  // block files, stamped on every status publish, and the whole cycle stands
+  // down on it: no restore, no plan.
+  property string unsupportedReason: ""
+
+  function unsupportedLine() {
+    return PanelModel.needsOmarchyText({ unsupportedReason: root.unsupportedReason })
+      + " (no monitor-workspaces block file, no monitor-workspaces.lua) — restoring and recording are off"
+  }
+
+  // The cycle ends here instead of planning. Not a failure: nothing was tried.
+  function endUnsupportedCycle() {
+    gateTimer.stop()
+    passTimer.stop()
+    root.warn("not restoring (" + root.cycleReason + ") — " + root.unsupportedLine())
+    root.cycleActive = false
+    root.rerunQueued = false
+    root.publishStatus({ restoring: false }, "unsupported system")
+  }
 
   function readBlocks(done) {
     root.blocksCallback = done || null
@@ -1282,13 +1303,19 @@ Item {
     id: blocksProc
     command: ["bash", "-c",
       "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/omarchy\"; cat \"$d/monitor-workspaces\" 2>/dev/null; "
-      + "printf '\\n@@MERGED@@\\n'; cat \"$d/monitor-workspaces-merged\" 2>/dev/null; true"]
+      + "printf '\\n@@MERGED@@\\n'; cat \"$d/monitor-workspaces-merged\" 2>/dev/null; "
+      + "printf '\\n@@PROBE@@\\n'; [ -e \"$d/monitor-workspaces\" ] && printf 'block '; "
+      + "[ -e /usr/share/omarchy/default/hypr/monitor-workspaces.lua ] && printf 'lua'; true"]
     stdout: StdioCollector { id: blocksOut; waitForEnd: true }
     onExited: function (exitCode) {
-      var parts = String(blocksOut.text).split("\n@@MERGED@@\n")
+      var probed = String(blocksOut.text).split("\n@@PROBE@@\n")
+      var probe = probed.length > 1 ? probed[1] : "block lua"
+      var unsupported = Slots.unsupportedReason(probe.indexOf("block") >= 0, probe.indexOf("lua") >= 0)
+      var parts = probed[0].split("\n@@MERGED@@\n")
       root.blocksText = parts[0] || ""
       root.mergedText = parts.length > 1 ? parts[1] : ""
       root.blockTable = Slots.parseBlocks(root.blocksText)
+      root.unsupportedReason = unsupported
       var done = root.blocksCallback
       root.blocksCallback = null
       if (done) done(true)
@@ -3331,6 +3358,15 @@ Item {
       }
     }
 
+    // A system without Omarchy 4.5's per-monitor workspaces: nothing to restore
+    // against, so nothing is attempted, not even by hand. Known once any block
+    // read has landed; a request that beats the first read starts a cycle that
+    // stands down at its first snapshot (runPass).
+    if (root.unsupportedReason !== "") {
+      root.warn("not restoring (" + reason + ") — " + root.unsupportedLine())
+      return
+    }
+
     if (root.stateLoaded && !byHand && StateModel.isPaused(root.state)) {
       root.log("paused — ignoring " + reason)
       return
@@ -3429,7 +3465,10 @@ Item {
     // No plan, and so no dispatch, until 4.5's re-sort has settled. A wait here
     // does not consume a settle pass: the pass simply starts later.
     root.gateThen("pass " + (root.passIndex + 1),
-      function () { root.planAndExecute() },
+      function () {
+        if (root.unsupportedReason !== "") { root.endUnsupportedCycle(); return }
+        root.planAndExecute()
+      },
       function () {
         root.warn("pass " + (root.passIndex + 1) + " abandoned: the live read failed"
           + " — the next settle pass will retry")

@@ -47,6 +47,20 @@ function isWholeNumber(value) {
   return typeof value === "number" && isFinite(value) && Math.floor(value) === value;
 }
 
+// Is this system one that has Omarchy 4.5's per-monitor workspaces at all?
+// Two independent witnesses, either is enough: the block file the lua writes
+// under $XDG_STATE_HOME/omarchy/, and the lua itself in
+// /usr/share/omarchy/default/hypr/. With neither, the system is older than 4.5
+// (or the lua is gone) and no slot can be mapped to a live workspace — so the
+// answer is a reason code, never a guess. "" means supported. The wording a
+// human reads is PanelModel.needsOmarchyText; the code is what the status file
+// carries.
+var NEEDS_OMARCHY_45 = "needs-omarchy-4.5";
+
+function unsupportedReason(blockFilePresent, luaPresent) {
+  return (blockFilePresent === true || luaPresent === true) ? "" : NEEDS_OMARCHY_45;
+}
+
 function own(object, key) {
   return object && Object.prototype.hasOwnProperty.call(object, key) ? object[key] : undefined;
 }
@@ -347,6 +361,8 @@ function workspaceMonitors(clients, monitors) {
 if (typeof module !== "undefined") {
   module.exports = {
     SLOTS: SLOTS,
+    NEEDS_OMARCHY_45: NEEDS_OMARCHY_45,
+    unsupportedReason: unsupportedReason,
     blockOf: blockOf,
     slotOf: slotOf,
     workspaceIdFor: workspaceIdFor,

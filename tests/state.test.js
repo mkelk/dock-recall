@@ -2041,6 +2041,7 @@ test("a default status says nothing is known yet", () => {
     driftCount: 0,
     shapes: [],
     shapeCount: 0,
+    unsupportedReason: "",
     restoring: false,
     paused: false,
     // v2 (tick 97e). Nothing is waiting on an unlock until a cycle says so.
@@ -2121,6 +2122,7 @@ test("mergeStatus leaves untouched fields alone", () => {
     driftCount: 3,
     shapes: [],
     shapeCount: 0,
+    unsupportedReason: "",
     restoring: false,
     paused: false,
     deferredLocked: false,

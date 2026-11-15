@@ -6342,6 +6342,8 @@ function wrapTooltip(text, columns) {
 
 function badgeTooltip(glyphState, status) {
   var current = status || {};
+  var needs = needsOmarchyText(current);
+  if (needs) return needs + ": nothing is restored or recorded on this system.";
   if (glyphState === "restoring") {
     return "Putting the watched apps back where the recording says they go.";
   }
@@ -6416,7 +6418,18 @@ function restoreTooltip(hasLayout, topologyName, restoreRefusalReason) {
     + " puts it. Safe to press twice.";
 }
 
-function recordTooltip(watchedCount, topologyName, restoring, capturing) {
+// The sentence for a system without Omarchy 4.5's per-monitor workspaces
+// (status.unsupportedReason, written by the service from Slots.unsupportedReason).
+// "" when the system is fine. Recording is refused with this same sentence: a
+// recording made without slots would be wrong, not merely incomplete.
+function needsOmarchyText(status) {
+  var reason = status && typeof status.unsupportedReason === "string" ? trim(status.unsupportedReason) : "";
+  return reason === "" ? "" : "Needs Omarchy 4.5 or newer";
+}
+
+function recordTooltip(watchedCount, topologyName, restoring, capturing, status) {
+  var needs = needsOmarchyText(status);
+  if (needs) return needs + " — Dock Recall cannot record on this system.";
   if (restoring || capturing) return recordBlockedHint(restoring, capturing);
   var count = Number(watchedCount) || 0;
   var where = trim(topologyName);
@@ -6793,6 +6806,8 @@ function shapeLinesFor(status) {
 
 function barGlyphTooltip(glyphState, status, topologyName) {
   var current = status || {};
+  var needs = needsOmarchyText(current);
+  if (needs) return "Dock Recall — " + needs;
   var where = trim(topologyName);
   if (!where || where === EMPTY_TOPOLOGY) where = "Dock Recall";
 
@@ -7713,6 +7728,7 @@ if (typeof module !== "undefined") {
     mayManualRestore: mayManualRestore,
     restoreTooltip: restoreTooltip,
     recordTooltip: recordTooltip,
+    needsOmarchyText: needsOmarchyText,
     headerMeta: headerMeta,
     recordedAgeLabel: recordedAgeLabel,
     pauseSwitchChecked: pauseSwitchChecked,

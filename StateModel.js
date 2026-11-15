@@ -342,6 +342,11 @@
 //                                // "drifted" when this is > 0 even if driftCount
 //                                // is 0: the same glyph as window drift, the
 //                                // reason goes to the tooltip and panel.
+//     unsupportedReason: string  // v9. "" = the system has Omarchy 4.5's per-monitor
+//                                // workspaces. Otherwise a reason code (today only
+//                                // "needs-omarchy-4.5"): the service restores and
+//                                // plans nothing, the panel refuses to record, and
+//                                // PanelModel.needsOmarchyText says so in words.
 //     restoring:   boolean       // a restore cycle is in flight (glyph sweeps)
 //     lastResult:  null | { ok: boolean, summary: string, at: string }
 //                                // the outcome of the last cycle that ran in
@@ -1293,7 +1298,7 @@ function setPictures(state, on) {
 // same rule engine.buildLayout follows.
 
 function defaultStatus() {
-  return { topologyKey: "", topologyName: "", recorded: false, driftCount: 0, shapes: [], shapeCount: 0, restoring: false, paused: false, deferredLocked: false, lastResult: null, verdicts: [] };
+  return { topologyKey: "", topologyName: "", recorded: false, driftCount: 0, shapes: [], shapeCount: 0, unsupportedReason: "", restoring: false, paused: false, deferredLocked: false, lastResult: null, verdicts: [] };
 }
 
 // One dimension word. Kept as free text rather than checked against a
@@ -1470,6 +1475,7 @@ function normalizeStatus(value) {
     driftCount: count < 0 ? 0 : count,
     shapes: shapes,
     shapeCount: shapes.length,
+    unsupportedReason: typeof src.unsupportedReason === "string" ? src.unsupportedReason : "",
     restoring: src.restoring === true,
     // Same default direction as State.paused: only an explicit `true` pauses,
     // so a status file written by an older service reads as active.
@@ -1557,6 +1563,7 @@ function mergeStatus(previous, patch) {
     base.shapes = normalizeShapes(next.shapes);
     base.shapeCount = base.shapes.length;
   }
+  if (next.unsupportedReason !== undefined) base.unsupportedReason = typeof next.unsupportedReason === "string" ? next.unsupportedReason : base.unsupportedReason;
   if (next.restoring !== undefined) base.restoring = next.restoring === true;
   if (next.paused !== undefined) base.paused = next.paused === true;
   if (next.deferredLocked !== undefined) base.deferredLocked = next.deferredLocked === true;
