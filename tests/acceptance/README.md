@@ -23,6 +23,7 @@ headless mechanism — is in [PROVISIONING.md](PROVISIONING.md).
 | `dock-recall-panel-test.sh` | the panel's `IpcHandler`, on both render paths |
 | `dock-recall-undock-locked-prepare-test.sh` | the locked scenario's in-guest setup |
 | `undock-locked.sh` | the locked scenario's host half — QMP keyboard and screendumps |
+| `reenable-rehearsal.sh` | the 4.5 re-enable migration, rehearsed on a guest in the desk's old state — host-driven, run by hand |
 | `vm-lib.sh` | reaching a VM the harness left running (sourced, not run) |
 | `stage.sh` | builds the directory the harness pushes into the guest |
 | `PROVISIONING.md` | what has to exist on the host, and where |
@@ -1253,6 +1254,42 @@ step gave up. The `[dock-recall]` log is copied out beside them as
 The VM that `--keep-running` leaves behind is stopped by `run.sh`'s EXIT trap on
 every path out — `vm-lib.sh` owns that, and is a library rather than a copy in
 each caller precisely so the teardown cannot drift.
+
+## What the re-enable rehearsal asserts
+
+`reenable-rehearsal.sh` is the VM rehearsal of omarchy-fast's migration
+`0000000123_dock_recall_reenable_45.sh` before it meets the desk. The migration's
+stub test (`cutover/test-reenable-45.sh` in the records repo) fakes `omarchy
+plugin add`, the shell and Hyprland; this proves the two things stubs cannot: the
+real `omarchy plugin add` succeeds after the old directory is moved aside, and
+the restarted shell keeps the jq-written `plugins[]` record.
+
+It is **not** part of `run.sh`. It drives a VM someone left running
+(`omarchy-iso-test ... --keep-running`; pin it with `DR_RUN_DIR_OVERRIDE`), and it
+needs the guest to reach github.com, because the migration installs GitHub
+master and defers (exit 75) until master is the 0.4.0 build. Run it only after
+that build is published. A 75 is reported as "deferred", not as a failure.
+
+```
+DR_RUN_DIR_OVERRIDE=<run dir> ./tests/acceptance/reenable-rehearsal.sh
+```
+
+It builds the desk's state in the guest: the old plugin (a `git archive` of
+`DR_OLD_REF`, default `c8c2748`, manifest 0.3.0, no `Slots.js`), no `plugins[]`
+record, no bar entry, `SUPER+SHIFT+L` commented out under migration 118's two
+note lines, `tests/fixtures/state-v7.json` as the recordings, and a real shell
+restart so the shell's memory matches. Then it runs the migration (read from the
+`dock-recall-reenable-45` branch of `~/git/omarchy-fast`, or `DR_MIGRATION`) and
+asserts: exit 0; the `plugins[]` record and the bar entry in `shell.json` *and*
+in the running shell's `listShellConfig` after a settle; the bind live in
+Hyprland (modmask 65, key `l`, description) and active in `bindings.lua`; the
+manifest at `DR_EXPECT_VERSION` (0.4.0) in a git clone; the old plugin tarred and
+the v7 recordings kept; a *new* `[dock-recall] service-ready` log line; the
+recordings file at v9 after `scripts/record-current` writes it, with the v7
+layouts intact. A second run must exit 0 with `shell.json`, `bindings.lua`, the
+manifest, `.installed-from` and the backups byte-identical and no shell restart.
+The two run logs land in the run directory as
+`dock-recall-reenable-rehearsal-run1.log` and `-run2.log`.
 
 ## Guest packages
 
