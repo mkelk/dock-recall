@@ -7,6 +7,7 @@ const assert = require("node:assert");
 
 const engine = require("../engine.js");
 const state = require("../StateModel.js");
+const slots = require("../Slots.js");
 const panel = require("../PanelModel.js");
 const { loadFixture, makeClient, IDENTITIES } = require("./helpers.js");
 
@@ -14,6 +15,18 @@ const clientsLaptop = loadFixture("clients-laptop.json");
 const monitorsLaptop = loadFixture("monitors-laptop.json");
 const LAPTOP_KEY = "Samsung Display Corp. ATNA60HR07-0";
 const AT = "2026-08-15T18:30:00Z";
+
+// QML source with its comments removed, for the source audits below that assert
+// an expression is ABSENT. Those files explain themselves at length, and a
+// comment warning "never write `store._queue[0] === entry` again" would fail the
+// very assertion it is documenting (tick 070). Line comments only — neither QML
+// file here uses a block comment, and neither has a `//` inside a string.
+function qmlCode(source) {
+  return String(source).split("\n").map(function (line) {
+    var at = line.indexOf("//");
+    return at === -1 ? line : line.slice(0, at);
+  }).join("\n");
+}
 
 // The panel always resolves a client through the ONE matcher the engine owns.
 // engine.matchClient answers with the identity ID (or null), which is exactly
@@ -153,7 +166,9 @@ test("a new identity never invents a launch command", () => {
 
 test("ticking something already watched is a no-op, not a duplicate", () => {
   const existing = [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }];
-  assert.strictEqual(panel.suggestIdentity("foot", existing), null);
+  // A refusal rather than null since tick v5c: "nothing to add" is a fact the
+  // panel has to be able to SAY, or the click reports a success it did not have.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", existing), { refusal: "already-watched" });
 });
 
 // ------------------------------------------------------------ toggle watched
@@ -202,10 +217,12 @@ test("what a toggle produces survives StateModel's normalizer intact", () => {
   const identities = panel.toggleWatchedIdentities(state.identities(before), "md.obsidian.Obsidian", "");
   const next = state.setIdentities(before, identities);
   const round = state.parseState(state.serializeState(next));
-  // A panel-created identity says nothing about titles, and schema v4
-  // materializes that as an empty list rather than an absent key.
+  // A panel-created identity says nothing about titles, and the schema
+  // materializes the empty list rather than leaving the key absent. Four fields
+  // is the whole of an identity since v7 removed the per-app picture flag.
   assert.deepStrictEqual(round.state.identities, [
-    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], titlePatterns: [], launch: "" }
+    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"], titlePatterns: [],
+      launch: "" }
   ]);
 });
 
@@ -540,6 +557,290 @@ test("only the [Desktop Entry] group is read, never a [Desktop Action]", () => {
   assert.strictEqual(entry.type, "Application");
 });
 
+test("parseDesktopEntry keeps Icon=, defaulting to empty and ignoring locale-suffixed keys", () => {
+  // FOOT_DESKTOP is real and declares no Icon= at all.
+  assert.strictEqual(panel.parseDesktopEntry(FOOT_DESKTOP).icon, "");
+  // WHATSAPP_DESKTOP and OBSIDIAN_DESKTOP are copied verbatim from files that
+  // do declare one.
+  assert.strictEqual(panel.parseDesktopEntry(WHATSAPP_DESKTOP).icon, "whatsapp");
+  assert.strictEqual(panel.parseDesktopEntry(OBSIDIAN_DESKTOP).icon, "obsidian");
+
+  // Icon[de] names the same field in another language; the plain key is the
+  // one this file wants — exactly the convention Name[de] already follows.
+  const localized = [
+    "[Desktop Entry]",
+    "Type=Application",
+    "Exec=thing",
+    "Icon[de]=ding",
+    "Icon=thing-icon",
+    ""
+  ].join("\n");
+  assert.strictEqual(panel.parseDesktopEntry(localized).icon, "thing-icon");
+
+  // The five fields this function already returned are untouched by the addition.
+  const entry = panel.parseDesktopEntry(FOOT_DESKTOP);
+  assert.strictEqual(entry.name, "Foot");
+  assert.strictEqual(entry.exec, "foot");
+  assert.strictEqual(entry.startupWMClass, "foot");
+  assert.strictEqual(entry.type, "Application");
+  assert.strictEqual(entry.hidden, false);
+});
+
+// ------------------------------------------------------------------- icons
+//
+// Which desktop entry describes an app, and what NAME it gives its icon. The
+// other half — turning a name into a drawable file — is the shell's
+// appLibrary.iconSource, which knows the icon theme and keeps the contextual
+// index that stops "zoom" resolving to an action icon. Nothing here
+// reimplements it; where the shell will not lend it (Omarchy 4.5 gives a
+// non-menu plugin no appLibrary), iconRequest only picks which lookup the
+// panel makes.
+
+test("an icon name is found through the same four passes as a launch command", () => {
+  const parsed = panel.parsedDesktopEntries(REAL_DESKTOP_FILES, false);
+
+  // Pass 1, the declared class exactly — and its chrome- variant, which is the
+  // whole reason a webapp entry recording the bare host finds the window
+  // Chromium named with a prefix and a profile tail.
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^chrome-web\\.whatsapp\\.com"], parsed), "whatsapp");
+  // Pass 3, the fuzzy class: the packager wrote md.Obsidian, the window says
+  // md.obsidian.Obsidian.
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^md\\.obsidian\\.Obsidian$"], parsed), "obsidian");
+  // foot.desktop is real and declares no Icon= at all. "" is the honest answer,
+  // and the panel draws the generic executable icon for it.
+  assert.strictEqual(panel.iconNameFromDesktopFiles(["^foot$"], parsed), "");
+  // Nothing claims this class.
+  assert.strictEqual(panel.iconNameFromDesktopFiles(["^nothing-here$"], parsed), "");
+});
+
+test("an entry with no Icon= does not swallow the match from a weaker entry that has one", () => {
+  // The strong claim (StartupWMClass, pass 1) carries no icon; the weak one
+  // (the filename, pass 4) does. Without the accept predicate the first would
+  // win the match and answer "", leaving the app iconless while a file on disk
+  // named its icon.
+  const iconless = [
+    "[Desktop Entry]", "Type=Application", "Exec=thing", "Name=Thing",
+    "StartupWMClass=thing", ""
+  ].join("\n");
+  const iconful = [
+    "[Desktop Entry]", "Type=Application", "Exec=thing --other", "Name=Thing Alt",
+    "Icon=thing-icon", ""
+  ].join("\n");
+  const files = [
+    { path: "/usr/share/applications/zzz-thing-alias.desktop", text: iconless },
+    { path: "/usr/share/applications/thing.desktop", text: iconful }
+  ];
+
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^thing$"], panel.parsedDesktopEntries(files, false)),
+    "thing-icon");
+  // And the launch command is untouched by that preference: launch resolution
+  // has no accept predicate, so the strongest claim still wins it.
+  assert.strictEqual(panel.launchFromDesktopFiles(["^thing$"], files), "thing");
+});
+
+test("an entry with no runnable Exec can name an icon but can never win a launch", () => {
+  // requireCommand is what keeps launch resolution what it was: an Exec-less
+  // file is dropped BEFORE the passes there, so it cannot shadow a file that
+  // actually launches something. The icon lookup keeps it — "which entry is
+  // this app" is a question a file with no Exec can still answer.
+  const execless = [
+    "[Desktop Entry]", "Type=Application", "Name=Linky",
+    "StartupWMClass=linky", "Icon=linky-icon", ""
+  ].join("\n");
+  const files = [{ path: "/usr/share/applications/linky.desktop", text: execless }];
+
+  assert.strictEqual(panel.parsedDesktopEntries(files, true).length, 0);
+  assert.strictEqual(panel.parsedDesktopEntries(files, false).length, 1);
+  assert.strictEqual(panel.launchFromDesktopFiles(["^linky$"], files), "");
+  assert.strictEqual(
+    panel.iconNameFromDesktopFiles(["^linky$"], panel.parsedDesktopEntries(files, false)),
+    "linky-icon");
+});
+
+test("the icon index answers for watched identities and for bare window classes", () => {
+  const identities = [
+    { id: "obsidian", patterns: ["^md\\.obsidian\\.Obsidian$"] },
+    { id: "whatsapp", patterns: ["^chrome-web\\.whatsapp\\.com"] },
+    // A watched identity whose app has no Icon= — a real case; foot is one.
+    { id: "terminal", patterns: ["^foot$"] }
+  ];
+  const clients = [
+    { class: "foot", address: "0x1" },
+    { class: OBSIDIAN_CLASS, address: "0x2" },
+    // Nothing on disk claims this one.
+    { class: "some-unpackaged-thing", address: "0x3" }
+  ];
+
+  const index = panel.iconNameIndex(identities, clients, REAL_DESKTOP_FILES);
+
+  assert.strictEqual(index["id:obsidian"], "obsidian");
+  assert.strictEqual(index["id:whatsapp"], "whatsapp");
+  assert.strictEqual(index["id:terminal"], "");
+  assert.strictEqual(index["class:foot"], "");
+  assert.strictEqual(index[`class:${OBSIDIAN_CLASS}`], "obsidian");
+  assert.strictEqual(index["class:some-unpackaged-thing"], "");
+
+  // The two keyspaces are kept apart by their prefixes, the way appRows keys
+  // its rows: an identity called `foot` and a window class called `foot` are
+  // different questions with possibly different answers.
+  assert.ok(Object.keys(index).every((k) => k.indexOf("id:") === 0 || k.indexOf("class:") === 0));
+});
+
+test("the icon index's inputs are the CLASSES, and a retitled window is not one", () => {
+  // What the panel binds on instead of the client list itself. liveClients is
+  // reassigned whenever the text of `hyprctl clients -j` differs, and that JSON
+  // carries window TITLES — so on a busy desk it is a new array on most 2 s
+  // ticks, carrying the same classes. This is the question whose answer decides
+  // whether the index has to be rebuilt at all.
+  const before = [
+    { class: "foot", title: "vim PanelModel.js", address: "0x1" },
+    { class: OBSIDIAN_CLASS, title: "Notes", address: "0x2" }
+  ];
+  const retitled = [
+    { class: "foot", title: "vim Panel.qml", address: "0x1" },
+    { class: OBSIDIAN_CLASS, title: "Notes — edited", address: "0x2" }
+  ];
+  assert.strictEqual(panel.clientClassKey(before), panel.clientClassKey(retitled));
+
+  // A SET, not a list: order is Hyprland's business, and a second window of an
+  // app the panel already knows about needs no rebuild either.
+  assert.strictEqual(panel.clientClassKey(before),
+    panel.clientClassKey([before[1], before[0], { class: "foot", address: "0x3" }]));
+
+  // A window of a class the panel has NOT seen does change it, which is the
+  // whole point — that app has an icon nobody has looked up yet.
+  assert.notStrictEqual(panel.clientClassKey(before),
+    panel.clientClassKey(before.concat([{ class: "org.gnome.Nautilus", address: "0x4" }])));
+
+  // The same expression iconNameIndex uses: class, else initialClass, and a
+  // client with neither contributes nothing rather than an empty entry.
+  assert.strictEqual(panel.clientClassKey([{ initialClass: "foot" }]), "foot");
+  assert.strictEqual(panel.clientClassKey([{ class: "  " }, {}, null]), "");
+  assert.strictEqual(panel.clientClassKey(null), "");
+  // A window may call itself anything, `__proto__` included, and the de-dup map
+  // must not find Object.prototype's member instead of an absent one.
+  assert.strictEqual(panel.clientClassKey(
+    [{ class: "__proto__" }, { class: "__proto__" }, { class: "constructor" }]),
+    "__proto__\nconstructor");
+});
+
+test("the desktop-file parse is done once per scan, not once per lookup", () => {
+  // The memo, and the invariant it rests on: `files` is REPLACED, never edited
+  // in place, so reference equality is a sound answer to "same scan".
+  const files = [
+    { path: "/usr/share/applications/thing.desktop",
+      text: "[Desktop Entry]\nType=Application\nExec=thing\nStartupWMClass=thing\nIcon=thing-icon\n" }
+  ];
+
+  const first = panel.parsedDesktopEntries(files, false);
+  assert.strictEqual(panel.parsedDesktopEntries(files, false), first,
+    "the same file list parses to the same array, not an equal one");
+
+  // The two callers disagree about requireCommand — launch resolution wants
+  // entries that can run, the icon lookup wants all of them — and one slot
+  // apiece is what stops them evicting each other on every alternate call.
+  const withCommand = panel.parsedDesktopEntries(files, true);
+  assert.notStrictEqual(withCommand, first);
+  assert.strictEqual(panel.parsedDesktopEntries(files, true), withCommand);
+  assert.strictEqual(panel.parsedDesktopEntries(files, false), first);
+
+  // A NEW scan is a new array, and it is parsed afresh — a cache that answered
+  // for it would be serving a desktop that has changed under it.
+  const rescanned = [{ path: files[0].path, text: files[0].text }];
+  const second = panel.parsedDesktopEntries(rescanned, false);
+  assert.notStrictEqual(second, first);
+  assert.deepStrictEqual(second, first);
+
+  // And the answers are the answers, memo or not.
+  assert.strictEqual(panel.iconNameFromDesktopFiles(["^thing$"], second), "thing-icon");
+  assert.strictEqual(panel.launchFromDesktopFiles(["^thing$"], rescanned), "thing");
+});
+
+test("a chip asks by identity first and by class second", () => {
+  const index = {
+    "id:obsidian": "obsidian",
+    "id:terminal": "",
+    "class:foot": "foot-icon",
+    "class:md.obsidian.Obsidian": "obsidian"
+  };
+
+  // A watched chip: its identity is the more specific claim.
+  assert.strictEqual(panel.iconNameFor(index, "obsidian", "md.obsidian.Obsidian"), "obsidian");
+  // An unwatched chip has no identity, so the class answers.
+  assert.strictEqual(panel.iconNameFor(index, "", "foot"), "foot-icon");
+  // A watched identity that resolved to nothing still falls through to its
+  // window's class — the identity's patterns may be narrower than the class is.
+  assert.strictEqual(panel.iconNameFor(index, "terminal", "foot"), "foot-icon");
+  // A recorded ghost has no window and so no class at all. Its identity is the
+  // only handle it has, and when that names nothing the panel draws the
+  // generic icon.
+  assert.strictEqual(panel.iconNameFor(index, "terminal", ""), "");
+  assert.strictEqual(panel.iconNameFor(index, "", ""), "");
+  assert.strictEqual(panel.iconNameFor(null, "obsidian", "foot"), "");
+});
+
+test("with no app library, an icon name is routed the way AppLibrary.iconSource routes it", () => {
+  // Omarchy 4.5's scoped facade lends appLibrary only to `menu` plugins, so the
+  // panel resolves names itself (tick 0i5). The branch is pure; the two
+  // lookups it names are Quickshell.iconPath and Util.fileUrl, in Panel.qml.
+  // An empty name is the generic executable icon — never an empty source.
+  assert.deepStrictEqual(panel.iconRequest(""), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest("   "), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest(null), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest(undefined), { kind: "generic" });
+  // Already a URL: passed through untouched.
+  assert.deepStrictEqual(panel.iconRequest("file:///usr/share/pixmaps/foot.png"),
+    { kind: "url", value: "file:///usr/share/pixmaps/foot.png" });
+  assert.deepStrictEqual(panel.iconRequest("image://icon/foot"),
+    { kind: "url", value: "image://icon/foot" });
+  // An absolute Icon= path — the acceptance panel test's own preview.png case.
+  assert.deepStrictEqual(
+    panel.iconRequest("/home/u/.config/omarchy/plugins/mkelk.dock-recall/preview.png"),
+    { kind: "path", value: "/home/u/.config/omarchy/plugins/mkelk.dock-recall/preview.png" });
+  // A theme name, trimmed the way desktop-entry values are.
+  assert.deepStrictEqual(panel.iconRequest(" obsidian "), { kind: "themed", value: "obsidian" });
+  // And the index's answer feeds it directly: a ghost with no entry asks for
+  // the generic icon, a watched app for its own name.
+  const index = { "id:obsidian": "obsidian" };
+  assert.deepStrictEqual(panel.iconRequest(panel.iconNameFor(index, "ghost", "")), { kind: "generic" });
+  assert.deepStrictEqual(panel.iconRequest(panel.iconNameFor(index, "obsidian", "")),
+    { kind: "themed", value: "obsidian" });
+});
+
+test("Panel.qml resolves icon names itself when the shell lends no app library", () => {
+  // BY PATH: the wiring half of the test above. Node cannot run the QML, so
+  // this pins the shape that made the 4.5 VM gate's chips and rows report
+  // iconSource "" (tick 0i5): a null appLibrary answered "" instead of falling
+  // through to a lookup of our own.
+  const qml = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8");
+  const body = (name) => {
+    const start = qml.indexOf("function " + name + "(");
+    assert.ok(start >= 0, "Panel.qml declares " + name);
+    const open = qml.indexOf("{", start);
+    let depth = 0;
+    for (let i = open; i < qml.length; i++) {
+      if (qml[i] === "{") depth++;
+      else if (qml[i] === "}" && --depth === 0) return qml.slice(open, i + 1);
+    }
+    throw new Error("unbalanced " + name);
+  };
+  const resolve = body("iconSourceForName");
+  assert.match(resolve, /if \(root\.appLibrary\) return/);
+  assert.match(resolve, /PanelModel\.iconRequest\(name\)/);
+  assert.match(resolve, /Util\.fileUrl\(request\.value\)/);
+  assert.match(resolve, /Quickshell\.iconPath\(request\.value, true\)/);
+  assert.match(resolve, /Quickshell\.iconPath\("application-x-executable", true\)/);
+  // Every chip, row and the generic comparison go through it — none asks the
+  // library directly, which is where a null one turned into "".
+  assert.match(body("iconSourceOf"), /root\.iconSourceForName\(/);
+  assert.match(qml, /readonly property string genericIconSource: root\.iconSourceForName\(""\)/);
+  assert.strictEqual((qml.match(/appLibrary\.iconSource\(/g) || []).length, 1,
+    "appLibrary.iconSource is asked in exactly one place, iconSourceForName");
+});
+
 test("a webapp identity finds its desktop file through StartupWMClass", () => {
   // The two halves of one fact: the entry records the bare host, Chromium
   // synthesizes the class with its own prefix and a per-profile tail.
@@ -745,7 +1046,9 @@ test("a broken launch joins the repairable set and is re-derived on a press", ()
 
   const requests = identities.map((i) => (
     { identityId: i.id, patterns: i.patterns, className: "", pid: "", argv: null }));
-  const derived = panel.deriveLaunchMap(requests, REAL_DESKTOP_FILES, {});
+  // `.commands` is the half these cases are about; `.refusals` has its own
+  // tests below.
+  const derived = panel.launchDerivation(requests, REAL_DESKTOP_FILES, {}).commands;
   assert.deepStrictEqual(derived, {
     obsidian: "/usr/bin/obsidian",
     whatsapp: "omarchy-launch-webapp https://web.whatsapp.com/",
@@ -831,7 +1134,7 @@ test("the running window wins, and the desktop file catches everything else", ()
   ];
   const windowsByPid = { "99": 1, "4242": 2 };
 
-  assert.deepStrictEqual(panel.deriveLaunchMap(requests, DESKTOP_FILES, windowsByPid), {
+  assert.deepStrictEqual(panel.launchDerivation(requests, DESKTOP_FILES, windowsByPid).commands, {
     terminal: "foot --title 'My Notes'",
     "mail-google": 'omarchy-launch-webapp "https://mail.google.com/mail/u/0/#inbox"',
     "mail-2": 'omarchy-launch-webapp "https://mail.google.com/mail/u/0/#inbox"'
@@ -858,7 +1161,7 @@ test("the plain browser window learns its OWN desktop file, never the process ar
   // chromium.desktop, %U stripped — a command that really does open a window
   // of class `chromium`, which is what the launch wait is watching for.
   assert.deepStrictEqual(
-    panel.deriveLaunchMap(requests, DESKTOP_FILES, panel.windowCountByPid(clients)),
+    panel.launchDerivation(requests, DESKTOP_FILES, panel.windowCountByPid(clients)).commands,
     {
       chromium: "/usr/bin/chromium",
       "mail-google": 'omarchy-launch-webapp "https://mail.google.com/mail/u/0/#inbox"'
@@ -883,7 +1186,7 @@ test("a shared pid stops argv derivation for a NON-browser host process too", ()
 
   // Falls through to foot.desktop, which launches a real terminal.
   assert.deepStrictEqual(
-    panel.deriveLaunchMap(requests, DESKTOP_FILES, panel.windowCountByPid(clients)),
+    panel.launchDerivation(requests, DESKTOP_FILES, panel.windowCountByPid(clients)).commands,
     { terminal: "foot" });
 
   // And the single-window case is untouched: one pid, one window, so the
@@ -894,7 +1197,7 @@ test("a shared pid stops argv derivation for a NON-browser host process too", ()
     pid: "700", argv: ["foot", "--working-directory", "/home/u/My Notes"]
   }];
   assert.deepStrictEqual(
-    panel.deriveLaunchMap(flags, DESKTOP_FILES, panel.windowCountByPid(alone)),
+    panel.launchDerivation(flags, DESKTOP_FILES, panel.windowCountByPid(alone)).commands,
     { terminal: "foot --working-directory '/home/u/My Notes'" });
 });
 
@@ -927,7 +1230,7 @@ test("a running Electron app learns its desktop file, never its rewritten cmdlin
     }
   ];
 
-  const derived = panel.deriveLaunchMap(requests, REAL_DESKTOP_FILES, panel.windowCountByPid(clients));
+  const derived = panel.launchDerivation(requests, REAL_DESKTOP_FILES, panel.windowCountByPid(clients)).commands;
   assert.deepStrictEqual(derived, {
     // obsidian.desktop, found through the fuzzy StartupWMClass — a command that
     // really does start Obsidian.
@@ -1016,7 +1319,8 @@ test("a launch repair round-trips through the file with its titles intact", () =
     state.identities(before), { herdr: "foot --title herdr" });
   const round = state.parseState(state.serializeState(state.setIdentities(before, repaired)));
   assert.deepStrictEqual(round.state.identities, [
-    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title herdr" }
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+      launch: "foot --title herdr" }
   ]);
 });
 
@@ -1120,13 +1424,85 @@ test("monitors are placed to scale in their real arrangement", () => {
   assert.ok(map.width <= 480 && map.height <= 240);
 });
 
-test("the map is ordered left to right, not by hyprctl's connection order", () => {
+test("the map is ordered for the eye, not by hyprctl's connection order", () => {
   const monitors = [
     { id: 5, name: "DP-2", x: 1440, y: 0, width: 1920, height: 1080, scale: 1 },
     { id: 0, name: "eDP-1", x: 0, y: 0, width: 1440, height: 900, scale: 1 }
   ];
   const map = panel.mapGeometry(monitors, 400, 200);
   assert.deepStrictEqual(map.monitors.map((m) => m.name), ["eDP-1", "DP-2"]);
+});
+
+test("the laptop's section comes first, then the external screens left to right (tick yn6)", () => {
+  // THE HUMAN'S ANSWER TO HIS OWN GATE: "I want two separated sections
+  // vertically, one section for laptop and one (or more) for each external
+  // monitor". A stack is read top to bottom, so the first section is the screen
+  // he is always sitting in front of — whatever its place on the desk.
+  //
+  // The laptop PHYSICALLY ON THE RIGHT is the case the old left-to-right rule
+  // got wrong and the only one that tells the two rules apart.
+  const rightHandLaptop = panel.mapGeometry([
+    { id: 1, name: "DP-1", x: 0, y: 0, width: 2150, height: 900, scale: 1 },
+    { id: 2, name: "HDMI-A-1", x: 2150, y: 0, width: 1920, height: 1080, scale: 1 },
+    { id: 0, name: "eDP-1", x: 4070, y: 0, width: 1440, height: 900, scale: 1 }
+  ], 400, 200);
+  assert.deepStrictEqual(rightHandLaptop.monitors.map((m) => m.name),
+    ["eDP-1", "DP-1", "HDMI-A-1"],
+    "the built-in panel leads, and the externals keep their own left-to-right order");
+
+  // The other connector names Hyprland gives a built-in panel, and the same
+  // test shortMonitorLabel uses to call one "Laptop" — so the two cannot
+  // disagree about which screen is the laptop.
+  for (const name of ["LVDS-1", "DSI-1", "edp-2"]) {
+    const map = panel.mapGeometry([
+      { id: 1, name: "DP-1", x: 0, y: 0, width: 2560, height: 1440, scale: 1 },
+      { id: 0, name, x: 2560, y: 0, width: 1440, height: 900, scale: 1 }
+    ], 400, 200);
+    assert.strictEqual(map.monitors[0].name, name, `${name} is a built-in panel`);
+  }
+
+  // With no internal panel the first clause never fires and the rule is exactly
+  // what it always was: left to right, then top to bottom.
+  const allExternal = panel.mapGeometry([
+    { id: 2, name: "HDMI-A-1", x: 1920, y: 0, width: 1920, height: 1080, scale: 1 },
+    { id: 1, name: "DP-1", x: 0, y: 0, width: 1920, height: 1080, scale: 1 },
+    { id: 3, name: "DP-2", x: 0, y: 1080, width: 1920, height: 1080, scale: 1 }
+  ], 400, 400);
+  assert.deepStrictEqual(allExternal.monitors.map((m) => m.name),
+    ["DP-1", "DP-2", "HDMI-A-1"]);
+});
+
+test("inside a section the workspaces run 1..10, not 1, 10, 2 (tick yn6)", () => {
+  // The human's addendum, in his words: "in each section, order by workspace
+  // number". It is what the map already drew — both map builders sort their
+  // workspace ids with `a - b` — and it is pinned here so it cannot regress
+  // into string order, where "10" sorts before "9" and the map reads 1 10 2 3.
+  const monitors = [
+    { id: 0, name: "eDP-1", x: 0, y: 0, width: 1920, height: 1080, scale: 1 }
+  ];
+  // Deliberately handed in the order that would come out wrong if anything
+  // sorted these as strings.
+  const clients = [1, 10, 2, 9, 3, 8].map((ws, i) => makeClient({
+    address: "0xw" + ws, class: "foot", workspace: ws, title: "w" + i
+  }));
+
+  const live = panel.liveMapModel(clients, monitors, resolver(IDENTITIES), null, 480, 240);
+  assert.deepStrictEqual(live.monitors[0].workspaces.map((w) => w.id),
+    [1, 2, 3, 8, 9, 10],
+    "the live map lists a monitor's workspaces in ascending NUMERIC order");
+
+  // And the recorded map, which builds its own list from the stored layout and
+  // could sort it differently without anything else noticing.
+  const layout = {
+    apps: [1, 10, 2, 9, 3, 8].map((ws) => ({
+      identityId: "foot", monitorDescription: "eDP-1", workspaceId: ws,
+      at: { x: 0, y: 0 }, size: { width: 1920, height: 1080 }
+    }))
+  };
+  const recorded = panel.recordedMapModel(layout, monitors, [], 480, 240);
+  assert.deepStrictEqual(recorded.monitors[0].workspaces.map((w) => Number(w.id)),
+    [1, 2, 3, 8, 9, 10],
+    "the recorded map lists a monitor's workspaces in ascending NUMERIC order");
 });
 
 test("negative coordinates are normalized rather than drawn off-canvas", () => {
@@ -1304,6 +1680,262 @@ test("pinning one monitor at the floor can push the next one under it too", () =
   assert.ok(widths[0] > floor, "the section that never got pinned keeps more than the floor");
 });
 
+// -------------------------------------- the map's shape: stacked, one scale
+
+// THE THREE THINGS THE HUMAN FOUND ON HIS OWN DESK (gate yxa, 2026-09-11):
+// eDP-1 at logical 1440x900 beside DP-1 at logical 2150x900, ten apps watched,
+// workspaces 5/6/9 on the laptop and 1/2/3/8/10 on the ultrawide.
+//
+//   1. "the sizes are uneven" — the laptop's tiles came out 190x120 and the
+//      ultrawide's 185x80: the same WIDTH at two different scales, so two
+//      monitors of identical logical height drew tiles of different heights.
+//   2. "sorting is not 1-10" — the map read 5 6 9 1 2 3 8 10.
+//      ANSWERED: the sections stack vertically, one per monitor, laptop first.
+//   3. "not really separated" — nothing between the two runs of tiles.
+//
+// The cause of 1 is the composition, not either function: monitorSectionWidths
+// split a row in proportion to logical width, then workspaceGridLayout filled
+// each section with as many columns as THAT section could hold — a scale per
+// monitor, never compared. mapSectionLayout replaces the split (the sections
+// are the full width now) and solves for the one scale every section can draw
+// at.
+//
+// The desk, as the panel sees it: the panel is ~1035 px wide and the map canvas
+// ~959 after the card's and the surface's padding.
+const DESK_WIDTH = 959;
+const DESK = [
+  { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 3 },   // eDP-1: ws 5, 6, 9
+  { logicalWidth: 2150, logicalHeight: 900, workspaceCount: 5 }    // DP-1: ws 1, 2, 3, 8, 10
+];
+// The theme's numbers, as the panel hands them in. `sectionPadding: 0` is a map
+// with no frame around a section; the frame's own fixtures set it.
+const OPTS = {
+  tileGap: 6, sectionGap: 12,
+  tileMinWidth: 96, tileMaxWidth: 220, tilePadding: 8, sectionPadding: 0
+};
+// And the same map with a frame around each section (tick 0qd).
+const FRAMED = Object.assign({}, OPTS, { sectionPadding: 12 });
+
+test("the sections stack: every one of them is the whole width of the map", () => {
+  // "I want two separated sections vertically, one section for laptop and one
+  // (or more) for each external monitor" — the human, answering the gate. There
+  // is no width to share between sections any more, which is what makes the one
+  // scale a minimum over monitors rather than a division over a sum.
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
+  assert.strictEqual(layout.sections.length, 2);
+  for (const s of layout.sections) {
+    assert.strictEqual(s.width, DESK_WIDTH, "a section is not the full map width");
+  }
+});
+
+test("two monitors of the same logical height draw tiles of the same height", () => {
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
+  const [laptop, ultrawide] = layout.sections;
+
+  // THE ASSERTION THE HUMAN MADE WITH A RED BOX. 900 = 900, so the tiles are
+  // the same height — whatever else the arithmetic decides.
+  assert.strictEqual(laptop.canvasHeight, ultrawide.canvasHeight,
+    `equal logical heights must draw equal tile heights, got ${laptop.canvasHeight}`
+    + ` and ${ultrawide.canvasHeight}`);
+
+  // And the widths are NOT equal any more: they are the monitors' own, in
+  // proportion. This is the pair that used to be the wrong way round.
+  assert.ok(ultrawide.tileWidth > laptop.tileWidth,
+    `the ultrawide's tile must be the wider one, got ${laptop.tileWidth}`
+    + ` and ${ultrawide.tileWidth}`);
+  const drawnRatio = (ultrawide.tileWidth - OPTS.tilePadding)
+    / (laptop.tileWidth - OPTS.tilePadding);
+  assert.ok(Math.abs(drawnRatio - 2150 / 1440) < 0.02,
+    `and wider by exactly the monitors' own ratio, got ${drawnRatio.toFixed(3)}`
+    + ` against ${(2150 / 1440).toFixed(3)}`);
+});
+
+test("one scale means every tile is its own monitor at that scale", () => {
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
+  // Asked of the DRAWN numbers rather than of `layout.scale` alone: a scale
+  // nobody drew at would agree with itself.
+  layout.sections.forEach((s, i) => {
+    const drawn = (s.tileWidth - OPTS.tilePadding) / DESK[i].logicalWidth;
+    assert.ok(Math.abs(drawn - layout.scale) < 0.005,
+      `a tile drawn at ${drawn.toFixed(4)} on a map whose scale is`
+      + ` ${layout.scale.toFixed(4)}`);
+  });
+});
+
+test("no section's row of tiles is wider than the section it is in", () => {
+  // The one outcome this function exists to prevent. Checked on both shapes,
+  // because the frame takes width away from exactly the row that has to fit.
+  for (const opts of [OPTS, FRAMED]) {
+    const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, opts);
+    for (const s of layout.sections) {
+      const row = s.cols * s.tileWidth + opts.tileGap * (s.cols - 1);
+      assert.ok(row <= s.width - opts.sectionPadding,
+        `a row of ${row} px inside a ${s.width} px section with`
+        + ` ${opts.sectionPadding} px of frame: ${JSON.stringify(s)}`);
+    }
+  }
+});
+
+test("the section that sets the scale fills its width; a narrower monitor does not", () => {
+  // The honest consequence of one scale on a stack: the busiest, widest monitor
+  // uses the whole row and the laptop's three workspaces take the width three
+  // laptop-shaped tiles need. The empty width to the right is not a gap to be
+  // closed — it is what "this screen has fewer, narrower workspaces" looks
+  // like, and the frame is what says the empty width is still its own.
+  const layout = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
+  const [laptop, ultrawide] = layout.sections;
+
+  const wideRow = ultrawide.cols * ultrawide.tileWidth
+    + OPTS.tileGap * (ultrawide.cols - 1);
+  assert.ok(wideRow >= DESK_WIDTH - 12,
+    `the scale-setting section leaves ${DESK_WIDTH - wideRow} px unused`);
+
+  const laptopRow = laptop.cols * laptop.tileWidth + OPTS.tileGap * (laptop.cols - 1);
+  assert.ok(laptopRow < wideRow, "the laptop's three workspaces fill the row too");
+});
+
+test("a taller monitor draws proportionally taller tiles — true proportions, between monitors", () => {
+  // 1920x1080 above 1440x900: not the same height, and that is the point. The
+  // heights must be in the monitors' own ratio, which is what "one scale" means
+  // when the logical heights differ.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 1920, logicalHeight: 1080, workspaceCount: 4 },
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 4 }
+  ], DESK_WIDTH, OPTS);
+
+  const [big, small] = layout.sections;
+  assert.ok(big.canvasHeight > small.canvasHeight, "1080 draws taller than 900");
+  const heightRatio = big.canvasHeight / small.canvasHeight;
+  assert.ok(Math.abs(heightRatio - 1080 / 900) < 0.03,
+    `taller by the monitors' own ratio, got ${heightRatio.toFixed(3)}`);
+  const widthRatio = (big.tileWidth - OPTS.tilePadding) / (small.tileWidth - OPTS.tilePadding);
+  assert.ok(Math.abs(widthRatio - 1920 / 1440) < 0.03,
+    `and wider by it too, got ${widthRatio.toFixed(3)}`);
+});
+
+test("a shared scale spends a ROW before it draws a tile nobody can read", () => {
+  // THE COST OF ONE SCALE, and the clause that keeps it from trading one
+  // complaint for another. The scale is set by the BUSIEST section, so a laptop
+  // beside a much wider screen full of workspaces draws its own tiles at the
+  // ratio of the two monitors' widths — which can be well under the 96 px floor
+  // whose whole definition is "narrower than this cannot show two windows side
+  // by side". So a section gives a column back and spends a row instead, which
+  // is exactly the trade workspaceGridLayout already makes inside one section.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 3 },
+    { logicalWidth: 3440, logicalHeight: 1440, workspaceCount: 5 }
+  ], DESK_WIDTH, OPTS);
+
+  for (const s of layout.sections) {
+    assert.ok(s.tileWidth >= OPTS.tileMinWidth,
+      `a tile at ${s.tileWidth} px is under the readable floor:`
+      + ` ${JSON.stringify(layout.sections)}`);
+  }
+  assert.ok(layout.sections[1].cols * layout.sections[1].rows >= 5,
+    "every workspace still has somewhere to go");
+});
+
+test("a row that buys no scale is not spent — a ten-workspace monitor is not ten rows", () => {
+  // The guard that stops the clause above running away. Once the map is pinned
+  // at the tile-width CEILING, giving a column back raises nothing: the scale
+  // is already as large as a tile is allowed to be. Without this the loop would
+  // spend every column it had, one row at a time, for no gain at all.
+  const layout = panel.mapSectionLayout([
+    { logicalWidth: 800, logicalHeight: 600, workspaceCount: 1 },
+    { logicalWidth: 5120, logicalHeight: 2160, workspaceCount: 10 }
+  ], DESK_WIDTH, OPTS);
+
+  const busy = layout.sections[1];
+  assert.ok(busy.rows <= 4,
+    `the busy monitor was reshaped into ${busy.rows} rows of ${busy.cols}`);
+  assert.ok(busy.cols >= 2, "and it kept more than one column");
+  // The small screen's tile IS under the floor here, and that is the honest
+  // answer: it is a sixth of the other monitor's width, and the alternative is
+  // the uneven scales the human complained about.
+  assert.ok(layout.sections[0].tileWidth >= 1);
+});
+
+test("one monitor is what it has always been, to the pixel", () => {
+  // With a single monitor there is nothing to share a scale WITH and no section
+  // to frame, so the rules are vacuous and the only thing worth guaranteeing is
+  // that the acceptance VM's pictures and assertions do not move. The expected
+  // side is computed the way the panel computed it before these ticks —
+  // workspaceGridLayout, then the delegate's own height from its own width —
+  // rather than written as a literal, because a literal in declaration order is
+  // a restatement and not an oracle (.tick/learnings.md, tick j18).
+  for (const [lw, lh, count, width] of [
+    [1440, 900, 7, 600], [1440, 900, 3, 959], [3440, 1440, 10, 700],
+    [1920, 1080, 1, 900], [1440, 900, 5, 300]
+  ]) {
+    const mons = [{ logicalWidth: lw, logicalHeight: lh, workspaceCount: count }];
+    const before = panel.workspaceGridLayout(count, lw / lh, width, 6, 96, 220);
+
+    // And it must be unable to notice the frame or the section gap either —
+    // both are charged only where they are drawn.
+    for (const opts of [OPTS, FRAMED]) {
+      const layout = panel.mapSectionLayout(mons, width, opts);
+      assert.strictEqual(layout.sections.length, 1);
+      const only = layout.sections[0];
+      assert.strictEqual(only.tileWidth, before.boxW,
+        `${lw}x${lh} x${count} in ${width}: the tile's width moved`);
+      assert.strictEqual(only.cols, before.cols, `${lw}x${lh} x${count}: the columns moved`);
+      assert.strictEqual(only.rows, before.rows, `${lw}x${lh} x${count}: the rows moved`);
+      // The delegate's old binding, restated: the canvas is the tile inside its
+      // padding, at the monitor's shape.
+      assert.strictEqual(only.canvasHeight,
+        Math.max(1, Math.round(Math.max(1, before.boxW - 8) / (lw / lh))),
+        `${lw}x${lh} x${count} in ${width}: the tile's canvas height moved`);
+      assert.strictEqual(only.width, width, "a lone section is the whole map");
+    }
+  }
+});
+
+test("the frame is paid for out of the scale, not out of the canvas", () => {
+  // HUMAN GATE FINDING 3: each section is framed on a multi-monitor desk (tick
+  // 0qd), and the frame costs width — which is why the layout is TOLD about it
+  // rather than having it drawn on afterwards. A frame added after the scale
+  // was solved is a row that overflows the section it is in.
+  const framed = panel.mapSectionLayout(DESK, DESK_WIDTH, FRAMED);
+  const bare = panel.mapSectionLayout(DESK, DESK_WIDTH, OPTS);
+
+  assert.ok(framed.scale < bare.scale,
+    `a framed map draws smaller tiles, got ${framed.scale} against ${bare.scale}`);
+  assert.strictEqual(framed.sections[0].canvasHeight, framed.sections[1].canvasHeight,
+    "framing must not reintroduce the defect the shared scale fixed");
+  for (const s of framed.sections) {
+    assert.strictEqual(s.width, DESK_WIDTH, "a framed section is still the full width");
+  }
+});
+
+test("no monitors, junk monitors and a monitor with no workspaces are answers, not throws", () => {
+  assert.deepStrictEqual(panel.mapSectionLayout([], 600, OPTS), { scale: 0, sections: [] });
+  assert.deepStrictEqual(panel.mapSectionLayout(null, 600, OPTS), { scale: 0, sections: [] });
+  // No options at all: the file's own defaults, not a throw.
+  assert.strictEqual(panel.mapSectionLayout(DESK, 600).sections.length, 2);
+
+  // A logical size the read came back without: the fallback aspect, not a
+  // division by zero.
+  const junk = panel.mapSectionLayout([
+    { logicalWidth: 0, logicalHeight: 0, workspaceCount: 2 },
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 2 }
+  ], 600, OPTS);
+  assert.strictEqual(junk.sections.length, 2);
+  for (const s of junk.sections) {
+    assert.ok(isFinite(s.tileWidth) && isFinite(s.canvasHeight), JSON.stringify(s));
+  }
+
+  // A monitor with nothing on it draws no tiles rather than a tile of nothing —
+  // and it is still IN the list, because the sections are indexed by the
+  // monitor's place in the stack.
+  const empty = panel.mapSectionLayout([
+    { logicalWidth: 1440, logicalHeight: 900, workspaceCount: 0 },
+    { logicalWidth: 2150, logicalHeight: 900, workspaceCount: 4 }
+  ], 600, OPTS);
+  assert.strictEqual(empty.sections.length, 2);
+  assert.strictEqual(empty.sections[0].cols, 0);
+  assert.ok(empty.sections[1].tileWidth > 0, "the monitor that HAS workspaces still draws");
+});
+
 // --------------------------------------------- the chip floor, and its barrier
 
 // A workspace box at the size the packing above produces on the laptop desk.
@@ -1423,12 +2055,215 @@ test("chip rects take the map model's slots as they come", () => {
   });
 });
 
-test("a chip too narrow for a label loses the label, not the tooltip", () => {
-  assert.strictEqual(panel.chipLabelVisible(20), false);
-  assert.strictEqual(panel.chipLabelVisible(40), true);
-  assert.strictEqual(panel.chipLabelVisible(NaN), false);
-  // A fused tab group divides its pill: three tabs in a 90 px slot get 30 each.
-  assert.strictEqual(panel.chipLabelVisible(90 / 3), false);
+// ------------------------------------------------- clamping at canvas edges
+//
+// The three cases above (floor, barrier, real overlap) all sit well inside the
+// canvas. These three sit AT its edges, where chipRectsForCanvas's own defensive
+// clamp (never mind the barrier math) is what keeps a chip on-screen.
+
+test("a malformed off-canvas rect is clamped onto the canvas, never drawn negative", () => {
+  // rx/ry below 0 and rw/rh that would spill further past — a stale or buggy
+  // fraction rect must still land ON the canvas, at the floor, not at a
+  // negative x/y no delegate can draw.
+  const [r] = panel.chipRectsForCanvas([{ rx: -0.5, ry: -0.4, rw: 0.66, rh: 0.6 }], 100, 50);
+  assert.strictEqual(r.x, 0);
+  assert.strictEqual(r.y, 0);
+  assert.strictEqual(r.width, panel.CHIP_MIN_WIDTH);
+  assert.strictEqual(r.height, panel.CHIP_MIN_HEIGHT);
+});
+
+test("a chip against the true right/bottom edge grows toward the floor without spilling past the canvas", () => {
+  // A lone sliver a hair from the far corner: there is no neighbour to barrier
+  // against, only the canvas edge itself, so the floor must grow BACKWARDS
+  // (left, up) rather than push x + width past what the canvas can draw.
+  const [r] = panel.chipRectsForCanvas([{ rx: 0.99, ry: 0.98, rw: 0.005, rh: 0.02 }], 100, 50);
+  assert.strictEqual(r.x + r.width, 100, "the floor grows left here, never past the right edge");
+  assert.strictEqual(r.y + r.height, 50, "and up, never past the bottom edge");
+  assert.strictEqual(r.width, panel.CHIP_MIN_WIDTH);
+  assert.strictEqual(r.height, panel.CHIP_MIN_HEIGHT);
+});
+
+test("a fraction rect that claims past the canvas edge is cropped, not drawn oversize", () => {
+  // rx 0.5 + rw 0.7 claims out to 120% of the canvas — the real window is not
+  // that big, the fraction is stale, and the chip must still end exactly at
+  // the edge with no floor involved (the cropped size is already above it).
+  const [r] = panel.chipRectsForCanvas([{ rx: 0.5, ry: 0.3, rw: 0.7, rh: 0.5 }], 100, 50);
+  assert.strictEqual(r.x, 50);
+  assert.strictEqual(r.width, 50);
+  assert.strictEqual(r.y, 15);
+  assert.strictEqual(r.height, 25);
+});
+
+test("the label threshold is the ladder's top tier and nothing else", () => {
+  // chipLabelVisible is GONE. It decided the label on width alone, which is a
+  // second threshold to disagree with the one the ladder already applies, and
+  // the panel now draws a name exactly when chipTreatment says "pill".
+  assert.strictEqual(panel.chipLabelVisible, undefined);
+  assert.strictEqual(panel.CHIP_LABEL_MIN_WIDTH, undefined);
+
+  // The cases that test asked about, answered by the ladder instead. A chip too
+  // narrow for a name is not a pill, so it has none — and it keeps its hover,
+  // its click and its tooltip, where the whole story already was.
+  assert.notStrictEqual(panel.chipTreatment(20, 60), "pill");
+  // A fused tab group divides its pill: three tabs in a 90 px slot get 30 each,
+  // and 30 px is not a pill however tall the slot is.
+  assert.notStrictEqual(panel.chipTreatment(90 / 3, 60), "pill");
+  // Width alone was never enough: the old threshold called 140 px a label at
+  // any height, and a 140x20 chip has nowhere to put one.
+  assert.notStrictEqual(panel.chipTreatment(140, 20), "pill");
+  assert.strictEqual(panel.chipTreatment(140, 56), "pill");
+});
+
+// -------------------------------------------------- chip treatment (drawn size)
+
+test("chipTreatment picks a tier from the chip's DRAWN size, checking both axes independently", () => {
+  // Both dimensions must clear a tier's cutoffs — a wide-but-short chip is not
+  // a pill just because it is wide, and a tall-but-narrow one is not a badge
+  // just because it is tall.
+  assert.strictEqual(panel.chipTreatment(140, 56), "pill");
+  assert.strictEqual(panel.chipTreatment(139, 56), "badge", "one px under the pill WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(140, 55), "badge", "one px under the pill HEIGHT cutoff");
+  assert.strictEqual(panel.chipTreatment(300, 55), "badge", "wide but short: no pill");
+  assert.strictEqual(panel.chipTreatment(139, 200), "badge", "tall but narrow: no pill either");
+
+  assert.strictEqual(panel.chipTreatment(56, 40), "badge");
+  assert.strictEqual(panel.chipTreatment(55, 40), "veiled", "one px under the badge WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(56, 39), "veiled", "one px under the badge HEIGHT cutoff");
+
+  assert.strictEqual(panel.chipTreatment(24, 16), "veiled");
+  assert.strictEqual(panel.chipTreatment(23, 16), "field", "one px under the veiled WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(24, 15), "field", "one px under the veiled HEIGHT cutoff");
+});
+
+test("the strip tier introduces no number of its own — it is two ratified ones", () => {
+  // The point of the whole design. The four cutoffs were ratified by a human
+  // against rendered chips; a fifth pair invented to rescue the stacked rows
+  // would be a guess sitting beside four measurements. So "room for a word
+  // across" is the width at which a name was ratified to fit beside an icon, and
+  // "room for one line down" is the ladder's own floor for there being anything
+  // to see. If either moves, the strip moves with it, and this line says so.
+  assert.strictEqual(panel.CHIP_STRIP_MIN_WIDTH, panel.CHIP_PILL_MIN_WIDTH);
+  assert.strictEqual(panel.CHIP_STRIP_MIN_HEIGHT, panel.CHIP_VEILED_MIN_HEIGHT);
+});
+
+test("a wide chip only one line tall is a strip, and draws its name", () => {
+  // THE FALLBACK STACK'S OWN SHAPE. A stacked row is canvas-wide and a fixed
+  // 17 px tall (Panel.qml stackRowHeight), so it can never clear the badge's
+  // 40 px however wide the map gets. Under a ladder that demands both axes it
+  // was `veiled` — a nameless icon under a 55% veil — for every app on the
+  // Recorded tab, which is strictly less than the width-only threshold it
+  // replaced said. This is the tier that gives it its name back.
+  assert.strictEqual(panel.chipTreatment(210, 17), "strip");
+
+  // The two edges of the tier, one pixel apart on each axis.
+  assert.strictEqual(panel.chipTreatment(140, 16), "strip");
+  assert.strictEqual(panel.chipTreatment(139, 16), "veiled", "one px under the strip WIDTH cutoff");
+  assert.strictEqual(panel.chipTreatment(140, 15), "field", "one px under the strip HEIGHT cutoff");
+  // ...and `field` rather than `veiled` there because 15 is under the veiled
+  // height too. The strip's floor IS the veiled floor, so nothing falls between.
+
+  // The tier is asked LAST of the drawing tiers, and that is its safety: a size
+  // that already earns a badge keeps its badge, however wide it is. A ratified
+  // both-axes answer is never overturned by the rescue.
+  assert.strictEqual(panel.chipTreatment(300, 55), "badge", "still the ratified answer");
+  assert.strictEqual(panel.chipTreatment(300, 40), "badge");
+  assert.strictEqual(panel.chipTreatment(300, 39), "strip", "one px below the badge, and now wide-and-short");
+
+  // So every strip is wider than a pill and shorter than a badge, by
+  // construction — the short-and-wide corner and nothing else.
+  for (const [w, h] of [[140, 16], [210, 17], [1000, 39], [300, 20]]) {
+    assert.strictEqual(panel.chipTreatment(w, h), "strip");
+    assert.ok(w >= panel.CHIP_PILL_MIN_WIDTH && h < panel.CHIP_BADGE_MIN_HEIGHT);
+  }
+});
+
+test("the strip changes nothing a positioned chip was already answered", () => {
+  // The evidence, rather than the argument. The old ladder is restated here —
+  // deliberately, the way the acceptance test restates the cutoffs in jq, so
+  // this compares against the ratified answer and not against the code under
+  // test — and every size on a fine grid must still get it, EXCEPT in the
+  // corner the strip was added for.
+  const before = (w, h) => {
+    if (w >= 140 && h >= 56) return "pill";
+    if (w >= 56 && h >= 40) return "badge";
+    if (w >= 24 && h >= 16) return "veiled";
+    return "field";
+  };
+  let changed = 0;
+  for (let w = 0; w <= 400; w++) {
+    for (let h = 0; h <= 200; h++) {
+      const now = panel.chipTreatment(w, h);
+      const was = before(w, h);
+      if (now === was) continue;
+      changed++;
+      // Only ever veiled -> strip, only ever in the corner, and only ever a
+      // chip GAINING its name. Nothing is demoted and no tier is redrawn.
+      assert.strictEqual(was, "veiled", `${w}x${h} was ${was}`);
+      assert.strictEqual(now, "strip", `${w}x${h} is now ${now}`);
+      assert.ok(w >= 140 && h >= 16 && h < 40, `${w}x${h} is outside the wide-and-short corner`);
+    }
+  }
+  // And the corner is not empty, so the loop above is not vacuously green.
+  assert.strictEqual(changed, (400 - 140 + 1) * (40 - 16));
+});
+
+test("a chip at the chipRectsForCanvas floor earns the field treatment", () => {
+  // The floor is a real state, not a degenerate one: chipRectsForCanvas grows
+  // every resolved rect to at least CHIP_MIN_WIDTH x CHIP_MIN_HEIGHT, so a
+  // terminal occupying 8% of an ultrawide really is drawn at exactly this size.
+  // It is a clickable rectangle with a tooltip and nothing else on it — no
+  // room for an icon, let alone a name — and the ladder has to say so.
+  assert.strictEqual(
+    panel.chipTreatment(panel.CHIP_MIN_WIDTH, panel.CHIP_MIN_HEIGHT), "field");
+  // Which is only true because the floor sits BELOW the veiled cutoff. If a
+  // future floor were raised past it, the tier at the floor changes with it and
+  // this line is where that shows up.
+  assert.ok(panel.CHIP_MIN_WIDTH < panel.CHIP_VEILED_MIN_WIDTH
+    || panel.CHIP_MIN_HEIGHT < panel.CHIP_VEILED_MIN_HEIGHT);
+});
+
+test("chipTreatment never throws on a degenerate size — it answers field", () => {
+  assert.strictEqual(panel.chipTreatment(0, 0), "field");
+  assert.strictEqual(panel.chipTreatment(-10, -10), "field");
+  assert.strictEqual(panel.chipTreatment(200, -5), "field");
+  assert.strictEqual(panel.chipTreatment("wide", 100), "field");
+  assert.strictEqual(panel.chipTreatment(undefined, undefined), "field");
+  assert.strictEqual(panel.chipTreatment(NaN, 100), "field");
+});
+
+// ------------------------------------------------- the focused workspace badge
+
+test("only the focused monitor's active workspace is the focused one", () => {
+  const monitors = [
+    { name: "eDP-1", focused: false, activeWorkspace: { id: 1, name: "1" } },
+    { name: "DP-2", focused: true, activeWorkspace: { id: 7, name: "7" } }
+  ];
+  // Every monitor has an active workspace; only one of them is in front of the
+  // user, and filling all three badges would say "you are here" three times.
+  assert.strictEqual(panel.focusedWorkspaceKey(monitors), "DP-2/7");
+  // Monitor-qualified, because a stale recording can name one workspace id
+  // under two monitors and only one of them is the one being looked at.
+  assert.notStrictEqual(panel.focusedWorkspaceKey(monitors), panel.workspaceKey("eDP-1", 7));
+  assert.strictEqual(panel.workspaceKey("DP-2", 7), "DP-2/7");
+});
+
+test("no focus is a real answer, and it fills no badge", () => {
+  // A headless output set is the live case, and it is legitimate: nothing is
+  // filled, which is honest rather than arbitrary.
+  assert.strictEqual(panel.focusedWorkspaceKey([
+    { name: "eDP-1", focused: false, activeWorkspace: { id: 1 } }
+  ]), "");
+  // Focused, but the read came back without the field.
+  assert.strictEqual(panel.focusedWorkspaceKey([{ name: "eDP-1", focused: true }]), "");
+  assert.strictEqual(panel.focusedWorkspaceKey([
+    { name: "eDP-1", focused: true, activeWorkspace: { name: "7" } }
+  ]), "");
+  // A disabled monitor cannot be the one in front of anybody.
+  assert.strictEqual(panel.focusedWorkspaceKey([
+    { name: "eDP-1", focused: true, disabled: true, activeWorkspace: { id: 3 } }
+  ]), "");
+  assert.strictEqual(panel.focusedWorkspaceKey([]), "");
+  assert.strictEqual(panel.focusedWorkspaceKey(null), "");
 });
 
 test("the real laptop fixture maps to one monitor with its workspaces", () => {
@@ -1768,7 +2603,7 @@ test("the flat list mirrors the map, in the map's reading order", () => {
 
   // One monitor in this fixture, so the whole list is workspace order — and
   // within a workspace, position order.
-  const workspaces = rows.map((r) => Number(/ws (\d+)/.exec(r.position)[1]));
+  const workspaces = rows.map((r) => Number(/ws (\d+)/.exec(r.position)[1]) || 10); // slot 10 reads "0"
   assert.deepStrictEqual(workspaces, workspaces.slice().sort((a, b) => a - b),
     "workspaces climb, they do not jump about: " + JSON.stringify(rows.map((r) => r.position)));
   // Within workspace 8 the left window (RTM at x=12) comes before the right one
@@ -2287,15 +3122,28 @@ test("a row tooltip leads with the app, not with a window it does not have", () 
   const scene = linkScenario();
   const row = scene.rows.find((r) => r.identityId === "terminal");
   const lines = panel.rowTooltipText(row).split("\n");
-  assert.deepStrictEqual(lines, ["Terminal", "foot", "eDP-1 · ws 1"]);
+  // The app, its class, where it is — and LAST what Restore can do for it.
+  // That fourth line arrived with tick pct: the strip has no captions left to
+  // print the launch hint on, so the tooltip is the only place it can be said,
+  // and every WATCHED row appRows builds has one (this identity has no launch
+  // command recorded, which is exactly "no launch cmd").
+  assert.deepStrictEqual(lines, ["Terminal", "foot", "eDP-1 · ws 1", "no launch cmd"]);
+
+  // An unwatched class row has no launchHint at all — nothing was ever recorded
+  // to launch — and gets no line rather than an empty one.
+  const unwatched = scene.rows.find((r) => r.identityId === "");
+  assert.strictEqual(unwatched.launchHint, "", "an unwatched row has no launch hint to give");
+  assert.strictEqual(panel.rowTooltipText(unwatched).split("\n").length, 3);
 
   // A ghost row has no class at all, and simply says less rather than leaving a
   // hole where the class line would be.
   const ghost = {
     key: "slack", identityId: "slack", className: "", linkKey: "id:slack", name: "Slack",
-    position: "DP-2 · ws 4 · not running", drifted: false, driftTo: "", mismatch: ""
+    position: "DP-2 · ws 4 · not running", drifted: false, driftTo: "", mismatch: "",
+    launchHint: "no launch cmd"
   };
-  assert.deepStrictEqual(panel.rowTooltipText(ghost), "Slack\nDP-2 · ws 4 · not running");
+  assert.deepStrictEqual(panel.rowTooltipText(ghost),
+    "Slack\nDP-2 · ws 4 · not running\nno launch cmd");
 });
 
 test("a tooltip never contains a blank line, and empty means empty", () => {
@@ -2780,10 +3628,179 @@ test("an open panel's badge prefers its own fresher drift, and only that", () =>
   assert.strictEqual(state.statusPatchFor("", layout, drift), null);
 });
 
+// ------------------------------------------------------------ the PanelHero
+
+test("every badge state keeps its own tone, and the four tones are four", () => {
+  // ENUMERATED, not spot-checked. The badge moved into the header beside a
+  // PanelHero whose own `detail` pill has ONE fixed border colour, and the
+  // reason it did not move INTO that pill is this table: four tones over six
+  // states, and the tone is the only channel a glance uses. A regression that
+  // flattened them would still produce six correct strings.
+  const cases = [
+    ["restoring", {}, "Restoring…", "accent"],
+    ["paused", {}, "Paused", "muted"],
+    ["hollow", {}, "Not recorded", "muted"],
+    ["failed", {}, "Restore failed", "urgent"],
+    ["drifted", { driftCount: 4 }, "Drifted (4)", "accent"],
+    ["ok", {}, "In sync", "ok"]
+  ];
+  for (const [glyphState, status, text, tone] of cases) {
+    assert.deepStrictEqual(panel.badgeFor(glyphState, status), { text, tone },
+      `badge for glyph state ${glyphState}`);
+  }
+  const tones = new Set(cases.map(([, , , tone]) => tone));
+  assert.deepStrictEqual([...tones].sort(), ["accent", "muted", "ok", "urgent"]);
+  // An unknown glyph state from a newer service reads as the quiet default
+  // rather than as nothing at all.
+  assert.deepStrictEqual(panel.badgeFor("something-new", {}), { text: "In sync", tone: "ok" });
+});
+
+test("the hero meta line carries the state AND the count", () => {
+  assert.strictEqual(panel.headerMeta("In sync", 3), "In sync · 3 apps watched");
+  assert.strictEqual(panel.headerMeta("Drifted (1)", 1), "Drifted (1) · 1 app watched");
+  // The case the count exists for: "In sync" over an empty watched list is a
+  // true statement about nothing.
+  assert.strictEqual(panel.headerMeta("In sync", 0), "In sync · 0 apps watched");
+  // No badge yet (a panel that has read no status) still says the half it knows.
+  assert.strictEqual(panel.headerMeta("", 2), "2 apps watched");
+  assert.strictEqual(panel.headerMeta(null, null), "0 apps watched");
+  assert.strictEqual(panel.headerMeta("In sync", -4), "In sync · 0 apps watched");
+  // The Recorded tab's age is one more clause on the same line, and only there.
+  assert.strictEqual(panel.headerMeta("In sync", 3, "recorded 3 days ago"),
+    "In sync · 3 apps watched · recorded 3 days ago");
+  assert.strictEqual(panel.headerMeta("In sync", 3, ""), "In sync · 3 apps watched");
+  assert.strictEqual(panel.headerMeta("In sync", 3, null), "In sync · 3 apps watched");
+});
+
+// -------------------------------------------- when the layout was recorded
+
+test("the recorded age is read in the recording's own units", () => {
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  const ago = (ms) => panel.recordedAgeLabel(new Date(now - ms).toISOString(), now);
+
+  assert.strictEqual(ago(0), "recorded just now");
+  assert.strictEqual(ago(59 * 1000), "recorded just now");
+  assert.strictEqual(ago(60 * 1000), "recorded 1 minute ago");
+  assert.strictEqual(ago(45 * 60 * 1000), "recorded 45 minutes ago");
+  assert.strictEqual(ago(60 * 60 * 1000), "recorded 1 hour ago");
+  assert.strictEqual(ago(23 * 60 * 60 * 1000), "recorded 23 hours ago");
+  assert.strictEqual(ago(24 * 60 * 60 * 1000), "recorded 1 day ago");
+  assert.strictEqual(ago(3 * 24 * 60 * 60 * 1000), "recorded 3 days ago");
+  assert.strictEqual(ago(29 * 24 * 60 * 60 * 1000), "recorded 29 days ago");
+  assert.strictEqual(ago(30 * 24 * 60 * 60 * 1000), "recorded 1 month ago");
+  assert.strictEqual(ago(200 * 24 * 60 * 60 * 1000), "recorded 6 months ago");
+  assert.strictEqual(ago(400 * 24 * 60 * 60 * 1000), "recorded 1 year ago");
+});
+
+test("the last five days of the year do not read as twelve months", () => {
+  // The cosmetic bug epic c7f's retro caught (tick 05q): `days < 365` with
+  // `floor(days / 30)` made 360 to 364 days say "12 months ago" — a unit nobody
+  // uses out loud, and one the very next day replaces with "1 year ago".
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  const days = (n) =>
+    panel.recordedAgeLabel(new Date(now - n * 24 * 60 * 60 * 1000).toISOString(), now);
+
+  assert.strictEqual(days(359), "recorded 11 months ago");
+  for (const n of [360, 361, 362, 363, 364]) {
+    assert.strictEqual(days(n), "recorded 11 months ago", n + " days");
+  }
+  assert.strictEqual(days(365), "recorded 1 year ago", "and the year still starts where it did");
+
+  // CLAMPED, not rounded up into a 360-day year: every bucket on this ladder
+  // FLOORS, so a label may understate an age and never overstate it. 29 days is
+  // "29 days ago" rather than "1 month ago" for exactly the same reason.
+  assert.strictEqual(days(29), "recorded 29 days ago");
+  assert.strictEqual(days(30), "recorded 1 month ago");
+
+  // And the whole ladder is monotone — no label names a smaller age than the one
+  // a day earlier, which is the thing a clamp can get wrong.
+  const rank = ["day", "month", "year"];
+  let previous = "";
+  let lastRank = -1;
+  let lastCount = -1;
+  // From day 1, because day 0 is "recorded just now" — the one rung of the
+  // ladder that names no unit at all.
+  for (let n = 1; n <= 800; n++) {
+    const label = days(n);
+    const parts = /^recorded (\d+) (day|month|year)s? ago$/.exec(label);
+    assert.ok(parts, n + " days produced an unparseable label: " + label);
+    const unit = rank.indexOf(parts[2]);
+    const count = Number(parts[1]);
+    if (unit === lastRank) {
+      assert.ok(count >= lastCount, "went backwards at " + n + " days: " + previous + " -> " + label);
+    } else {
+      assert.ok(unit > lastRank, "changed to a smaller unit at " + n + " days: " + previous + " -> " + label);
+    }
+    lastRank = unit;
+    lastCount = count;
+    previous = label;
+  }
+});
+
+test("a recording with no timestamp says nothing rather than guessing", () => {
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  // null is what StateModel.normalizeLayout writes for a layout that carries no
+  // recordedAt, and it is a DIFFERENT thing from having no recording at all —
+  // the payload keeps those apart (present-and-null vs the key being absent)
+  // even though the header has nothing to say in either case.
+  assert.strictEqual(panel.recordedAgeLabel(null, now), "");
+  assert.strictEqual(panel.recordedAgeLabel("", now), "");
+  assert.strictEqual(panel.recordedAgeLabel("   ", now), "");
+  assert.strictEqual(panel.recordedAgeLabel("not a date", now), "");
+  assert.strictEqual(panel.recordedAgeLabel(undefined, now), "");
+  // A number is not the schema's shape for this field, whatever Date.parse
+  // would make of it.
+  assert.strictEqual(panel.recordedAgeLabel(now, now), "");
+  // And no clock is no answer.
+  assert.strictEqual(panel.recordedAgeLabel("2026-09-01T00:00:00.000Z", NaN), "");
+  assert.strictEqual(panel.recordedAgeLabel("2026-09-01T00:00:00.000Z", undefined), "");
+});
+
+test("a stamp from the future names its day rather than reading as fresh", () => {
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  // A layout recorded on another machine, or before a clock correction. Clamping
+  // it to "just now" would make the one recording whose age cannot be known read
+  // as the freshest thing in the panel.
+  assert.strictEqual(panel.recordedAgeLabel("2026-12-25T09:00:00.000Z", now),
+    "recorded 2026-12-25");
+  // A minute of skew is a clock being a clock, not a recording from the future.
+  assert.strictEqual(panel.recordedAgeLabel("2026-09-03T12:00:30.000Z", now),
+    "recorded just now");
+});
+
+test("the pause switch is ON when the tool is working", () => {
+  // The only polarity a switch with no label can carry: `paused` is the flag,
+  // and a switch that was on while the tool was off would be the control lying
+  // about itself.
+  assert.strictEqual(panel.pauseSwitchChecked(false), true);
+  assert.strictEqual(panel.pauseSwitchChecked(true), false);
+});
+
 test("Record says why it is unavailable while a restore is in flight", () => {
   assert.strictEqual(panel.recordBlockedHint(false), "");
   const hint = panel.recordBlockedHint(true);
   assert.ok(hint.indexOf("Record") !== -1 && hint.length > 0, hint);
+});
+
+test("Record also says why it is out while the last recording's pictures are still being taken (tick ilg)", () => {
+  // The second blocked reason, and the one the button gained when `busy` became
+  // load-bearing: a control that dims with no explanation reads as broken.
+  const capturing = panel.recordBlockedHint(false, true);
+  assert.ok(capturing.indexOf("Record is disabled") !== -1, capturing);
+  assert.ok(capturing.indexOf("picture") !== -1, capturing);
+  assert.notStrictEqual(capturing, panel.recordBlockedHint(true, false));
+
+  // Restoring wins when both hold — two sentences in a one-line hint is a hint
+  // nobody reads, and restoring is the one that stops the other half of the
+  // panel too.
+  assert.strictEqual(panel.recordBlockedHint(true, true), panel.recordBlockedHint(true, false));
+
+  // The old one-argument callers are unchanged: no capture round, no sentence.
+  assert.strictEqual(panel.recordBlockedHint(false), "");
+  assert.strictEqual(panel.recordBlockedHint(false, false), "");
+
+  // And the tooltip is the same sentence, so the two cannot drift apart.
+  assert.strictEqual(panel.recordTooltip(6, "Laptop", false, true), capturing);
 });
 
 test("the record button says what it will do", () => {
@@ -2823,9 +3840,13 @@ test("record writes a layout the service reads back unchanged", () => {
   // Two foot windows are open, and schema v3 records both.
   assert.deepStrictEqual(stored.apps.map((a) => a.identityId).sort(), ["chromium", "foot", "foot"]);
   // And it converges: restoring onto the desktop it was recorded from is a
-  // no-op, which is what makes the badge flip to "In sync" straight after.
+  // no-op, which is what makes the badge flip to "In sync" straight after. The
+  // file holds slots (v8), so resolve them to live ids first, as the service does.
+  const table = slots.parseBlocks("0\teDP-1\t" + LAPTOP_KEY + "\n");
+  const resolved = slots.toLive(stored, table, monitorsLaptop);
+  assert.ok(resolved.apps.every((a) => a.unplaceable === null), "every recorded slot resolves");
   assert.strictEqual(
-    engine.planRestore(clientsLaptop, monitorsLaptop, stored, state.identities(round.state)).length, 0);
+    engine.planRestore(clientsLaptop, monitorsLaptop, resolved, state.identities(round.state)).length, 0);
 });
 
 test("recording again overwrites this topology and leaves the others alone", () => {
@@ -3279,7 +4300,7 @@ test("a refusal proposes nothing at all, and says why", () => {
   // click happened to catch. Tick gpq made it a refusal the panel says out loud.
   const ambiguous = footChildDerivation([{ pid: 901, argv: ["herdr"] }, { pid: 902, argv: ["btop"] }]);
   assert.deepStrictEqual(panel.suggestIdentity("foot", [], ambiguous),
-    { refusal: "several-children", className: "foot" });
+    { refusal: "several-children" });
 
   // Same for a terminal whose cmdline has not come back yet, and for a caller
   // that passes no derivation at all.
@@ -3303,9 +4324,10 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
     launch: "foot --title=herdr herdr"
   });
 
-  // The same PAIR already on the list is the same rule, so nothing is added.
+  // The same PAIR already on the list is the same rule, so nothing is added —
+  // and since tick v5c that is said out loud rather than answered with null.
   const watchedHerdr = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
-  assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, herdr), null);
+  assert.deepStrictEqual(panel.suggestIdentity("foot", watchedHerdr, herdr), { refusal: "already-watched" });
 
   // A different title on the same class is a different rule.
   assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr, btop).id, "btop");
@@ -3316,9 +4338,9 @@ test("the duplicate guard compares BOTH axes, not patterns alone", () => {
   // other reason, that a terminal's class names no app (tick gpq).
   assert.strictEqual(panel.suggestIdentity("foot", watchedHerdr).refusal, "not-read");
 
-  // The class-only guard still answers as it always did.
-  assert.strictEqual(panel.suggestIdentity("foot",
-    [{ id: "terminal", patterns: ["^foot$"], launch: "" }]), null);
+  // The class-only guard still answers the same FACT, now with a reason.
+  assert.deepStrictEqual(panel.suggestIdentity("foot",
+    [{ id: "terminal", patterns: ["^foot$"], launch: "" }]), { refusal: "already-watched" });
 
   // An id collision is still suffixed rather than merged.
   const takenId = [{ id: "herdr", patterns: ["^something-else$"], launch: "" }];
@@ -3346,9 +4368,9 @@ test("a ticked title identity is prepended, so first-match reaches it first", ()
 });
 
 test("a proposed title identity survives StateModel's normalizer intact", () => {
-  // The v4 field whitelist has to carry both lists AND the launch through a
-  // write — an identity that loses `titlePatterns` on the way in stops
-  // matching its window and nothing says why.
+  // The field whitelist has to carry both lists AND the launch through a write
+  // — an identity that loses `titlePatterns` on the way in stops matching its
+  // window and nothing says why.
   const identities = panel.toggleWatchedIdentities([], "foot", "",
     footChildDerivation([{ pid: 901, argv: ["herdr"] }]));
   const round = state.parseState(state.serializeState(state.setIdentities(state.defaultState(), identities)));
@@ -3397,6 +4419,32 @@ test("a window already launched with --title proposes that title", () => {
   assert.strictEqual(panel.titleFromOwnArgv(["foot", "-T", "herdr"]), "");
 });
 
+test("a --title belonging to the HOSTED command is never read as the terminal's", () => {
+  // Tick qkz. The scan ran to the end of argv, so the flag of the program the
+  // terminal is RUNNING was read as the terminal's own. `watch --title x` is an
+  // ordinary command line, and the identity it produced promised a window
+  // titled `x` that alacritty never sets — a permanent awaiting-title ghost,
+  // with the log affirming the tick.
+  assert.strictEqual(panel.titleFromOwnArgv(["alacritty", "-e", "watch", "--title", "x"]), "",
+    "-e is where the terminal's own argv ends");
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("alacritty", ["alacritty", "-e", "watch", "--title", "x"], null, "Alacritty"),
+    { command: "", title: "", reason: "no-title" });
+
+  // foot and kitty take a BARE trailing command (TERMINAL_FAMILY exec ""), so
+  // their boundary is the first word that is not a flag.
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "watch", "--title", "x"]), "");
+  assert.strictEqual(panel.titleFromOwnArgv(["kitty", "--hold", "watch", "--title=x"]), "");
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "--", "watch", "--title=x"]), "");
+
+  // The terminal's OWN --title still reads, before and after other flags of its
+  // own, in both spellings — that is the flow the README documents.
+  assert.strictEqual(panel.titleFromOwnArgv(["foot", "--title=herdr", "herdr"]), "herdr");
+  assert.strictEqual(panel.titleFromOwnArgv(["alacritty", "--title", "herdr", "-e", "herdr"]), "herdr");
+  assert.strictEqual(
+    panel.titleFromOwnArgv(["foot", "--working-directory=/x", "--title=herdr", "herdr"]), "herdr");
+});
+
 test("a terminal launched with a command of its own is named by its window title", () => {
   // `foot -e btop` sets no --title, but foot titled the window from the command
   // and initialTitle is fixed at map time. That IS evidence about this window.
@@ -3418,6 +4466,115 @@ test("a terminal launched with a command of its own is named by its window title
     panel.terminalTickDerivation("foot", ["foot"], tree["900"], "user@host:~/git").title, "herdr");
 });
 
+test("a shell or flag-only argv never trusts a shell-retitled window title", () => {
+  // Tick q58. `argv.length > 1` was a proxy for "the terminal was launched with
+  // a command of its own", and it is not one: a terminal carrying only its own
+  // flags, or one whose command is a bare SHELL, is exactly the case the
+  // comment above the branch says must never be trusted — an interactive shell
+  // retitles the window to its working directory before it is mapped. What came
+  // out was a titlePattern matching only in that directory, on an identity
+  // whose launch reopens a bare shell.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory=/x"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" });
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "fish"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" });
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("alacritty", ["alacritty", "-e", "/usr/bin/bash"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" });
+
+  // And the refusal reaches the panel rather than a junk identity reaching the
+  // file: no titlePatterns, no `^~/proj$`.
+  for (const argv of [["foot", "--working-directory=/x"], ["foot", "fish"]]) {
+    assert.deepStrictEqual(
+      panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", argv, null, "~/proj")),
+      { refusal: "no-title" });
+  }
+
+  // A REAL hosted command is still trusted — that is the case the branch exists
+  // for, in both the exec-flag and the bare-trailing-command shapes.
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", ["foot", "-e", "btop"], null, "btop"),
+    { command: "foot -e btop", title: "btop", reason: "" });
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", ["foot", "btop"], null, "btop"),
+    { command: "foot btop", title: "btop", reason: "" });
+});
+
+test("a flag's SPACE-separated value is never a hosted command", () => {
+  // Tick 3bp. The two spellings of one flag answered differently. `foot
+  // --working-directory=/x` refused (the test above pins it); `foot
+  // --working-directory /x` produced `{command: "foot --working-directory /x",
+  // title: "~/proj"}` — the same junk identity, from the same launch, because
+  // hostedArgvOf stopped its scan at the unknown flag and handed the flag's
+  // VALUE (`/x`) to the case-2 gate as a hosted command. The gate reads a
+  // hosted command as "the terminal set this window's title", and the title it
+  // then trusted was one an interactive shell had written: `^~/proj$` matches
+  // only while that shell sits in that directory, and the launch reopens a bare
+  // shell.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x"], null, "~/proj"),
+    { command: "", title: "", reason: "no-title" },
+    "the space spelling refuses exactly as the = spelling does");
+
+  // The two spellings now agree, which is the whole point of the repair.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x"], null, "~/proj"),
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory=/x"], null, "~/proj"));
+
+  // And the refusal reaches the panel instead of the identity reaching the file.
+  assert.deepStrictEqual(
+    panel.suggestIdentity("foot", [],
+      panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x"], null, "~/proj")),
+    { refusal: "no-title" });
+
+  // A flag with a separate value does not hide a REAL hosted command sitting
+  // behind it: the value is consumed, the command after it is still found.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--working-directory", "/x", "btop"], null, "btop"),
+    { command: "foot --working-directory /x btop", title: "btop", reason: "" });
+
+  // Nor does it disturb the terminal's OWN --title in its separate-value
+  // spelling, which case 1 reads before this question is ever asked.
+  assert.deepStrictEqual(
+    panel.terminalTickDerivation("foot", ["foot", "--title", "herdr", "herdr"], null, "~/proj"),
+    { command: "foot --title herdr herdr", title: "herdr", reason: "" });
+});
+
+test("no title travels with a command the panel refuses to run", () => {
+  // Tick cjs. The invariant terminalChildDerivation states in as many words —
+  // "the title travels only with a command that survived dispatchableCommand"
+  // — was not held by the two cases that read the terminal's OWN argv. A
+  // refused command left `command: ""` and handed the title over anyway, and
+  // `launch: ""` is the schema's NEVER-LAUNCH marker: the tick wrote a
+  // titlePatterns identity that can never be started, as a silent success, and
+  // the restore that discovered it was months away.
+  const flagged = ["foot", "--title=herdr", "herdr", "]]"];
+  assert.strictEqual(panel.launchCommandFromArgv(flagged, "foot"), "",
+    "dispatchableCommand refuses this argv");
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", flagged, null, "herdr"),
+    { command: "", title: "", reason: "unrunnable-command" });
+
+  // Case 2 reads the same argv for its command, so it fails the same way.
+  const shown = ["foot", "-e", "herdr", "]]"];
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", shown, null, "herdr"),
+    { command: "", title: "", reason: "unrunnable-command" });
+
+  // And it is LOUD: the refusal reaches the panel as a sentence, instead of a
+  // tick mark over an identity that will never come back.
+  for (const argv of [flagged, shown]) {
+    const derived = panel.terminalTickDerivation("foot", argv, null, "herdr");
+    assert.deepStrictEqual(panel.suggestIdentity("foot", [], derived),
+      { refusal: "unrunnable-command" });
+    assert.strictEqual(panel.tickRefusalReason("foot", [], derived), "unrunnable-command");
+    const hint = panel.tickRefusalHint("foot", "unrunnable-command");
+    assert.ok(hint.indexOf("cannot be turned into a command that runs") !== -1, hint);
+  }
+
+  // A runnable argv is untouched by any of it.
+  assert.deepStrictEqual(panel.terminalTickDerivation("foot", ["foot", "--title=herdr", "herdr"], null, "herdr"),
+    { command: "foot --title=herdr herdr", title: "herdr", reason: "" });
+});
+
 test("a terminal tick that cannot name its app refuses, and never writes the catch-all", () => {
   // THE OTHER HALF OF THE BLOCKER. Every one of these used to answer
   // {id:"foot", patterns:["^foot$"]}: an identity claiming every terminal on
@@ -3428,9 +4585,9 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
 
   // The /proc read has not come back yet — the race the panel admits to.
   assert.deepStrictEqual(panel.suggestIdentity("foot", []),
-    { refusal: "not-read", className: "foot" });
+    { refusal: "not-read" });
   assert.deepStrictEqual(panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", null, null, "foot")),
-    { refusal: "not-read", className: "foot" });
+    { refusal: "not-read" });
   // Two children: naming one of them would be a guess.
   assert.strictEqual(
     panel.suggestIdentity("foot", [], panel.terminalTickDerivation("foot", ["foot"], twoChildren, "foot")).refusal,
@@ -3448,9 +4605,10 @@ test("a terminal tick that cannot name its app refuses, and never writes the cat
   assert.deepStrictEqual(panel.suggestIdentity("chromium", []),
     { id: "chromium", patterns: ["^chromium$"], launch: "" });
 
-  // Already watched is a no-op, not a refusal: the click changed nothing.
-  assert.strictEqual(panel.suggestIdentity("foot",
-    [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }]), null);
+  // Already watched is a no-op — and since tick v5c a no-op the panel can SAY,
+  // because a silent one logged a success line for a click that changed nothing.
+  assert.deepStrictEqual(panel.suggestIdentity("foot",
+    [{ id: "terminal", patterns: ["^foot$"], launch: "foot" }]), { refusal: "already-watched" });
 
   // And the panel has a sentence for it, naming the way out.
   const said = panel.tickRefusalHint("foot", "several-children");
@@ -3533,24 +4691,24 @@ test("the panel names the exact relaunch command until a matching window exists"
 
   // The bare window alone: nothing matches, and the panel says so with the
   // command that fixes it.
-  const said = panel.untitledTerminalHint([BARE_WINDOW], identities,
+  const said = panel.awaitingTitleHint([BARE_WINDOW], identities,
     resolver(identities), argvByPid, procTree);
   assert.ok(said.indexOf('"herdr" is watched') === 0, said);
   assert.ok(said.indexOf("Relaunch it as: foot --title=herdr herdr") !== -1, said);
 
   // It CLEARS the moment a window matches — which is exactly what relaunching
   // with --title does.
-  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW, TITLED_WINDOW], identities,
+  assert.strictEqual(panel.awaitingTitleHint([BARE_WINDOW, TITLED_WINDOW], identities,
     resolver(identities), argvByPid, procTree), "");
   // No evidence, no sentence: an app that is simply not running says nothing,
   // and neither does a terminal whose child names something else.
-  assert.strictEqual(panel.untitledTerminalHint([], identities, resolver(identities), {}, {}), "");
-  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW], identities,
+  assert.strictEqual(panel.awaitingTitleHint([], identities, resolver(identities), {}, {}), "");
+  assert.strictEqual(panel.awaitingTitleHint([BARE_WINDOW], identities,
     resolver(identities), argvByPid, panel.procTreeFromDump(procDump([
       { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["btop"] }] }
     ]))), "");
   // A class-only identity is not this problem and never gets the line.
-  assert.strictEqual(panel.untitledTerminalHint([BARE_WINDOW],
+  assert.strictEqual(panel.awaitingTitleHint([BARE_WINDOW],
     [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }],
     resolver([{ id: "terminal", patterns: ["^foot$"], titlePatterns: [] }]), argvByPid, procTree), "");
 });
@@ -3607,11 +4765,21 @@ test("a title identity with no window yet still gets a row, and the row unticks 
   assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW, TITLED_WINDOW], identities,
     resolver(identities)), {}, "and it clears the moment a window matches");
 
-  // A webapp identity whose window is simply closed is an ordinary closed app,
-  // and `--title` is advice about the wrong thing.
-  const slack = [{ id: "slack", patterns: ["^chromium$"], titlePatterns: ["^Slack$"], launch: "" }];
+  // A webapp identity whose window is simply CLOSED is an ordinary closed app,
+  // and nothing here says a word about it — the condition still requires a live
+  // window of the identity's own class.
+  const slack = [{ id: "slack", patterns: ["^chrome-app.slack.com__x$"], titlePatterns: ["^Slack$"], launch: "" }];
   assert.deepStrictEqual(panel.awaitingTitleIndex(
     [makeClient({ class: "chromium", initialTitle: "News" })], slack, resolver(slack)), {});
+
+  // But a HAND-AUTHORED non-terminal title identity whose class IS on screen and
+  // still matches nothing is the same recoverable mis-tick a terminal's is, and
+  // since tick s7l it gets the same row. What it does not get is the `--title`
+  // advice, which is not true about a chromium window — see the s7l tests below.
+  const gmail = [{ id: "gmail", patterns: ["^chromium$"], titlePatterns: ["^Gmail$"], launch: "" }];
+  assert.deepStrictEqual(panel.awaitingTitleIndex(
+    [makeClient({ class: "chromium", initialTitle: "News" })], gmail, resolver(gmail)),
+    { gmail: "chromium" });
   // A class-only identity is not this problem either — it matches its terminal
   // already.
   const wide = [{ id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" }];
@@ -3646,6 +4814,52 @@ test("the panel knows which pids to read and which window a tick is about", () =
   // A stale address falls back to the class rather than dropping the tick.
   assert.strictEqual(panel.clientForTick(clients, "0xgone", "foot").initialTitle, "foot");
   assert.strictEqual(panel.clientForTick(clients, "", "nothing-here"), null);
+});
+
+test("the awaiting-title row and hint read patterns the way the MATCHER reads them", () => {
+  // Tick 7qe. Both asked `patternListHas(identity.patterns,
+  // derivePattern(className))` — exact string equality against a freshly
+  // regenerated pattern — while the matcher compiles the pattern
+  // case-insensitively (engine.js compilePattern). A hand-edited pattern is
+  // invited by the README, and every one of these keeps matching, recording and
+  // restoring; only the row and the hint fell silent, which is precisely when
+  // the user has no way back from a mis-tick.
+  const argvByPid = { "268861": ["foot"] };
+  const procTree = panel.procTreeFromDump(procDump([
+    { pid: 268861, argv: ["foot"], children: [{ pid: 901, argv: ["herdr"] }] }
+  ]));
+
+  for (const pattern of ["^Foot$", "^(foot|footclient)$", "^foot$"]) {
+    const identities = [{ id: "herdr", patterns: [pattern], titlePatterns: ["^herdr$"],
+      launch: "foot --title=herdr herdr" }];
+    // The matcher is happy with all three — that is the whole point.
+    assert.strictEqual(engine.clientMatchesIdentity(TITLED_WINDOW, identities[0]), true, pattern);
+
+    assert.deepStrictEqual(panel.awaitingTitleIndex([BARE_WINDOW], identities, resolver(identities)),
+      { herdr: "foot" }, pattern);
+    assert.ok(panel.awaitingTitleHint([BARE_WINDOW], identities,
+      resolver(identities), argvByPid, procTree).indexOf('"herdr" is watched') === 0, pattern);
+  }
+
+  // A hand-edited TITLE pattern is read the same way, by the half of the hint
+  // that asks whether the identity claims the title the child process names.
+  const cased = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^HERDR$"],
+    launch: "foot --title=herdr herdr" }];
+  assert.ok(panel.awaitingTitleHint([BARE_WINDOW], cased,
+    resolver(cased), argvByPid, procTree).indexOf('"herdr" is watched') === 0);
+
+  // And the two must AGREE. They had drifted ~20 lines apart: the hint took any
+  // live client, the row took only an isMappable one, so a terminal on a
+  // special workspace — a scratchpad, the shape the README's --title advice is
+  // most often used for — got the sentence and no row to undo the tick with.
+  const scratch = Object.assign({}, BARE_WINDOW, { workspace: { id: -99, name: "special:scratch" } });
+  const identities = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr" }];
+  const hinted = panel.awaitingTitleHint([scratch], identities,
+    resolver(identities), argvByPid, procTree) !== "";
+  const rowed = Object.keys(panel.awaitingTitleIndex([scratch], identities, resolver(identities))).length > 0;
+  assert.strictEqual(hinted, true, "a scratchpad terminal is evidence");
+  assert.strictEqual(rowed, hinted, "and the row says what the hint says");
 });
 
 test("an unwatched row carries the address of the window it was built from", () => {
@@ -4066,6 +5280,59 @@ test("Retry says out loud that it runs the whole restore", () => {
   assert.ok(panel.retryTooltip(null, false).length > 0);
 });
 
+// ------------------------------------- may the manual restore fire at all (66x)
+//
+// The blocker: an INERT state file (a schema from the future — StateModel.
+// restoreRefusal) left Restore now and Retry LIT. Pressing either wrote the
+// trigger and dismissed the panel; the service then refused the cycle into its
+// log, where a user never looks. A refusal is a feature only if it is visible,
+// so the refusal has to reach the affordance itself — and the condition all
+// three entry points (both buttons and the keyboard's Enter) share is here,
+// once, rather than copied into three QML bindings.
+test("an inert state file refuses the manual restore, and every button says so", () => {
+  const future = state.parseState(JSON.stringify({
+    version: state.STATE_VERSION + 1, identities: [], layouts: {}
+  })).state;
+  const inert = state.restoreRefusal(future);
+  assert.ok(inert, "the fixture is only a fixture if a future version really refuses");
+
+  // The two ways to answer no are different in kind, and both answer no.
+  assert.strictEqual(panel.mayManualRestore(true, ""), true, "the ordinary desk");
+  assert.strictEqual(panel.mayManualRestore(false, ""), false, "nothing recorded: nothing to put back");
+  assert.strictEqual(panel.mayManualRestore(true, inert), false,
+    "a layout the build may not act on is not a layout the button may offer");
+  assert.strictEqual(panel.mayManualRestore(false, inert), false);
+  // Whitespace is not a reason; a missing argument is not a refusal.
+  assert.strictEqual(panel.mayManualRestore(true, "   "), true);
+  assert.strictEqual(panel.mayManualRestore(true, undefined), true);
+  assert.strictEqual(panel.mayManualRestore(true, null), true);
+
+  // ...and the dim buttons carry the reason, so a pointer user gets it on
+  // demand and not only from the panel's persistent Inert line.
+  const restore = panel.restoreTooltip(true, "Laptop", inert);
+  assert.ok(restore.indexOf("Nothing will be restored") === 0, restore);
+  assert.ok(restore.indexOf(inert) !== -1, "the tooltip quotes the refusal itself");
+  assert.strictEqual(restore.indexOf("Safe to press twice"), -1,
+    "an inert file must not be offered as something safe to press twice");
+
+  // The inert reason outranks the empty-layout sentence: saying "nothing
+  // recorded yet" about a file full of recordings would be wrong twice over.
+  assert.strictEqual(panel.restoreTooltip(false, "Laptop", inert).indexOf("no layout to put back"), -1);
+
+  const scene = failedScene();
+  const browser = panel.failedRestoreRows(scene.verdicts, scene.rows)
+    .find((f) => f.identityId === "chromium");
+  const retry = panel.retryTooltip(browser, false, inert);
+  assert.ok(retry.indexOf("Nothing will be restored") === 0, retry);
+  assert.ok(retry.indexOf(inert) !== -1);
+  // Retry IS the whole restore, so it cannot claim to be running one either.
+  assert.strictEqual(panel.retryTooltip(browser, true, inert).indexOf("A restore is running"), -1);
+
+  // And the ordinary desk is untouched by the new argument.
+  assert.strictEqual(panel.restoreTooltip(true, "Laptop", ""), panel.restoreTooltip(true, "Laptop"));
+  assert.strictEqual(panel.retryTooltip(browser, false, ""), panel.retryTooltip(browser, false));
+});
+
 // ------------------------------------------------ one undo after Record (7ow)
 //
 // The sketch, twice: "Recording OVERWRITES this topology's layout — the previous
@@ -4204,6 +5471,27 @@ test("the menu lists every recorded layout, current one first and marked", () =>
   assert.strictEqual(rows[1].appLabel, "6 apps");
 });
 
+test("two desks can share a menu row's NAME, so the row carries a key that is its own", () => {
+  // The hazard behind keying the overflow render registry on topologyKey rather
+  // than on the name Panel.qml draws. humanizeTopology keeps a make and a model
+  // and drops the rest, so two desks whose EDID serials differ — genuinely two
+  // recordings, two rows, one of them possibly `current` — arrive at one string.
+  const twinA = "AOC Inc. U34G2G 0x00001234 | Samsung Display Corp. ATNA60HR07-0";
+  const twinB = "AOC Inc. U34G2G 0x0000ABCD | Samsung Display Corp. ATNA60HR07-0";
+  const rows = panel.overflowMenuRows(
+    [layoutRow(twinA, 3), layoutRow(twinB, 5)], twinB, monitorsLaptop);
+
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(rows[0].name, rows[1].name, "the display name really does collide");
+  // And exactly one of them is the desk you are sitting at, which is the field
+  // a shared registry slot would have handed to both.
+  assert.deepStrictEqual(rows.map((r) => r.current), [true, false]);
+  // The key does not collide, is on the row, and is what the delegate reports
+  // under.
+  assert.notStrictEqual(rows[0].topologyKey, rows[1].topologyKey);
+  assert.strictEqual(new Set(rows.map((r) => r.topologyKey)).size, 2);
+});
+
 test("the mini glyph draws one box per monitor, and stops at three", () => {
   const rows = panel.overflowMenuRows(
     [layoutRow(LAPTOP_KEY, 1), layoutRow(DOCKED_KEY, 0), layoutRow(TRIPLE_KEY, 4),
@@ -4235,10 +5523,11 @@ test("nothing recorded, or nothing recorded HERE, is said rather than left blank
   assert.strictEqual(here.hint, "");
 });
 
-test("the two actions are about THIS desk, and say why they are unavailable", () => {
+test("two acts about THIS desk plus the pictures switch, each saying why", () => {
   const model = panel.overflowMenuModel(
-    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop");
-  assert.deepStrictEqual(panel.menuActionIds(model.actions), ["forget", "rerecord"]);
+    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true);
+  assert.deepStrictEqual(panel.menuActionIds(model.actions),
+    ["forget", "rerecord", "pictures"]);
 
   const forget = panel.menuAction(model.actions, "forget");
   assert.strictEqual(forget.label, "Forget this layout");
@@ -4249,36 +5538,73 @@ test("the two actions are about THIS desk, and say why they are unavailable", ()
   assert.ok(panel.menuAction(model.actions, "rerecord").enabled);
 
   // Nothing recorded here: Forget stays visible and explains itself.
-  const cold = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop");
+  const cold = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop", true);
   assert.strictEqual(panel.menuAction(cold.actions, "forget").enabled, false);
   assert.ok(panel.menuAction(cold.actions, "forget").tooltip.indexOf("nothing to forget") !== -1);
   assert.strictEqual(panel.menuAction(cold.actions, "rerecord").enabled, false);
 
   // A topology with no name at all still gets sentences about "this setup".
-  const nameless = panel.overflowMenuModel([], "", [], false, "");
+  const nameless = panel.overflowMenuModel([], "", [], false, "", true);
   assert.ok(panel.menuAction(nameless.actions, "forget").tooltip.indexOf("this setup") !== -1);
   assert.strictEqual(panel.menuAction(nameless.actions, "nope"), null);
 });
 
+test("THE PICTURES ENTRY: the label flips, the tooltip says the cost, never disabled", () => {
+  // The whole affordance for schema v7's one switch, and the reason it is here
+  // rather than on eleven rows: it has to be FINDABLE. The label names the act
+  // the press performs, like the other two entries, so the menu is its own
+  // receipt — press it and the words say the other thing.
+  const on = panel.menuAction(panel.overflowMenuModel(
+    [], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true).actions, "pictures");
+  const off = panel.menuAction(panel.overflowMenuModel(
+    [], LAPTOP_KEY, monitorsLaptop, true, "Laptop", false).actions, "pictures");
+
+  assert.strictEqual(on.label, "Turn pictures off");
+  assert.strictEqual(off.label, "Turn pictures on");
+
+  // NEVER DISABLED, in either position. A dimmed privacy control is worse than
+  // none: both directions always mean something.
+  assert.strictEqual(on.enabled, true);
+  assert.strictEqual(off.enabled, true);
+
+  // The tooltip is where the cost is said, BEFORE the press — this panel never
+  // blocks, so there is no confirmation dialog to say it in afterwards.
+  assert.ok(on.tooltip.indexOf("Delete every stored picture") !== -1, on.tooltip);
+  assert.ok(on.tooltip.indexOf("every desk") !== -1, on.tooltip);
+  assert.ok(on.tooltip.indexOf("stop photographing") !== -1, on.tooltip);
+  // And the other direction says what comes back, and when.
+  assert.ok(off.tooltip.indexOf("Photograph every watched window") !== -1, off.tooltip);
+  assert.ok(off.tooltip.indexOf("Record") !== -1, off.tooltip);
+
+  // `!== false`, StateModel.picturesOn's rule: only the literal false is off.
+  for (const junk of [undefined, "false", 0, null, {}]) {
+    assert.strictEqual(panel.menuAction(panel.overflowMenuModel(
+      [], LAPTOP_KEY, monitorsLaptop, true, "Laptop", junk).actions, "pictures").label,
+      "Turn pictures off", JSON.stringify(junk) + " read as off");
+  }
+});
+
 test("the keyboard cursor lands on something pressable, and walks the actions", () => {
   const warm = panel.overflowMenuModel(
-    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop");
+    [layoutRow(LAPTOP_KEY, 3)], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true);
   assert.strictEqual(panel.firstEnabledActionId(warm.actions), "forget");
 
   // Nothing to forget: the cursor skips to the action that can be pressed.
-  const noLayout = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, true, "Laptop");
+  const noLayout = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, true, "Laptop", true);
   assert.strictEqual(panel.firstEnabledActionId(noLayout.actions), "rerecord");
 
-  // Everything disabled: the cursor still has to be somewhere.
-  const frozen = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop");
-  assert.strictEqual(panel.firstEnabledActionId(frozen.actions), "forget");
+  // Nothing recorded and nothing to record: the pictures switch is always
+  // pressable, so the cursor lands on it rather than on a dimmed row.
+  const frozen = panel.overflowMenuModel([], LAPTOP_KEY, monitorsLaptop, false, "Laptop", true);
+  assert.strictEqual(panel.firstEnabledActionId(frozen.actions), "pictures");
   assert.strictEqual(panel.firstEnabledActionId([]), "");
 
   // Arrows walk the same wrap-around walker the panel sections use.
   const ids = panel.menuActionIds(warm.actions);
   assert.strictEqual(panel.nextSection(ids, "forget", 1), "rerecord");
-  assert.strictEqual(panel.nextSection(ids, "rerecord", 1), "forget");
-  assert.strictEqual(panel.nextSection(ids, "forget", -1), "rerecord");
+  assert.strictEqual(panel.nextSection(ids, "rerecord", 1), "pictures");
+  assert.strictEqual(panel.nextSection(ids, "pictures", 1), "forget");
+  assert.strictEqual(panel.nextSection(ids, "forget", -1), "pictures");
 });
 
 test("forgetting arms the SAME one-shot undo a record arms", () => {
@@ -4500,7 +5826,7 @@ test("the shadow notice names the losing identity, its shadower and the fix", ()
   // `strict` is the engine's answer to "is the claimant wider BY CONSTRUCTION"
   // — a class-only rule in front of a class+title one is. Only then is the
   // instruction provably safe advice (tick ytt).
-  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"], strict: true });
+  const line = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true });
 
   assert.ok(line.indexOf('"herdr"') >= 0, line);
   assert.ok(line.indexOf('"terminal"') >= 0, line);
@@ -4526,12 +5852,12 @@ test("without a strict-subset relation the notice observes rather than instructs
 
   // An entry that does not say the relation is strict has not earned an
   // instruction, so a missing field reads as the weak case.
-  assert.ok(panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"] })
+  assert.ok(panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"] })
     .indexOf("No open window currently reaches") === 0);
 });
 
 test("the shadow notice counts the windows, and says two shadowers as two", () => {
-  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimedBy: ["terminal"], strict: true });
+  const one = panel.shadowNoticeFor({ id: "herdr", windows: 1, claimed: 1, claimedBy: ["terminal"], strict: true });
   assert.ok(one.indexOf("the only window it matches") >= 0, one);
   assert.ok(one.indexOf(" is earlier") >= 0, one);
 
@@ -4590,4 +5916,2692 @@ test("the whole path: a catch-all in front is detected and explained", () => {
   const ticked = panel.toggleWatchedIdentities(before, "foot", "",
     { command: "foot", title: "", reason: "no-child" }, engine.couldShadow);
   assert.deepStrictEqual(ticked, before, "refused: a class-only terminal identity is not written");
+});
+
+// ------------------------------------------ what a row's Learn button may write
+//
+// Tick tnm / finding A9. `learnLaunchFor(identityId)` read
+// `root.derivedLaunch[identityId]` with a bare bracket lookup on a bare object,
+// and the derivation map is keyed by identity id. For the id `constructor` on a
+// KEY MISS — an app with no derivable launch, which is precisely when the row's
+// repair offer is on screen — that lookup does not answer undefined. It answers
+// `Object`, the constructor function, which is truthy; the guard fell through,
+// and `String(Object)` went into the state file as the app's launch command:
+//
+//     "launch": "function Object() { [native code] }"
+//
+// The row is reachable in that state because `launchRepairable` is a paint-time
+// snapshot: the row can be stale by the time it is clicked.
+//
+// Two rules, and both belong here rather than in the QML that fires them: the
+// lookup is own-guarded, and the VALUE is checked before it is written. The
+// second is what makes the first a rule rather than a patch — a launch command
+// is a string that survives the dispatch, and anything else is the shape of a
+// bug, whatever produced it.
+
+test("learnableLaunch refuses everything that is not a runnable command string", () => {
+  // The value the bug actually produced, and its whole family.
+  assert.strictEqual(panel.learnableLaunch(Object), "");
+  assert.strictEqual(panel.learnableLaunch(Object.prototype.toString), "");
+  assert.strictEqual(panel.learnableLaunch(Object.prototype.hasOwnProperty), "");
+  assert.strictEqual(panel.learnableLaunch(String(Object)), "",
+    "the same value as a string is still not a command");
+  assert.strictEqual(panel.learnableLaunch("function Object() { [native code] }"), "");
+
+  // Nothing, and things that are not strings.
+  for (const value of [undefined, null, "", "   ", 0, 7, true, {}, [], Object.prototype]) {
+    assert.strictEqual(panel.learnableLaunch(value), "", JSON.stringify(value) + " was accepted");
+  }
+
+  // The Lua-dispatch rule still applies, unchanged: this is the same gate every
+  // other producer of a launch command returns through.
+  assert.strictEqual(panel.learnableLaunch("foot --title=x]]"), "");
+  assert.strictEqual(panel.learnableLaunch("foot\nbtop"), "");
+
+  // And a real command comes back trimmed and intact.
+  assert.strictEqual(panel.learnableLaunch("  foot --app-id=herdr herdr  "), "foot --app-id=herdr herdr");
+  assert.strictEqual(panel.learnableLaunch("omarchy-launch-browser"), "omarchy-launch-browser");
+});
+
+test("singleLaunchRepair answers nothing for a reserved id the derivation never mentioned", () => {
+  // THE BUG, at its own altitude: the map is empty, so there is nothing to
+  // learn — and the answer must say so rather than hand back Object.
+  assert.strictEqual(panel.singleLaunchRepair({}, "constructor"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "toString"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "hasOwnProperty"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "valueOf"), null);
+  assert.strictEqual(panel.singleLaunchRepair({}, "__proto__"), null);
+
+  // A map that DOES mention it answers with a one-entry map, ready for the
+  // backfill — the reserved id is not the problem, the missing key was.
+  assert.deepStrictEqual(panel.singleLaunchRepair({ constructor: "foot --app-id=Constructor" }, "constructor"),
+    { constructor: "foot --app-id=Constructor" });
+
+  // Ordinary ids, ordinary answers.
+  assert.deepStrictEqual(panel.singleLaunchRepair({ herdr: "foot herdr", other: "x" }, "herdr"),
+    { herdr: "foot herdr" });
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot herdr" }, "other"), null);
+  assert.strictEqual(panel.singleLaunchRepair(null, "herdr"), null);
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot herdr" }, ""), null);
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot herdr" }, null), null);
+
+  // A stored value that is junk is refused at the write, not merely at the
+  // lookup: the map is user-adjacent (it is built from /proc and .desktop
+  // files), so "the key existed" is not the same as "the value may be written".
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "foot ]] herdr" }, "herdr"), null);
+  assert.strictEqual(panel.singleLaunchRepair({ herdr: "   " }, "herdr"), null);
+});
+
+test("the one-entry repair is exactly what the backfill accepts", () => {
+  const identities = [
+    { id: "constructor", patterns: ["^Constructor$"], titlePatterns: [], launch: "" },
+    { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }
+  ];
+  const one = panel.singleLaunchRepair({ constructor: "foot --app-id=Constructor" }, "constructor");
+  assert.strictEqual(panel.learnableCount(identities, one), 1);
+
+  const after = panel.backfillLaunchCommands(identities, one);
+  assert.strictEqual(after[0].launch, "foot --app-id=Constructor");
+  assert.strictEqual(after[1].launch, "", "the other identity is untouched by a one-row repair");
+});
+
+test("Panel.qml reads the derivation through the guarded lookup and nowhere else", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The shape the bug had. Any bare bracket lookup on the derivation map is a
+  // reopening of it, whatever the key expression. Comment lines are skipped —
+  // the fix's own comment quotes the line it removed, and it should.
+  for (const line of source.split("\n")) {
+    if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+    assert.ok(!/root\.derivedLaunch\s*\[/.test(line),
+      "Panel.qml still reads root.derivedLaunch with a bare bracket lookup: " + line.trim());
+  }
+  assert.ok(/PanelModel\.singleLaunchRepair\(/.test(source),
+    "Panel.qml no longer routes a row's Learn through the guarded repair");
+});
+
+// ------------------------------------------- a duplicate tick is a VISIBLE no-op
+//
+// Tick v5c / finding A7. Click a chip whose window matches nothing, on an app an
+// identity on the list ALREADY claims — the ordinary way to get there is a
+// terminal running `herdr` that was started without `--title`, while
+// `{^foot$ + ^herdr$}` is watched — and every gate said yes to a click that
+// changed nothing:
+//
+//   suggestIdentity      returned null (the duplicate guard, before the
+//                        terminal refusal, deliberately)
+//   tickRefusalReason    therefore returned "" — no refusal to report
+//   toggleWatchedIdentities returned the unchanged list
+//   writeState           returned TRUE, because the bytes were identical and a
+//                        byte-identical write is a successful write
+//   the log              said: watching "foot" — 3 identities
+//
+// with `createdId` falling back to the CLASS because nothing had been added.
+// The user is told they are now watching foot; they are not, the window still
+// matches nothing, and the one thing that would have helped — relaunch it under
+// the title the identity looks for — was never said.
+//
+// null was the wrong answer. "Nothing to add" and "nothing to say" are not the
+// same fact, and the panel had no way to tell them apart.
+
+const WATCHED_HERDR = [
+  { id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "foot --title=herdr herdr" }
+];
+
+test("suggestIdentity says already-watched instead of answering null", () => {
+  const herdr = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+
+  const answer = panel.suggestIdentity("foot", WATCHED_HERDR, herdr);
+  assert.deepStrictEqual(answer, { refusal: "already-watched" },
+    "a duplicate proposal must be a refusal with a reason, not a silent null");
+
+  // The class-only duplicate answers the same way — the fact is the same one.
+  assert.deepStrictEqual(
+    panel.suggestIdentity("chromium", [{ id: "browser", patterns: ["^chromium$"], launch: "" }]),
+    { refusal: "already-watched" });
+
+  // And it is the DUPLICATE that wins over the terminal refusal, as it always
+  // did: the more specific truth about the click is that it changes nothing.
+  assert.deepStrictEqual(panel.suggestIdentity("foot", WATCHED_HERDR, herdr).refusal, "already-watched");
+});
+
+test("the list is still left exactly as it was", () => {
+  const herdr = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+  const after = panel.toggleWatchedIdentities(WATCHED_HERDR, "foot", "", herdr, engine.couldShadow);
+  assert.deepStrictEqual(after, WATCHED_HERDR, "a refusal must never change the list");
+  assert.notStrictEqual(after, WATCHED_HERDR, "and must still hand back a copy");
+  assert.strictEqual(panel.addedIdentity(WATCHED_HERDR, after), null);
+});
+
+test("tickRefusalReason and its hint carry already-watched to the panel", () => {
+  const herdr = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+  assert.strictEqual(panel.tickRefusalReason("foot", WATCHED_HERDR, herdr), "already-watched");
+
+  const hint = panel.tickRefusalHint("foot", "already-watched");
+  assert.ok(hint, "already-watched has no sentence, so the panel would say nothing");
+  assert.ok(/already/i.test(hint), hint);
+  // The one thing it must NOT say is the thing every other terminal refusal
+  // says — that nothing names the app inside it. Something did: it is on the
+  // list already.
+  assert.strictEqual(hint.indexOf("nothing about it names the app"), -1, hint);
+  // A terminal still gets the relaunch advice, because that IS the fix here.
+  assert.ok(hint.indexOf("--title=") !== -1, hint);
+
+  // A non-terminal class gets the same fact without the terminal-only advice.
+  const browserHint = panel.tickRefusalHint("chromium", "already-watched");
+  assert.ok(browserHint, browserHint);
+  assert.strictEqual(browserHint.indexOf("--title="), -1,
+    "a chromium window has no --title convention to relaunch under");
+});
+
+test("Panel.qml reserves the success line for a list that actually changed", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The fallback that produced the lie: `added ? added.id : chip.className`.
+  assert.strictEqual(source.indexOf("added ? added.id : chip.className"), -1,
+    "Panel.qml still names the clicked CLASS when nothing was added");
+  // And there is a branch that says so out loud instead.
+  assert.ok(/no change/.test(source),
+    "Panel.qml has no honest no-op line for a click that changed nothing");
+});
+
+// ------------------------------------------- a refusal dies with its window
+//
+// Tick 8rw / finding A10. `refusedTick` is `{ className, address }` — the
+// QUESTION a refused tick asked, kept so the hint can re-ask it against the live
+// desktop every frame and clear itself the moment the answer changes. That
+// self-clearing is the design, and it had one hole: nothing ever asked whether
+// the WINDOW was still there.
+//
+// The re-ask goes through clientForTick, which falls back to the first window of
+// the same CLASS when the address is gone. That fallback is right for a tick —
+// a list row can predate a refresh and the class is all that is left. It is
+// wrong for a refusal, and wrong in two different ways:
+//
+//   - the refused terminal closes and another foot window is open: the hint
+//     re-derives against a DIFFERENT window and tells the user about a terminal
+//     they never clicked;
+//   - the refused terminal closes and no foot window is left: clientForTick
+//     answers null, the derivation is null, the reason stays "not-read", and the
+//     panel says "still reading… press it again in a moment" forever, about a
+//     window that is gone.
+//
+// So the question is asked separately, and it is a question about identity, not
+// about derivation: is this refusal still about a window that exists?
+
+const REFUSED_FOOT = { className: "foot", address: "0xf1" };
+
+test("refusalStillLive is false the moment the refused window closes", () => {
+  const refused = makeClient({ address: "0xf1", class: "foot" });
+  const other = makeClient({ address: "0xf2", class: "foot" });
+  const unrelated = makeClient({ address: "0xc1", class: "chromium" });
+
+  assert.strictEqual(panel.refusalStillLive([refused, unrelated], REFUSED_FOOT), true);
+
+  // THE CLASS-FALLBACK CASE. Another window of the same class is on screen and
+  // is emphatically not the one that was refused.
+  assert.strictEqual(panel.refusalStillLive([other, unrelated], REFUSED_FOOT), false,
+    "a sibling window of the same class kept the refusal alive");
+
+  // THE ADDRESS-GONE CASE. Nothing of that class is left at all.
+  assert.strictEqual(panel.refusalStillLive([unrelated], REFUSED_FOOT), false);
+  assert.strictEqual(panel.refusalStillLive([], REFUSED_FOOT), false);
+
+  // An address that came back with a different class is a reused address, not
+  // the window that was clicked.
+  const reused = makeClient({ address: "0xf1", class: "chromium" });
+  assert.strictEqual(panel.refusalStillLive([reused], REFUSED_FOOT), false);
+
+  // initialClass counts, the way it does everywhere a class is compared.
+  const byInitial = makeClient({ address: "0xf1", class: "", initialClass: "foot" });
+  assert.strictEqual(panel.refusalStillLive([byInitial], REFUSED_FOOT), true);
+});
+
+test("a refusal with no address is about the class, and lives while the class does", () => {
+  // A chip can carry no address (chip.address || ""). Then the class IS the
+  // whole question, and there is no sibling to confuse it with.
+  const classOnly = { className: "foot", address: "" };
+  assert.strictEqual(panel.refusalStillLive([makeClient({ address: "0xf9", class: "foot" })], classOnly), true);
+  assert.strictEqual(panel.refusalStillLive([makeClient({ address: "0xc1", class: "chromium" })], classOnly), false);
+});
+
+test("nothing at all is not a live refusal", () => {
+  const clients = [makeClient({ address: "0xf1", class: "foot" })];
+  for (const value of [null, undefined, {}, { className: "" }, { className: "   " }, "foot", 7]) {
+    assert.strictEqual(panel.refusalStillLive(clients, value), false, JSON.stringify(value));
+  }
+  assert.strictEqual(panel.refusalStillLive(null, REFUSED_FOOT), false);
+});
+
+test("Panel.qml clears refusedTick when the clients list says the window is gone", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  assert.ok(/PanelModel\.refusalStillLive\(/.test(source),
+    "Panel.qml never asks whether the refusal is still about a live window");
+  // The natural signal: the refusal is re-checked whenever the client list is
+  // reassigned, which is the one moment a window can have gone away.
+  assert.ok(/onLiveClientsChanged/.test(source),
+    "Panel.qml has no hook on the client list, so a dead refusal is never noticed");
+});
+
+// ------------------------ the awaiting-title surface is not terminals-only
+//
+// Tick s7l / finding A12. The tick-1m4 gap re-opened outside the terminal case.
+//
+// awaitingTitleCandidates — the one place that decides which identities are
+// waiting on a title — filtered its windows through isTerminalClass. The
+// comment defending that filter was about the ADVICE ("telling that user to
+// relaunch with --title would be advice about the wrong thing"), and it is
+// right about the advice; it was applied to the wrong thing. What the filter
+// actually removed was the RECOVERY ROW.
+//
+// So a hand-authored `^chromium$` + `^Gmail$` — the README invites the hand
+// edit — matched no window while an ordinary chromium window sat on screen, and
+// had no chip, no row, and no way back except editing the state file. Exactly
+// the state 1m4 exists to make recoverable, one class of app further out.
+//
+// The filter moves rather than disappears: every candidate says whether its
+// window is a terminal, and the two places that give ADVICE branch on it. A
+// terminal is told how to relaunch; anything else is told the true thing —
+// its title patterns match no window of its class.
+
+const CHROMIUM_UNMATCHED = makeClient({
+  address: "0xb1", class: "chromium", initialClass: "chromium",
+  title: "News", initialTitle: "News", workspace: 2, pid: 4242
+});
+const CHROMIUM_GMAIL = makeClient({
+  address: "0xb2", class: "chromium", initialClass: "chromium",
+  title: "Gmail", initialTitle: "Gmail", workspace: 2, pid: 4243
+});
+const GMAIL_IDENTITY = [
+  { id: "gmail", patterns: ["^chromium$"], titlePatterns: ["^Gmail$"], launch: "omarchy-launch-browser" }
+];
+
+test("a non-terminal title identity is an awaiting-title candidate too", () => {
+  const candidates = panel.awaitingTitleCandidates([CHROMIUM_UNMATCHED],
+    GMAIL_IDENTITY, resolver(GMAIL_IDENTITY));
+  assert.strictEqual(candidates.length, 1, JSON.stringify(candidates));
+  assert.strictEqual(candidates[0].identity.id, "gmail");
+  assert.strictEqual(candidates[0].windows.length, 1);
+  assert.strictEqual(candidates[0].windows[0].className, "chromium");
+  assert.strictEqual(candidates[0].windows[0].isTerminal, false,
+    "the terminal question is answered on the candidate, not used to drop it");
+
+  // And it clears the instant a window matches, exactly as the terminal case does.
+  assert.deepStrictEqual(panel.awaitingTitleCandidates([CHROMIUM_UNMATCHED, CHROMIUM_GMAIL],
+    GMAIL_IDENTITY, resolver(GMAIL_IDENTITY)), []);
+  // No window of its class on screen is an ordinary not-running app, and stays
+  // one: the row is about a class that IS there and still matches nothing.
+  assert.deepStrictEqual(panel.awaitingTitleCandidates([], GMAIL_IDENTITY, resolver(GMAIL_IDENTITY)), []);
+
+  // The terminal candidate still says what it is.
+  const footIdentity = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
+  const footCandidates = panel.awaitingTitleCandidates([BARE_WINDOW], footIdentity, resolver(footIdentity));
+  assert.strictEqual(footCandidates.length, 1);
+  assert.strictEqual(footCandidates[0].windows[0].isTerminal, true);
+});
+
+test("the index and the recovery row reach a non-terminal identity", () => {
+  assert.deepStrictEqual(
+    panel.awaitingTitleIndex([CHROMIUM_UNMATCHED], GMAIL_IDENTITY, resolver(GMAIL_IDENTITY)),
+    { gmail: "chromium" });
+
+  const rows = panel.appRows([CHROMIUM_UNMATCHED], monitorsLaptop, resolver(GMAIL_IDENTITY),
+    null, null, GMAIL_IDENTITY, {});
+  const row = rows.find((r) => r.identityId === "gmail");
+  assert.ok(row, "no recovery row for the hand-authored title identity: " + JSON.stringify(rows));
+  assert.strictEqual(row.awaitingTitle, true);
+  assert.strictEqual(row.watched, true);
+  assert.strictEqual(row.clickable, true, "the row must untick, which is the whole point of it");
+
+  // THE HONEST SENTENCE. A chromium window has no --title convention, and a row
+  // that claimed one would send the user off to do something that cannot work.
+  assert.strictEqual(row.position.indexOf("--title"), -1, row.position);
+  assert.ok(/title pattern/i.test(row.position), row.position);
+
+  // The terminal row keeps the advice that IS true for it.
+  const footIdentity = [{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }];
+  const footRows = panel.appRows([BARE_WINDOW], monitorsLaptop, resolver(footIdentity),
+    null, null, footIdentity, {});
+  const footRow = footRows.find((r) => r.identityId === "herdr");
+  assert.ok(footRow, JSON.stringify(footRows));
+  assert.ok(footRow.position.indexOf("--title") !== -1, footRow.position);
+});
+
+test("the hint tells a non-terminal the truth, without the relaunch claim", () => {
+  const said = panel.awaitingTitleHint([CHROMIUM_UNMATCHED], GMAIL_IDENTITY,
+    resolver(GMAIL_IDENTITY), {}, {});
+  assert.ok(said, "the non-terminal candidate says nothing at all");
+  assert.ok(said.indexOf('"gmail"') === 0 || said.indexOf('"gmail" is watched') !== -1, said);
+  assert.strictEqual(said.indexOf("--title"), -1,
+    "the --title advice is terminal-specific and cannot be given about a chromium window");
+  // It names what the user can actually check: the pattern, and the class it
+  // is being compared against.
+  assert.ok(said.indexOf("^Gmail$") !== -1, said);
+  assert.ok(said.indexOf("chromium") !== -1, said);
+
+  // And it clears when a window matches.
+  assert.strictEqual(panel.awaitingTitleHint([CHROMIUM_UNMATCHED, CHROMIUM_GMAIL],
+    GMAIL_IDENTITY, resolver(GMAIL_IDENTITY), {}, {}), "");
+});
+
+test("Panel.qml supplies the same inputs to the renamed hint", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The learnings rule: a pure fix with no QML supplier does nothing. The
+  // inputs did not change here — the same client list, identity list and
+  // matcher — so what has to be checked is that the panel calls the function
+  // that now answers for both kinds of app.
+  assert.ok(/PanelModel\.awaitingTitleHint\(/.test(source),
+    "Panel.qml still calls the terminals-only hint");
+  assert.strictEqual(source.indexOf("untitledTerminalHint"), -1,
+    "the old name is still in Panel.qml, so one of the two is dead code");
+  const binding = source.slice(source.indexOf("PanelModel.awaitingTitleHint("));
+  assert.ok(binding.slice(0, 300).indexOf("root.liveClients") !== -1, binding.slice(0, 300));
+  assert.ok(binding.slice(0, 300).indexOf("Engine.matchClient") !== -1, binding.slice(0, 300));
+});
+
+// ------------------------------------------- one question, asked once (zkb)
+//
+// Cleanup B. A single chip click asked suggestIdentity TWICE — once through
+// tickRefusalReason to find out whether to refuse, and again inside
+// toggleWatchedIdentities to build the list — and then diffed the two lists with
+// addedIdentity to recover the identity the second call had just built and
+// thrown away. Three passes over the same question, and three places for the
+// answers to disagree if any of them ever grew a condition the others lacked.
+//
+// tickOutcome is that question asked once: what does this click DO?
+
+test("tickOutcome answers the whole click in one pass", () => {
+  const derivation = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+
+  // A tick that adds.
+  const add = panel.tickOutcome([], "foot", "", derivation, engine.couldShadow);
+  assert.strictEqual(add.refusal, "");
+  assert.deepStrictEqual(add.added, {
+    id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"],
+    launch: "foot --title=herdr herdr"
+  });
+  assert.deepStrictEqual(add.identities, [add.added]);
+
+  // An UNTICK names no addition and needs no proposal at all.
+  const off = panel.tickOutcome(add.identities, "foot", "herdr", derivation, engine.couldShadow);
+  assert.strictEqual(off.refusal, "");
+  assert.strictEqual(off.added, null);
+  assert.deepStrictEqual(off.identities, []);
+
+  // A refusal: the list is untouched and the reason travels.
+  const refused = panel.tickOutcome([], "foot", "", null, engine.couldShadow);
+  assert.strictEqual(refused.refusal, "not-read");
+  assert.strictEqual(refused.added, null);
+  assert.deepStrictEqual(refused.identities, []);
+
+  // The duplicate from tick v5c arrives the same way.
+  const dup = panel.tickOutcome(add.identities, "foot", "", derivation, engine.couldShadow);
+  assert.strictEqual(dup.refusal, "already-watched");
+  assert.strictEqual(dup.added, null);
+  assert.deepStrictEqual(dup.identities, add.identities);
+
+  // A class that derives no pattern at all: nothing to add, nothing to say.
+  const nothing = panel.tickOutcome([], "", "", null, engine.couldShadow);
+  assert.strictEqual(nothing.refusal, "");
+  assert.strictEqual(nothing.added, null);
+  assert.deepStrictEqual(nothing.identities, []);
+});
+
+test("toggleWatchedIdentities is tickOutcome's list, so the two cannot disagree", () => {
+  const derivation = { command: "foot --title=herdr herdr", title: "herdr", reason: "" };
+  const cases = [
+    [[], "foot", "", derivation],
+    [[], "chromium", "", null],
+    [[{ id: "herdr", patterns: ["^foot$"], titlePatterns: ["^herdr$"], launch: "" }], "foot", "herdr", null],
+    [[{ id: "browser", patterns: ["^chromium$"], launch: "" }], "chromium", "", null]
+  ];
+  for (const [identities, className, identityId, derived] of cases) {
+    assert.deepStrictEqual(
+      panel.toggleWatchedIdentities(identities, className, identityId, derived, engine.couldShadow),
+      panel.tickOutcome(identities, className, identityId, derived, engine.couldShadow).identities,
+      className + "/" + identityId);
+  }
+});
+
+test("the panel asks each of these questions exactly once", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const panelSource = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const serviceSource = fs.readFileSync(path.join(__dirname, "..", "Service.qml"), "utf8");
+
+  function bodyOf(source, header, what) {
+    const start = source.indexOf(header);
+    assert.ok(start !== -1, what + " has no " + header);
+    let depth = 0;
+    for (let i = start + header.length - 1; i < source.length; i++) {
+      if (source[i] === "{") depth += 1;
+      else if (source[i] === "}") {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, i + 1);
+      }
+    }
+    assert.fail(what + ": unbalanced braces after " + header);
+  }
+  const count = (text, needle) => text.split(needle).length - 1;
+
+  // One click, one proposal. toggleWatchedIdentities and addedIdentity were the
+  // second and third passes over it.
+  const toggle = bodyOf(panelSource, "function toggleChip(chip) {", "Panel.qml");
+  assert.strictEqual(count(toggle, "PanelModel.tickOutcome("), 1, toggle);
+  assert.strictEqual(count(toggle, "PanelModel.tickRefusalReason("), 0,
+    "toggleChip still asks the refusal question separately from the toggle");
+  assert.strictEqual(count(toggle, "PanelModel.toggleWatchedIdentities("), 0, toggle);
+  assert.strictEqual(count(toggle, "PanelModel.addedIdentity("), 0,
+    "toggleChip still recovers the added identity by diffing two lists");
+
+  // One state read, one refusal question. loadState asked writeRefusal twice
+  // about the same object.
+  const load = bodyOf(serviceSource, "function loadState(raw, exists) {", "Service.qml");
+  assert.strictEqual(count(load, "StateModel.writeRefusal("), 1, load);
+});
+
+test("the /proc maps are reassigned only when they changed", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // Every ~4 s the cmdline read landed and reassigned both maps whatever it
+  // found, and every binding downstream of them — the whole launch derivation
+  // chain, the hints, the rows — re-evaluated for nothing. The read still
+  // happens; only a CHANGED answer is published.
+  // The publish of each merged map has to sit inside the comparison against
+  // its own serialized shadow, and there must be exactly one of each.
+  const guards = [
+    ["argvByPid", "if (mergedText !== root.argvByPidText) {", "root.argvByPid = merged"],
+    ["procTree", "if (mergedTreeText !== root.procTreeText) {", "root.procTree = mergedTree"]
+  ];
+  for (const [map, guard, publish] of guards) {
+    const at = source.indexOf(guard);
+    assert.ok(at !== -1, map + " is published without comparing against its last published value");
+    const published = source.indexOf(publish, at);
+    assert.ok(published !== -1 && published - at < 120,
+      map + " is published somewhere other than inside its guard");
+    assert.strictEqual(source.split(publish).length - 1, 1,
+      map + " is published more than once, so one of them is unguarded");
+  }
+  // And the shadows are dropped with the maps when the panel forgets its reads,
+  // or the next read would compare against a picture the panel no longer holds.
+  const forget = source.slice(source.indexOf("function forgetProcReads()"));
+  assert.ok(forget.slice(0, 500).indexOf("argvByPidText") !== -1, forget.slice(0, 500));
+  assert.ok(forget.slice(0, 500).indexOf("procTreeText") !== -1, forget.slice(0, 500));
+});
+
+// ---------------------------------------------------------------------------
+// The capture cache (tick sz6)
+// ---------------------------------------------------------------------------
+//
+// Pictures are keyed on (identityId, occurrence, topologyKey) and stored under
+// ~/.cache/omarchy/dock-recall/ — a CACHE, deliberately, so a cleaner wiping it
+// degrades the map to icons rather than breaking anything, and so the state file
+// stays the one file this plugin writes.
+
+// Two windows of one identity plus a second identity, on the laptop monitor set,
+// so a plan can be asked about occurrence 0 AND occurrence 1.
+function captureDesk() {
+  const identities = [
+    { id: "terminal", patterns: ["^foot$"], titlePatterns: [], launch: "foot" },
+    { id: "browser", patterns: ["^chromium$"], titlePatterns: [], launch: "chromium" }
+  ];
+  const clients = [
+    makeClient({ address: "0xaaa", class: "foot", workspace: 1, at: [0, 0] }),
+    makeClient({ address: "0xbbb", class: "foot", workspace: 1, at: [900, 0] }),
+    makeClient({ address: "0xccc", class: "chromium", workspace: 2 })
+  ];
+  const layout = engine.buildLayout(clients, monitorsLaptop, identities, AT);
+  return { identities, clients, layout, chosen: engine.chosenWindows(clients, identities, monitorsLaptop) };
+}
+
+test("a capture file names all three parts of its key, and changes when any of them does", () => {
+  const a = panel.captureFileName("terminal", 0, "Laptop");
+  const b = panel.captureFileName("terminal", 1, "Laptop");
+  const c = panel.captureFileName("browser", 0, "Laptop");
+  const d = panel.captureFileName("terminal", 0, "Laptop | Dell");
+
+  assert.strictEqual(a, panel.captureFileName("terminal", 0, "Laptop"), "and it is stable");
+  assert.strictEqual(new Set([a, b, c, d]).size, 4, "identity, occurrence and topology all move it");
+  for (const name of [a, b, c, d]) {
+    assert.match(name, /^[0-9a-f]{8}-[A-Za-z0-9._-]+-[0-9a-f]{8}-\d+\.jpg$/, name);
+  }
+  // Readable enough to debug from a directory listing.
+  assert.ok(a.indexOf("terminal") !== -1, a);
+  // An occurrence a hand-edited file put junk in still lands on a real number,
+  // because occurrenceOf is the same coercion every other consumer applies.
+  assert.strictEqual(panel.captureFileName("terminal", -1, "Laptop"), a);
+  assert.strictEqual(panel.captureFileName("terminal", "0", "Laptop"), a);
+  // And an entry with no identity names nothing at all, rather than naming the
+  // bare topology prefix.
+  assert.strictEqual(panel.captureFileName("", 0, "Laptop"), "");
+});
+
+test("a hostile identity id becomes a filename, never a path", () => {
+  // An identity id is hand-editable in the state file, so this is user input on
+  // its way into a name that is later handed to `find` and to saveToFile.
+  const nasty = panel.captureFileName("../../../etc/passwd", 0, "Laptop");
+  // THE INVARIANT IS "one path segment", not "no dots". A dot inside a name is
+  // ordinary — `md.obsidian.Obsidian` is a real identity id — and only three
+  // shapes are dangerous: a separator, a name that IS "." or "..", and a
+  // leading "-" or "." (a flag, or a hidden file). The topology prefix and the
+  // ".jpg" suffix mean the whole name can never be "." or ".." either.
+  assert.ok(nasty.indexOf("/") === -1, nasty);
+  assert.match(nasty, /^[0-9a-f]{8}-[A-Za-z0-9._-]+-[0-9a-f]{8}-\d+\.jpg$/);
+  assert.ok(nasty !== "." && nasty !== "..");
+
+  // Two ids that sanitize to the SAME characters still get different files —
+  // that is what the id's own hash is for.
+  assert.notStrictEqual(panel.captureFileName("a/b", 0, "L"), panel.captureFileName("a:b", 0, "L"));
+
+  // A leading dash would read as a flag, a leading dot would hide the file and,
+  // as "..", would name the parent directory.
+  assert.strictEqual(panel.captureSafeSegment("-rf", 8).charAt(0), "_");
+  assert.strictEqual(panel.captureSafeSegment("..", 8).charAt(0), "_");
+  assert.strictEqual(panel.captureSafeSegment("", 8), "_");
+  // Capped, so no id can push the name past a filesystem's limit.
+  assert.strictEqual(panel.captureSafeSegment("x".repeat(500), 40).length, 40);
+});
+
+test("every picture of one recording shares the topology prefix, which is what evicts them", () => {
+  const prefix = panel.captureTopologyPrefix("Laptop | Dell");
+  assert.match(prefix, /^[0-9a-f]{8}-$/);
+  for (const occurrence of [0, 1, 2]) {
+    assert.ok(panel.captureFileName("terminal", occurrence, "Laptop | Dell").indexOf(prefix) === 0);
+  }
+  // A different desk is a different prefix, so forgetting one layout cannot
+  // take another desk's pictures with it.
+  assert.notStrictEqual(prefix, panel.captureTopologyPrefix("Laptop"));
+});
+
+test("a capture plan takes one picture per WATCHED window, and every one of them", () => {
+  const desk = captureDesk();
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, true);
+
+  assert.strictEqual(plan.topologyKey, desk.layout.topologyKey);
+  assert.strictEqual(plan.prefix, panel.captureTopologyPrefix(desk.layout.topologyKey));
+
+  // Two terminals are two pictures, at two occurrences, of two DIFFERENT
+  // windows — captures are the only thing that can tell duplicates apart, and a
+  // plan that photographed one window twice would defeat the point.
+  const terminals = plan.captures.filter((c) => c.identityId === "terminal");
+  assert.deepStrictEqual(terminals.map((c) => c.occurrence), [0, 1]);
+  assert.strictEqual(new Set(plan.captures.map((c) => c.address)).size, 3);
+  assert.strictEqual(new Set(plan.captures.map((c) => c.file)).size, 3);
+
+  // The window each entry names is the one buildLayout numbered that
+  // occurrence, taken from the same chosenWindows index — not a second match.
+  for (const capture of plan.captures) {
+    assert.strictEqual(capture.address,
+      desk.chosen.byId[capture.identityId][capture.occurrence].address);
+    assert.strictEqual(capture.file,
+      panel.captureFileName(capture.identityId, capture.occurrence, plan.topologyKey));
+  }
+
+  // THE BROWSER IS PHOTOGRAPHED TOO (schema v7). It is watched and it has a
+  // window, and that is now the whole of the question — the per-app camera it
+  // used to be skipped by is gone, and with pictures on nothing in a healthy
+  // plan is skipped at all.
+  assert.deepStrictEqual(plan.captures.map((c) => c.identityId).sort(),
+    ["browser", "terminal", "terminal"]);
+  assert.deepStrictEqual(plan.skipped, []);
+});
+
+test("with the pictures off the plan is empty, and every app says why", () => {
+  const desk = captureDesk();
+  const plan = panel.capturePlan(desk.layout, desk.identities, desk.chosen, false);
+  assert.deepStrictEqual(plan.captures, []);
+  assert.strictEqual(plan.skipped.length, desk.layout.apps.length,
+    "every app in the layout is accounted for, not silently absent");
+  assert.ok(plan.skipped.every((s) => s.reason === "pictures-off"),
+    JSON.stringify(plan.skipped));
+  // The prefix is still named, because the round still EVICTS: a re-record with
+  // the pictures switched off has to drop the ones the last one took.
+  assert.strictEqual(plan.prefix, panel.captureTopologyPrefix(desk.layout.topologyKey));
+
+  // Only the literal false is off — StateModel.picturesOn's rule, applied at
+  // the one other place the switch is read.
+  for (const junk of [true, undefined, "false", 0, null, {}]) {
+    assert.strictEqual(panel.capturePlan(desk.layout, desk.identities, desk.chosen, junk)
+      .captures.length, 3, JSON.stringify(junk) + " read as off");
+  }
+});
+
+test("a layout entry whose identity has gone is not photographed", () => {
+  // A watched app IS pictured, so "watched" is the only per-app question left —
+  // and a recorded ghost, whose identity the file no longer carries, is not.
+  const desk = captureDesk();
+  const fewer = desk.identities.filter((i) => i.id !== "browser");
+  const plan = panel.capturePlan(desk.layout, fewer, desk.chosen, true);
+  assert.deepStrictEqual(plan.captures.map((c) => c.identityId), ["terminal", "terminal"]);
+  assert.deepStrictEqual(plan.skipped,
+    [{ identityId: "browser", occurrence: 0, reason: "not-watched" }]);
+});
+
+test("a recorded app whose window has gone is skipped, not guessed at", () => {
+  const desk = captureDesk();
+  // The layout still names both terminals; the desk no longer has the second.
+  const fewer = desk.clients.filter((c) => c.address !== "0xbbb");
+  const chosen = engine.chosenWindows(fewer, desk.identities, monitorsLaptop);
+  const plan = panel.capturePlan(desk.layout, desk.identities, chosen, true);
+
+  assert.deepStrictEqual(
+    plan.captures.filter((c) => c.identityId === "terminal").map((c) => c.occurrence), [0]);
+  assert.ok(plan.skipped.some((s) => s.identityId === "terminal" && s.reason === "no-window"));
+});
+
+test("a layout with no topology plans nothing, because a picture with no prefix cannot be evicted", () => {
+  const desk = captureDesk();
+  const plan = panel.capturePlan({ topologyKey: "", apps: desk.layout.apps },
+    desk.identities, desk.chosen, true);
+  assert.deepStrictEqual(plan, { topologyKey: "", prefix: "", captures: [], skipped: [] });
+  assert.deepStrictEqual(panel.capturePlan(null, desk.identities, desk.chosen, true).captures, []);
+});
+
+test("the capture log line reads as best-effort, and says all four numbers", () => {
+  const plan = {
+    skipped: [
+      { identityId: "browser", occurrence: 0, reason: "pictures-off" },
+      { identityId: "slack", occurrence: 0, reason: "no-window" }
+    ]
+  };
+  const line = panel.captureLogLine(plan, [
+    { ok: true }, { ok: false, reason: "no-frame" }
+  ]);
+  assert.strictEqual(line,
+    "1 picture(s) stored, 1 could not be captured (no-frame), 1 not pictured, 1 no longer open");
+
+  // A failure names its reason, and each distinct one once — the reasons are
+  // the whole diagnostic value of the line, and "no-frame" in particular is the
+  // one real failure mode this feature has (a monitor that is not rendering).
+  assert.strictEqual(
+    panel.captureLogLine(null, [{ ok: false, reason: "no-frame" },
+                                { ok: false, reason: "no-frame" },
+                                { ok: false, reason: "no-handle" },
+                                { ok: false }]),
+    "0 picture(s) stored, 4 could not be captured (no-frame, no-handle, unknown)");
+
+  // A clean round says one thing and does not enumerate zeroes.
+  assert.strictEqual(panel.captureLogLine({ skipped: [] }, [{ ok: true }, { ok: true }]),
+    "2 picture(s) stored");
+  // And a round that stored nothing still leads with the count rather than
+  // reading as a failure: the recording is fine either way.
+  assert.strictEqual(panel.captureLogLine(null, []), "0 picture(s) stored");
+});
+
+test("a listing of the cache is a set of basenames, and a missing directory is an empty one", () => {
+  assert.deepStrictEqual(panel.captureFileIndex("a.jpg\nb.jpg\n"), { "a.jpg": true, "b.jpg": true });
+  // A wiped cache is the normal, correct answer — not an error.
+  assert.deepStrictEqual(panel.captureFileIndex(""), {});
+  assert.deepStrictEqual(panel.captureFileIndex(null), {});
+  assert.deepStrictEqual(panel.captureFileIndex("  \n\n a.jpg \n"), { "a.jpg": true });
+});
+
+test("A SCREENSHOT CANNOT FAIL A RECORD: the capture is last, gated, and off the stack", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  const record = source.slice(source.indexOf("function recordLayout()"));
+  const body = record.slice(0, record.indexOf("\n  }\n"));
+
+  // 1. THE WRITE GATES IT. The capture kickoff has to come after the guarded
+  //    upsertLayout, so every refusal path returns before it.
+  const write = body.indexOf("if (!root.writeState(StateModel.upsertLayout(base, recorded))) return false");
+  const capture = body.indexOf("captureAfterRecord");
+  assert.ok(write !== -1, "recordLayout no longer gates on writeState's boolean");
+  assert.ok(capture !== -1, "recordLayout no longer starts a capture at all");
+  assert.ok(capture > write, "the capture is reachable without the layout having been written");
+
+  // 2. IT IS OFF THE RECORDING'S STACK. Qt.callLater puts it in a later
+  //    event-loop turn, so recordLayout has already returned before any capture
+  //    code runs and nothing it does can unwind through the record.
+  assert.ok(body.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout, chosen) })") !== -1,
+    "the capture is called synchronously from recordLayout");
+
+  // 3. NOTHING IN THE CAPTURE PATH WRITES THE STATE FILE. The one function it
+  //    reaches, and the whole store, must never call writeState.
+  const after = source.slice(source.indexOf("function captureAfterRecord(layout, chosen)"));
+  const afterBody = after.slice(0, after.indexOf("\n  }\n"));
+  assert.strictEqual(afterBody.indexOf("writeState"), -1, afterBody);
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  assert.strictEqual(store.indexOf("writeState"), -1, "the capture store writes the state file");
+  assert.strictEqual(store.indexOf("StateModel"), -1, "the capture store reaches the state model");
+});
+
+test("the pictures are evicted at all three points a recording can end", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // Forget deletes, undo drops what the undone record took, and a re-record
+  // replaces — the third one through captureAfterRecord/capture, which evicts
+  // the topology's prefix before it writes the new set.
+  for (const [name, fn] of [["undoRecord", "function undoRecord()"],
+                            ["forgetLayout", "function forgetLayout()"]]) {
+    const at = source.indexOf(fn);
+    assert.ok(at !== -1, name + " is gone");
+    const body = source.slice(at, source.indexOf("\n  }\n", at));
+    assert.ok(body.indexOf("captureStore.evict(PanelModel.captureTopologyPrefix(") !== -1,
+      name + " no longer evicts this topology's pictures");
+  }
+
+  const after = source.slice(source.indexOf("function captureAfterRecord(layout, chosen)"));
+  const afterBody = after.slice(0, after.indexOf("\n  }\n"));
+  assert.ok(afterBody.indexOf("captureStore.evict(plan.prefix") !== -1,
+    "a re-record with the pictures since switched off leaves the old ones behind");
+
+  // And the eviction of the REPLACED set is a step of the capture sequence, not
+  // a second call the caller has to remember: `find -delete` racing a save is
+  // exactly what ordering them separately would buy.
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  const capture = store.slice(store.indexOf("function capture(plan, done)"));
+  assert.ok(capture.slice(0, 2000).indexOf("_resolveThenWalk") !== -1);
+  assert.ok(store.indexOf("store.evict(store._plan ? store._plan.prefix : \"\", \"re-recorded\",") !== -1,
+    "the capture sequence no longer evicts before it writes");
+  // And the walk is chained onto THAT eviction's own completion, not onto
+  // whichever eviction happens to finish next (tick ilg).
+  assert.ok(store.indexOf("function () { store._runEvictThen() })") !== -1,
+    "the round's continuation is no longer attached to the round's own eviction job");
+});
+
+test("_finish() tears down every piece of round state, and every early-return path between the guard and completion reaches it (tick gox)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // THE BUG: _finish() used to clear only `_done` and `_active`, leaving
+  // `_queue` populated after an early abort (a failed mkdir, say). The next
+  // captureAll() then hit `if (store._active || store._queue.length > 0)`,
+  // read it as "a round is already running", and refused — silently, for the
+  // rest of the panel's life. `_finish()` must reset everything a round
+  // writes into, not just the two fields `busy` reads.
+  const finishAt = store.indexOf("function _finish()");
+  assert.ok(finishAt !== -1, "_finish() is gone");
+  const finishBody = store.slice(finishAt, store.indexOf("\n  }\n", finishAt));
+
+  for (const field of ["_done", "_active", "_queue", "_handles", "_evictThen", "_plan", "_results"]) {
+    assert.ok(new RegExp("store\\." + field + "\\s*=").test(finishBody),
+      "_finish() no longer resets " + field + " — a round left with this set latches the guard");
+  }
+
+  // The callback must still get the results it was going to get: `results` is
+  // read out of store._results BEFORE _finish() resets that property.
+  const resultsReadAt = finishBody.indexOf("var results = store._results");
+  const resultsResetAt = finishBody.indexOf("store._results = []");
+  const callbackAt = finishBody.indexOf("done(results)");
+  assert.ok(resultsReadAt !== -1 && resultsResetAt !== -1 && callbackAt !== -1,
+    "_finish()'s shape changed under this test");
+  assert.ok(resultsReadAt < resultsResetAt,
+    "_finish() resets _results before reading it into a local — the callback would get []");
+
+  // THE AUDIT: every early-return path AFTER capture()'s guards and before a
+  // normal completion must reach _finish(). Each slice below is exactly one
+  // such path, isolated the same way the QML itself separates them, and each
+  // must contain a call to store._finish().
+  //
+  // capture()'s OWN two refusals are the exception, and tick ilg is why: they
+  // run before a single field of round state is written, so there is nothing to
+  // tear down — and calling _finish() there tore down the round that was
+  // actually running. They are pinned by their own test below.
+  const mkdirAt = store.indexOf("id: mkdirProc");
+  const mkdirBody = store.slice(mkdirAt, store.indexOf("\n  }\n", mkdirAt));
+  const mkdirFail = mkdirBody.slice(mkdirBody.indexOf("if (exitCode !== 0)"),
+    mkdirBody.indexOf("store.evict("));
+  assert.ok(mkdirFail.indexOf("store._finish()") !== -1,
+    "mkdirProc's failure path no longer reaches _finish() — this is the exact path tick gox found broken");
+
+  const walkAt = store.indexOf("function _resolveThenWalk()");
+  const walkBody = store.slice(walkAt, store.indexOf("\n  }\n", walkAt));
+  const walkEmpty = walkBody.slice(0, walkBody.indexOf("var addresses"));
+  assert.ok(walkEmpty.indexOf("store._finish()") !== -1,
+    "_resolveThenWalk()'s empty-queue path no longer reaches _finish()");
+
+  const nextAt = store.indexOf("function _next()");
+  const nextBody = store.slice(nextAt, store.indexOf("\n  }\n", nextAt));
+  const nextEmpty = nextBody.slice(nextBody.indexOf("if (store._queue.length === 0)"),
+    nextBody.indexOf("var entry = store._queue[0]"));
+  assert.ok(nextEmpty.indexOf("store._finish()") !== -1,
+    "_next()'s normal-completion path (empty queue) no longer reaches _finish()");
+
+  // The whole-queue deadline reaches _finish() through the shared loud-abandon
+  // path (tick 070), which is also the guard's impossible-state exit — one
+  // implementation of "a round that cannot proceed fails loudly", not one per
+  // caller. Both halves are pinned: the deadline delegates, and the delegate
+  // both warns and tears the round down.
+  const totalAt = store.indexOf("id: total");
+  const totalBody = store.slice(totalAt, store.indexOf("\n  }\n", totalAt));
+  assert.ok(totalBody.indexOf("store._abandonRound(") !== -1,
+    "the whole-queue deadline no longer ends the round through _abandonRound():\n" + totalBody);
+  const abandonAt = store.indexOf("function _abandonRound(sentence, reason)");
+  assert.ok(abandonAt !== -1, "_abandonRound is gone");
+  const abandonBody = store.slice(abandonAt, store.indexOf("\n  }\n", abandonAt));
+  assert.ok(abandonBody.indexOf("store._finish()") !== -1,
+    "_abandonRound() no longer reaches _finish(), so an abandoned round latches `busy` forever");
+  assert.ok(abandonBody.indexOf("store.warn(sentence)") !== -1,
+    "_abandonRound() no longer says anything — a round that gives up in silence is tick 070 again");
+  assert.ok(abandonBody.indexOf("guard.stop()") !== -1 && abandonBody.indexOf("total.stop()") !== -1,
+    "_abandonRound() leaves a timer armed over a round that is over:\n" + abandonBody);
+  assert.ok(abandonBody.indexOf("store._results = results") !== -1,
+    "_abandonRound() drops the windows it abandoned instead of reporting them");
+
+  // The remaining exits — _settle()'s callers (no-handle, view-create-failed,
+  // empty-source, grab-null, save-failed, grab-refused) and the per-window
+  // guard timer (no-frame) — never return out of the round at all: each
+  // records one entry's result and loops back to _next() via Qt.callLater,
+  // which drains to the empty-queue path pinned above. Pinned here by
+  // confirming _settle() itself never tears the round down early.
+  const settleAt = store.indexOf("function _settle(step, ok, reason)");
+  const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
+  assert.strictEqual(settleBody.indexOf("_finish"), -1,
+    "_settle() now short-circuits the round instead of always looping back to _next()");
+  assert.ok(settleBody.indexOf("Qt.callLater(function () { store._next() })") !== -1,
+    "_settle() no longer loops back to _next(), so its callers would no longer reach the audited path");
+});
+
+// ---------------------------------------------------------------------------
+// A capture round cannot be destroyed by the Record that was refused (tick ilg)
+// ---------------------------------------------------------------------------
+
+test("A REFUSED RECORD TOUCHES NOTHING: capture()'s guards come before any round state (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  const at = store.indexOf("function capture(plan, done) {");
+  assert.ok(at !== -1, "capture() is gone");
+  const body = store.slice(at, store.indexOf("\n  }\n", at));
+
+  // 1. THE GUARD IS FIRST. `_plan`, `_done` and `_results` used to be assigned
+  //    above it, so a second Record during a live round overwrote the FIRST
+  //    round's fields with the refused one's — and then called _finish(), which
+  //    since tick gox correctly resets everything, tearing down the round that
+  //    was actually running: its `done` lost (so its log line never appeared),
+  //    its view left alive with a pending grab, and `busy` false so the NEXT
+  //    Record was not blocked either.
+  const guard = body.indexOf("if (store.busy)");
+  assert.ok(guard !== -1, "capture() no longer refuses a second round on `busy`");
+  for (const field of ["_plan", "_done", "_results", "_queue", "_handles", "_evictThen"]) {
+    const write = body.indexOf("store." + field + " =");
+    assert.ok(write !== -1, "capture() no longer sets " + field);
+    assert.ok(write > guard,
+      "capture() writes " + field + " before the one-round-at-a-time guard — a refused Record "
+      + "would alter the round that is actually running");
+  }
+
+  // 2. NEITHER REFUSAL CALLS _finish(). The round it would tear down belongs to
+  //    somebody else. This is the assertion that must not be relaxed back: the
+  //    pre-gox latch (a half-reset round leaving `_queue` populated) is NOT the
+  //    way to stop the interleave, and nothing here reintroduces it.
+  const refusals = body.slice(guard, body.indexOf("var captures ="));
+  assert.strictEqual(refusals.indexOf("_finish"), -1,
+    "capture()'s refusal paths call _finish() again — the exact bug tick ilg closed:\n" + refusals);
+
+  // 3. The caller is still answered, with the empty round it always got: it
+  //    logs "0 picture(s) stored".
+  assert.strictEqual((refusals.match(/callback\(\[\]\)/g) || []).length, 2,
+    "capture()'s two refusals no longer both answer the caller with an empty round:\n" + refusals);
+});
+
+test("`busy` is load-bearing: a live capture round dims Record, and says why (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+  const panelSrc = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // It covers the WHOLE round, mkdir and eviction included: between capture()
+  // and _resolveThenWalk the queue can be non-empty but `_active` is still
+  // false, and that window is a process spawn and a `find` wide.
+  const busyAt = store.indexOf("readonly property bool busy:");
+  assert.ok(busyAt !== -1, "captureStore.busy is gone");
+  const busyLine = store.slice(busyAt, store.indexOf("\n", busyAt));
+  for (const field of ["_queue", "_active", "_plan"]) {
+    assert.ok(busyLine.indexOf(field) !== -1,
+      "busy no longer covers " + field + ", so part of a round reads as idle: " + busyLine);
+  }
+
+  // AND SOMETHING READS IT. It was read nowhere at all — verified by grep at
+  // review time — which is how a second Record ever reached the store's refusal.
+  const canAt = panelSrc.indexOf("readonly property bool canRecord:");
+  assert.ok(canAt !== -1, "canRecord is gone");
+  assert.ok(panelSrc.slice(canAt, canAt + 260).indexOf("!captureStore.busy") !== -1,
+    "canRecord does not consult captureStore.busy, so Record is live during a capture round");
+
+  // Both doors onto the act go through canRecord: the button binds it, the
+  // keyboard and the overflow's Re-record call recordLayout(), and the IPC verb
+  // answers "cannot-record" before it ever gets there.
+  const ipc = panelSrc.slice(panelSrc.indexOf("function record(): string {"), panelSrc.length);
+  assert.ok(ipc.slice(0, 200).indexOf("if (!root.canRecord) return \"cannot-record\"") !== -1,
+    "the IPC record verb no longer gates on canRecord");
+  const rec = panelSrc.slice(panelSrc.indexOf("function recordLayout() {"));
+  assert.ok(rec.slice(0, 120).indexOf("if (!root.canRecord) return false") !== -1,
+    "recordLayout no longer gates on canRecord");
+
+  // And the hint under the map says which of the two reasons it is.
+  const hintAt = panelSrc.indexOf("readonly property string recordHint:");
+  assert.ok(panelSrc.slice(hintAt, hintAt + 180).indexOf("captureStore.busy") !== -1,
+    "recordHint never mentions the capture round, so Record dims with no explanation");
+});
+
+test("a late grab cannot write a picture for a capture already reported failed (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // "The step in flight" is the head of the queue, and every path that answers
+  // for a step shifts it off. Asked as a NUMBER since tick 070 — see the
+  // regression test below for why an object could never answer it.
+  const isAt = store.indexOf("function _isCurrentStep(step)");
+  assert.ok(isAt !== -1, "_isCurrentStep is gone");
+  const isBody = store.slice(isAt, store.indexOf("\n  }\n", isAt));
+  assert.ok(isBody.indexOf("step === store._step") !== -1
+    && isBody.indexOf("store._queue.length > 0") !== -1,
+    "_isCurrentStep no longer means 'this step, and the queue still has a head':\n" + isBody);
+
+  // 1. THE PER-WINDOW GUARD CANNOT OUTLIVE ITS STEP. It measures exactly one
+  //    thing — does this window ever deliver a frame — and stops the moment one
+  //    does. It used to be stopped only at the top of _next(), a LATER turn, so
+  //    it could fire against a grab still on the render thread.
+  const contentAt = store.indexOf("function _onContent(view)");
+  const contentBody = store.slice(contentAt, store.indexOf("\n  }\n", contentAt));
+  const stop = contentBody.indexOf("guard.stop()");
+  assert.ok(stop !== -1, "the per-window guard is no longer stopped when the frame arrives");
+  assert.ok(stop < contentBody.indexOf("view.grabToImage("),
+    "the guard is stopped after the grab is queued, which is the race itself");
+
+  // 2. THE SAVE IS GATED, not just the result. A file written after the step
+  //    ended is a picture no listing knows about, that no eviction can reach,
+  //    and that can land after the switch-off has already emptied the cache.
+  const grab = contentBody.slice(contentBody.indexOf("view.grabToImage(function (result)"));
+  const gate = grab.indexOf("if (!store._isCurrentStep(step)) return");
+  const save = grab.indexOf("saveToFile");
+  assert.ok(gate !== -1, "the grab callback never checks whether its step is still in flight:\n" + grab);
+  assert.ok(save !== -1 && gate < save,
+    "the grab callback saves before it checks its step is still in flight:\n" + grab);
+
+  // 3. _settle IS IDEMPOTENT PER ENTRY. A second answer for one step used to
+  //    push a duplicate result AND shift the queue again — one window silently
+  //    dropped, unphotographed and unreported, and therefore missing from the
+  //    round's results and from the log line built out of them.
+  const settleAt = store.indexOf("function _settle(step, ok, reason)");
+  const settleBody = store.slice(settleAt, store.indexOf("\n  }\n", settleAt));
+  const settleGate = settleBody.indexOf("if (!store._isCurrentStep(step)) return");
+  assert.ok(settleGate !== -1, "_settle() is answerable twice for one step:\n" + settleBody);
+  assert.ok(settleGate < settleBody.indexOf("store._results = results"),
+    "_settle() records the result before checking the step is still in flight");
+
+  //    AND THE TOKEN IS BURNT (tick 070). Shifting the queue was enough while
+  //    the subject was the entry object — the shifted-off entry could never be
+  //    the head again. A number survives the shift, so answering a step has to
+  //    END it, or the second answer for step N lands on the entry that has just
+  //    become the head: this same dropped window, one layer down.
+  assert.ok(settleBody.indexOf("store._step = store._step + 1") !== -1,
+    "_settle() no longer ends the step it answered, so a second answer for it "
+    + "would be accepted against the NEXT window:\n" + settleBody);
+  assert.ok(settleBody.indexOf("store._step = store._step + 1")
+    < settleBody.indexOf("store._queue = store._queue.slice(1)"),
+    "_settle() shifts the queue before it ends the step:\n" + settleBody);
+
+  // 4. And the guard timer no longer settles blind: with _settle a no-op for a
+  //    stale step, a guard firing against one would advance nothing at all.
+  const guardAt = store.indexOf("id: guard");
+  const guardBody = store.slice(guardAt, store.indexOf("\n  }\n", guardAt));
+  assert.ok(guardBody.indexOf("if (!store._isCurrentStep(step))") !== -1,
+    "the per-window guard settles a step without checking it is the one in flight:\n" + guardBody);
+  // NOT _next() (tick 070): _next() rebuilds a view for the SAME queue head, so
+  // a mismatch that does not correct itself is an invisible loop — a fresh
+  // compositor capture session every stepMs, no result and no log line.
+  //
+  // Read against the CODE and not the file text: the comment beside this branch
+  // has to be able to name the call it is warning about.
+  const guardCode = qmlCode(guardBody);
+  assert.strictEqual(guardCode.indexOf("store._next()"), -1,
+    "the per-window guard retries the step by calling _next() again — the silent "
+    + "respawn loop tick 070 closed:\n" + guardBody);
+  assert.ok(guardBody.indexOf("store._abandonRound(") !== -1,
+    "the per-window guard's impossible state is silent again:\n" + guardBody);
+});
+
+// ---------------------------------------------------------------------------
+// The step in flight is a NUMBER, because an object cannot cross into a view
+// (tick 070)
+// ---------------------------------------------------------------------------
+
+test("no answer for a capture step is carried in a QML property as a JS object (tick 070)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // THE BUG, measured in the nested sandbox 2026-09-04 and reproduced from the
+  // acceptance VM's symptom: the round went silent after its own eviction and
+  // stored nothing.
+  //
+  // `Component.createObject(parent, { entry: entry })` passes its properties
+  // through a QVariantMap, so the queue entry arrived in the view as a DEEP
+  // COPY. Every path that answered for a step then asked
+  // `store._queue[0] === entry` against that copy and got `false` — for ever.
+  // The instrumented run:
+  //
+  //   entry===head false   head===head2 true   entry.address===head.address true
+  //
+  // so the grab callback returned before saving, `_settle` returned before
+  // recording, and the guard fell into its "not the step in flight" branch and
+  // called `_next()` — which built another view for the SAME head, every 6 s,
+  // with no result and no log line, until the whole-queue deadline ended the
+  // round 45 s later.
+  //
+  // The repair is that the step's identity is an integer, which the property
+  // boundary cannot copy into something else.
+
+  // 1. THE VIEW CARRIES A NUMBER. Not an object, and not "any property called
+  //    entry" — the whole failure was that an object survives the crossing as
+  //    data while losing the only thing being asked about it.
+  const componentAt = store.indexOf("id: viewComponent");
+  const componentBody = qmlCode(store.slice(componentAt, store.indexOf("\n  }\n", componentAt)));
+  assert.ok(/property\s+int\s+step\s*:/.test(componentBody),
+    "the capture view no longer carries an integer step:\n" + componentBody);
+  assert.strictEqual(/property\s+var\s+entry\s*:/.test(componentBody), false,
+    "the capture view carries the queue entry in a `property var` again — it "
+    + "arrives there as a copy, and every answer about it is discarded:\n" + componentBody);
+
+  // 2. AND THAT IS WHAT createObject IS HANDED. A properties map carrying the
+  //    entry is the crossing itself.
+  const nextAt = store.indexOf("function _next()");
+  const nextBody = store.slice(nextAt, store.indexOf("\n  }\n", nextAt));
+  assert.ok(nextBody.indexOf("createObject(stage, { captureSource: handle, step: step })") !== -1,
+    "the view is created with something other than the step number:\n" + nextBody);
+  assert.ok(nextBody.indexOf("store._step = store._step + 1") !== -1,
+    "_next() no longer claims a step number for the window it is about to start");
+
+  // 3. NOTHING COMPARES JS OBJECT IDENTITY ANYWHERE IN THIS FILE. `===` between
+  //    two objects that crossed a QML property is the whole defect, and the
+  //    exact expression that was there must not come back.
+  const code = qmlCode(store);
+  assert.strictEqual(code.indexOf("store._queue[0] === entry"), -1,
+    "the round identifies its step by object identity again");
+  assert.strictEqual(code.indexOf("_isCurrentEntry"), -1,
+    "_isCurrentEntry is back — it can only ever answer false");
+
+  // 4. EVERY ANSWER GOES THROUGH THE NUMBER. The three that can answer for a
+  //    step — the frame handler, the grab callback and the per-window guard —
+  //    plus _settle itself.
+  for (const [name, needle] of [
+    ["_onContent", "function _onContent(view)"],
+    ["_settle", "function _settle(step, ok, reason)"],
+  ]) {
+    const at = store.indexOf(needle);
+    assert.ok(at !== -1, name + " is gone");
+    assert.ok(store.slice(at, store.indexOf("\n  }\n", at)).indexOf("store._isCurrentStep(") !== -1,
+      name + " no longer asks whether its step is the one in flight");
+  }
+  const guardAt = store.indexOf("id: guard");
+  const guardBody = store.slice(guardAt, store.indexOf("\n  }\n", guardAt));
+  assert.ok(guardBody.indexOf("store._current ? store._current.step : 0") !== -1,
+    "the per-window guard no longer reads the step off the view it armed for:\n" + guardBody);
+
+  // 5. A ROUND THAT CANNOT PROCEED FAILS LOUDLY. Both exits that end a round
+  //    without draining it go through the same warn-and-tear-down, and the
+  //    whole-queue deadline is the outer bound on all of it.
+  const abandonAt = store.indexOf("function _abandonRound(sentence, reason)");
+  assert.ok(abandonAt !== -1, "_abandonRound is gone");
+  const abandonBody = store.slice(abandonAt, store.indexOf("\n  }\n", abandonAt));
+  assert.ok(abandonBody.indexOf("store.warn(sentence)") !== -1
+    && abandonBody.indexOf("store._finish()") !== -1,
+    "a round that gives up no longer both says so and tears itself down:\n" + abandonBody);
+  const totalBody = store.slice(store.indexOf("id: total"),
+    store.indexOf("\n  }\n", store.indexOf("id: total")));
+  assert.ok(totalBody.indexOf("store._abandonRound(") !== -1
+    && guardBody.indexOf("store._abandonRound(") !== -1,
+    "the deadline and the guard no longer share the one loud exit");
+});
+
+test("two evictions cannot cross, and a `find` that failed is not silent (tick ilg)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // ONE Process, five callers. The pattern, the reason and the continuation
+  // lived in properties beside it, so a second eviction SIGTERMed the first and
+  // then ran the first's onExited against the SECOND's pattern: the wrong
+  // sentence logged, and the capture round's "now start walking" continuation
+  // fired on a `find` that had been killed — breaking the stated invariant that
+  // the eviction completes before the first save.
+  assert.ok(store.indexOf("function _enqueueEvict(names, sentence, reason, then)") !== -1,
+    "evictions are no longer queued as jobs");
+  const startAt = store.indexOf("function _startEvict()");
+  assert.ok(startAt !== -1, "_startEvict is gone");
+  const startBody = store.slice(startAt, store.indexOf("\n  }\n", startAt));
+  assert.ok(startBody.indexOf("if (store._evictJob || store._evictQueue.length === 0) return") !== -1,
+    "_startEvict no longer refuses to start a second find over a running one");
+
+  // NOTHING CAN KILL A RUNNING FIND. The `running = false; running = true`
+  // restart is what SIGTERMed the previous eviction, and it now exists in
+  // exactly ONE place — behind the guard above, where no job is in flight.
+  assert.strictEqual((store.match(/evictProc\.running = false/g) || []).length, 1,
+    "the shared Process is restarted from more than one place again");
+  assert.ok(startBody.indexOf("evictProc.running = false") !== -1,
+    "the one restart is no longer the guarded one inside _startEvict:\n" + startBody);
+  // And the property the old code crossed is gone entirely.
+  assert.strictEqual(store.indexOf("_evictReason"), -1,
+    "the eviction's reason still lives in a property a later caller can overwrite");
+
+  const block = store.slice(store.indexOf("id: evictProc"), store.indexOf("property var _evictThen"));
+  assert.ok(block.indexOf("var job = store._evictJob") !== -1,
+    "onExited no longer reads the job that actually finished:\n" + block);
+  assert.ok(block.indexOf("job.names") !== -1 && block.indexOf("job.reason") !== -1
+    && block.indexOf("job.sentence") !== -1,
+    "the log line is still built from shared properties rather than the finished job");
+  assert.ok(block.indexOf("job.then()") !== -1,
+    "the continuation is no longer the finished job's own");
+  assert.ok(block.indexOf("store._startEvict()") !== -1,
+    "nothing starts the next queued eviction, so the queue stalls after one job");
+
+  // A DELETE THAT FAILED IS SAID OUT LOUD. `find`'s exit code was ignored and
+  // its stderr went to a collector nothing read, so an undeletable picture left
+  // a log line claiming the pictures were dropped.
+  assert.ok(block.indexOf("if (exitCode !== 0 && store._cacheDirPresent)") !== -1,
+    "a failed eviction is still silent:\n" + block);
+  assert.ok(block.indexOf("store.warn(") !== -1, block);
+  assert.ok(block.indexOf("evictErr.text") !== -1,
+    "the eviction's stderr still goes to a collector nothing reads");
+  // ...but the MISSING cache directory is not a failure — it is the state the
+  // plugin ships in, and the listing swallows it for exactly the same reason.
+  const listing = store.slice(store.indexOf("id: listProc"), store.indexOf("property bool _cacheDirPresent"));
+  assert.ok(listing.indexOf("store._cacheDirPresent = (exitCode === 0)") !== -1, listing);
+});
+
+// ---------------------------------------------------------------------------
+// Unwatching an app deletes its pictures, on every desk (tick sp7)
+// ---------------------------------------------------------------------------
+
+// `find -name` is fnmatch, so the pattern is testable against real file names
+// rather than only against itself. Everything but the two wildcards this
+// codebase puts in is escaped, so a metacharacter that leaked out of an
+// identity id would show up as a MISS here and not as a silently wider match.
+function globToRegExp(glob) {
+  return new RegExp("^" + String(glob)
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\?/g, ".")
+    .replace(/\*/g, ".*") + "$");
+}
+
+test("an unwatched app names EVERY picture of itself, on every desk (tick sp7)", () => {
+  const mine = "obsidian";
+  const theirs = "slack";
+  const pattern = panel.captureIdentityPattern(mine);
+  const re = globToRegExp(pattern);
+
+  // The topology segment is wildcarded and the occurrence is left open, so one
+  // pattern names this app's pictures wherever and however often they were
+  // taken. This is the whole repair: being watched is a fact about an APP, and
+  // an eviction keyed on the desk you happen to be plugged into left every
+  // other desk's copies with nobody who would ever come back for them.
+  for (const key of ["Laptop", "Laptop + AOC U34", "", "eDP-1|DP-3|HDMI-A-1"]) {
+    for (const occurrence of [0, 1, 7, 23]) {
+      const name = panel.captureFileName(mine, occurrence, key);
+      assert.ok(re.test(name), pattern + " does not name " + name);
+      assert.ok(!re.test(panel.captureFileName(theirs, occurrence, key)),
+        pattern + " also names another app's picture: " + panel.captureFileName(theirs, occurrence, key));
+    }
+  }
+
+  // And it names nothing else in the directory.
+  assert.ok(!re.test("readme.txt"));
+  assert.ok(!re.test(panel.captureFileName(mine, 0, "Laptop").replace(/\.jpg$/, ".png")));
+});
+
+test("the identity pattern carries no glob metacharacter of its own (tick sp7)", () => {
+  // captureSafeSegment maps everything outside [A-Za-z0-9._-] to "_", so the
+  // only "?" and "*" in a pattern are the ones captureIdentityPattern puts
+  // there: eight for the topology hash, one for the occurrence. An id that could
+  // contribute its own would be a user-editable string widening a delete.
+  for (const id of ["a?b", "a*b", "../../etc/passwd", "[a-z]", "**", "?", "-rf", ".hidden"]) {
+    const pattern = panel.captureIdentityPattern(id);
+    assert.strictEqual((pattern.match(/\?/g) || []).length, 8, id + " -> " + pattern);
+    assert.strictEqual((pattern.match(/\*/g) || []).length, 1, id + " -> " + pattern);
+    assert.strictEqual(pattern.indexOf("["), -1, id + " -> " + pattern);
+  }
+
+  // Two ids that SANITIZE the same are still told apart, by the hash that
+  // captureFileName uses for exactly the same reason.
+  const a = panel.captureIdentityPattern("a/b");
+  const b = panel.captureIdentityPattern("a?b");
+  assert.notStrictEqual(a, b);
+  assert.ok(!globToRegExp(a).test(panel.captureFileName("a?b", 0, "Laptop")));
+  assert.ok(globToRegExp(a).test(panel.captureFileName("a/b", 0, "Laptop")));
+
+  // An empty id names NOTHING, for the reason captureFileName returns "" for
+  // one: a caller must not be able to build a pattern that matches every file.
+  assert.strictEqual(panel.captureIdentityPattern(""), "");
+  assert.strictEqual(panel.captureIdentityPattern("   "), "");
+  assert.strictEqual(panel.captureIdentityPattern(null), "");
+  assert.deepStrictEqual(panel.captureIdentityPatterns(["", null, "  "]), []);
+
+  // The list form is de-duplicated: one act, one name per app.
+  assert.deepStrictEqual(panel.captureIdentityPatterns(["obsidian", "obsidian", "slack"]),
+    [panel.captureIdentityPattern("obsidian"), panel.captureIdentityPattern("slack")]);
+  assert.deepStrictEqual(panel.captureIdentityPatterns(null), []);
+});
+
+test("EVERY WAY OF DROPPING A PICTURE DELETES IT, on every desk (tick sp7)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  const bodyOf = (marker) => {
+    const at = source.indexOf(marker);
+    assert.ok(at !== -1, marker + " is gone");
+    return source.slice(at, source.indexOf("\n  }\n", at));
+  };
+
+  // 1. THE SWITCH, which is now the whole of the global half: off deletes every
+  //    stored picture on every desk and empties the live store as well, and both
+  //    happen only once the write is known to have landed.
+  const switched = bodyOf("function setPictures(on) {");
+  assert.ok(switched.indexOf("captureStore.evictAll(\"switched off\")") !== -1,
+    "switching the pictures off no longer deletes the stored ones:\n" + switched);
+  assert.ok(switched.indexOf("liveCaptures.clear()") !== -1,
+    "switching the pictures off leaves the live ones in memory:\n" + switched);
+  assert.ok(switched.indexOf("if (!root.writeState(StateModel.setPictures(fresh, want))) return")
+    < switched.indexOf("captureStore.evictAll"),
+    "the pictures go before the write that switches them off is known to have landed");
+  assert.strictEqual(switched.indexOf("captureTopologyPrefix"), -1,
+    "the switch evicts one desk's prefix — the other desks would keep their pictures forever");
+
+  // 2. UNWATCHING, which is what makes the README's promise true: it took the
+  //    identity, never the files.
+  const toggle = bodyOf("function toggleChip(chip) {");
+  assert.ok(toggle.indexOf("captureStore.evictIdentities([chip.identityId], \"unwatched\")") !== -1,
+    "unticking an app still leaves its photographs on disk:\n" + toggle);
+  assert.ok(toggle.indexOf("if (root.writeState(StateModel.setIdentities")
+    < toggle.indexOf("evictIdentities"), "the pictures go before the unwatch is written");
+  // And the LIVE half of the same act, handed the set that is LEFT rather than
+  // the id that went — the shape LiveCaptureStore.retain documents.
+  assert.ok(toggle.indexOf("liveCaptures.retain(remaining)") !== -1,
+    "unticking an app leaves its live picture on the map:\n" + toggle);
+
+  // 3. THE STORE'S SIDE: one process for the whole list, built from the pure
+  //    function, and an empty list deletes nothing — exactly as an empty prefix
+  //    does.
+  const evictIds = store.slice(store.indexOf("function evictIdentities(identityIds, reason)"));
+  const evictBody = evictIds.slice(0, evictIds.indexOf("\n  }\n"));
+  assert.ok(evictBody.indexOf("PanelModel.captureIdentityPatterns(identityIds)") !== -1, evictBody);
+  assert.ok(evictBody.indexOf("if (!names.length) return") !== -1,
+    "an empty identity list no longer refuses — it would name every file:\n" + evictBody);
+  // Several names go into ONE find, as an -o group.
+  const match = store.slice(store.indexOf("function _matchArgs(names)"));
+  const matchBody = match.slice(0, match.indexOf("\n  }\n"));
+  assert.ok(matchBody.indexOf("\"-o\"") !== -1 && matchBody.indexOf("\"(\"") !== -1, matchBody);
+});
+
+// ---------------------------------------------------------------------------
+// ONE SWITCH, AND NO SECOND ANSWER ANYWHERE (epic wau)
+// ---------------------------------------------------------------------------
+//
+// Increment 06 shipped two consents: a camera on every row and a three-answer
+// dialogue on the first Record. The human used them, could not find the camera,
+// and was talked out of his own pictures by the dialogue. Both are gone, and
+// these are the pins that keep them gone — an absence needs a test more than a
+// presence does, because nothing else fails when one comes back.
+
+test("the consent prompt does not exist, in any file", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = path.join(__dirname, "..");
+
+  assert.strictEqual(fs.existsSync(path.join(root, "ConsentPrompt.qml")), false,
+    "ConsentPrompt.qml is back");
+
+  const source = fs.readFileSync(path.join(root, "Panel.qml"), "utf8");
+  for (const word of ["consentOpen", "ConsentPrompt", "answerConsent", "pictureConsent",
+    "consentChoices", "consentCaptures", "picturedOf(", "picturableOf(", "setPicturedFor"]) {
+    assert.strictEqual(source.indexOf(word), -1,
+      "Panel.qml still names " + word + " — the prompt or the per-app camera is back");
+  }
+
+  // The map's chips lost their per-app grant too: the switch is the panel's and
+  // there is no second derivation of it anywhere a chip can reach.
+  const map = fs.readFileSync(path.join(root, "MapWorkspace.qml"), "utf8");
+  assert.strictEqual(map.indexOf("pictured"), -1, "MapWorkspace still reports a per-app grant");
+
+  // And the pure model: the prompt's vocabulary went with it.
+  const model = fs.readFileSync(path.join(root, "PanelModel.js"), "utf8");
+  for (const fn of ["function consentChoices", "function isConsentChoice",
+    "function consentPromptDue", "function picturedIdentityIds"]) {
+    assert.strictEqual(model.indexOf(fn), -1, "PanelModel still defines " + fn);
+  }
+  assert.strictEqual(panel.consentChoices, undefined, "consentChoices is still exported");
+  assert.strictEqual(panel.picturedIdentityIds, undefined,
+    "picturedIdentityIds is still exported");
+});
+
+test("the payload states the switch and none of the consent keys", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const state = source.slice(source.indexOf("function panelState()"));
+
+  // ALWAYS PRESENT and always a boolean: whether this tool may photograph is a
+  // fact the panel has, not a draw-time value it waits for. A key that vanished
+  // when the answer was "off" would make "the pictures are off" and "this build
+  // has no switch" the same payload.
+  assert.ok(state.indexOf("pictures: root.picturesOn") !== -1,
+    "the payload no longer carries the switch");
+
+  // ABSENT, never null — tests/acceptance/README.md is normative about the
+  // difference, and the acceptance suite asserts these with has().
+  for (const key of ["pictureConsent:", "consentOpen:", "consentChoices:", "consentCaptures:",
+    "pictured:", "picturable:"]) {
+    assert.strictEqual(state.indexOf(key), -1,
+      "the payload still carries " + key + " — it must be absent, not null");
+  }
+});
+
+test("the IPC verb is setPictures, and setPictured is not a verb", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // One switch, so no key: `setPictured(key, value)` is not renamed, it is gone.
+  assert.ok(source.indexOf("function setPictures(value: string): string") !== -1,
+    "the setPictures verb is missing");
+  assert.strictEqual(source.indexOf("function setPictured("), -1,
+    "the per-row setPictured verb is back");
+  assert.strictEqual(source.indexOf("function answerConsent("), -1,
+    "the answerConsent verb is back");
+
+  const at = source.indexOf("function setPictures(value: string): string");
+  const body = source.slice(at, source.indexOf("\n    }\n", at));
+  // The two words it takes, the two it answers, and the one refusal that comes
+  // before the file has been read — the shape setPaused established.
+  assert.ok(body.indexOf('if (want !== "on" && want !== "off") return "unknown"') !== -1, body);
+  assert.ok(body.indexOf('if (!root.stateLoaded) return "no-state"') !== -1, body);
+  assert.ok(body.indexOf('return root.picturesOn ? "on" : "off"') !== -1,
+    "the verb answers what it was asked for rather than the resulting state:\n" + body);
+  // Through the panel's own setter, which owns the fresh read, the eviction and
+  // the log — an IPC path that wrote the flag itself would switch nothing off.
+  assert.ok(body.indexOf("root.setPictures(want === \"on\")") !== -1, body);
+});
+
+test("setPictures cannot be switched OFF by a garbled argument", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const at = source.indexOf("function setPictures(on) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+
+  // `!== false` and never `=== true`, at the layer that actually calls evictAll
+  // and clear(). OFF is the destructive direction — it deletes every stored
+  // picture on every desk — and the reading rule StateModel.picturesOn owns
+  // exists precisely so that nothing but the literal `false` can select it. A
+  // `=== true` here would make every non-boolean argument a wholesale delete.
+  assert.ok(body.indexOf("var want = on !== false") !== -1,
+    "Panel.setPictures coerces its argument to OFF, which is the destructive "
+    + "direction — only the literal false may select it:\n" + body);
+  assert.strictEqual(body.indexOf("on === true"), -1, body);
+
+  // And the pure half, where it can be executed rather than grepped.
+  const st = require("../StateModel.js");
+  const on = st.defaultState();
+  const off = st.setPictures(on, false);
+  assert.strictEqual(st.picturesOn(off), false, "the literal false is off");
+  for (const junk of [undefined, null, 0, "", "false", "off", {}]) {
+    assert.strictEqual(st.picturesOn(st.setPictures(on, junk)), true,
+      JSON.stringify(junk) + " must not switch the pictures off");
+    assert.strictEqual(st.picturesOn(st.setPictures(off, junk)), true,
+      JSON.stringify(junk) + " on an already-off state is not a second switch-off");
+  }
+});
+
+test("the overflow menu's Pictures entry actually throws the switch", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const at = source.indexOf("function activateOverflow() {");
+  assert.ok(at !== -1, "Panel.qml has no activateOverflow");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+
+  // THE PRESS PATH, which nothing else in this repository reaches. The menu
+  // MODEL is pure and is tested above; the payload carries no menu actions at
+  // all, so the acceptance VM cannot see one either — which means a build whose
+  // "pictures" entry did nothing would satisfy every other assertion about the
+  // switch, in node and in the VM alike, and the user would press it and watch
+  // nothing happen.
+  const branch = body.indexOf("action.id === \"pictures\"");
+  assert.ok(branch !== -1,
+    "activateOverflow has no branch for the pictures entry, so pressing it does nothing:\n"
+    + body);
+  const call = body.indexOf("root.setPictures(!root.picturesOn)", branch);
+  assert.ok(call !== -1,
+    "the pictures branch does not throw the switch through the panel's own setter — "
+    + "which owns the fresh read, the eviction and the log:\n" + body);
+
+  // AND THE MENU STAYS OPEN, which is what the entry's own comment promises and
+  // what makes the press legible: the label flips under the cursor, so the menu
+  // is its own receipt. Forget and Re-record both close it; this one must not.
+  assert.strictEqual(body.indexOf("closeOverflow", call), -1,
+    "the pictures branch closes the menu, so the flipped label — the only "
+    + "feedback the press has — is never seen:\n" + body);
+});
+
+test("switching the pictures off is the ONLY thing that empties the whole cache", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // THE OTHER HALF OF THE DoD's SECOND CLAUSE: "a v6 file's stored pictures
+  // SURVIVE on disk when `pictures` resolves true". The VM can watch a migration
+  // and can watch the cache, but it seeds no v6 file — so survival is asserted
+  // here, as a property of the code: there is exactly one call to `evictAll` in
+  // the whole panel, and it is inside `setPictures`. Nothing on the read path,
+  // nothing on the migration path, and nothing a panel open touches can empty
+  // the cache; only the user throwing the switch can.
+  //
+  // A COUNT, deliberately, and it is the assertion that would catch the
+  // regression this is written against — a second `evictAll` added to a
+  // load-time or migrate-time branch would leave every other test in this
+  // repository green while quietly deleting the user's pictures the first time
+  // they opened the panel after an upgrade.
+  const calls = source.split("evictAll(").length - 1;
+  assert.strictEqual(calls, 1,
+    "Panel.qml calls evictAll " + calls + " times; exactly one call, inside setPictures, "
+    + "is what makes \"a migrated file's pictures survive\" a property of the code");
+
+  const at = source.indexOf("function setPictures(on) {");
+  assert.ok(at !== -1, "Panel.qml has no setPictures");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+  assert.ok(body.indexOf("evictAll(") !== -1,
+    "the one evictAll is not in setPictures — something else empties the cache:\n" + body);
+
+  // And it is on the OFF branch only: switching the pictures ON must not delete
+  // the pictures a migrated file arrived with.
+  const off = body.indexOf("if (!want) {");
+  assert.ok(off !== -1 && off < body.indexOf("evictAll("),
+    "evictAll is not inside the off branch, so switching the pictures ON would "
+    + "delete them:\n" + body);
+});
+
+test("switching the pictures back ON restarts the live round under an open panel", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const at = source.indexOf("function setPictures(on) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+
+  // A live round is ONCE PER PANEL SESSION (the latch), so switching the
+  // pictures on with the panel already open would otherwise draw nothing until
+  // the user closed and reopened it. The latch is dropped and the round re-run;
+  // startLiveRound's own guards hold it back when the panel is shut.
+  const latch = body.indexOf("root.liveRoundStarted = false");
+  const start = body.indexOf("root.startLiveRound()");
+  assert.ok(latch !== -1 && start !== -1,
+    "switching the pictures on does not restart the live round:\n" + body);
+  assert.ok(latch < start, "the round is restarted before the latch is dropped:\n" + body);
+
+  // BOTH LOG LINES GATED ON THE WRITE (the writeState-returns-boolean rule): a
+  // refused write must not claim in the log that anything happened.
+  const write = body.indexOf("if (!root.writeState(StateModel.setPictures(fresh, want))) return");
+  assert.ok(write !== -1, body);
+  assert.ok(write < body.indexOf("pictures switched off"), body);
+  assert.ok(write < body.indexOf("pictures switched on"), body);
+  // And the off line says what it just destroyed, because nothing else will.
+  assert.ok(body.indexOf("every stored picture deleted") !== -1, body);
+});
+
+// ---------------------------------------------------------------------------
+// The picture is of the window it claims (tick 3xi)
+// ---------------------------------------------------------------------------
+
+// Two windows of one identity, far enough apart that the placement comparator
+// has an opinion about which is occurrence 0.
+function twoTerminals(leftAt, rightAt) {
+  return [
+    makeClient({ address: "0xLEFT", class: "foot", title: "left", at: leftAt, size: [800, 600],
+                 workspace: { id: 1, name: "1" }, monitor: 0 }),
+    makeClient({ address: "0xRIGHT", class: "foot", title: "right", at: rightAt, size: [400, 300],
+                 workspace: { id: 1, name: "1" }, monitor: 0 })
+  ];
+}
+
+test("a SECOND window index is a second opinion, and it can photograph the wrong window (tick 3xi)", () => {
+  // This test exists to show the failure is real rather than theoretical, and to
+  // make it impossible to reintroduce quietly. Both halves use the SAME layout;
+  // the only difference is which index the plan is built from.
+  const identities = [{ id: "terminal", patterns: ["^foot$"] }];
+  const atRecord = twoTerminals([100, 100], [900, 100]);
+  const layout = engine.buildLayout(atRecord, monitorsLaptop, identities, AT);
+
+  // The desk read a moment later, with the two windows swapped left to right —
+  // a drag, a tiling flip, anything. Nothing about the layout changed; it is
+  // already written.
+  const afterwards = twoTerminals([900, 100], [100, 100]);
+
+  const honest = engine.chosenWindows(atRecord, identities, monitorsLaptop);
+  const second = engine.chosenWindows(afterwards, identities, monitorsLaptop);
+
+  // The occurrence order really did move. Without this the rest proves nothing.
+  assert.notStrictEqual(honest.byId.terminal[0].address, second.byId.terminal[0].address,
+    "the two reads agree, so this fixture cannot demonstrate anything");
+
+  const fromRecord = panel.capturePlan(layout, identities, honest);
+  const fromSecondOpinion = panel.capturePlan(layout, identities, second);
+
+  // BOTH PLANS ARE FILED UNDER THE SAME NAMES. That is the whole danger: the
+  // key is (identity, occurrence, topology), it is right either way, and no map
+  // and no assertion about the key can tell these two apart.
+  assert.deepStrictEqual(fromRecord.captures.map((c) => c.file),
+    fromSecondOpinion.captures.map((c) => c.file));
+
+  // And they photograph DIFFERENT WINDOWS.
+  assert.notDeepStrictEqual(fromRecord.captures.map((c) => c.address),
+    fromSecondOpinion.captures.map((c) => c.address),
+    "the second opinion happened to agree — the fixture no longer demonstrates the bug");
+
+  // The honest plan's window is the one the layout entry actually describes:
+  // same address, and therefore the geometry the record filed.
+  const byAddress = {};
+  for (const client of atRecord) byAddress[client.address] = client;
+  for (const capture of fromRecord.captures) {
+    const entry = layout.apps.find((a) => a.identityId === capture.identityId
+      && a.occurrence === capture.occurrence);
+    assert.ok(entry, "no layout entry for " + capture.file);
+    const client = byAddress[capture.address];
+    assert.ok(client, "the capture names an address the record never saw: " + capture.address);
+    assert.deepStrictEqual(entry.at, client.at,
+      "the picture's window is not the window this entry describes");
+    assert.deepStrictEqual(entry.size, client.size);
+  }
+});
+
+test("ONE INDEX, TWO USES: buildLayout takes the index the capture will be handed (tick 3xi)", () => {
+  const identities = [{ id: "terminal", patterns: ["^foot$"] }];
+  const clients = twoTerminals([100, 100], [900, 100]);
+  const chosen = engine.chosenWindows(clients, identities, monitorsLaptop);
+
+  // Handing in the index the function would have built itself changes nothing —
+  // so the panel's single computation is not a different recording.
+  assert.deepStrictEqual(
+    engine.buildLayout(clients, monitorsLaptop, identities, AT, chosen),
+    engine.buildLayout(clients, monitorsLaptop, identities, AT));
+
+  // And the parameter is LOAD-BEARING rather than politely ignored: an index
+  // over a different read produces a different record. If this ever comes out
+  // equal, buildLayout has gone back to computing its own and the panel's two
+  // uses are two computations again.
+  const other = engine.chosenWindows(twoTerminals([900, 100], [100, 100]), identities, monitorsLaptop);
+  assert.notDeepStrictEqual(
+    engine.buildLayout(clients, monitorsLaptop, identities, AT, other),
+    engine.buildLayout(clients, monitorsLaptop, identities, AT));
+
+  // Omitted, it is what it always was — scripts/record-current, and every test
+  // that only wants a record.
+  assert.deepStrictEqual(
+    engine.buildLayout(clients, monitorsLaptop, identities, AT, null),
+    engine.buildLayout(clients, monitorsLaptop, identities, AT));
+});
+
+test("the panel builds the window index ONCE, and the comment says what the code does (tick 3xi)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // EXACTLY ONE call in the whole panel. Two is the bug: the second ran a
+  // Qt.callLater turn later, over the LIVE client list, with nothing making the
+  // two agree.
+  assert.strictEqual((source.match(/Engine\.chosenWindows\(/g) || []).length, 1,
+    "Panel.qml computes the window index more than once — a capture can be filed under a "
+    + "correct key and be a photograph of a different window");
+
+  const recAt = source.indexOf("function recordLayout() {");
+  const recBody = source.slice(recAt, source.indexOf("\n  }\n", recAt));
+  assert.ok(recBody.indexOf("var chosen = Engine.chosenWindows(") !== -1,
+    "recordLayout no longer builds the index:\n" + recBody);
+  // The same variable reaches both: the record and the pictures.
+  assert.ok(recBody.indexOf("new Date().toISOString(), chosen,") !== -1,
+    "the layout is no longer built from the index the capture will be handed:\n" + recBody);
+  assert.ok(recBody.indexOf("Qt.callLater(function () { root.captureAfterRecord(layout, chosen) })") !== -1,
+    "the capture is no longer handed the index the layout was built from:\n" + recBody);
+
+  // And the capture NEVER builds one. A refusal, not a recomputation — building
+  // one there is precisely the second opinion.
+  const capAt = source.indexOf("function captureAfterRecord(layout, chosen) {");
+  assert.ok(capAt !== -1, "captureAfterRecord no longer takes the index");
+  const capBody = source.slice(capAt, source.indexOf("\n  }\n", capAt));
+  assert.strictEqual(capBody.indexOf("chosenWindows"), -1,
+    "captureAfterRecord computes the index again:\n" + capBody);
+  assert.ok(capBody.indexOf("if (!chosen)") !== -1,
+    "a recording with no index silently gets a guessed one:\n" + capBody);
+
+  // THE COMMENT IS PART OF THE CONTRACT. The old one asserted the two
+  // computations were "the same index buildLayout numbered the occurrences
+  // with, computed from the same clients and monitors", which was false — and
+  // this codebase treats a false comment as a defect in itself.
+  const comment = source.slice(source.indexOf("// Take the pictures the layout just committed"), capAt);
+  assert.strictEqual(comment.indexOf("would be a second opinion"), -1,
+    "the comment still claims a second match here would merely be a second opinion");
+  assert.ok(comment.indexOf("HANDED IN") !== -1, comment);
+});
+
+test("the map stops drawing a picture the switch has turned off (tick sp7)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // A `find` is a process and the listing that follows it is another, so
+  // `captureStore.has()` goes on answering yes for the frames in between. The
+  // gate is the SWITCH, which is written synchronously — so the photograph stops
+  // being drawn in the same instant it goes off, and the delete is what makes
+  // that true on disk as well.
+  const at = source.indexOf("function captureFileFor(identityId, occurrence) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+  const gate = body.indexOf("if (!root.picturesOn) return \"\"");
+  assert.ok(gate !== -1,
+    "the chip's capture is not gated on the switch, so a picture keeps rendering after"
+    + " the pictures are turned off:\n" + body);
+  assert.ok(gate < body.indexOf("captureStore.hasIn("),
+    "the listing is consulted before the switch is:\n" + body);
+
+  // ONE gate, in the funnel both readers go through — the chip's Image and the
+  // panelState payload. A second copy in MapWorkspace's Image would let
+  // `captureSource` (which the payload reports as BOUND) name a picture the
+  // chip is not drawing.
+  //
+  // Since tick 2zi the Image binds `pictureSource`, which is the UNION of the
+  // recorded source and the live one — declared in the delegate, from the two
+  // reported properties themselves, so it still cannot be a second derivation of
+  // either gate. The assertion that matters is unchanged: no picture question is
+  // asked inside the Image.
+  const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
+    map.indexOf("// THE VEIL"));
+  assert.ok(image.indexOf("source: chipTab.pictureSource") !== -1, image);
+  assert.strictEqual(image.indexOf("picturesOn"), -1,
+    "the Image reads the switch a second time, so the reported source and the drawn one can differ");
+
+  // And `pictureSource` is exactly the two reported properties and nothing else.
+  const union = map.slice(map.indexOf("readonly property string pictureSource:"));
+  const unionBody = union.slice(0, union.indexOf("\n\n"));
+  assert.ok(unionBody.indexOf("chipTab.captureSource") !== -1
+    && unionBody.indexOf("chipTab.liveSource") !== -1, unionBody);
+  assert.strictEqual(unionBody.indexOf("panel."), -1,
+    "the drawn source reaches past the two reported properties to ask the panel again:\n" + unionBody);
+});
+
+// ---------------------------------------------------------------------------
+// The Recorded map draws its captures (tick vbh)
+// ---------------------------------------------------------------------------
+//
+// The rendering itself cannot be proven here — no scene graph, no pixels. What
+// CAN be proven, and is exactly what would break silently, is the STRUCTURE the
+// rendering depends on: where the capture sits relative to the veil and the
+// content, that it is not a member of the Column that lays the name out, and
+// that it draws nothing until it is ready. The VM's IpcHandler assertions carry
+// the rest.
+
+test("the capture is the chip's GROUND: before the veil, before the content", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  const capture = source.indexOf("id: chipCapture");
+  const veil = source.indexOf("visible: chipTab.treatment === \"veiled\"");
+  const content = source.indexOf("id: chipContent");
+  assert.ok(capture !== -1, "the capture Image is gone");
+  assert.ok(veil !== -1 && content !== -1);
+
+  // QML paints siblings in document order, so this IS the layer order: the
+  // picture underneath, the veil quietening it, the icon and the name on top.
+  // Reordering these three is a visual change with no other symptom.
+  assert.ok(capture < veil, "the veil is painted under the capture, so it quietens nothing");
+  assert.ok(veil < content, "the veil is painted over the icon and the name");
+});
+
+test("A CAPTURE CANNOT PUSH THE NAME OUT: it is a sibling of the content, not a member", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // The Recorded map is entirely the FALLBACK path — 210x17 stacked rows —
+  // which is where names came back in tick ajp after a size ladder silently
+  // took every one of them away. A capture inside `chipContent` would take a
+  // share of the Column's width and could do it again.
+  const contentAt = source.indexOf("id: chipContent");
+  const captureAt = source.indexOf("id: chipCapture");
+  assert.ok(captureAt < contentAt, "the capture is declared inside the content Column");
+
+  // It fills the CHIP, not a slot in a layout.
+  const block = source.slice(captureAt, contentAt);
+  assert.ok(block.indexOf("anchors.fill: parent") !== -1, block);
+
+  // And the label is still gated on the tiers that carry a name, with nothing
+  // about a capture in that condition — the ladder decides the treatment and
+  // the capture fills in underneath it.
+  const label = source.slice(source.indexOf("id: chipLabel"));
+  const visible = label.slice(label.indexOf("visible:"), label.indexOf("visible:") + 60);
+  assert.ok(visible.indexOf("chipPill.hasLabel") !== -1, visible);
+  assert.strictEqual(visible.indexOf("captureSource"), -1,
+    "the label's visibility now depends on whether there is a capture");
+});
+
+test("no empty-image flash, and a deleted capture is not an error", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+  const block = source.slice(source.indexOf("id: chipCapture"), source.indexOf("id: chipContent"));
+
+  // Ready and nothing else: a source that is loading, that failed, or that was
+  // never set all draw nothing at all, and the chip is what it was before this
+  // tick. That one binding is the whole of "falls back to its icon with nothing
+  // erroring".
+  assert.ok(block.indexOf("visible: chipCapture.status === Image.Ready") !== -1, block);
+  // The path does not change when the picture does — a re-record writes a new
+  // file at the same name — so the image cache must not answer for it.
+  assert.ok(block.indexOf("cache: false") !== -1, block);
+});
+
+test("the ladder's cutoffs are exactly what epic c7f ratified — captures did not move them", () => {
+  // Restated here rather than imported, for the reason the VM test restates
+  // them in jq: a test that asked chipTreatment what chipTreatment thinks would
+  // agree with a wrong answer. This is the guard that a tick which fills a
+  // picture in UNDER the ladder did not quietly retune it.
+  assert.strictEqual(panel.chipTreatment(140, 56), "pill");
+  assert.strictEqual(panel.chipTreatment(139, 56), "badge");
+  assert.strictEqual(panel.chipTreatment(56, 40), "badge");
+  assert.strictEqual(panel.chipTreatment(55, 40), "veiled");
+  assert.strictEqual(panel.chipTreatment(210, 17), "strip");
+  assert.strictEqual(panel.chipTreatment(24, 16), "veiled");
+  assert.strictEqual(panel.chipTreatment(23, 16), "field");
+  assert.strictEqual(panel.chipTreatment(24, 15), "field");
+});
+
+test("the capture source is a fact about the RECORDED map, and a file URL", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const fn = source.slice(source.indexOf("function captureSourceOf(identityId, occurrence)"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+
+  // The Live tab draws the windows that are on screen; a photograph of one laid
+  // over the window itself is a staler picture of the same thing.
+  assert.ok(body.indexOf("if (!root.showRecorded) return \"\"") !== -1, body);
+  // Util.fileUrl, not a hand-built "file://" + path: it percent-encodes each
+  // segment, and a home directory with a space in it is the ordinary case that
+  // breaks the hand-built one.
+  assert.ok(body.indexOf("Util.fileUrl(path)") !== -1, body);
+
+  // And the payload adds both keys only when they have something to say.
+  const state = source.slice(source.indexOf("function panelState()"));
+  assert.ok(state.indexOf("if (capturePath) chips[chips.length - 1].capturePath = capturePath") !== -1);
+  assert.ok(state.indexOf("if (drawnCapture) chips[chips.length - 1].captureSource = drawnCapture") !== -1);
+});
+
+// ---------------------------------------------------------------------------
+// LIVE PICTURES (tick 2zi) — the Live map draws the windows as they are NOW
+// ---------------------------------------------------------------------------
+//
+// The human's ratified choice, in full (epic tsp): live pictures are held in
+// MEMORY ONLY. Photographed when the panel opens, drawn from memory, NEVER
+// written to disk, discarded when the panel closes. The parts with a right
+// answer are pure and live here; the machinery is QML and is pinned at the
+// source, the way every other QML gate in this file is.
+
+// One live desk, as the instance index has it: three watched apps over four
+// windows (one of them twice, at two occurrences), plus — by its absence — the
+// unwatched window, which has no identity and so is not in the index to plan.
+function liveDesk() {
+  return {
+    instances: {
+      byAddress: {
+        "0xaa": { identityId: "terminal", occurrence: 0, index: 0, instances: 2 },
+        "0xbb": { identityId: "terminal", occurrence: 1, index: 1, instances: 2 },
+        "0xcc": { identityId: "browser", occurrence: 0, index: 0, instances: 1 },
+        "0xdd": { identityId: "editor", occurrence: 0, index: 0, instances: 1 }
+      }
+    },
+    identities: [
+      { id: "terminal" },
+      { id: "browser" },
+      { id: "editor" }
+    ]
+  };
+}
+
+test("a live plan photographs one window per WATCHED live window, and names no file", () => {
+  const desk = liveDesk();
+  const plan = panel.liveCapturePlan(desk.instances, desk.identities, true);
+
+  // Ordered by identity, then occurrence: an object's key order is an accident
+  // of insertion, and a round that walked two identical desks in two different
+  // orders would be a round nothing could pin.
+  assert.deepStrictEqual(plan.captures,
+    [{ address: "0xcc", identityId: "browser", occurrence: 0 },
+     { address: "0xdd", identityId: "editor", occurrence: 0 },
+     { address: "0xaa", identityId: "terminal", occurrence: 0 },
+     { address: "0xbb", identityId: "terminal", occurrence: 1 }]);
+
+  // NO FILE NAME AND NO PREFIX ANYWHERE IN THE PLAN. This is the whole of
+  // "memory only" said in the one place a future author would reach for when
+  // adding a cache back: a plan with no name for a picture cannot file one.
+  for (const entry of plan.captures) {
+    assert.strictEqual(entry.file, undefined,
+      "a live capture names a file — the picture is on its way to a disk");
+  }
+  assert.strictEqual(plan.prefix, undefined);
+  assert.strictEqual(plan.topologyKey, undefined);
+
+  // With the pictures on and every window watched, nothing is skipped.
+  assert.deepStrictEqual(plan.skipped, []);
+});
+
+test("the live plan obeys the same switch Record obeys, by the same rule", () => {
+  const desk = liveDesk();
+
+  // OFF: nothing planned, and every window REPORTED so the log can say what the
+  // round did not do rather than only what it did.
+  const off = panel.liveCapturePlan(desk.instances, desk.identities, false);
+  assert.deepStrictEqual(off.captures, []);
+  assert.strictEqual(off.skipped.length, 4);
+  assert.ok(off.skipped.every((s) => s.reason === "pictures-off"), JSON.stringify(off.skipped));
+
+  // Only the literal false is off — StateModel.picturesOn's rule again.
+  for (const junk of [true, undefined, "false", 0, null, {}]) {
+    assert.strictEqual(panel.liveCapturePlan(desk.instances, desk.identities, junk)
+      .captures.length, 4, JSON.stringify(junk) + " read as off");
+  }
+
+  // A window whose identity the file no longer carries is not photographed, and
+  // says so — the live half of "a WATCHED app is pictured".
+  const fewer = desk.identities.filter((i) => i.id !== "browser");
+  const some = panel.liveCapturePlan(desk.instances, fewer, true);
+  assert.deepStrictEqual(some.captures.map((c) => c.identityId),
+    ["editor", "terminal", "terminal"]);
+  assert.deepStrictEqual(some.skipped,
+    [{ address: "0xcc", identityId: "browser", occurrence: 0, reason: "not-watched" }]);
+
+  // An app nobody watches is not in the index to be asked at all: the index is
+  // built from resolved identities only.
+  assert.strictEqual(
+    panel.liveCapturePlan(desk.instances, desk.identities, true).captures
+      .filter((c) => c.address === "0xee").length, 0);
+
+  // Nothing at all is not a failure — it is a desk with no windows on it.
+  assert.deepStrictEqual(panel.liveCapturePlan(null, null, true), { captures: [], skipped: [] });
+  assert.deepStrictEqual(
+    panel.liveCapturePlan({ byAddress: {} }, desk.identities, true).captures, []);
+});
+
+test("the live round's log line says the pictures were never written", () => {
+  const desk = liveDesk();
+  // The browser unwatched, so the line has a skip to report as well as takes.
+  const plan = panel.liveCapturePlan(desk.instances,
+    desk.identities.filter((i) => i.id !== "browser"), true);
+
+  const all = plan.captures.map((c) => ({ ok: true, reason: "" }));
+  const line = panel.liveCaptureLogLine(plan, all);
+  // The one word that matters. A line saying "stored" about these is the first
+  // place the memory-only promise starts to blur.
+  assert.ok(line.indexOf("held in memory, never written to disk") !== -1, line);
+  assert.ok(line.indexOf("3 live picture(s)") === 0, line);
+  assert.ok(line.indexOf("1 not pictured") !== -1, line);
+
+  // A FAILURE SAYS WHY — the reasons are the whole diagnostic value of the line.
+  const mixed = panel.liveCaptureLogLine(plan,
+    [{ ok: true, reason: "" }, { ok: false, reason: "no-frame" },
+     { ok: false, reason: "withdrawn" }]);
+  assert.ok(mixed.indexOf("2 could not be taken (no-frame, withdrawn)") !== -1, mixed);
+
+  // A round that was abandoned reports the windows it never reached, rather than
+  // leaving them out of the arithmetic entirely.
+  const short = panel.liveCaptureLogLine(plan, [{ ok: true, reason: "" }]);
+  assert.ok(short.indexOf("2 not reached") !== -1, short);
+});
+
+test("NOTHING ON THE LIVE PATH CAN WRITE A FILE", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
+
+  // THE CONSTRAINT THE WHOLE TICK HANGS ON, and the human chose it over an
+  // on-disk cache after being shown both (epic tsp). A picture that never
+  // persists has no withdrawal surface, and that absence IS the design — so it
+  // is guarded here rather than left to a reviewer noticing a new `saveToFile`.
+  const code = store.split("\n")
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join("\n");
+
+  assert.strictEqual(code.indexOf("saveToFile"), -1,
+    "the live store saves a grab to a file — live pictures are memory only");
+  assert.strictEqual(code.indexOf("cacheDir"), -1,
+    "the live store has a cache directory, which is the first half of a store to evict");
+  assert.strictEqual(code.indexOf("Process"), -1,
+    "the live store spawns a process — there is nothing on this path for one to do");
+  assert.strictEqual(code.indexOf("FileView"), -1, "the live store reads or writes a file");
+
+  // And the URL it publishes is the grab result's own, held alive by a reference
+  // — which is the mechanism that makes drawing without writing possible at all.
+  assert.ok(code.indexOf("result.url") !== -1, code);
+  assert.ok(code.indexOf("result: result") !== -1,
+    "nothing holds the grab result, so its url is dangling the moment the callback returns");
+});
+
+test("RECORD STAYS AVAILABLE: the dependency between the two rounds runs one way", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
+
+  // `captureStore.busy` dims Record (tick ilg) so two rounds cannot interleave.
+  // A live round on every panel open sharing that flag would make Record refuse
+  // for a moment EVERY time the panel appeared — a new defect, and worse than
+  // the one ilg fixed. So `canRecord` must never learn about the live store.
+  const at = source.indexOf("readonly property bool canRecord:");
+  const canRecord = source.slice(at, source.indexOf("\n\n", at));
+  assert.ok(canRecord.indexOf("!captureStore.busy") !== -1, canRecord);
+  assert.strictEqual(canRecord.indexOf("liveCaptures"), -1,
+    "Record now waits for a live round, which dims it every time the panel opens:\n" + canRecord);
+
+  // The other direction is the whole answer: the live round parks while a
+  // recorded one is in flight, so the compositor never holds two capture
+  // sessions either.
+  assert.ok(source.indexOf("yielding: captureStore.busy") !== -1,
+    "the live round does not stand aside for Record");
+
+  // Parking BURNS THE TOKEN. The view being destroyed may already have a
+  // grabToImage on the render thread, and its callback must answer for nothing
+  // when it lands (tick 070's currency, tick ilg's hazard).
+  const park = store.slice(store.indexOf("function _park()"),
+    store.indexOf("function _resume()"));
+  assert.ok(park.indexOf("liveStore._step = liveStore._step + 1") !== -1, park);
+  assert.ok(park.indexOf("destroy()") !== -1, park);
+  assert.strictEqual(park.indexOf("_next()"), -1,
+    "parking walks the queue on, so a Record and a live grab overlap anyway:\n" + park);
+
+  // And the queue is NOT thrown away, so the window that was standing aside is
+  // photographed when the round walks on.
+  assert.strictEqual(park.indexOf("_queue = []"), -1, park);
+});
+
+test("a chip is never blank: the icon is the fallback, and there is only one of it", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // The picture — either kind — draws only when the Image says Ready.
+  const image = map.slice(map.indexOf("Image {\n                id: chipCapture"),
+    map.indexOf("// THE VEIL"));
+  assert.ok(image.indexOf("visible: chipCapture.status === Image.Ready") !== -1, image);
+
+  // AND THE ICON STEPS ASIDE FOR A PICTURE THIS CHIP IS HOLDING, which since
+  // tick nlg is `pictureHeld` and not `captureDrawn`. The two differ in exactly
+  // one case — a picture being RELOADED — and that case is the blink this is
+  // now pinned against: on the recorded map a reload is asynchronous and
+  // happens on every re-layout (sourceSize is the chip's drawn size), so
+  // `!captureDrawn` brought the icon back on every chip at once for no reason
+  // the user could see.
+  const icon = map.slice(map.indexOf("id: chipIcon"), map.indexOf("id: chipLabel"));
+  assert.ok(icon.indexOf("visible: chipTab.iconSource !== \"\" && !chipTab.pictureHeld") !== -1,
+    "the icon no longer steps aside for a picture, or no longer comes back without one:\n" + icon);
+
+  // THE LATCH IS A LATCH, and all three of its edges are here — the whole of
+  // "a chip is never blank" now rests on the falling ones. A latch that only
+  // ever rises is a chip with no picture and no icon, which is the one state
+  // this test's name forbids.
+  const tab = map.slice(map.indexOf("readonly property bool captureDrawn:"),
+    map.indexOf("Image {\n                id: chipCapture"));
+  assert.ok(/property bool pictureHeld:\s*false/.test(tab),
+    "the icon's latch is gone, or is no longer a writable property that starts down:\n" + tab);
+  assert.ok(/if \(chipTab\.captureDrawn\) chipTab\.pictureHeld = true/.test(tab),
+    "nothing raises the latch, so a chip that has drawn a picture still draws its icon over it");
+  assert.ok(/if \(chipTab\.pictureSource === ""\) chipTab\.pictureHeld = false/.test(tab),
+    "the latch does not come down when the chip has no picture to draw — the"
+    + " pictures switched off, an untick, a grab that never landed:\n" + tab);
+  assert.ok(image.indexOf("if (chipCapture.status === Image.Error) chipTab.pictureHeld = false") !== -1,
+    "the latch does not come down on Image.Error, so a capture deleted under a"
+    + " live panel leaves a chip with no picture AND no icon:\n" + image);
+
+  // AND THE PAYLOAD DID NOT MOVE WITH THE ICON. `captureDrawn` is still the
+  // Image's own instant, and it is still what gates the two source keys — so
+  // `captureSource`/`liveSource` still mean "this chip is DRAWING it"
+  // (tests/acceptance/README.md is normative). ONE mechanism for both kinds of
+  // picture: it knows nothing about which source it drew.
+  const drawn = map.slice(map.indexOf("readonly property bool captureDrawn:"));
+  assert.ok(drawn.slice(0, 120).indexOf("chipCapture.status === Image.Ready") !== -1,
+    drawn.slice(0, 120));
+  assert.ok(map.indexOf("captureSource: chipTab.captureDrawn ? chipTab.captureSource : \"\"") !== -1,
+    "the payload's capture source is no longer gated on the chip's own Ready");
+  assert.ok(map.indexOf("liveSource: chipTab.captureDrawn ? chipTab.liveSource : \"\"") !== -1,
+    "the payload's live source is no longer gated on the chip's own Ready");
+  assert.strictEqual(map.indexOf("pictureHeld ? chipTab."), -1,
+    "the icon's latch has reached the payload: a reported source would then mean"
+    + " \"this chip drew one once\", which is a different sentence");
+});
+
+test("the live source is a fact about the LIVE map, keyed by the window address", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const fn = source.slice(source.indexOf("function liveSourceOf(identityId, address)"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+
+  // The mirror of captureSourceOf's rule: a picture out of the CACHE is a fact
+  // about a recorded layout, and a picture of the window as it is now is a fact
+  // about the live one.
+  assert.ok(body.indexOf("if (root.showRecorded) return \"\"") !== -1, body);
+  // THE SWITCH, in the one funnel both readers go through — the chip's Image
+  // and the payload — so a picture stops being drawn in the same frame the flag
+  // is written, with no panel reopen and nothing to wait for.
+  assert.ok(body.indexOf("if (!root.picturesOn) return \"\"") !== -1, body);
+  // The map is PASSED IN, so the binding's dependency is visible at the call
+  // site and cannot be tidied away (tick md1).
+  assert.ok(body.indexOf("liveCaptures.urlIn(liveCaptures.pictures, address)") !== -1, body);
+
+  // And the pixels go too, at both of the two sites that can drop a live
+  // picture: the switch (all of them at once) and an unwatch (one app's).
+  const off = source.slice(source.indexOf("function setPictures(on) {"));
+  assert.ok(off.slice(0, off.indexOf("\n  }\n")).indexOf("liveCaptures.clear()") !== -1,
+    "switching the pictures off leaves the live ones in memory");
+  const tick = source.slice(source.indexOf("function toggleChip(chip) {"));
+  assert.ok(tick.slice(0, tick.indexOf("\n  }\n")).indexOf("liveCaptures.retain(remaining)") !== -1,
+    "unticking an app leaves its live picture in memory");
+
+  // And the payload's two halves: a boolean the panel always states, and the URL
+  // the chip reports only once it has drawn it.
+  const state = source.slice(source.indexOf("function panelState()"));
+  assert.ok(state.indexOf("liveCapture: liveCapture") !== -1, "the payload lost its live claim");
+  assert.ok(state.indexOf("if (drawnLive) chips[chips.length - 1].liveSource = drawnLive") !== -1,
+    "the live source is reported as \"\" rather than left absent");
+});
+
+test("ONE ROUND PER PANEL SESSION, started by the first client list and discarded on close", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  const fn = source.slice(source.indexOf("function startLiveRound()"));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+  // The latch, and both of its conditions: a panel that is not open has nothing
+  // to draw, and a client list arrives a whole process spawn after the panel
+  // does — so `opened` alone is too early to plan from.
+  assert.ok(body.indexOf("if (!root.opened || !root.haveLiveData) return") !== -1, body);
+  assert.ok(body.indexOf("if (root.liveRoundStarted) return") !== -1, body);
+  assert.ok(body.indexOf("PanelModel.liveCapturePlan(") !== -1
+    && body.indexOf("root.instanceIndex, root.identities, root.picturesOn") !== -1,
+    "the plan is derived a second time instead of coming from the index the map is built from,"
+    + " or it no longer consults the switch:\n" + body);
+
+  // Both triggers, and QML allows one handler per signal per object — so they
+  // are inside the handlers that already exist rather than beside them.
+  const opened = source.slice(source.indexOf("onOpenedChanged: {"));
+  assert.ok(opened.slice(0, 400).indexOf("root.startLiveRound()") !== -1, opened.slice(0, 400));
+  assert.ok(opened.slice(0, 400).indexOf("liveCaptures.clear()") !== -1,
+    "the pictures are not discarded when the panel closes");
+  assert.ok(opened.slice(0, 400).indexOf("root.liveRoundStarted = false") !== -1,
+    "the latch survives a close, so a re-opened panel would draw the previous session's pictures");
+  const clients = source.slice(source.indexOf("onLiveClientsChanged: {"));
+  assert.ok(clients.slice(0, 900).indexOf("root.startLiveRound()") !== -1, clients.slice(0, 900));
+});
+
+test("THE LAST PRECONDITION TO ARRIVE IS A TRIGGER — the one an acceptance VM caught", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // WHAT THIS COST: one acceptance VM cycle, and it left no line in the log to
+  // go on. `startLiveRound` is guarded on `opened && haveLiveData` and was
+  // triggered by `onOpenedChanged` and `onLiveClientsChanged` — two of its three
+  // preconditions. The third is set LAST inside the very handler that fires the
+  // second, so on a fresh panel the trigger ran at the one moment the guard
+  // could not pass; the latch stayed down, and the panel's own dedupe on the raw
+  // client text meant an idle desk never fired it again.
+  //
+  // This pins the FACT and the REPAIR together, because either alone rots. The
+  // fact: the flag is committed after the clients, deliberately — publishing "we
+  // have data" before the data is the half-snapshot that pairing exists to
+  // prevent. The repair: the flag therefore has to be a trigger too.
+  const at = source.indexOf("id: monitorsProc");
+  const commit = source.slice(at, source.indexOf("\n  }\n", at));
+  const clientsAt = commit.indexOf("root.liveClients = root.pendingClients");
+  const flagAt = commit.indexOf("root.haveLiveData = true");
+  assert.ok(clientsAt !== -1 && flagAt !== -1, commit);
+  assert.ok(clientsAt < flagAt,
+    "the snapshot commit order changed; re-read why startLiveRound has three triggers:\n" + commit);
+
+  assert.ok(source.indexOf("onHaveLiveDataChanged: root.startLiveRound()") !== -1,
+    "the precondition that lands LAST does not trigger the round it gates");
+});
+
+test("A LIVE ROUND IS A BRACKET: it says when it opens and when it closes", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const store = fs.readFileSync(path.join(__dirname, "..", "LiveCaptureStore.qml"), "utf8");
+
+  // THE DIAGNOSIS THAT COULD NOT BE MADE. The first VM run of this feature
+  // failed with no line from this file anywhere in a 400-line log, and three
+  // different faults produce exactly that silence: a round never started, a
+  // round started with an empty plan, and a round that started and stalled. An
+  // unclosed bracket is now a stall and a bracket around zero is a desk with
+  // nothing to photograph — tick 070's lesson, applied one VM cycle earlier
+  // than last time.
+  const start = store.slice(store.indexOf("function start(plan) {"),
+    store.indexOf("function clear()"));
+  assert.ok(start.indexOf("liveStore.log(\"live picture round: \"") !== -1,
+    "a live round no longer says it is starting:\n" + start);
+  // BEFORE the empty-plan return, or an empty round is silent again — which is
+  // the state this repair exists to end.
+  assert.ok(start.indexOf("liveStore.log(\"live picture round: \"")
+    < start.indexOf("if (liveStore._queue.length === 0)"), start);
+  // And a refused round is loud too, though no user pressed anything.
+  assert.ok(start.indexOf("liveStore.warn(") !== -1 && start.indexOf("already running") !== -1,
+    "a round refused because another is running says nothing:\n" + start);
+
+  // The closing line is UNCONDITIONAL once a round has opened one. Gating it on
+  // there being something to report is exactly how an empty round became
+  // indistinguishable from a round that never ran.
+  const finish = store.slice(store.indexOf("function _finish() {"));
+  const body = finish.slice(0, finish.indexOf("\n  }\n"));
+  assert.ok(body.indexOf("if (plan) {") !== -1,
+    "the round's end line is conditional on more than the round having started:\n" + body);
+  assert.ok(body.indexOf("liveCaptureLogLine(plan, results)") !== -1, body);
+});
+
+test("the chip's report carries an onXChanged for EVERY property it captures (tick sm1)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const map = fs.readFileSync(path.join(__dirname, "..", "MapWorkspace.qml"), "utf8");
+
+  // THE RULE, MECHANISED. A report site that captures a property with no handler
+  // for it reports whatever that property was when some OTHER handler last
+  // fired, for ever — the sm1 family of defects, which this increment has paid
+  // for twice (`iconResolved` for a whole session; `captureDrawn`, which lands
+  // after the source it belongs to). Arguing the exception per property is how
+  // the rule stops being checkable, so it is checked.
+  // The CHIP's report site, anchored on the call rather than on the function
+  // name: `reportRender` is the name of the workspace's site too, and the first
+  // match in the file is that one.
+  const at = map.indexOf("panel.reportChipRender(");
+  const body = map.slice(at, map.indexOf("\n                })", at));
+
+  const captured = new Set();
+  for (const m of body.matchAll(/\b(chipTab|chipSlot)\.(\w+)/g)) {
+    captured.add(m[1] + "." + m[2]);
+  }
+  // Not nothing, and not one: a regex that stopped matching would pass silently.
+  assert.ok(captured.size > 15, "the report captures " + captured.size + " properties");
+
+  // chipTab's own handlers are `onXChanged:` in the delegate; the slot's reach
+  // the chip through the Connections block, as `function onXChanged()`.
+  const delegateHandlers = new Set(
+    [...map.matchAll(/^\s*on([A-Z]\w*)Changed:/gm)].map((m) => m[1]));
+  const connectionsHandlers = new Set(
+    [...map.matchAll(/function on([A-Z]\w*)Changed\(\)/g)].map((m) => m[1]));
+
+  const missing = [];
+  for (const key of captured) {
+    const [owner, property] = key.split(".");
+    const handler = property.charAt(0).toUpperCase() + property.slice(1);
+    const have = owner === "chipSlot"
+      ? connectionsHandlers.has(handler)
+      : delegateHandlers.has(handler);
+    if (!have) missing.push(key + " (no on" + handler + "Changed)");
+  }
+  assert.deepStrictEqual(missing.sort(), [],
+    "these reported properties have no change handler, so the payload will carry a stale value "
+    + "for the whole session:\n  " + missing.join("\n  "));
+});
+
+// ---------------------------------------------------------------------------
+// The guards stop being whitelists, and the small correctness items (tick md1)
+// ---------------------------------------------------------------------------
+
+test("the chip's picture depends on the LISTING, in the call rather than in a dead branch (tick md1)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const store = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // `if (captureStore.generation < 0) return ""` was a branch that can never be
+  // true whose only job was to register a binding dependency, and nothing
+  // pinned it: a future tidy-up deleting an obviously-dead line would silently
+  // stop every chip's picture refreshing after an evict, with no test failure
+  // and no visible error.
+  const at = source.indexOf("function captureFileFor(identityId, occurrence) {");
+  const body = source.slice(at, source.indexOf("\n  }\n", at));
+  assert.strictEqual(body.indexOf("generation"), -1,
+    "the dead generation branch is back:\n" + body);
+  assert.ok(body.indexOf("captureStore.hasIn(captureStore.files, name)") !== -1,
+    "the listing is no longer passed in, so the dependency is invisible at the call site:\n" + body);
+
+  // And it cannot be tidied away, because without it there is no listing to
+  // look in: `hasIn` takes the set as its first argument.
+  assert.ok(store.indexOf("function hasIn(files, name)") !== -1,
+    "CaptureStore no longer offers a lookup that takes the listing");
+  const hasAt = store.indexOf("function has(name)");
+  assert.ok(hasAt !== -1);
+  assert.ok(store.slice(hasAt, store.indexOf("\n  }\n", hasAt)).indexOf("store.hasIn(store.files, name)") !== -1,
+    "has() is a second lookup rule rather than the same one with the store's own listing");
+
+  // The counter is gone entirely — an unread property is the next thing to be
+  // read for the wrong reason.
+  assert.strictEqual(store.indexOf("property int generation"), -1,
+    "the generation counter is still there, read by nobody");
+});
+
+test("the five copies of plugin_state in the acceptance suite are one function (tick md1)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const dir = path.join(__dirname, "acceptance");
+
+  // The captures test had drifted into an UNANCHORED regex over the whole line,
+  // inferring the state from a substring — and PLUGIN_ID contains a `.`, so the
+  // pattern matched more than it meant to. A format change that moved the word
+  // "enabled" would have reported `disabled` for an enabled plugin, and the
+  // enable step that follows would have chased a phantom.
+  const bodies = new Map();
+  for (const name of fs.readdirSync(dir).filter((f) => f.endsWith("-test.sh")).sort()) {
+    const source = fs.readFileSync(path.join(dir, name), "utf8");
+    const at = source.indexOf("plugin_state()");
+    if (at === -1) continue;
+    bodies.set(name, source.slice(at, source.indexOf("\n}\n", at)).replace(/\s+/g, " ").trim());
+  }
+
+  assert.ok(bodies.size >= 5,
+    "expected at least five acceptance scripts to define plugin_state, found " + bodies.size);
+  const spellings = new Set(bodies.values());
+  assert.strictEqual(spellings.size, 1,
+    "plugin_state is spelled " + spellings.size + " different ways:\n"
+    + [...bodies].map(([f, b]) => "  " + f + ": " + b).join("\n"));
+  // And the one spelling reads the FIELD, keyed on the whole id.
+  assert.match([...spellings][0], /\$1 == id \{ print \$2 \}/,
+    "plugin_state no longer reads the state field with an exact id match");
+});
+
+test("the state file's writes block, so a record is on disk when it says it is", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+
+  // The defect this pins (tick m4s) was invisible in every cheaper tier: the
+  // acceptance VM recorded a layout, the IPC answered "recorded", and a jq in
+  // the very next process found no layout in the file. `setText` schedules an
+  // asynchronous job unless the view is told otherwise, and five whole-file
+  // rewriters re-read this path SYNCHRONOUSLY through freshState() — one of
+  // them, Undo, is by design the next thing that happens after a Record. A
+  // write still in flight is a lost recording, silently.
+  const view = source.match(/FileView\s*\{[^}]*?id:\s*stateFile[^}]*?\}/s);
+  assert.ok(view, "Panel.qml no longer has a FileView with id: stateFile");
+  assert.match(view[0], /^\s*blockWrites:\s*true\s*$/m,
+    "the state file's FileView does not declare blockWrites: true, so writeState "
+    + "can return true before the bytes are on disk");
+
+  // The synchronous re-read is the other half of the pair, and the reason the
+  // asynchronous write was dangerous rather than merely untidy. If this ever
+  // stops being blocking the hazard changes shape, so it is pinned beside it.
+  const reader = source.match(/FileView\s*\{[^}]*?id:\s*stateReader[^}]*?\}/s);
+  assert.ok(reader, "Panel.qml no longer has a FileView with id: stateReader");
+  assert.match(reader[0], /^\s*blockAllReads:\s*true\s*$/m,
+    "freshState's view no longer reads the file synchronously");
+});
+
+test("a capture is not written once the pictures have been switched off mid-round", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "..", "CaptureStore.qml"), "utf8");
+
+  // The defect this pins (tick zxg), from the acceptance log verbatim:
+  //
+  //   recorded 2 apps for topology "… | dr-cap-dock"
+  //   unwatched "dr-two" — its stored pictures are deleted, on every desk
+  //   dropped every stored picture of 1 app(s), on every desk (unwatched)
+  //   1 picture(s) stored, 1 not pictured        <- the round's save, AFTER
+  //
+  // The pictures deleted, and then an in-flight round wrote one back.
+  // `_isCurrentStep` did not catch it and could not: the step WAS still
+  // current — the round was healthy, and it was the answer underneath it that
+  // had changed. So the save asks again, and it must ask BEFORE it writes.
+  const grab = source.match(/grabToImage\(function \(result\) \{[\s\S]*?\n    \}/);
+  assert.ok(grab, "CaptureStore.qml no longer has the grab callback");
+
+  const gate = grab[0].indexOf("_stillOwed");
+  const write = grab[0].indexOf("saveToFile");
+  assert.ok(gate > -1,
+    "the grab callback no longer re-asks whether this picture is still owed");
+  assert.ok(write > -1, "the grab callback no longer saves");
+  assert.ok(gate < write,
+    "the question is re-asked AFTER the file is written, which is too late — "
+    + "the whole point is that no picture nobody is owed reaches the disk");
+
+  // And the panel must actually supply the predicate, or the store's own
+  // default ("no predicate means yes") silently reopens the hole. BOTH stores
+  // get one, and each is read as a BODY rather than through a character budget:
+  // a `[\s\S]{0,N}` window is a test that fails the day somebody writes a
+  // longer comment, which is not a defect, and passes the day somebody moves
+  // the guard out of the function, which is.
+  const panel = fs.readFileSync(path.join(__dirname, "..", "Panel.qml"), "utf8");
+  const predicateBody = (signature) => {
+    const at = panel.indexOf(signature);
+    assert.ok(at !== -1, "Panel.qml has no " + signature);
+    let depth = 0;
+    for (let i = panel.indexOf("{", at); i < panel.length; i++) {
+      if (panel[i] === "{") depth += 1;
+      else if (panel[i] === "}") {
+        depth -= 1;
+        if (depth === 0) return panel.slice(at, i + 1);
+      }
+    }
+    assert.fail(signature + " is unbalanced");
+  };
+  const recorded = predicateBody("stillOwed: function (identityId, topologyKey)");
+  const live = predicateBody("stillOwed: function (identityId)");
+
+  // THE SWITCH, in both.
+  assert.ok(recorded.indexOf("root.picturesOn") !== -1,
+    "the recorded store's predicate no longer reads the pictures switch:\n" + recorded);
+  assert.ok(live.indexOf("root.picturesOn") !== -1,
+    "the live store's predicate no longer reads the pictures switch:\n" + live);
+  assert.strictEqual(panel.indexOf("picturedOf("), -1,
+    "the per-app camera predicate is back; there is one switch and it is picturesOn");
+
+  // AND WHETHER THE APP IS STILL WATCHED, in both — the question the switch
+  // cannot ask, and the one this gate lost when the per-app consent collapsed
+  // into a global boolean.
+  //
+  // WHAT THAT COST, and why it is pinned here rather than argued: the predicate
+  // this replaced was built on `StateModel.isPictured`, which answers false for
+  // an identity the file no longer carries — so unticking an app mid-round
+  // settled the step "withdrawn" as a side effect of how consent was stored.
+  // Reading only the switch handed that back: `toggleChip` evicts the app's
+  // pictures and a grab already on the render thread writes one after the
+  // delete, for an app nobody watches. Consent went global; WATCHING did not.
+  assert.ok(recorded.indexOf("StateModel.identityById(root.stateModel, identityId)") !== -1,
+    "the recorded store's predicate no longer asks whether the app is still watched, "
+    + "so an untick mid-round can still land a picture after the eviction:\n" + recorded);
+  assert.ok(live.indexOf("StateModel.identityById(root.stateModel, identityId)") !== -1,
+    "the live store's predicate no longer asks whether the app is still watched:\n" + live);
+
+  // AND THE THIRD QUESTION, learned from the gate: a Forget switches nothing
+  // off and unticks nobody, so neither question above says no for a layout that
+  // no longer exists. The recorded predicate must also ask whether the
+  // recording this picture belongs to is still there, and the store must pass
+  // it the round's topology key to ask with. (The live one has no third half: a
+  // live picture belongs to no recording — and asserting its ABSENCE is what
+  // stops the two predicates being quietly conflated.)
+  assert.ok(recorded.indexOf("layoutFor(") !== -1,
+    "the recorded predicate no longer checks the layout still exists:\n" + recorded);
+  assert.strictEqual(live.indexOf("layoutFor("), -1,
+    "the live predicate asks about a recording; a live picture belongs to none:\n" + live);
+  assert.match(source, /stillOwed\(entry\.identityId,\s*key\)/,
+    "CaptureStore no longer passes the round's topology key to the predicate");
+
+  // THE DRAW-TIME HALF OF THE SAME GUARANTEE. The eviction an untick starts is a
+  // `find`, and a hand edit that drops an identity starts none at all — so both
+  // source functions refuse an identity the file no longer carries, and the
+  // recorded map draws no picture for a ghost chip.
+  const sourceFn = (name) => {
+    const at = panel.indexOf("function " + name);
+    assert.ok(at !== -1, "Panel.qml has no " + name);
+    return panel.slice(at, panel.indexOf("\n  }\n", at));
+  };
+  for (const name of ["captureFileFor(identityId, occurrence)", "liveSourceOf(identityId, address)"]) {
+    const body = sourceFn(name);
+    assert.ok(body.indexOf("root.picturesOn") !== -1, name + " no longer reads the switch:\n" + body);
+    assert.ok(body.indexOf("StateModel.identityById(root.stateModel, identityId)") !== -1,
+      name + " draws a picture for an app the file no longer carries:\n" + body);
+  }
+
+  // AND THE PREDICATE ITSELF ANSWERS, which a grep for a name cannot show. It
+  // routes to StateModel.picturesOn, which is pure and testable here.
+  const st = require("../StateModel.js");
+  const on = st.parseState(JSON.stringify({
+    version: 7, pictures: true,
+    identities: [{ id: "seen", patterns: ["^foot$"] }], layouts: {}
+  })).state;
+  const off = st.setPictures(on, false);
+
+  assert.strictEqual(st.picturesOn(on), true, "with the switch on, the picture is owed");
+  assert.strictEqual(st.picturesOn(off), false,
+    "and the instant it is off nothing is — which is the case this gate exists for");
+});
+
+// ---------------------------------------------------------------- tick fe3
+// The workspace context: a manual record stores layoutMode and group.active,
+// which only happens when the panel hands Engine.buildLayout / driftOf the
+// `hyprctl workspaces -j` read. A failed read nulls the context, nothing else.
+test("the panel reads hyprctl workspaces and passes the context to record and drift (tick fe3)", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "Panel.qml"), "utf8");
+  assert.ok(src.indexOf('command: ["hyprctl", "workspaces", "-j"]') !== -1, "no workspaces read");
+  const ctx = "{ workspaces: root.liveWorkspaces, built: null }";
+  const recAt = src.indexOf("function recordLayout() {");
+  const recBody = src.slice(recAt, src.indexOf("\n  }\n", recAt));
+  assert.ok(recBody.indexOf("Engine.buildLayout(") !== -1 && recBody.indexOf(ctx) !== -1,
+    "recordLayout does not pass the workspace context");
+  const driftAt = src.indexOf("Engine.driftOf(");
+  assert.ok(src.slice(driftAt, driftAt + 250).indexOf(ctx) !== -1,
+    "driftReport does not pass the workspace context");
+  // A failed workspaces read must not become a desktop read failure.
+  const procAt = src.indexOf("id: workspacesProc");
+  const procBody = src.slice(procAt, src.indexOf("\n  }\n", procAt));
+  assert.ok(procBody.indexOf("noteReadFailure") === -1, "a workspaces failure must only null the context");
+  assert.ok(procBody.indexOf("root.liveWorkspaces = null") !== -1, "a failed read must null the context");
+});
+
+test("the engine records layoutMode when the context carries the workspaces (tick fe3)", () => {
+  const clients = [{ address: "0x1", class: "kitty", workspace: { id: 1 }, monitor: 0,
+    at: [0, 0], size: [100, 100], floating: false, mapped: true, hidden: false, pid: 1 }];
+  const monitors = [{ id: 0, name: "A", description: "A", x: 0, y: 0, width: 1920, height: 1080, scale: 1,
+    activeWorkspace: { id: 1 } }];
+  const ids = [{ id: "k", name: "k", match: { class: "kitty" } }];
+  const withWs = engine.buildLayout(clients, monitors, ids, AT, undefined,
+    { workspaces: [{ id: 1, tiledLayout: "scrolling" }], built: null });
+  const without = engine.buildLayout(clients, monitors, ids, AT, undefined, { workspaces: null, built: null });
+  if (withWs.apps.length) {
+    assert.strictEqual(withWs.apps[0].layoutMode, "scrolling");
+    assert.strictEqual(without.apps[0].layoutMode, null);
+  }
+});
+
+test("the three layout-mode refusal words have a tag and a sentence of the panel's own", () => {
+  for (const code of [
+    engine.TILING_REFUSAL_LAYOUT_SCROLLING,
+    engine.TILING_REFUSAL_LAYOUT_FLOATING,
+    engine.TILING_REFUSAL_LAYOUT_MODE_DIFFERS
+  ]) {
+    const tag = panel.refusalTagFor(code);
+    assert.ok(tag && tag !== code && tag.length <= 16, code + " tag: " + tag);
+    const sentence = panel.refusalSentenceFor(code);
+    assert.ok(sentence.length > tag.length && sentence.indexOf(code) === -1, code + ": " + sentence);
+    assert.notStrictEqual(sentence, engine.tilingRefusalPhrase(code), code + " borrows the engine's voice");
+  }
+});
+
+test("shapeLinesFor: one line per unmet shape, and nothing when there are none", () => {
+  const empty = { lines: [], summary: "" };
+  assert.deepStrictEqual(panel.shapeLinesFor(null), empty);
+  assert.deepStrictEqual(panel.shapeLinesFor({}), empty);
+  assert.deepStrictEqual(panel.shapeLinesFor({ shapeCount: 0, shapes: [] }), empty);
+
+  const out = panel.shapeLinesFor({ shapeCount: 2, shapes: [
+    { workspaceId: 3, monitorDescription: "Samsung Display Corp. ATNA60HR07-0", meanIou: 0.55, reason: "ambiguous-tree" },
+    { workspaceId: 12, monitorDescription: "", meanIou: 0.9, reason: null }
+  ] });
+  assert.strictEqual(out.lines.length, 2);
+  assert.ok(out.lines[0].indexOf("workspace 3 on ") === 0, out.lines[0]);
+  assert.ok(out.lines[0].indexOf(": 0.55 of its recorded shape - ") !== -1, out.lines[0]);
+  assert.ok(out.lines[0].endsWith(panel.refusalSentenceFor("ambiguous-tree")), out.lines[0]);
+  assert.strictEqual(out.lines[1], "workspace 2: 0.90 of its recorded shape - not yet in that shape");
+  assert.ok(out.summary.indexOf("2 workspaces") !== -1 && out.summary.indexOf("3 (shape unclear)") !== -1, out.summary);
+  assert.strictEqual(out.summary.indexOf("\n"), -1);
+});
+
+test("the bar tooltip and badge tooltip carry the shape summary only when there is one", () => {
+  const withShape = statusOf({ recorded: true, shapeCount: 1,
+    shapes: [{ workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: "layout-floating" }] });
+  assert.strictEqual(state.glyphState(withShape), "drifted");
+  const tip = panel.barGlyphTooltip("drifted", withShape, "Desk");
+  assert.ok(tip.indexOf("\n") !== -1 && tip.indexOf("3 (floating layout)") !== -1, tip);
+  assert.ok(panel.badgeTooltip("drifted", withShape).indexOf("tile shape") !== -1);
+  // today's wording, untouched, with no shapes
+  assert.strictEqual(panel.barGlyphTooltip("drifted", statusOf({ recorded: true, driftCount: 2 }), "Desk"),
+    "Desk — drifted (2)");
+});
+
+test("shapeLinesFor: a null reason never promises a restore will fix it", () => {
+  const out = panel.shapeLinesFor({ shapeCount: 1, shapes: [
+    { workspaceId: 12, monitorDescription: "", meanIou: 0.9, reason: null }
+  ] });
+  assert.ok(out.lines[0].indexOf("restore") === -1, out.lines[0]);
+  assert.ok(out.summary.indexOf("restore") === -1, out.summary);
+  assert.ok(out.summary.indexOf("2 (shape differs)") !== -1, out.summary);
+});
+
+test("v2p: the badge tooltip says the shapes too when apps have drifted as well", () => {
+  const both = statusOf({ recorded: true, driftCount: 2, shapeCount: 1,
+    shapes: [{ workspaceId: 3, monitorDescription: "M", meanIou: 0.5, reason: null }] });
+  assert.strictEqual(state.glyphState(both), "drifted");
+  const tip = panel.badgeTooltip("drifted", both);
+  assert.ok(tip.indexOf("2 apps are") === 0, tip);
+  assert.ok(tip.indexOf("tile shape") !== -1, "the shapes are not hidden behind the count: " + tip);
+  // Drift alone keeps today's sentence, word for word.
+  assert.strictEqual(panel.badgeTooltip("drifted", statusOf({ recorded: true, driftCount: 1 })),
+    "1 app is not where the recording puts them. Restore now moves them back; Record layout files where they are instead.");
+});
+
+// ------------------------------------------- slot labels (5ue / m73)
+
+const monitorsDockedLabels = loadFixture("monitors-laptop+headless.json");
+
+function labelClient(workspace, monitor, n) {
+  return makeClient({ address: "0x" + (1000 + n), class: "foot", workspace: workspace, monitor: monitor,
+    at: [0, 0], size: [100, 100] });
+}
+
+function liveLabelMap(monitors, placements, blocks) {
+  const clients = placements.map((p, n) => labelClient(p[0], p[1], n));
+  return panel.liveMapModel(clients, monitors, resolver(IDENTITIES), null, 600, 300, null, null, blocks);
+}
+
+function monitorBox(map, name) {
+  return map.monitors.find((m) => m.name === name);
+}
+
+test("two monitors, blocks 0 and 1: each monitor's workspaces are labelled 1-10", () => {
+  const map = liveLabelMap(monitorsDockedLabels,
+    [[1, 0], [3, 0], [10, 0], [11, 1], [13, 1], [20, 1]], { "eDP-1": 0, "hw-test": 1 });
+  const laptop = monitorBox(map, "eDP-1");
+  const external = monitorBox(map, "hw-test");
+  // Slot 10 reads "0", exactly like 4.5's bar (human, 2026-11-15).
+  assert.deepStrictEqual(laptop.workspaces.map((w) => w.name), ["1", "3", "0"]);
+  assert.deepStrictEqual(external.workspaces.map((w) => w.name), ["1", "3", "0"]);
+  assert.deepStrictEqual(laptop.workspaces.map((w) => w.id), [1, 3, 10]);
+  assert.deepStrictEqual(external.workspaces.map((w) => w.id), [11, 13, 20]);
+  assert.deepStrictEqual(laptop.workspaces.map((w) => w.slot), [1, 3, 10]);
+  assert.strictEqual(laptop.block, 0);
+  assert.strictEqual(external.block, 1);
+  assert.ok(laptop.workspaces.concat(external.workspaces).every((w) => w.guest === false && w.firstGuest === false));
+});
+
+test("a merged workspace is labelled by its slot after its host's own", () => {
+  const laptopOnly = [monitorsDockedLabels[0]];
+  const map = liveLabelMap(laptopOnly, [[1, 0], [2, 0], [3, 0], [4, 0], [5, 0], [6, 0]], { "eDP-1": 0 });
+  const ws = monitorBox(map, "eDP-1").workspaces;
+  assert.deepStrictEqual(ws.map((w) => w.id), [1, 2, 3, 4, 5, 6]);
+  const last = ws[ws.length - 1];
+  assert.strictEqual(last.name, "6");
+  assert.strictEqual(last.guest, false);
+});
+
+test("a guest that kept its id comes after its host's own, labelled by its slot", () => {
+  const laptopOnly = [monitorsDockedLabels[0]];
+  const map = liveLabelMap(laptopOnly, [[14, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 0]], { "eDP-1": 0 });
+  const ws = monitorBox(map, "eDP-1").workspaces;
+  assert.deepStrictEqual(ws.map((w) => w.id), [1, 2, 3, 4, 5, 14]);
+  const guest = ws[5];
+  assert.strictEqual(guest.name, "4");
+  assert.strictEqual(guest.guest, true);
+  assert.strictEqual(guest.firstGuest, true);
+  assert.ok(ws.slice(0, 5).every((w) => !w.guest && !w.firstGuest));
+});
+
+test("a block-1 host lists a block-0 guest after its own", () => {
+  const map = liveLabelMap(monitorsDockedLabels, [[3, 1], [11, 1], [12, 1]], { "eDP-1": 0, "hw-test": 1 });
+  const ws = monitorBox(map, "hw-test").workspaces;
+  assert.deepStrictEqual(ws.map((w) => w.id), [11, 12, 3]);
+  assert.deepStrictEqual(ws.map((w) => w.guest), [false, false, true]);
+  assert.deepStrictEqual(ws.map((w) => w.firstGuest), [false, false, true]);
+  assert.strictEqual(ws[2].name, "3");
+});
+
+test("no blocks passed: the block is the one the monitor's active workspace is in", () => {
+  // The fixture's active workspaces are 9 (eDP-1, block 0) and 4 (hw-test, block 0).
+  const monitors = JSON.parse(JSON.stringify(monitorsDockedLabels));
+  monitors[1].activeWorkspace = { id: 12, name: "12" };
+  const map = liveLabelMap(monitors, [[1, 0], [15, 0], [12, 1], [2, 1]]);
+  assert.strictEqual(monitorBox(map, "eDP-1").block, 0);
+  assert.strictEqual(monitorBox(map, "hw-test").block, 1);
+  assert.deepStrictEqual(monitorBox(map, "eDP-1").workspaces.map((w) => [w.id, w.guest]), [[1, false], [15, true]]);
+  assert.deepStrictEqual(monitorBox(map, "hw-test").workspaces.map((w) => [w.id, w.guest]), [[12, false], [2, true]]);
+  // A monitor with no usable active workspace has no block, and so no guests.
+  const bare = JSON.parse(JSON.stringify(monitorsDockedLabels));
+  bare[1].activeWorkspace = null;
+  const none = liveLabelMap(bare, [[12, 1], [2, 1]]);
+  assert.strictEqual(monitorBox(none, "hw-test").block, null);
+  assert.ok(monitorBox(none, "hw-test").workspaces.every((w) => !w.guest));
+  // An explicit block beats the active workspace.
+  const forced = liveLabelMap(monitors, [[12, 1], [2, 1]], { "hw-test": 0 });
+  assert.strictEqual(monitorBox(forced, "hw-test").block, 0);
+});
+
+test("the recorded map labels a workspace by its recorded slot", () => {
+  const app = (extra) => Object.assign({ identityId: "terminal", monitorDescription: LAPTOP_KEY,
+    occurrence: 1, at: [0, 0], size: [100, 100], floating: false, group: null }, extra);
+  const layout = { apps: [
+    app({ workspaceId: 14, slot: 4, occurrence: 1 }),
+    app({ workspaceId: 3, occurrence: 2 }),
+    app({ workspaceId: 20, occurrence: 3 }),
+    app({ workspaceId: null, occurrence: 4 }),
+    app({ workspaceId: 7, slot: 10, occurrence: 5 })
+  ] };
+  const map = panel.recordedMapModel(layout, [monitorsDockedLabels[0]], [], 600, 300);
+  const ws = monitorBox(map, "eDP-1").workspaces;
+  const byId = {};
+  ws.forEach((w) => { byId[w.id] = w; });
+  assert.strictEqual(byId[14].name, "4");
+  assert.strictEqual(byId[3].name, "3");
+  assert.strictEqual(byId[20].name, "0");
+  assert.strictEqual(byId[7].name, "0", "a recorded slot wins over the id");
+  assert.strictEqual(byId[0].name, "?", "no workspace and no slot is unknown, never 0");
+  assert.ok(ws.every((w) => w.guest === false));
+});
+
+test("placement and shape text name the slot, not the id", () => {
+  assert.strictEqual(panel.placementLabel("X", 13, [{ name: "DP-1", description: "X" }]), "DP-1 · ws 3");
+  assert.strictEqual(panel.placementLabel("X", null, [{ name: "DP-1", description: "X" }]), "DP-1 · ws ?");
+  assert.strictEqual(panel.livePlacementLabel(
+    { monitor: 1, workspace: { id: 13 } }, [{ id: 1, name: "DP-1" }]), "DP-1 · ws 3");
+  assert.strictEqual(panel.livePlacementLabel({ monitor: 1 }, [{ id: 1, name: "DP-1" }]), "DP-1 · ws ?");
+  const out = panel.shapeLinesFor({ shapes: [{ workspaceId: 14, monitorDescription: "", meanIou: 0.5, reason: null }] });
+  assert.strictEqual(out.lines[0], "workspace 4: 0.50 of its recorded shape - not yet in that shape");
+  assert.ok(out.summary.indexOf("4 (shape differs)") !== -1, out.summary);
+});
+
+test("slotLabelFor and blockOfWorkspace are twins of Slots.slotOf and Slots.blockOf", () => {
+  for (let i = 1; i <= 40; i++) {
+    const slot = slots.slotOf(i);
+    assert.strictEqual(panel.slotLabelFor(i), slot === 10 ? "0" : String(slot), "id " + i);
+    assert.strictEqual(panel.blockOfWorkspace(i), slots.blockOf(i), "id " + i);
+  }
+  [0, -98, null, undefined, 1.5, "3"].forEach((bad) => {
+    assert.strictEqual(panel.slotLabelFor(bad), "?");
+  });
 });

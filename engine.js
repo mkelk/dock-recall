@@ -152,15 +152,43 @@ function monitorByDescription(monitorsJson, desc) {
 // Identity order stays priority order, so a title identity must sit BEFORE the
 // catch-all terminal identity that would otherwise claim its window first.
 
+// Compiled patterns, keyed by their source string.
+//
+// THE CACHE INVARIANT: one pattern string always compiles to the same regex, so
+// one compiled object per source may be shared by every caller. That holds only
+// because the flags are fixed at "i" and there is no /g anywhere here — a
+// global regex carries `lastIndex` between calls, and sharing one would make
+// `.test` answer differently depending on who asked last. A pattern that does
+// NOT compile caches its `null` too: a typo in a hand-edited file is asked
+// about exactly as often as a good one.
+//
+// Why it earns its keep: shadowedIdentities is O(clients x identities^2) and
+// sits on a binding that re-evaluates on every Hyprland event, so the same
+// dozen patterns were recompiled thousands of times per refresh. Behaviour is
+// identical either way — this is a memo of a pure function, not a decision.
+//
+// Never evicted, and it does not need to be: the key space is the DISTINCT
+// pattern strings of a state file a human hand-edits — tens, not thousands —
+// and nothing a window can inject reaches it. The "re:" prefix keeps a pattern
+// spelled `__proto__` or `constructor` off Object.prototype's members (see the
+// reserved-id note above `own` in StateModel.js), so the hasOwnProperty guard
+// is the whole of the repair this map needs.
+var COMPILED_PATTERNS = {};
+
 // Compile a pattern string. A user-editable list can contain a typo; a bad
 // regex must not take the whole engine down, so it simply never matches.
 function compilePattern(pattern) {
   if (typeof pattern !== "string" || !pattern) return null;
+  var key = "re:" + pattern;
+  if (Object.prototype.hasOwnProperty.call(COMPILED_PATTERNS, key)) return COMPILED_PATTERNS[key];
+  var compiled = null;
   try {
-    return new RegExp(pattern, "i");
+    compiled = new RegExp(pattern, "i");
   } catch (e) {
-    return null;
+    compiled = null;
   }
+  COMPILED_PATTERNS[key] = compiled;
+  return compiled;
 }
 
 // A pattern list, or an empty one. ES5, and no assumption about the QML JS
@@ -523,6 +551,227 @@ function clientsFor(clientsJson, identity, identities) {
     if (matchClient(clients[i], list) === identity.id) out.push(clients[i]);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// THE QUESTIONS THE SHELL USED TO ANSWER ITSELF
+// ---------------------------------------------------------------------------
+//
+// Tick v29 / finding A8. Each of these was a loop with a bare-object dedupe map
+// inside a QML file, and each map was keyed by exactly the strings the 8hp
+// sweep exists for — an identity id, or a window's class name. `seen[id]` on a
+// bare object is truthy for `constructor`, `toString`, `valueOf`,
+// `hasOwnProperty` and the rest whether or not anything was put there, so the
+// FIRST sighting of such an app was discarded as a duplicate:
+//
+//   - the panel's chip said "not running" about a window on screen;
+//   - a restore verdict named no app at all for the op that moved it;
+//   - a timed-out launch said "no new window appeared" with the window there.
+//
+// 8hp fixed every map node could reach and stopped at the QML boundary. The
+// answer was not to hand QML another guard: none of these is a question with
+// anything for a view to decide. They are pure functions of a client list, they
+// live here, and the shell calls them.
+
+// Which watched identities have at least one window on screen, in the order
+// their first window appears. Windows matching nothing are skipped.
+function runningIdentityIds(clientsJson, identities) {
+  var clients = clientsJson || [];
+  var list = identities || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < clients.length; i++) {
+    var id = matchClient(clients[i], list);
+    if (!id || own(seen, id)) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+// The apps behind a set of window addresses, deduped, in the order the
+// addresses were given. An address naming no live window contributes nothing:
+// the read it came from may be a moment old, and an op whose window has since
+// closed is an op about no app rather than about a mystery one.
+function identityIdsForAddresses(clientsJson, addresses, identities) {
+  var clients = clientsJson || [];
+  var wanted = addresses || [];
+  var list = identities || [];
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < wanted.length; i++) {
+    var address = String(wanted[i] || "");
+    if (!address) continue;
+    var client = null;
+    for (var c = 0; c < clients.length; c++) {
+      if (clients[c] && String(clients[c].address || "") === address) { client = clients[c]; break; }
+    }
+    if (!client) continue;
+    var id = matchClient(client, list);
+    if (!id || own(seen, id)) continue;
+    seen[id] = true;
+    out.push(id);
+  }
+  return out;
+}
+
+// Every window ADDRESS in a client list. The baseline a launch takes at
+// dispatch time, so the wait afterwards can tell the window it opened from the
+// windows that were already there.
+function addressesOf(clientsJson) {
+  var clients = clientsJson || [];
+  var out = [];
+  for (var i = 0; i < clients.length; i++) {
+    var address = clients[i] ? String(clients[i].address || "") : "";
+    if (address) out.push(address);
+  }
+  return out;
+}
+
+// An address lookup set for the two functions below. Addresses are hex and can
+// never collide with an Object.prototype key, but the reads go through `own`
+// anyway: an unguarded lookup here would be one more thing a later reader has
+// to reason about rather than recognise.
+function addressSet(before) {
+  var known = {};
+  var list = before || [];
+  for (var i = 0; i < list.length; i++) {
+    var address = String(list[i] || "");
+    if (address) known[address] = true;
+  }
+  return known;
+}
+
+// The CLASSES of the windows present now that were not in `before`, deduped, in
+// the order they appear.
+//
+// This is the line that turns "launch produced no window" from a dead end into
+// a diagnosis: the launch command worked and opened SOMETHING, it just was not
+// a window the identity claims (the shared-Chromium bug wrote `--app=…gmail` as
+// chromium's launch, so the window that appeared was chrome-mail.google.com…).
+//
+// Classes are all it can list, and since schema v4 an identity can also
+// constrain `initialTitle` — so a window of the right class whose title is
+// wrong shows up here looking correct. That is the terminal case: a launch that
+// lost its `--title` opens a `foot` window the `{^foot$ + ^herdr$}` identity
+// does not claim, and this reports "foot".
+function newClassesSince(clientsJson, before) {
+  var clients = clientsJson || [];
+  var known = addressSet(before);
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < clients.length; i++) {
+    var client = clients[i];
+    if (!client) continue;
+    var address = String(client.address || "");
+    if (!address || own(known, address)) continue;
+    var name = String(client.class || client.initialClass || "?");
+    if (own(seen, name)) continue;
+    seen[name] = true;
+    out.push(name);
+  }
+  return out;
+}
+
+// The address of the window a launch actually opened: the one client that was
+// NOT on screen when the command was dispatched. "" when every candidate
+// predates the dispatch, which is the honest answer when the wait was satisfied
+// by a window somebody else opened.
+//
+// Searched from the end because hyprctl's own listing order is neither creation
+// order nor stable — naming clients[length - 1] outright could put a window the
+// user has had open for an hour into a line reading "launched foo -> 0x…".
+function newAddressSince(clientsJson, before) {
+  var clients = clientsJson || [];
+  var known = addressSet(before);
+  for (var i = clients.length - 1; i >= 0; i--) {
+    var address = clients[i] ? String(clients[i].address || "") : "";
+    if (address && !own(known, address)) return address;
+  }
+  return "";
+}
+
+// WHAT A LAUNCH THAT PRODUCED NOTHING MAY CLAIM (tick ql5, finding A11).
+//
+// When the 10s wait gives up, the service says what DID appear instead. That
+// sentence used to be built out of class names alone:
+//
+//     launch of "herdr" produced no window within 10s — continuing without it
+//     (windows that did appear since the dispatch: foot)
+//     … reason: launch produced no window within 10s (saw foot instead)
+//
+// and Service.qml's own comment admitted the problem: since schema v4 an
+// identity constrains `initialTitle` as well, so `{^foot$ + ^herdr$}` does not
+// claim a bare `foot` window — and the window the launch just opened IS a foot
+// window. "saw foot instead" tells the user the wrong app started. Nothing
+// started wrong: the launch command lost its `--title`, the right program is
+// running in front of them, and the identity cannot see it. One reading sends
+// them to fix a launch command; the other sends them hunting a bug that is not
+// there.
+//
+// So the diagnosis asks the identity's own question. A NEW window whose class
+// this identity claims and whose title it does not is a title problem, and says
+// so with the patterns that did not match. Everything else keeps the wording it
+// had: a class that really is wrong is still "saw X instead" (the shared-
+// Chromium case, which this must not swallow), and nothing at all is still
+// nothing at all.
+//
+// Returns { classes, titleMismatch, detail, reason }:
+//   classes       — the new window classes, deduped, for a caller that wants them
+//   titleMismatch — the right class appeared under a title this identity rejects
+//   detail        — the parenthetical the WARN line ends with
+//   reason        — the outcome reason, which is what a user reads on a panel row
+function launchTimeoutDiagnosis(identity, clientsNow, before, seconds, want) {
+  var clients = clientsNow || [];
+  var known = addressSet(before);
+  var classes = newClassesSince(clients, before);
+  var secs = (typeof seconds === "number" && isFinite(seconds)) ? seconds : 0;
+  var wanted = (typeof want === "number" && want > 1) ? want : 1;
+  var base = "launch produced no window within " + secs + "s";
+  var waiting = wanted > 1 ? " (waiting for window " + wanted + " of this app)" : "";
+
+  var titlePatterns = patternList(identity && identity.titlePatterns);
+  var classPatterns = patternList(identity && identity.patterns);
+  var id = (identity && typeof identity.id === "string") ? identity.id : "";
+
+  // BOTH halves have to be true: a window that is new since the dispatch, of a
+  // class this identity claims, carrying a title it does not. Asked over the
+  // same fields clientMatchesIdentity reads, so the diagnosis and the matcher
+  // cannot disagree about why the window was skipped.
+  if (titlePatterns.length > 0 && classPatterns.length > 0) {
+    for (var i = 0; i < clients.length; i++) {
+      var client = clients[i];
+      if (!client) continue;
+      var address = String(client.address || "");
+      if (!address || own(known, address)) continue;
+      if (!anyPatternMatches(classPatterns, [client.class, client.initialClass])) continue;
+      if (anyPatternMatches(titlePatterns, [client.initialTitle])) continue;
+
+      var className = String(client.class || client.initialClass || "?");
+      var title = (typeof client.initialTitle === "string") ? client.initialTitle : "";
+      var titled = title ? 'titled "' + title + '"' : "with no title of its own";
+      var wants = titlePatterns.join(", ");
+      return {
+        classes: classes,
+        titleMismatch: true,
+        detail: waiting + " (a " + className + " window did appear " + titled
+          + ', but "' + id + '" claims only titles matching ' + wants
+          + " — its launch command has lost its --title)",
+        reason: base + " (a " + className + " window appeared " + titled
+          + ', which "' + id + '" does not claim: its title patterns are ' + wants + ")"
+      };
+    }
+  }
+
+  var appeared = classes.join(", ");
+  return {
+    classes: classes,
+    titleMismatch: false,
+    detail: waiting + (appeared
+      ? " (windows that did appear since the dispatch: " + appeared + ")"
+      : " (no new window appeared at all)"),
+    reason: base + (appeared ? " (saw " + appeared + " instead)" : "")
+  };
 }
 
 // How many windows of an identity are open right now.
@@ -907,6 +1156,11 @@ function recordedGroupSlotOf(recorded) {
   return ids.join("+") + "@" + recorded.group.index;
 }
 
+// Whether a recorded entry has a workspace a window could be moved to.
+function isPlaceable(entry) {
+  return !entry.unplaceable && entry.workspaceId !== null && entry.workspaceId !== undefined;
+}
+
 // Pair one identity's recorded entries to its live windows.
 //
 // `recorded` is the identity's entries in record order; `live` is its windows in
@@ -937,43 +1191,51 @@ function matchOccurrences(recorded, live, clientsJson, monitorsJson, identities)
     }
   }
 
-  // Pass 2: best geometry overlap, best pair first. Recomputed after each pick
-  // rather than sorted once, because taking a pair changes which pairs are
-  // still available — and a greedy best-first pass is deterministic as long as
-  // ties break on the recorded index then the live index, which they do.
-  for (;;) {
-    var bestScore = 0;
-    var bestI = -1;
-    var bestJ = -1;
-    for (i = 0; i < recorded.length; i++) {
-      if (out[i]) continue;
-      for (j = 0; j < live.length; j++) {
-        if (taken[j]) continue;
-        var iou = rectIou(
-          { at: recorded[i].at, size: recorded[i].size },
-          { at: live[j].at, size: live[j].size }
-        );
-        if (iou === null || iou <= 0) continue;
-        if (iou > bestScore) {
-          bestScore = iou;
-          bestI = i;
-          bestJ = j;
+  // Passes 2 and 3 run PLACEABLE entries first, then the rest. An entry that
+  // cannot be placed (unplaceable from Slots.toLive, or no workspaceId) has
+  // nowhere to move a window to, so it must not take a live window a placeable
+  // entry of the same identity is still waiting for: it would read as drifted
+  // while the placeable one reads missing and the plan launches a surplus.
+  for (var phase = 0; phase < 2; phase++) {
+    // Pass 2: best geometry overlap, best pair first. Recomputed after each
+    // pick rather than sorted once, because taking a pair changes which pairs
+    // are still available — and a greedy best-first pass is deterministic as
+    // long as ties break on the recorded index then the live index, which they
+    // do.
+    for (;;) {
+      var bestScore = 0;
+      var bestI = -1;
+      var bestJ = -1;
+      for (i = 0; i < recorded.length; i++) {
+        if (out[i] || isPlaceable(recorded[i]) !== (phase === 0)) continue;
+        for (j = 0; j < live.length; j++) {
+          if (taken[j]) continue;
+          var iou = rectIou(
+            { at: recorded[i].at, size: recorded[i].size },
+            { at: live[j].at, size: live[j].size }
+          );
+          if (iou === null || iou <= 0) continue;
+          if (iou > bestScore) {
+            bestScore = iou;
+            bestI = i;
+            bestJ = j;
+          }
         }
       }
+      if (bestI === -1) break;
+      out[bestI] = live[bestJ];
+      taken[bestJ] = true;
     }
-    if (bestI === -1) break;
-    out[bestI] = live[bestJ];
-    taken[bestJ] = true;
-  }
 
-  // Pass 3: the remainder, both sides in their own order.
-  j = 0;
-  for (i = 0; i < recorded.length; i++) {
-    if (out[i]) continue;
-    while (j < live.length && taken[j]) j++;
-    if (j >= live.length) break;
-    out[i] = live[j];
-    taken[j] = true;
+    // Pass 3: the remainder, both sides in their own order.
+    j = 0;
+    for (i = 0; i < recorded.length; i++) {
+      if (out[i] || isPlaceable(recorded[i]) !== (phase === 0)) continue;
+      while (j < live.length && taken[j]) j++;
+      if (j >= live.length) break;
+      out[i] = live[j];
+      taken[j] = true;
+    }
   }
   return out;
 }
@@ -1099,6 +1361,10 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //     at:    null | [x, y]        // schema v2. The window's top-left in layout
 //                                 // coordinates, straight off client.at.
 //     size:  null | [w, h]        // schema v2. client.size, same coordinates.
+//     layoutMode: "dwindle" | "scrolling" | "floating" | null
+//                                 // schema v9. workspaceModeOf for the
+//                                 // window's workspace; null when it could not
+//                                 // be read, and always null without a context.
 //   }
 //
 // GEOMETRY (schema v2) — what it is and, just as importantly, what it is not.
@@ -1134,6 +1400,12 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 //                       // watched members in tab order, so the same group
 //                       // recorded twice gets the same id.
 //     index:   number   // 0-based position of this app in the tab order.
+//     active:  true | false | null
+//                       // schema v9. true on the one watched member that was
+//                       // the group's visible tab (activeTabOf), false on the
+//                       // others — on all of them when the visible tab is an
+//                       // unwatched window — and null on all of them when the
+//                       // read cannot name one visible tab. null never drifts.
 //   }
 //
 // Recorded membership is (identityId, occurrence)-AWARE as of schema v3. A tab
@@ -1160,10 +1432,14 @@ function matchLayout(clientsJson, monitorsJson, layout, identities, chosen) {
 // recorded WINDOW, so a second window of one identity is recorded at
 // occurrence 1 (pinned in tests/record.test.js).
 //
-// STATE_VERSION has since moved on to 4, which is a generation about
-// IDENTITIES rather than entries — it adds `titlePatterns` — so a file written
-// today carries that line per identity too. No layout entry changed shape for
-// it.
+// STATE_VERSION has moved on since, and every generation after v3 has been
+// about IDENTITIES or about the file as a whole rather than about entries —
+// `titlePatterns` at v4, two picture consents at v5 and v6, and at v7 the one
+// `pictures` switch that replaced both — so a file written today carries more
+// than this paragraph describes, and NO layout entry has changed shape since
+// v3. The current number is StateModel.STATE_VERSION and is deliberately not
+// repeated here: a generation named in prose is a generation that goes stale,
+// which is exactly what this sentence did.
 
 // The tab order to believe for `client`'s group.
 //
@@ -1449,10 +1725,55 @@ function dissolveTargets(addresses, clientsJson) {
 // The pick avoids every workspace that HAS windows (the emptiness is the whole
 // point) and every workspace a monitor is currently SHOWING or has as its
 // special workspace (moving windows through a visible workspace is churn the
-// user watches happen). 31 is the base: past Omarchy's 1..10 bindings, stable
-// for tests. The scan is bounded; 31..99 all being in use means the desktop
-// has bigger problems than this join.
-function pickScratchWorkspace(clientsJson, monitorsJson) {
+// user watches happen).
+//
+// WHERE the scratch ids live — OUTSIDE EVERY BLOCK (tick vp0). Under Omarchy
+// 4.5 every monitor owns a block of ten ids (block B = B*10+1 .. B*10+10), and
+// /usr/share/omarchy/default/hypr/monitor-workspaces.lua reconciles them. The
+// old base, 31, is block 3 — a real monitor's slot 1 on a desk with four
+// monitors ever seen. So the scan starts at
+//
+//     base = max(90, highestAssignedBlock + 2) * 10 + 1      (901 by default)
+//
+// and covers 99 ids. Why that is safe, from the lua:
+//   - free_block() (lines 219-231) hands a new monitor the LOWEST block no
+//     identity holds, so blocks are assigned densely from 0. Block 90 is only
+//     ever owned after ninety monitors have been seen; a block above every
+//     assigned one, with a spare block between, is owned by nobody.
+//   - owner() (lines 279-291) therefore returns nil for every scratch id, and
+//     place() (565-578) only moves a workspace that HAS an owner on another
+//     monitor — it leaves the scratch workspace where it was created.
+//   - merge() (622-647) is the one that acts: at a RECONCILE (a monitor event
+//     or a config reload) a workspace with windows and no owner is a guest, and
+//     it is renumbered into the block of the monitor it sits on, with no merged
+//     record (block 90 has no identity to remember). Probed nested in tick zf6
+//     (tests/nested-notes.md, 2026-11-14, answer (c)): a window on 901 sat
+//     there untouched until `hyprctl reload`, then landed on ws 2.
+// So a scratch join must NOT straddle a reconcile: a reload or hotplug in the
+// middle renumbers the half-assembled group into a real workspace. The service
+// gates the join on that (ReconcileGate); this function only makes sure no
+// block owner is disturbed.
+//
+// `blocksTable` is optional: a Slots.parseBlocks table. Absent or junk, the
+// base is 901. Every row counts, superseded ones included — a block once
+// handed out may be handed back to its identity.
+var SCRATCH_MIN_BLOCK = 90;
+var SCRATCH_SPAN = 99;
+
+function scratchBase(blocksTable) {
+  var highest = -1;
+  var rows = blocksTable && Object.prototype.toString.call(blocksTable.rows) === "[object Array]"
+    ? blocksTable.rows : [];
+  for (var r = 0; r < rows.length; r++) {
+    var block = rows[r] ? rows[r].block : null;
+    if (typeof block === "number" && isFinite(block) && Math.floor(block) === block && block > highest) {
+      highest = block;
+    }
+  }
+  return Math.max(SCRATCH_MIN_BLOCK, highest + 2) * 10 + 1;
+}
+
+function pickScratchWorkspace(clientsJson, monitorsJson, blocksTable) {
   var used = {};
   var clients = clientsJson || [];
   for (var i = 0; i < clients.length; i++) {
@@ -1466,10 +1787,13 @@ function pickScratchWorkspace(clientsJson, monitorsJson) {
     if (mon.activeWorkspace && typeof mon.activeWorkspace.id === "number") used[mon.activeWorkspace.id] = true;
     if (mon.specialWorkspace && typeof mon.specialWorkspace.id === "number") used[mon.specialWorkspace.id] = true;
   }
-  for (var id = 31; id < 100; id++) {
+  var base = scratchBase(blocksTable);
+  for (var id = base; id < base + SCRATCH_SPAN; id++) {
     if (!used[id]) return id;
   }
-  return 100;
+  // 99 empty, invisible ids all in use means the desktop has bigger problems
+  // than this join. Still past every block.
+  return base + SCRATCH_SPAN;
 }
 
 // A window's `at` or `size` as the record stores it: a pair of finite numbers,
@@ -1521,6 +1845,99 @@ function isSpecialWorkspaceId(value) {
   return typeof id === "number" && isFinite(id) && id < 0;
 }
 
+// ---------------------------------------------------------------------------
+// Planning context, layout modes and the visible tab (schema v9, epic 9i2)
+// ---------------------------------------------------------------------------
+//
+//   context = { workspaces: Array | null     // `hyprctl workspaces -j`, verbatim
+//             , built: { "<workspaceId>": true } | null }
+//
+// The one optional trailing argument of buildLayout, driftOf and planRestore.
+// Absent, every answer is what it was before the argument existed: a mode that
+// cannot be read is null, and null refuses nothing and records nothing.
+
+// The tag Omarchy 4.5 puts on every window of a floating workspace
+// (workspace-modes.lua: Hyprland has no floating layout, so 4.5 floats the
+// windows and tags them).
+var FLOATING_WORKSPACE_TAG = "omarchy-floating-workspace";
+
+// hyprctl prints a dynamic tag with a trailing "*"; the name is the same tag.
+function hasTag(client, tag) {
+  var tags = client && isAddressList(client.tags) ? client.tags : [];
+  for (var i = 0; i < tags.length; i++) {
+    var t = tags[i];
+    if (typeof t !== "string") continue;
+    if (t.charAt(t.length - 1) === "*") t = t.slice(0, -1);
+    if (t === tag) return true;
+  }
+  return false;
+}
+
+// The layout mode of one workspace: "dwindle" | "scrolling" | "floating" | null.
+//
+// "floating" when any client on it carries FLOATING_WORKSPACE_TAG; else the
+// `tiledLayout` of the context.workspaces entry with that id, when it is one of
+// the two tiled words this project knows; else null — unknown, which is the
+// answer for an empty workspace, for any other layout name, and for every
+// workspace when there is no context at all.
+//
+// `workspaceId` may be a number or a whole-number string ("4"): context.built
+// is keyed by String(workspaceId), so callers hold both spellings.
+function workspaceModeOf(context, clientsJson, workspaceId) {
+  if (!context || typeof context !== "object") return null;
+  if (typeof workspaceId === "string" && /^-?\d+$/.test(workspaceId)) workspaceId = Number(workspaceId);
+  if (typeof workspaceId !== "number" || !isFinite(workspaceId)) return null;
+  var clients = clientsJson || [];
+  for (var i = 0; i < clients.length; i++) {
+    var c = clients[i];
+    if (!c || !c.workspace || c.workspace.id !== workspaceId) continue;
+    if (hasTag(c, FLOATING_WORKSPACE_TAG)) return "floating";
+  }
+  // The first entry with the id wins; hyprctl emits no duplicates.
+  var workspaces = isAddressList(context.workspaces) ? context.workspaces : [];
+  for (var w = 0; w < workspaces.length; w++) {
+    var ws = workspaces[w];
+    if (!ws || ws.id !== workspaceId) continue;
+    var mode = ws.tiledLayout;
+    return (mode === "dwindle" || mode === "scrolling") ? mode : null;
+  }
+  return null;
+}
+
+// The group's visible tab: the address of the ONE member reporting
+// `visible === true`, or null when none or several do (a read that cannot
+// tell is not an answer). `memberClients` are the group's live clients.
+function activeTabOf(memberClients) {
+  var list = memberClients || [];
+  var found = null;
+  var visible = 0;
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i];
+    if (!c || c.visible !== true) continue;
+    visible++;
+    found = c.address || null;
+  }
+  return visible === 1 ? found : null;
+}
+
+// The live clients of a client's group, in tab order — watched or not, because
+// the visible tab may be an unwatched window and that has to read as "none of
+// the watched members", not as "unknown".
+function groupMemberClients(client, clientsJson) {
+  var clients = clientsJson || [];
+  var addresses = groupOrderFor(client, clients);
+  var out = [];
+  for (var a = 0; a < addresses.length; a++) {
+    for (var c = 0; c < clients.length; c++) {
+      if (clients[c] && clients[c].address === addresses[a]) {
+        out.push(clients[c]);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 // Snapshot the current placement of every watched app.
 //
 // `recordedAt` is passed in rather than read from a clock, so this function is
@@ -1533,7 +1950,32 @@ function isSpecialWorkspaceId(value) {
 // exists so a recorder (the panel, scripts/record-current) can say out loud
 // that the count it just printed is short, and why. A silently short recording
 // is exactly the "windows out of sync" report this project exists to answer.
-function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
+//
+// `chosenIndex` is the LAST parameter and the newest (tick 3xi): the window
+// index the occurrences are numbered from, when the caller has already built one
+// and needs to keep it. It is not an optimisation. A caller that has to name the
+// window an entry describes — the capture pipeline is the only one — cannot
+// compute that index a SECOND time and still be talking about the same windows:
+// the second call runs a later event-loop turn over a LIVE client list, and
+// nothing makes the two agree. A picture filed under a CORRECT key that
+// photographed a DIFFERENT window is the one failure that feature cannot detect
+// and the map could never show, and "keyed on identity, occurrence and topology"
+// goes on passing while it happens.
+//
+// So the panel builds the index once, hands it here, and hands the SAME variable
+// to the capture. Omitted — scripts/record-current, and every test that only
+// wants a record — this builds its own, which is the behaviour it always had.
+//
+// It is not returned on the layout, deliberately: the layout is a RECORD, it is
+// serialized and compared as one, and an index of raw hyprctl clients hanging
+// off it would put the whole client list into everything that stringifies a
+// recording.
+//
+// `context` (schema v9) is the planning context described above. It supplies
+// the workspace layout mode, recorded as `layoutMode` on every entry; without
+// it `layoutMode` is null. The group's visible tab, `group.active`, needs no
+// context: it is read off the clients.
+function buildLayout(clientsJson, monitorsJson, identities, recordedAt, chosenIndex, context) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
   var list = identities || [];
@@ -1544,7 +1986,7 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
   // order, indexed once before anything is recorded and used for both halves of
   // every entry. An app entry that describes window A while the group it claims
   // to be in was read off window B is the index-hole bug — see pickClientFor.
-  var chosen = chosenWindows(clients, list, monitors);
+  var chosen = chosenIndex ? chosenIndex : chosenWindows(clients, list, monitors);
 
   for (var i = 0; i < list.length; i++) {
     var identity = list[i];
@@ -1588,9 +2030,14 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
       // identity are two members and do make a group — the collapse that used to
       // hide that is gone with the tuple keys.
       if (memberIds.length > 1) {
+        // v9. true on the visible tab, false on the other members (all of
+        // them when the visible tab is an unwatched window), null on all when
+        // the read cannot name one visible tab.
+        var activeAddress = activeTabOf(groupMemberClients(client, clients));
         group = {
           groupId: groupIdFor(memberIds),
-          index: memberIds.indexOf(memberKeyFor(identity.id, occ))
+          index: memberIds.indexOf(memberKeyFor(identity.id, occ)),
+          active: activeAddress === null ? null : activeAddress === client.address
         };
       }
 
@@ -1606,7 +2053,9 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
         // geometry read from a different window of the same identity would
         // describe a desktop that never existed.
         at: geometryPair(client.at),
-        size: geometryPair(client.size)
+        size: geometryPair(client.size),
+        // v9. The workspace's layout mode; null without a context.
+        layoutMode: context ? workspaceModeOf(context, clients, client.workspace ? client.workspace.id : null) : null
       });
     }
   }
@@ -1671,6 +2120,15 @@ function buildLayout(clientsJson, monitorsJson, identities, recordedAt) {
 //                                     // dispatched (it reads as a RELATIVE
 //                                     // selector and moves the wrong workspace
 //                                     // — see isSpecialWorkspaceId)
+//               | "monitor-unassigned" // resolved layout (Slots.toLive): the
+//                                     // monitor is here but 4.5 has not given
+//                                     // it a workspace block yet
+//               | "slot-unknown"      // resolved layout: no usable slot
+//                                     // (monitor-unknown also arrives this way
+//                                     // from app.unplaceable)
+//               | "workspace-elsewhere" // the recorded workspace exists, on a
+//                                     // monitor other than the recorded one —
+//                                     // 4.5 owns that, so it is refused
 //               | "identity-unknown"
 //     drift:      { monitor, workspace, group, floating }
 //                                     // booleans; all false unless drifted.
@@ -1728,10 +2186,60 @@ function identityById(identities, id) {
   return null;
 }
 
+// Every regular workspace that exists right now, keyed by id (as a string), to
+// the monitor OBJECT showing it: the workspaces with windows (through each
+// client's monitor index) and the ones a monitor is showing while empty (its
+// activeWorkspace, applied last, so it wins a conflict). The same rule as
+// Slots.workspaceMonitors, which this file cannot import — engine.js and
+// Slots.js load side by side in QML and neither may require the other.
+//
+// Under Omarchy 4.5 a workspace id belongs to one monitor's block, so this map
+// answers two planner questions: does a move's destination exist yet (a move to
+// an id that does not is created on the FOCUSED monitor, tests/nested-notes.md
+// 2026-11-14 (a)), and is a recorded workspace living on a monitor that is not
+// the one it was recorded on (`workspace-elsewhere`, a refusal).
+function liveWorkspaceMonitors(clientsJson, monitorsJson) {
+  var out = {};
+  var clients = clientsJson || [];
+  var monitors = monitorsJson || [];
+  for (var c = 0; c < clients.length; c++) {
+    var client = clients[c];
+    var ws = client && client.workspace ? client.workspace.id : null;
+    if (!isRegularWorkspaceId(ws)) continue;
+    var monitor = monitorByIndex(monitors, client.monitor);
+    if (monitor) out[String(ws)] = monitor;
+  }
+  for (var m = 0; m < monitors.length; m++) {
+    var mon = monitors[m];
+    var active = mon && mon.activeWorkspace ? mon.activeWorkspace.id : null;
+    if (isRegularWorkspaceId(active)) out[String(active)] = mon;
+  }
+  return out;
+}
+
+function isRegularWorkspaceId(value) {
+  return typeof value === "number" && isFinite(value) && Math.floor(value) === value && value >= 1;
+}
+
+// Is the recorded workspace live on a monitor OTHER than the recorded one?
+// Compared by label, not connector: twins share a label, and a record cannot
+// say which twin it meant (see monitorByDescription), so a workspace on either
+// twin is not "elsewhere".
+function liveWorkspaceIsElsewhere(liveWorkspaces, recorded) {
+  if (!recorded || !isRegularWorkspaceId(recorded.workspaceId)) return false;
+  var holder = own(liveWorkspaces, String(recorded.workspaceId));
+  if (!holder) return false;
+  return monitorLabel(holder) !== (recorded.monitorDescription || "").trim();
+}
+
 // Per-identity comparison of the recorded layout against the live desktop.
 // This is what powers the UI badge, and planRestore() is derived from it — so
 // what the badge says and what a restore would do can never disagree.
-function driftOf(clientsJson, monitorsJson, layout, identities) {
+// `context` (schema v9): the planning context. It supplies each workspace's live
+// layout mode, and through it the §2.4 refusals: no float drift where the mode
+// owns the float state, the mode word on report.tilingRefusals and on
+// report.shapes. Absent, the report is what it was without it.
+function driftOf(clientsJson, monitorsJson, layout, identities, context) {
   var clients = clientsJson || [];
   var monitors = monitorsJson || [];
   var recordedApps = (layout && layout.apps) || [];
@@ -1745,6 +2253,17 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
   var apps = [];
   var appClients = [];
   var summary = { ok: 0, drifted: 0, missing: 0, skipped: 0 };
+  var liveWorkspaces = liveWorkspaceMonitors(clients, monitors);
+  // The layout-mode refusal of each recorded workspace (schema v9), asked once
+  // per workspace. Always null without a context.
+  var modeRefusals = {};
+  function modeRefusalFor(rec) {
+    var key = String(rec.monitorDescription || "") + "\u0000" + String(rec.workspaceId);
+    if (!Object.prototype.hasOwnProperty.call(modeRefusals, key)) {
+      modeRefusals[key] = workspaceModeRefusalOf(recordedApps, context, clients, rec.workspaceId, rec.monitorDescription);
+    }
+    return modeRefusals[key];
+  }
 
   // Pass 1: everything except the group verdict, which cannot be reached one
   // app at a time — whether a group is right depends on which of its OTHER
@@ -1763,7 +2282,9 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
       // window never sets it — its rect is an outcome of the dwindle tree, not
       // a promise anything can keep, and `resize` aimed at one silently
       // rearranges the split (tick y29 evidence). See the geometry block below.
-      drift: { monitor: false, workspace: false, group: false, floating: false, geometry: false },
+      // `activeTab` (schema v9) is set in pass 2, on the one member of an
+      // intact group that was recorded as its visible tab and is not in front.
+      drift: { monitor: false, workspace: false, group: false, floating: false, geometry: false, activeTab: false },
       recorded: {
         monitorDescription: recorded.monitorDescription,
         workspaceId: recorded.workspaceId,
@@ -1815,6 +2336,26 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
       entry.status = "skipped";
       entry.reason = "monitor-absent";
       entry.current = currentPlacement(matched.clientByEntry[i], clients, monitors, identities, chosen.idByAddress);
+    } else if (recorded.unplaceable) {
+      // A RESOLVED layout (Slots.toLive) could not turn this record into a
+      // live workspace id: the monitor is plugged in but 4.5 has not handed it
+      // a block yet (monitor-unassigned — transient, the reconcile gate waits
+      // it out), the blocks file has never seen its identity (monitor-unknown),
+      // or the record carries no usable slot (slot-unknown). There is no
+      // destination, so nothing is planned for it — not even a launch.
+      entry.status = "skipped";
+      entry.reason = recorded.unplaceable;
+      entry.current = currentPlacement(matched.clientByEntry[i], clients, monitors, identities, chosen.idByAddress);
+    } else if (liveWorkspaceIsElsewhere(liveWorkspaces, recorded)) {
+      // The recorded workspace exists, but on a monitor other than the one it
+      // was recorded on. Under 4.5 an id belongs to its monitor's block, and
+      // which monitor shows a workspace is 4.5's decision, not ours: its next
+      // reconcile renumbers or undoes anything we move. Moving the window onto
+      // that workspace would put it on the wrong screen, so it is refused, out
+      // loud, rather than half-restored.
+      entry.status = "skipped";
+      entry.reason = "workspace-elsewhere";
+      entry.current = currentPlacement(matched.clientByEntry[i], clients, monitors, identities, chosen.idByAddress);
     } else {
       var client = matched.clientByEntry[i];
       if (!client) {
@@ -1825,6 +2366,11 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
         entry.drift.monitor = entry.current.monitorDescription !== recorded.monitorDescription;
         entry.drift.workspace = entry.current.workspaceId !== recorded.workspaceId;
         entry.drift.floating = !!entry.current.floating !== !!recorded.floating;
+        // A layout mode that floats and tiles windows itself (§2.4): the float
+        // state is the mode's, so it is no drift and no `floating` op.
+        if (entry.drift.floating && modeRefusalBlocksFloating(modeRefusalFor(recorded), recorded)) {
+          entry.drift.floating = false;
+        }
         // Recorded ungrouped: being in a WATCHED group now IS drift, and since
         // tick 8t4 the plan fixes it with an "ungroup" op — the recording is
         // the statement "these windows stand alone", and a restore that cannot
@@ -1876,6 +2422,14 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
     // reads this field and emits nothing when it is set.
     if (entry.drift.geometry) {
       entry.geometry.skip = geometryPlanSkip(entry.recorded, monitors);
+      // A recorded float whose float toggle the layout mode took away (§2.4),
+      // and whose window is TILED now: the geometry op would run against a
+      // tiled window, where `resize` silently moves the split (tick y29). The
+      // mode's refusal word is the reason the planner leaves it.
+      if (!entry.geometry.skip && entry.current && !entry.current.floating
+        && modeRefusalBlocksFloating(modeRefusalFor(recorded), recorded)) {
+        entry.geometry.skip = modeRefusalFor(recorded);
+      }
     }
 
     apps.push(entry);
@@ -1886,7 +2440,7 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
   var groups = groupDriftOf(recordedApps, apps, appClients, clients, identities, chosen);
 
   for (var s = 0; s < apps.length; s++) {
-    if (apps[s].status === "ok" && apps[s].drift.group) apps[s].status = "drifted";
+    if (apps[s].status === "ok" && (apps[s].drift.group || apps[s].drift.activeTab)) apps[s].status = "drifted";
     summary[apps[s].status] += 1;
   }
 
@@ -1895,7 +2449,10 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
   // the report every reader already has — `scripts/verify` never builds a plan
   // — and because a ceiling that is only visible to whoever runs a restore is a
   // ceiling the person looking at the amber number cannot find.
-  var tilingRefusals = tilingRefusalsOf(recordedApps, apps, clients);
+  // Handed the group verdicts from pass 2 (epic 9i2): a tab group is one tile
+  // only while its group is intact, and only `groups` can say that.
+  var tiledWorkspaces = tiledWorkspacesOf(recordedApps, apps, clients, groups, context);
+  var tilingRefusals = tilingRefusalsFrom(tiledWorkspaces);
   var refusalByWorkspace = {};
   for (var t = 0; t < tilingRefusals.length; t++) {
     refusalByWorkspace[String(tilingRefusals[t].monitorDescription || "")
@@ -1927,7 +2484,10 @@ function driftOf(clientsJson, monitorsJson, layout, identities) {
     geometry: geometrySummaryOf(apps, refusalByWorkspace),
     // The refusals as a list, for a caller that wants them without walking the
     // workspace rows — the service logs from this one.
-    tilingRefusals: tilingRefusals
+    tilingRefusals: tilingRefusals,
+    // The unmet tiled shapes (§2.7), refused or not: what a person looking at
+    // drift=0 beside a wrong tiling needs to see.
+    shapes: tilingShapesFrom(tiledWorkspaces)
   };
 }
 
@@ -2012,6 +2572,32 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
     // drift to report: one window on its own is not a tab group, and saying it
     // has drifted would be a badge nobody can clear.
 
+    // The visible tab (schema v9, §2.6). `activeRecorded` is the live window of
+    // the ONE present member recorded `active: true` — none when the recording
+    // could not tell (a migrated v8 record holds `active: null` on every
+    // member), when the recorded tab is not here, or when a hand-edited file
+    // claims two. `activeLive` is the compositor's own answer over the group's
+    // live members, watched or not: an unwatched tab in front is a wrong tab.
+    // Judged only on an INTACT group of two or more present members: a group
+    // that is being rebuilt carries its tab on the group op instead, and one
+    // window on its own has no tab to be wrong about.
+    var activeAt = -1;
+    var activeCount = 0;
+    for (var r = 0; r < present.length; r++) {
+      var recordedGroup = recordedApps[present[r]].group;
+      if (recordedGroup && recordedGroup.active === true) {
+        activeCount++;
+        activeAt = present[r];
+      }
+    }
+    var activeRecorded = activeCount === 1 ? appClients[activeAt].address : null;
+    var activeLive = present.length > 1
+      ? activeTabOf(groupMemberClients(appClients[present[0]], clients))
+      : null;
+    var activeDrift = !needed && present.length > 1
+      && activeRecorded !== null && activeLive !== null && activeRecorded !== activeLive;
+    if (activeDrift) apps[activeAt].drift.activeTab = true;
+
     out.push({
       groupId: group.groupId,
       // The identity ids of the members that are here, in recorded order. Kept
@@ -2023,7 +2609,10 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
       memberKeys: memberKeys,
       addresses: addresses,
       missing: missing,
-      needed: needed
+      needed: needed,
+      activeRecorded: activeRecorded,
+      activeLive: activeLive,
+      activeDrift: activeDrift
     });
   }
   return out;
@@ -2046,9 +2635,10 @@ function groupDriftOf(recordedApps, apps, appClients, clients, identities, chose
 //     identityId: string
 //     status:     "ok" | "drifted" | "missing" | "skipped"   // from driftOf
 //     workspace:  "ok" | "wrong-workspace" | "workspace-special"
+//               | "workspace-elsewhere" | "slot-unknown"
 //               | "not-running" | "identity-unknown" | "not-judged"
 //     monitor:    "ok" | "wrong-monitor" | "monitor-absent" | "monitor-unknown"
-//               | "not-running" | "identity-unknown"
+//               | "monitor-unassigned" | "not-running" | "identity-unknown"
 //     floating:   "ok" | "should-float" | "should-tile" | "not-running"
 //               | "identity-unknown" | "not-judged"
 //     group:      "ok" | "not-joined" | "wrong-order" | "unexpected-group"
@@ -2251,8 +2841,11 @@ function rectIou(recorded, current) {
 //                                    // nothing and a float's IoU is a useful
 //                                    // second opinion), aggregated for tiled.
 //     skip:      null | string       // why the PLANNER declined to act on a
-//                                    // `geometry-off` float: "off-region" or
-//                                    // "non-positive-size". null on every
+//                                    // `geometry-off` float: "off-region",
+//                                    // "non-positive-size", or a layout-mode
+//                                    // refusal word that took the float's
+//                                    // toggle away while it is tiled (§2.4,
+//                                    // driftOf). null on every
 //                                    // other score, including every one that
 //                                    // was never a candidate for an op. See
 //                                    // geometryPlanSkip.
@@ -2539,20 +3132,36 @@ function geometrySummaryOf(apps, refusalByWorkspace) {
   };
 }
 
+// driftOf reports `monitor-unknown` for two causes, and only the record can
+// tell them apart: an EMPTY monitorDescription means buildLayout never knew
+// where the window was. Saying "not connected" about that would send the user
+// to check a cable that was never the problem.
+var MONITOR_NEVER_RECORDED_PHRASE = "no monitor was ever recorded for it";
+
 // The phrase a verdict word becomes in a sentence. "not-judged" maps to the
 // empty string on purpose: it contributes nothing to a row's text.
 var VERDICT_PHRASES = {
   "wrong-workspace": "on the wrong workspace",
   "wrong-monitor": "on the wrong monitor",
   "monitor-absent": "its recorded monitor is not connected",
-  "monitor-unknown": "no monitor was ever recorded for it",
+  // From a resolved layout (Slots.toLive): the recorded monitor is not
+  // plugged in, or is disabled or mirrored, and Omarchy's blocks file has no
+  // workspace block for it. The LEGACY cause of the same reason — a record that
+  // never had a monitor at all — keeps its own sentence, see
+  // MONITOR_NEVER_RECORDED_PHRASE.
+  "monitor-unknown": "its monitor is not connected and has no workspace block yet",
   "workspace-special": "recorded on a special workspace — not restorable",
+  "monitor-unassigned": "its monitor has no workspace block yet",
+  "slot-unknown": "no workspace slot was recorded for it",
+  "workspace-elsewhere": "its workspace is on another monitor — not moved",
   "should-float": "should be floating",
   "should-tile": "should be tiled",
   "not-joined": "not in its recorded group",
   "wrong-order": "in its group in the wrong tab order",
   "unexpected-group": "grouped, but recorded standing alone",
   "missing-member": "its group is short a member that is here",
+  // Schema v9: the group stands, but another tab is in front of this one.
+  "wrong-tab": "wrong tab in front",
   "not-running": "not running",
   "identity-unknown": "no longer a watched app",
   "not-judged": "",
@@ -2611,6 +3220,9 @@ var GEOMETRY_SKIP_PHRASES = {
 function geometrySkipPhrase(skip) {
   if (!skip) return "";
   var phrase = own(GEOMETRY_SKIP_PHRASES, skip);
+  // A layout-mode refusal can veto a float's geometry op too (driftOf); its
+  // sentence is the tiling one.
+  if (phrase === undefined) phrase = own(TILING_REFUSAL_PHRASES, skip);
   return phrase === undefined ? String(skip) : phrase;
 }
 
@@ -2701,18 +3313,20 @@ function verdictForApp(app, groupsById, blocked, instance) {
       verdict.workspace = "identity-unknown";
       verdict.floating = "identity-unknown";
       verdict.group = "identity-unknown";
-    } else if (app.reason === "workspace-special") {
-      // The WORKSPACE dimension carries this one — the monitor may be sitting
-      // right there, and saying "monitor" about a scratchpad recording would
-      // send the user to check a cable that is fine.
-      verdict.workspace = "workspace-special";
+    } else if (app.reason === "workspace-special" || app.reason === "workspace-elsewhere"
+      || app.reason === "slot-unknown") {
+      // The WORKSPACE dimension carries these — the monitor may be sitting
+      // right there, and saying "monitor" about a scratchpad recording, a
+      // workspace 4.5 has put on another screen, or a record with no slot
+      // would send the user to check a cable that is fine.
+      verdict.workspace = app.reason;
       verdict.monitor = "not-judged";
       verdict.floating = "not-judged";
       verdict.group = "not-judged";
     } else {
-      // monitor-absent / monitor-unknown: the monitor dimension carries the
-      // whole story and the other three have no destination to be judged
-      // against.
+      // monitor-absent / monitor-unknown / monitor-unassigned: the monitor
+      // dimension carries the whole story and the other three have no
+      // destination to be judged against.
       verdict.monitor = app.reason || "not-judged";
       verdict.workspace = "not-judged";
       verdict.floating = "not-judged";
@@ -2728,6 +3342,9 @@ function verdictForApp(app, groupsById, blocked, instance) {
     if (drift.workspace) verdict.workspace = "wrong-workspace";
     if (drift.floating) verdict.floating = recorded.floating ? "should-float" : "should-tile";
     if (drift.group) verdict.group = groupVerdictFor(app, groupsById);
+    // A wrong tab is a group fact, so it reads on the group dimension — and only
+    // when the membership itself is right: a group being rebuilt says why.
+    else if (drift.activeTab) verdict.group = "wrong-tab";
   }
 
   var phrases = [];
@@ -2736,6 +3353,9 @@ function verdictForApp(app, groupsById, blocked, instance) {
     if (word === "ok") continue;
     verdict.ok = false;
     var phrase = verdictPhrase(word);
+    if (word === "monitor-unknown" && !String(recorded.monitorDescription || "").trim()) {
+      phrase = MONITOR_NEVER_RECORDED_PHRASE;
+    }
     if (phrase && phrases.indexOf(phrase) === -1) phrases.push(phrase);
   }
 
@@ -3080,13 +3700,35 @@ function placementOrderOf(items) {
   while (queue.length) {
     var node = queue.shift();
     if (node.key !== undefined) continue;
-    order.push({ key: firstKeyOf(node.far), parentKey: firstKeyOf(node.near) });
+    // `axis` is the cut this arrival makes (epic 9i2 §2.5): 0 when it lands
+    // beside its parent, 1 when it lands below. The arrival always takes the
+    // far side, so the axis is the whole of what the service has to check.
+    order.push({ key: firstKeyOf(node.far), parentKey: firstKeyOf(node.near), axis: node.axis });
     // Unshifted, near first, so the traversal stays pre-order rather than
     // becoming a breadth-first sweep — see the argument above.
     queue.unshift(node.far);
     queue.unshift(node.near);
   }
   return order;
+}
+
+// How an arrival reads against its split parent once it has landed (§2.5): the
+// axis of the one cut between their two tile boxes — 0 side by side, 1 stacked —
+// or null when it is not a cut with the arrival on the FAR side. The arrival
+// always takes the far side (right/below), and a togglesplit keeps it there, so
+// an arrival found left of or above its parent is not "the other axis": it
+// landed somewhere the program did not put it, and no toggle can make that the
+// recorded tree (tick v2p — an axis-only check read it as right and built on it).
+// `parent`, `arrival`: { at, size } tile boxes.
+function arrivalAxisBetween(parent, arrival) {
+  if (!parent || !arrival) return null;
+  var tree = splitTreeOf([
+    { key: "parent", at: parent.at, size: parent.size },
+    { key: "arrival", at: arrival.at, size: arrival.size }
+  ]);
+  if (!tree || (tree.axis !== 0 && tree.axis !== 1)) return null;
+  if (!tree.far || tree.far.key !== "arrival") return null;
+  return tree.axis;
 }
 
 // ---------------------------------------------------------------------------
@@ -3370,18 +4012,168 @@ var TILING_REFUSAL_NOT_A_TREE = "not-a-tree";
 var TILING_REFUSAL_AMBIGUOUS = "ambiguous-tree";
 var TILING_REFUSAL_DIFFERENT_SHAPE = "different-shape";
 
+// The layout-mode words (schema v9). They outrank the tree words above: a
+// workspace whose live mode is not dwindle has no split tree to aim at.
+var TILING_REFUSAL_LAYOUT_SCROLLING = "layout-scrolling";
+var TILING_REFUSAL_LAYOUT_FLOATING = "layout-floating";
+var TILING_REFUSAL_LAYOUT_MODE_DIFFERS = "layout-mode-differs";
+
 var TILING_REFUSAL_PHRASES = {
   "not-a-tree": "these rects are not a guillotine tiling, so there is no divider to aim at",
   "ambiguous-tree": "these rects fit more than one split tree, so which divider a nudge"
     + " would move is a guess — the shape is left exactly as it is",
   "different-shape": "the live split shape differs from the recording by more than one"
-    + " flip, and no sequence of divider moves reaches another shape"
+    + " flip, and no sequence of divider moves reaches another shape",
+  "layout-scrolling": "this workspace is in the scrolling layout, which has no split tree,"
+    + " so its tiles are left exactly as they are",
+  "layout-floating": "this workspace is in the floating layout, so its windows are placed"
+    + " by the workspace mode, not by a split tree",
+  "layout-mode-differs": "this workspace was recorded in a different layout mode than it"
+    + " is in now, so the recorded shape cannot be rebuilt in this one"
 };
+
+// ---------------------------------------------------------------------------
+// Tiles (epic 9i2)
+// ---------------------------------------------------------------------------
+//
+//   Tile = { key, at, size, members, groupId }
+//
+// A tab group occupies ONE rect of the split tree, so it is one tile: its
+// members sorted by tab index, keyed by its tab-0 window, with that window's
+// rect. An ungrouped window is a tile of one, keyed by its own address.
+//
+// `entries`: [{ address, at, size, groupId | null, index | null }]. Tiles come
+// out in the order their first entry appears.
+function tilesOf(entries) {
+  var list = entries || [];
+  var tiles = [];
+  var byGroup = {};
+  var g;
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e) continue;
+    var groupId = (e.groupId === null || e.groupId === undefined) ? null : e.groupId;
+    if (groupId === null) {
+      tiles.push({ key: e.address, at: e.at, size: e.size, members: [e.address], groupId: null });
+      continue;
+    }
+    // Prefixed, so "__proto__" is a key like any other.
+    var bucket = own(byGroup, "g:" + groupId);
+    if (bucket === undefined) {
+      bucket = { groupId: groupId, entries: [] };
+      byGroup["g:" + groupId] = bucket;
+      tiles.push(bucket);
+    }
+    bucket.entries.push(e);
+  }
+  for (g = 0; g < tiles.length; g++) {
+    var tile = tiles[g];
+    if (!tile.entries) continue;
+    // Insertion sort by tab index: stable, and ES5's sort is not guaranteed to be.
+    var sorted = [];
+    for (var k = 0; k < tile.entries.length; k++) {
+      var entry = tile.entries[k];
+      var at = sorted.length;
+      while (at > 0 && tabIndexOf(sorted[at - 1]) > tabIndexOf(entry)) at--;
+      sorted.splice(at, 0, entry);
+    }
+    var members = [];
+    for (var m = 0; m < sorted.length; m++) members.push(sorted[m].address);
+    tiles[g] = { key: members[0], at: sorted[0].at, size: sorted[0].size, members: members, groupId: tile.groupId };
+  }
+  return tiles;
+}
+
+// A missing or junk tab index sorts after every real one.
+function tabIndexOf(entry) {
+  var index = entry ? entry.index : null;
+  return (typeof index === "number" && isFinite(index)) ? index : Infinity;
+}
+
+// The key of the tile holding `address`, or null when no tile does.
+function tileKeyOf(tiles, address) {
+  var list = tiles || [];
+  for (var i = 0; i < list.length; i++) {
+    var members = list[i] && list[i].members ? list[i].members : [];
+    for (var m = 0; m < members.length; m++) {
+      if (members[m] === address) return list[i].key;
+    }
+  }
+  return null;
+}
 
 function tilingRefusalPhrase(reason) {
   if (!reason) return "";
   var phrase = own(TILING_REFUSAL_PHRASES, reason);
   return phrase === undefined ? String(reason) : phrase;
+}
+
+// The layout-mode refusal for ONE workspace, or null (schema v9, §2.4).
+//
+//   recordedMode  the `layoutMode` every recorded app of the workspace shares,
+//                 or null (not recorded, or the apps disagree)
+//   liveMode      workspaceModeOf for the workspace now, or null (unknown)
+//
+// The live word comes first because it is the one the desktop can act on: a
+// scrolling or floating workspace has no split tree, whatever it was recorded
+// in. A recorded mode that differs from a known live one is refused next — the
+// recorded rects were drawn by another layout and are no shape to aim at here.
+// Either side null and the question is not asked: no context, no refusal.
+function layoutModeRefusalOf(recordedMode, liveMode) {
+  if (liveMode === "scrolling") return TILING_REFUSAL_LAYOUT_SCROLLING;
+  if (liveMode === "floating") return TILING_REFUSAL_LAYOUT_FLOATING;
+  if (recordedMode && liveMode && recordedMode !== liveMode) return TILING_REFUSAL_LAYOUT_MODE_DIFFERS;
+  return null;
+}
+
+// The `layoutMode` the recording gives one workspace: the value every recorded
+// app on it carries, when it is the same non-null value on all of them; else
+// null. Every recorded app counts, floats and skipped ones included — the mode
+// is a fact about the workspace, and an app the plan will not touch was still
+// recorded in it.
+function recordedLayoutModeOf(recordedApps, workspaceId, monitorDescription) {
+  var list = recordedApps || [];
+  var mode = null;
+  for (var i = 0; i < list.length; i++) {
+    var recorded = list[i];
+    if (!recorded) continue;
+    if (String(recorded.workspaceId) !== String(workspaceId)) continue;
+    if (String(recorded.monitorDescription) !== String(monitorDescription)) continue;
+    var m = recorded.layoutMode;
+    if (m !== "dwindle" && m !== "scrolling" && m !== "floating") return null;
+    if (mode === null) mode = m;
+    else if (mode !== m) return null;
+  }
+  return mode;
+}
+
+// The layout-mode refusal for a recorded workspace on this desktop: what
+// layoutModeRefusalOf answers for its recorded and live modes. Null without a
+// context, so every caller is unchanged when there is none.
+//
+// A STALE TAG reads as floating, and that is the safe way round. 4.5 strips
+// FLOATING_WORKSPACE_TAG from a window carried off a floating workspace one
+// timer tick after the move lands (workspace-modes.lua, window.move_to_workspace),
+// so a read in between sees the tag on the destination. workspaceModeOf then
+// answers "floating" for a tiled workspace, and the plan does LESS — no tiled
+// op, no float toggle there — for one pass; the next read has lost the tag and
+// plans the rest. The opposite rule (every window must carry the tag) would
+// misread a floating workspace whose newest window is not tagged yet as tiled,
+// and plan splits and a float toggle against the mode.
+function workspaceModeRefusalOf(recordedApps, context, clientsJson, workspaceId, monitorDescription) {
+  if (!context) return null;
+  var liveMode = workspaceModeOf(context, clientsJson, workspaceId);
+  if (liveMode === null) return null;
+  return layoutModeRefusalOf(recordedLayoutModeOf(recordedApps, workspaceId, monitorDescription), liveMode);
+}
+
+// Does this mode refusal take the `floating` op away from this recorded app?
+// On a floating workspace the mode floats and tiles windows itself, so a float
+// toggle would fight it; on a workspace recorded floating and now in another
+// mode, the recorded float was the mode's doing, not the app's.
+function modeRefusalBlocksFloating(refusal, recorded) {
+  if (refusal === TILING_REFUSAL_LAYOUT_FLOATING) return true;
+  return refusal === TILING_REFUSAL_LAYOUT_MODE_DIFFERS && !!recorded && recorded.layoutMode === "floating";
 }
 
 // Why this workspace cannot be refined, or null when it can.
@@ -3394,10 +4186,18 @@ function tilingRefusalPhrase(reason) {
 // windows (nothing to refine), or two sets of different sizes (a workspace
 // mid-restore, which the gate above has already excluded and which will be
 // asked again next pass).
-function tilingRefusalOf(recordedItems, liveItems) {
+//
+// `opts.treeKnown` (§2.5): the live tree is the recorded tree, so the only
+// question left is whether the recording is a tree at all. See
+// planWorkspaceTiling for why that is sound.
+function tilingRefusalOf(recordedItems, liveItems, opts) {
   var recorded = recordedItems || [];
   var live = liveItems || [];
   if (recorded.length < 2 || recorded.length !== live.length) return null;
+
+  if (opts && opts.treeKnown === true) {
+    return splitTreeOf(recorded) ? null : TILING_REFUSAL_NOT_A_TREE;
+  }
 
   var recordedTree = splitTreeOf(recorded);
   var liveTree = splitTreeOf(live);
@@ -3429,26 +4229,63 @@ function tilingRefusalOf(recordedItems, liveItems) {
 // refuses for a reason worth saying out loud — an out-parameter rather than a
 // richer return value because every caller and every test of this function
 // reads "null means nothing to do", and a refusal IS nothing to do.
-function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
+//
+// `opts.treeKnown` (epic 9i2 §2.5): THE KNOWN TREE. Set by the planner only for
+// a workspace whose `context.built[workspaceId]` is true, and then the recorded
+// tree — splitTreeOf(recorded), the very tree placementOrderOf read the arrival
+// program from — IS the live tree. No live reconstruction, no ambiguity
+// refusal, no flip, no swap: only the divider candidates, computed by the
+// recorded tree's sign law against the live rects taken in recorded leaf
+// order, one nudge per plan as without the flag.
+//
+// Why that is sound, and not the guess the eqb law forbids. The ambiguity
+// refusal exists because, on rects that fit two trees, this planner cannot tell
+// which one the COMPOSITOR holds, and a nudge aimed at the wrong one inverts the
+// sign law. With the flag that question has already been answered by the
+// compositor itself: the service sets `built` only when, in one plan, every
+// `sequenced` move to the workspace executed, every focus read-back showed the
+// named split parent focused before its arrival, and every `splitAxis`
+// read-back showed the arrival on the recorded side of it. An arrival splits
+// exactly the focused tile and takes its far side, so a program of pre-order
+// arrivals, each confirmed on its parent and its axis, builds the tree the
+// program was read from, node for node — whatever else those rects would also
+// fit. The flag lives for ONE restore (cleared at cycle start, never
+// persisted, deleted when the shape is abandoned), so a tree the user re-tiles
+// later is asked about from scratch. Without the flag nothing changes: an
+// ambiguous workspace the plugin did not build stays refused.
+//
+// A recording that is not a tree is still `not-a-tree`; with no tree there was
+// no program, and nothing was built from it.
+function planWorkspaceTiling(recordedItems, liveItems, refusalOut, opts) {
   var recorded = recordedItems || [];
   var live = liveItems || [];
   if (recorded.length < 2 || recorded.length !== live.length) return null;
+  var treeKnown = !!(opts && opts.treeKnown === true);
+  // Nothing reconstructs the live side when the tree is known, so nothing else
+  // would notice a live rect that is no rect at all.
+  if (treeKnown) {
+    for (var v = 0; v < live.length; v++) {
+      if (!live[v] || !isRectPair(live[v].at) || !isRectPair(live[v].size)) return null;
+    }
+  }
 
-  var refusal = tilingRefusalOf(recorded, live);
+  var refusal = tilingRefusalOf(recorded, live, opts);
   if (refusal) {
     if (refusalOut) refusalOut.reason = refusal;
     return null;
   }
 
   var recordedTree = splitTreeOf(recorded);
-  var liveTree = splitTreeOf(live);
+  // Known: the recorded tree stands for the live one, occupants included — the
+  // program put each window in its recorded slot and the read-backs said so.
+  var liveTree = treeKnown ? recordedTree : splitTreeOf(live);
 
   // ONE FLIP AND NOTHING ELSE THIS PLAN. The flip changes every rect under the
   // flipped node, so any swap or nudge computed here would be computed against
   // a tiling that is about to stop existing. The pass's own re-plan is where
   // occupancy and ratios get their turn — against the shape this op produced,
   // read back from the compositor rather than predicted.
-  var flip = singleFlipOf(recordedTree, liveTree);
+  var flip = treeKnown ? null : singleFlipOf(recordedTree, liveTree);
   if (flip) {
     return { swaps: [], dividers: [], split: { address: flip.address }, meanIou: null };
   }
@@ -3589,15 +4426,21 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 //            //   split-brain-tolerant and re-reads before every toggle.
 //            //   Groups made purely of unwatched windows never produce one of
 //            //   these: driftOf only sees watched members.
-//      | { kind: "workspace-monitor", workspaceId, monitorDescription,
-//                                     monitorName }
-//      | { kind: "move",   address, workspaceId, monitorDescription }
+//      | { kind: "move",   address, workspaceId, monitorDescription,
+//                          monitorName, viaMonitor }
+//            // monitorName: the recorded monitor's live connector — under
+//            //   Omarchy 4.5 the monitor whose block contains workspaceId.
+//            // viaMonitor: true when workspaceId does not exist yet (no window
+//            //   on it, no monitor showing it). A move to a missing id CREATES
+//            //   it on the FOCUSED monitor (tests/nested-notes.md 2026-11-14
+//            //   (a)), so opToCommand follows the move with the one workspace
+//            //   move this planner ever dispatches: the new workspace onto its
+//            //   owner. See opToCommand.
 //      | { kind: "floating", address, value }
-//            // value: the recorded floating state. Executed by the service as
-//            //   a READ-GATED targeted toggle — see the floating verb evidence
-//            //   above opToCommand: on Hyprland 0.56 the float dispatcher only
-//            //   ever toggles, so a blind dispatch can invert a window that is
-//            //   already right.
+//            // value: the recorded floating state. Dispatched as an ABSOLUTE
+//            //   `action = "on"|"off"` (nested-notes 9i2 (g)); the service
+//            //   still reads the window first — see the floating verb
+//            //   evidence above opToCommand.
 //      | { kind: "split",  address, workspaceId }
 //            // address: a window whose PARENT node in the live split tree has
 //            //   the wrong orientation — the one node the live tiling differs
@@ -3608,47 +4451,57 @@ function planWorkspaceTiling(recordedItems, liveItems, refusalOut) {
 //            //   the rebuild reproduces exactly this order, tab for tab.
 //            // missing:   recorded members that could not take part, so the
 //            //   service can log which app the group is short of.
+//            // active:    the live window of the member recorded as the
+//            //   visible tab, or null (schema v9) — the rebuild ends on it.
+//      | { kind: "tab",    address, anchor, index }
+//            // An INTACT group showing the wrong tab: bring `address` to the
+//            //   front. index: its 0-based position in the live tab ring;
+//            //   anchor: the group's tile key. Dispatched by selector,
+//            //   focus-independent (nested-notes 9i2 (b)).
 //
-// Order is launches, then ungroups, then workspace-monitor, then moves, then
-// floatings, then groups:
+// Order is launches, then ungroups, then moves, then floatings, then groups,
+// then tabs (a tab is chosen inside a group that stands), then geometry and the
+// tiled refinement:
 //   - a window that has to be launched has no address to do anything to yet;
 //   - stale groups are dissolved BEFORE any move, because Hyprland moves a
 //     grouped window's whole group with it — moving first would drag windows
 //     that are recorded elsewhere onto the wrong workspace;
-//   - a window has to be on the right workspace before the workspace's monitor
-//     decides which screen it shows up on;
 //   - floating is restored after the moves (a float toggle re-places the window
 //     within its CURRENT workspace) and before the groups (a group member must
 //     be tiled for into_group to find it);
 //   - a group can only be formed once its members are on the right workspace.
 //
-// Why "workspace-monitor" exists at all: in Hyprland a workspace lives on
-// exactly ONE output, so a window's monitor IS its workspace's monitor. A
-// window that is already on its recorded workspace but on the wrong monitor
-// therefore cannot be fixed by moving the window — `window.move({ workspace })`
-// onto the workspace it is already on is a no-op, and the identical plan would
-// be emitted forever. The workspace itself has to move.
+// There is no op that moves an EXISTING workspace to another monitor (the
+// `workspace-monitor` op is gone, tick 7ph). Under Omarchy 4.5 every monitor
+// owns a block of ten workspace ids and its config reconciles them on every
+// monitor event and reload, so a workspace sitting on the "wrong" monitor is
+// 4.5's arrangement, and moving it would be undone or renumbered. driftOf
+// refuses that case as `workspace-elsewhere`; a monitor drift on its own can
+// therefore no longer plan anything — a window on its recorded workspace is on
+// that workspace's monitor.
 //
 // The plan is IDEMPOTENT: run it against a conforming desktop and it is empty.
 // That is what makes the restore safe to re-run, which is the whole strategy —
 // after the launches settle the service simply plans again, and the second plan
 // contains the moves and groups the first could not express.
 
-function planRestore(clientsJson, monitorsJson, layout, identities) {
+// `context` (schema v9): the planning context, handed to driftOf and read for the
+// §2.4 layout-mode refusals (no tiled op, no splitParent on a refused
+// workspace). Absent, the plan is byte-identical to the plan without it.
+function planRestore(clientsJson, monitorsJson, layout, identities, context) {
   var clients = clientsJson || [];
-  var report = driftOf(clients, monitorsJson, layout, identities);
+  var report = driftOf(clients, monitorsJson, layout, identities, context);
   var recordedApps = (layout && layout.apps) || [];
 
   var launches = [];
   var ungroups = [];
   var ungroupByLiveGroup = {};
   var ungroupOrder = [];
-  var workspaceMoves = [];
-  var seenWorkspaceMoves = {};
   var moves = [];
   var moveRects = [];
   var floatings = [];
   var groups = [];
+  var tabs = [];
   var geometries = [];
 
   for (var i = 0; i < recordedApps.length; i++) {
@@ -3679,39 +4532,23 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
       });
     }
 
-    if (entry.drift.monitor) {
-      // Put the recorded workspace back on the recorded monitor. Deduplicated:
-      // several apps recorded on the same workspace ask for the same move, and
-      // it only needs doing once. driftOf has already established that the
-      // recorded monitor exists in this topology, so the lookup resolves.
-      // The separator is a NUL, spelled as an ESCAPE and never as a literal
-      // byte: a literal NUL in the source makes the whole file "binary" to
-      // grep, which then reports nothing at all for every other line in it.
-      // NUL rather than "|" or " " because a monitor description is free text
-      // that can contain both, and a separator that can occur inside the parts
-      // is a key collision waiting for the right pair of monitors.
-      var wsKey = recorded.workspaceId + "\u0000" + recorded.monitorDescription;
-      if (!seenWorkspaceMoves[wsKey]) {
-        seenWorkspaceMoves[wsKey] = true;
-        var target = monitorByDescription(monitorsJson, recorded.monitorDescription);
-        workspaceMoves.push({
-          kind: "workspace-monitor",
-          workspaceId: recorded.workspaceId,
-          monitorDescription: recorded.monitorDescription,
-          // The live output name, resolved here while the monitor list is in
-          // hand, because that is what the dispatch has to name. See
-          // opToCommand.
-          monitorName: (target && target.name) || ""
-        });
-      }
-    }
-
-    if (entry.drift.monitor || entry.drift.workspace) {
+    // A workspace drift only. A monitor drift alone cannot reach here any
+    // more: a window on its recorded workspace but another monitor means the
+    // workspace itself is elsewhere, and driftOf has skipped it.
+    if (entry.drift.workspace) {
+      // driftOf has established that the recorded monitor is live, so the
+      // lookup resolves; it is the connector the workspace move names when
+      // the destination has to be created.
+      var owner = monitorByDescription(monitorsJson, recorded.monitorDescription);
       moves.push({
         kind: "move",
         address: entry.current.address,
         workspaceId: recorded.workspaceId,
-        monitorDescription: recorded.monitorDescription
+        monitorDescription: recorded.monitorDescription,
+        monitorName: (owner && owner.name) || "",
+        // Decided by stampViaMonitor once the moves are in their final order:
+        // whether the destination exists depends on the moves before it.
+        viaMonitor: false
       });
       // The rect each move is aimed at, kept ALONGSIDE the op rather than on
       // it: applyPlacementOrder needs it to reconstruct the tree, and nothing
@@ -3779,12 +4616,22 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
   var reportGroups = report.groups || [];
   for (var g = 0; g < reportGroups.length; g++) {
     var group = reportGroups[g];
-    if (!group.needed) continue;
+    if (!group.needed) {
+      // An intact group showing the wrong tab (§2.6): one `tab` op, nothing
+      // else — the group itself is right and is never rebuilt for this.
+      var tab = tabOpFor(group, clients);
+      if (tab) tabs.push(tab);
+      continue;
+    }
     if (group.addresses.length < 2) continue;
     groups.push({
       kind: "group",
       addresses: group.addresses.slice(),
-      missing: group.missing.slice()
+      missing: group.missing.slice(),
+      // The live window of the member recorded as the visible tab, or null: a
+      // rebuild ends with this tab in front (the service's last step), so a
+      // regrouped group does not need a `tab` op on the next pass as well.
+      active: group.activeRecorded || null
     });
   }
 
@@ -3805,18 +4652,137 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
   // the re-plan that follows is where it does its work. Which is also why it
   // costs nothing on a converged desktop: it plans, finds the slots right and
   // the ratios inside 0.95, and returns empty.
-  var refinements = planTiledRefinements(recordedApps, report, clients);
+  var refinements = planTiledRefinements(recordedApps, report, clients, context);
+
+  var orderedMoves = applyPlacementOrder(moves, moveRects, recordedApps, report, clients, context);
+  stampViaMonitor(orderedMoves, clients, monitorsJson);
 
   return launches
     .concat(ungroups)
-    .concat(workspaceMoves)
-    .concat(applyPlacementOrder(moves, moveRects, recordedApps, report, clients))
+    .concat(orderedMoves)
     .concat(floatings)
     .concat(groups)
+    .concat(tabs)
     .concat(geometries)
     .concat(refinements.splits)
     .concat(refinements.swaps)
     .concat(refinements.dividers);
+}
+
+// The `tab` op for one report group, or null (§2.6).
+//
+// Only for a group driftOf found intact and showing the wrong tab. `index` is
+// the recorded-active window's position in the LIVE tab ring, 0-based, read off
+// the same ring activeTabOf judged — unwatched tabs included, because the
+// compositor counts them, and the recorded `group.index` does not. opToCommand
+// turns it into the dispatcher's 1-based index. `anchor` is the group's tile
+// key (its first present recorded member), named for the ledger and the
+// read-back; the dispatch itself names `address`, which picks the group just
+// as well (nested-notes 9i2 (b)). A window that is not in its own ring — a read
+// that cannot place it — plans nothing rather than a guessed index.
+function tabOpFor(group, clientsJson) {
+  if (!group || !group.activeDrift || !group.activeRecorded) return null;
+  var clients = clientsJson || [];
+  var client = null;
+  for (var c = 0; c < clients.length; c++) {
+    if (clients[c] && clients[c].address === group.activeRecorded) {
+      client = clients[c];
+      break;
+    }
+  }
+  if (!client) return null;
+  var index = groupOrderFor(client, clients).indexOf(group.activeRecorded);
+  if (index < 0) return null;
+  return {
+    kind: "tab",
+    address: group.activeRecorded,
+    anchor: (group.addresses && group.addresses[0]) || group.activeRecorded,
+    index: index
+  };
+}
+
+// Mark each move whose destination will NOT exist when it runs: `viaMonitor`.
+//
+// A move to a workspace that does not exist creates it on the FOCUSED monitor
+// (tests/nested-notes.md 2026-11-14 (a)), and 4.5's next reconcile then adopts
+// it into that monitor's block — so such a move needs its workspace sent to its
+// owner straight after (opToCommand). Whether the destination exists is a
+// question about the moment the move RUNS, not the moment the plan was made:
+// Hyprland destroys a workspace the moment its last window leaves, unless a
+// monitor is showing it, and an earlier move in this same plan can be what
+// empties it. The property test found exactly that — ws 7 live at plan time,
+// emptied by two earlier moves, recreated on the wrong monitor by the third.
+//
+// So the moves are walked in their final order over a model of the occupancy:
+// every window where it is now, a move relocating the window (and its whole
+// live group, which Hyprland drags along), and a monitor's active workspace
+// existing regardless. The ungroups that run before the moves are ignored:
+// they only keep windows BEHIND that this model lets a group drag away, so the
+// error is one way — a workspace can look emptier than it will be (one
+// redundant workspace move, onto the monitor it is already on), never fuller.
+// Launches land wherever the compositor puts them and are not counted on.
+//
+// "Shown" is modelled per monitor, and it does not outlast a move that changes
+// what that monitor shows (tick fz5). Two kinds of move do: a viaMonitor move,
+// whose workspace move makes the new workspace the one its monitor shows; and
+// a choreographed move (splitParent), whose focus dispatch pulls the
+// destination onto its monitor. After either, the monitor's previous workspace
+// is protected by its windows alone. Found by tests/sandbox-slots.sh on a dock:
+// the external came back showing an EMPTY ws 14, the plan's first move created
+// ws 19 there, 14 went hidden and was destroyed, and the later move into 14
+// recreated it on the focused primary — stranding the window off its owner.
+// The service's refocus after a choreographed move can only bring back what a
+// monitor showed at plan time, so it errs the same safe way.
+function stampViaMonitor(moves, clientsJson, monitorsJson) {
+  var clients = clientsJson || [];
+  var monitors = monitorsJson || [];
+  var where = {};
+  var byAddress = {};
+  for (var c = 0; c < clients.length; c++) {
+    var client = clients[c];
+    if (!client || !client.address) continue;
+    byAddress[client.address] = client;
+    where[client.address] = client.workspace ? client.workspace.id : null;
+  }
+  // monitor name -> the workspace id it shows (null: nothing protected).
+  var shownBy = {};
+  for (var m = 0; m < monitors.length; m++) {
+    var monitor = monitors[m];
+    if (!monitor) continue;
+    var active = monitor.activeWorkspace ? monitor.activeWorkspace.id : null;
+    shownBy[typeof monitor.name === "string" ? monitor.name : "#" + m] = isRegularWorkspaceId(active) ? active : null;
+  }
+  function exists(ws) {
+    for (var name in shownBy) {
+      if (Object.prototype.hasOwnProperty.call(shownBy, name) && shownBy[name] === ws) return true;
+    }
+    for (var address in where) {
+      if (Object.prototype.hasOwnProperty.call(where, address) && where[address] === ws) return true;
+    }
+    return false;
+  }
+  for (var i = 0; i < moves.length; i++) {
+    var op = moves[i];
+    op.viaMonitor = !exists(op.workspaceId);
+    var mover = own(byAddress, op.address);
+    var dragged = mover && isAddressList(mover.grouped) && mover.grouped.length > 1
+      ? mover.grouped : [op.address];
+    for (var d = 0; d < dragged.length; d++) {
+      if (own(where, dragged[d]) !== undefined) where[dragged[d]] = op.workspaceId;
+    }
+    var reshows = op.viaMonitor || (typeof op.splitParent === "string" && op.splitParent !== "");
+    if (reshows) {
+      if (op.monitorName && own(shownBy, op.monitorName) !== undefined) {
+        // It now shows the destination, which this move has just occupied.
+        shownBy[op.monitorName] = op.workspaceId;
+      } else {
+        // Which monitor changed is unknown: protect nothing by being shown.
+        for (var key in shownBy) {
+          if (Object.prototype.hasOwnProperty.call(shownBy, key)) shownBy[key] = null;
+        }
+      }
+    }
+  }
 }
 
 // Every workspace refinement is allowed to LOOK at, in recorded order, with
@@ -3834,10 +4800,38 @@ function planRestore(clientsJson, monitorsJson, layout, identities) {
 // are already in the plan above, and the next iteration asks again. That
 // distinction is why this returns only the workspaces that passed — nothing may
 // report a refusal about a workspace nobody put the question to.
-function tiledWorkspacesOf(recordedApps, appEntries, clients) {
+//
+// TILES, NOT WINDOWS (epic 9i2). A tab group holds ONE rect of the split tree,
+// so `items` and `live` are tiles (tilesOf): the recorded members of one group
+// are one item, keyed by the live address of its lowest-index present member
+// and carrying that member's rect. Before this a group was N identical rects —
+// not a guillotine tiling — and a group beside any other window was refused as
+// `not-a-tree` for ever (finding-grouping-tiling, probe G2).
+//
+// A group is one tile only while it is INTACT: `reportGroups` (driftOf's group
+// verdicts) says `needed === false`. A workspace holding a group whose op is
+// still to run, or any app with `drift.group`, is PENDING — its members are
+// about to be joined, split or reordered, so the rects are about to change —
+// and pending is the gate's "not yet asked", not a refusal. Without
+// `reportGroups` the same question is answered from `drift.group` alone, which
+// groupDriftOf sets on every present member of a group it marks needed.
+//
+// The stranger rule counts a client only if it is not a TAB of one of the
+// workspace's tiles: an unwatched window tabbed into a group shares the group's
+// rect and takes no tile of its own.
+function tiledWorkspacesOf(recordedApps, appEntries, clients, reportGroups, context) {
   var apps = appEntries || [];
   var byWorkspace = {};
   var order = [];
+
+  var haveGroups = Object.prototype.toString.call(reportGroups) === "[object Array]";
+  var neededByGroup = {};
+  if (haveGroups) {
+    for (var r = 0; r < reportGroups.length; r++) {
+      if (!reportGroups[r]) continue;
+      neededByGroup["g:" + reportGroups[r].groupId] = !!reportGroups[r].needed;
+    }
+  }
 
   for (var i = 0; i < recordedApps.length; i++) {
     var recorded = recordedApps[i];
@@ -3846,9 +4840,12 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
     var key = recorded.workspaceId + " " + recorded.monitorDescription;
     if (!byWorkspace[key]) {
       byWorkspace[key] = {
-        ok: true, items: [], live: [],
+        ok: true, entries: [], liveEntries: [],
         workspaceId: recorded.workspaceId,
-        monitorDescription: recorded.monitorDescription
+        monitorDescription: recorded.monitorDescription,
+        // §2.4: null without a context, and then nothing below changes.
+        modeRefusal: workspaceModeRefusalOf(recordedApps, context, clients,
+          recorded.workspaceId, recorded.monitorDescription)
       };
       order.push(key);
     }
@@ -3856,8 +4853,18 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
 
     // Any one of these and the workspace is not finished, so it is not ours.
     if (entry.status === "missing" || !entry.current) { bucket.ok = false; continue; }
-    if (recorded.floating || entry.current.floating) { bucket.ok = false; continue; }
+    // A window the FLOATING layout floated is still a tile of the recording:
+    // the workspace is finished, and its refusal is what gets said about it.
+    if (recorded.floating) { bucket.ok = false; continue; }
+    if (entry.current.floating && bucket.modeRefusal !== TILING_REFUSAL_LAYOUT_FLOATING) { bucket.ok = false; continue; }
     if (entry.drift.workspace || entry.drift.monitor) { bucket.ok = false; continue; }
+    // Pending: a group still to be built, rebuilt or dissolved.
+    if (entry.drift.group) { bucket.ok = false; continue; }
+    var recordedGroup = recorded.group && recorded.group.groupId ? recorded.group : null;
+    if (recordedGroup && haveGroups && own(neededByGroup, "g:" + recordedGroup.groupId) !== false) {
+      bucket.ok = false;
+      continue;
+    }
 
     var at = geometryPair(recorded.at);
     var size = geometryPair(recorded.size);
@@ -3865,37 +4872,79 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
     var liveSize = geometryPair(entry.current.size);
     if (!at || !size || !liveAt || !liveSize) { bucket.ok = false; continue; }
 
-    bucket.items.push({ key: entry.current.address, at: at, size: size });
-    bucket.live.push({ key: entry.current.address, at: liveAt, size: liveSize });
+    // The live side uses the RECORDED group id and tab index: the group is
+    // intact, so its live tab order is the recorded one and both sides key the
+    // tile by the same window.
+    var groupId = recordedGroup ? recordedGroup.groupId : null;
+    var index = recordedGroup ? recordedGroup.index : null;
+    bucket.entries.push({ address: entry.current.address, at: at, size: size, groupId: groupId, index: index });
+    bucket.liveEntries.push({ address: entry.current.address, at: liveAt, size: liveSize, groupId: groupId, index: index });
+  }
+
+  var liveClients = clients || [];
+  var liveByAddress = {};
+  for (var l = 0; l < liveClients.length; l++) {
+    if (liveClients[l] && typeof liveClients[l].address === "string") liveByAddress[liveClients[l].address] = liveClients[l];
   }
 
   var out = [];
   for (var k = 0; k < order.length; k++) {
     var group = byWorkspace[order[k]];
-    if (!group.ok || group.items.length < 2) continue;
+    if (!group.ok) continue;
+    var items = tilesOf(group.entries);
+    var live = tilesOf(group.liveEntries);
+    if (items.length < 2) continue;
 
     // A window nobody watches, tiled on this workspace, holds a tile that is
     // not in the recording — so the recorded rects are not reachable and every
     // nudge would be aimed past it. Same rule the placement gate uses, for the
-    // same reason; a FLOAT holds no tile and does not count.
+    // same reason; a FLOAT holds no tile and does not count, and neither does a
+    // tab of one of this workspace's tiles.
     var occupied = {};
-    for (var m = 0; m < group.live.length; m++) occupied[group.live[m].key] = true;
+    for (var m = 0; m < live.length; m++) {
+      for (var n = 0; n < live[m].members.length; n++) {
+        var member = live[m].members[n];
+        occupied[member] = true;
+        var memberClient = own(liveByAddress, member);
+        var tabs = memberClient && isAddressList(memberClient.grouped) ? memberClient.grouped : [];
+        for (var t = 0; t < tabs.length; t++) occupied[tabs[t]] = true;
+      }
+    }
     var stranger = false;
-    var live = clients || [];
-    for (var c = 0; c < live.length; c++) {
-      var client = live[c];
+    for (var c = 0; c < liveClients.length; c++) {
+      var client = liveClients[c];
       if (!client || !client.workspace) continue;
       if (String(client.workspace.id) !== String(group.workspaceId)) continue;
       if (client.floating) continue;
-      if (occupied[client.address]) continue;
+      if (own(occupied, client.address)) continue;
       stranger = true;
       break;
     }
     if (stranger) continue;
 
-    out.push(group);
+    out.push({
+      ok: true, items: items, live: live,
+      workspaceId: group.workspaceId,
+      monitorDescription: group.monitorDescription,
+      modeRefusal: group.modeRefusal,
+      // §2.5: this restore built the workspace itself and read every arrival
+      // back, so its recorded tree is the live tree (planWorkspaceTiling).
+      treeKnown: builtByThisCycle(context, group.workspaceId)
+    });
   }
   return out;
+}
+
+// Did this restore build this workspace itself, every arrival read back
+// (context.built, §2.5)? Only an own `true` counts — `built` is keyed by
+// workspace id, and an inherited "constructor" is not a workspace.
+function builtByThisCycle(context, workspaceId) {
+  if (!context || !context.built || typeof context.built !== "object") return false;
+  return own(context.built, String(workspaceId)) === true;
+}
+
+function treeOptsOf(group) {
+  return group && group.treeKnown ? { treeKnown: true } : undefined;
 }
 
 // Is this workspace already where the recording puts it?
@@ -3907,20 +4956,27 @@ function tiledWorkspacesOf(recordedApps, appEntries, clients) {
 // two windows in each other's slots share few pixels with their own recorded
 // rects.
 function tilingSettled(recordedItems, liveItems) {
+  var mean = tilingMeanIouOf(recordedItems, liveItems);
+  return mean !== null && mean >= TILED_REFINEMENT_TARGET_IOU;
+}
+
+// The mean IoU of each tile against its own recorded rect, or null when the two
+// sides are not the same tiles (or a rect cannot be scored).
+function tilingMeanIouOf(recordedItems, liveItems) {
   var recorded = recordedItems || [];
   var live = liveItems || [];
-  if (!recorded.length || recorded.length !== live.length) return false;
+  if (!recorded.length || recorded.length !== live.length) return null;
   var byKey = {};
   for (var i = 0; i < live.length; i++) byKey[live[i].key] = live[i];
   var total = 0;
   for (var r = 0; r < recorded.length; r++) {
     var mine = own(byKey, recorded[r].key);
-    if (!mine) return false;
+    if (!mine) return null;
     var score = rectIou(recorded[r], mine);
-    if (score === null) return false;
+    if (score === null) return null;
     total += score;
   }
-  return (total / recorded.length) >= TILED_REFINEMENT_TARGET_IOU;
+  return total / recorded.length;
 }
 
 // The refusals, for the report: every gate-passing workspace whose tiling this
@@ -3938,16 +4994,52 @@ function tilingSettled(recordedItems, liveItems) {
 // ceiling stops being read at all. So a SETTLED workspace reports nothing. The
 // planner's refusal is unchanged, and the sentence comes back the moment the
 // workspace drifts — which is the only moment a reader needs it.
-function tilingRefusalsOf(recordedApps, appEntries, clients) {
-  var groups = tiledWorkspacesOf(recordedApps || [], appEntries, clients);
+//
+// A layout-mode refusal (§2.4) outranks the tree words, under the same gate.
+function tilingRefusalsOf(recordedApps, appEntries, clients, reportGroups, context) {
+  return tilingRefusalsFrom(tiledWorkspacesOf(recordedApps || [], appEntries, clients, reportGroups, context));
+}
+
+function tilingRefusalsFrom(groups) {
   var out = [];
   for (var i = 0; i < groups.length; i++) {
     if (tilingSettled(groups[i].items, groups[i].live)) continue;
-    var reason = tilingRefusalOf(groups[i].items, groups[i].live);
+    var reason = groups[i].modeRefusal || tilingRefusalOf(groups[i].items, groups[i].live, treeOptsOf(groups[i]));
     if (!reason) continue;
     out.push({
       workspaceId: groups[i].workspaceId,
       monitorDescription: groups[i].monitorDescription,
+      reason: reason
+    });
+  }
+  return out;
+}
+
+// The unmet shapes (§2.7): one row per finished tiled workspace whose TILE mean
+// IoU is below TILED_REFINEMENT_TARGET_IOU, settled or not by any refinement —
+// the fact drift=0 alone hides, because a tiled rect is never drift.
+//
+//   { workspaceId, monitorDescription, meanIou, reason }
+//
+// `reason` is the refusal word that keeps a restore from acting on it (the mode
+// word first, as in tilingRefusalsFrom), or null when planWorkspaceTiling has a
+// program for it. A PENDING workspace — a move, a launch or a group op still to
+// run — is not finished, is not in `groups`, and is not a shape.
+function tilingShapesFrom(groups) {
+  var out = [];
+  for (var i = 0; i < groups.length; i++) {
+    var mean = tilingMeanIouOf(groups[i].items, groups[i].live);
+    if (mean === null || mean >= TILED_REFINEMENT_TARGET_IOU) continue;
+    var reason = groups[i].modeRefusal || null;
+    if (!reason) {
+      var refusal = {};
+      planWorkspaceTiling(groups[i].items, groups[i].live, refusal, treeOptsOf(groups[i]));
+      reason = refusal.reason || null;
+    }
+    out.push({
+      workspaceId: groups[i].workspaceId,
+      monitorDescription: groups[i].monitorDescription,
+      meanIou: round4(mean),
       reason: reason
     });
   }
@@ -3959,23 +5051,46 @@ function tilingRefusalsOf(recordedApps, appEntries, clients) {
 // swap in front of every nudge across the whole plan, not just within a
 // workspace: a swap moves no divider, so nothing about that interleaving can go
 // wrong, and one rule is easier to keep true than one rule per workspace.
-function planTiledRefinements(recordedApps, report, clients) {
+function planTiledRefinements(recordedApps, report, clients, context) {
   var splits = [];
   var swaps = [];
   var dividers = [];
-  var groups = tiledWorkspacesOf(recordedApps, report.apps, clients);
+  // Ops name TILE keys: a swap or a divider at a group's leader moves the whole
+  // group (nested-notes 9i2 (c), (d)), so the leader stands for the tile.
+  var groups = tiledWorkspacesOf(recordedApps, report.apps, clients, report.groups, context);
 
   for (var k = 0; k < groups.length; k++) {
     var group = groups[k];
-    var program = planWorkspaceTiling(group.items, group.live);
+    // Scrolling and floating have no split tree, and a mode other than the
+    // recorded one drew other rects (§2.4): no split, swap or divider at all.
+    // On scrolling a swap and a resize both answer "ok" and rearrange.
+    if (group.modeRefusal) continue;
+    var program = planWorkspaceTiling(group.items, group.live, null, treeOptsOf(group));
     if (!program) continue;
     if (program.split) {
-      splits.push({ kind: "split", address: program.split.address, workspaceId: group.workspaceId });
+      splits.push({
+        kind: "split",
+        address: splitAddressOf(program.split.address, report.groups, clients),
+        workspaceId: group.workspaceId
+      });
       continue;
     }
+    var groupKeys = {};
+    for (var gk = 0; gk < group.items.length; gk++) {
+      if (group.items[gk].groupId !== null && group.items[gk].groupId !== undefined) groupKeys[group.items[gk].key] = true;
+    }
+    var swapsAGroup = false;
     for (var s = 0; s < program.swaps.length; s++) {
       swaps.push({ kind: "swap", address: program.swaps[s].address, target: program.swaps[s].target });
+      if (own(groupKeys, program.swaps[s].address) || own(groupKeys, program.swaps[s].target)) swapsAGroup = true;
     }
+    // A swap that moves a GROUP takes the ratios to the next plan. A group's
+    // member rect is its tile minus the groupbar (nested-notes 9i2 (c)), and a
+    // plain window's is the whole tile, so the slot a group is about to leave
+    // or enter measures 21px differently once the swap has run — and every
+    // divider below was computed against the slots as they are now. The
+    // re-plan reads the swapped desk back and compares like with like.
+    if (swapsAGroup) continue;
     for (var d = 0; d < program.dividers.length; d++) {
       dividers.push({
         kind: "divider",
@@ -3987,6 +5102,38 @@ function planTiledRefinements(recordedApps, report, clients) {
   }
 
   return { splits: splits, swaps: swaps, dividers: dividers };
+}
+
+// The window a `split` op on a tile focuses (tick v2p). `togglesplit` flips
+// the node of whatever is focused, and any member of a group stands for its
+// tile — but focusing a member that is not the visible tab MAKES it the visible
+// tab (§2 amendment), so a split aimed at the tile key (tab 0) would flip the
+// right node and show the wrong tab. So the op names the tab that will be in
+// front when it runs:
+//   - the recorded-active member when this plan also carries the group's `tab`
+//     op (tabOpFor): that op runs first and brings it to the front;
+//   - else the live visible tab (activeTabOf over the whole live ring, an
+//     unwatched tab included — it is in front, and focusing it keeps it there);
+//   - else the recorded-active member (a read that cannot tell which tab shows);
+//   - else the tile key itself (migrated v8, nothing known either way).
+// An ungrouped tile is its own key.
+function splitAddressOf(key, reportGroups, clientsJson) {
+  var clients = clientsJson || [];
+  var leader = null;
+  for (var c = 0; c < clients.length; c++) {
+    if (clients[c] && clients[c].address === key) { leader = clients[c]; break; }
+  }
+  if (!leader || !isAddressList(leader.grouped) || leader.grouped.length < 2) return key;
+  var groups = reportGroups || [];
+  var recorded = null;
+  for (var g = 0; g < groups.length; g++) {
+    if (!groups[g] || !isAddressList(groups[g].addresses)) continue;
+    if (groups[g].addresses.indexOf(key) === -1) continue;
+    if (tabOpFor(groups[g], clients)) return groups[g].activeRecorded;
+    recorded = groups[g].activeRecorded || null;
+    break;
+  }
+  return activeTabOf(groupMemberClients(leader, clients)) || recorded || key;
 }
 
 // ---------------------------------------------------------------------------
@@ -4036,14 +5183,17 @@ function planTiledRefinements(recordedApps, report, clients) {
 //   5. the recorded rects reconstruct a guillotine tree (placementOrderOf).
 //      Rects from a monitor arrangement these coordinates no longer describe
 //      do not, and that is the case where guessing would be worst.
-function applyPlacementOrder(moves, moveRects, recordedApps, report, clients) {
+function applyPlacementOrder(moves, moveRects, recordedApps, report, clients, context) {
   if (moves.length < 2) return moves;
 
   var rectByAddress = {};
   for (var r = 0; r < moveRects.length; r++) rectByAddress[moveRects[r].address] = moveRects[r];
 
-  // Group the moves by the workspace they are aimed at. Same NUL-separated key
-  // shape as the workspace-monitor dedupe above, for the same reason.
+  // Group the moves by the workspace they are aimed at. The separator is a
+  // NUL, spelled as an ESCAPE and never as a literal byte (a literal NUL makes
+  // the whole file "binary" to grep): a monitor description is free text that
+  // can contain any printable separator, and one that can occur inside the
+  // parts is a key collision waiting for the right pair of monitors.
   var groupsByKey = {};
   var keyOrder = [];
   for (var i = 0; i < moves.length; i++) {
@@ -4055,17 +5205,31 @@ function applyPlacementOrder(moves, moveRects, recordedApps, report, clients) {
   var ordered = [];
   for (var k = 0; k < keyOrder.length; k++) {
     var group = groupsByKey[keyOrder[k]];
-    var sequenced = sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients);
+    var sequenced = sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients, context);
     ordered = ordered.concat(sequenced);
   }
   return ordered;
 }
 
-function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients) {
+function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clients, context) {
   if (group.length < 2) return group;                                   // (1)
 
   var workspaceId = group[0].workspaceId;
   var monitorDescription = group[0].monitorDescription;
+
+  // (0) the destination has a split tree to build, in the recorded mode (§2.4).
+  // A splitParent on a scrolling or floating workspace focuses windows for an
+  // arrival order nothing reads; the moves go in recorded order, unfocused.
+  if (workspaceModeRefusalOf(recordedApps, context, clients, workspaceId, monitorDescription)) return group;
+  // A destination that does not exist yet has no readable mode (null), so the
+  // refusal above cannot see it — but one RECORDED scrolling or floating stands
+  // down as well (tick v2p): nothing says it will come up tiled, and an arrival
+  // order is no shape on either mode. The service re-reads the mode before any
+  // axis correction for the case left over (recorded dwindle or unrecorded).
+  if (context) {
+    var recordedMode = recordedLayoutModeOf(recordedApps, workspaceId, monitorDescription);
+    if (recordedMode === "scrolling" || recordedMode === "floating") return group;
+  }
 
   var moving = {};
   for (var g = 0; g < group.length; g++) moving[group[g].address] = true;
@@ -4095,8 +5259,10 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
   }
 
   // (2) and (3): everything the recording puts on this workspace is here, and
-  // none of it is recorded as a float.
+  // none of it is recorded as a float. Counted in WINDOWS, not tiles: every
+  // member of a group has to be arriving too.
   var wanted = 0;
+  var recordedGroupOf = {};
   for (var a = 0; a < recordedApps.length; a++) {
     var recorded = recordedApps[a];
     if (String(recorded.workspaceId) !== String(workspaceId)) continue;
@@ -4107,6 +5273,7 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
     // "ok" and "drifted" both carry a live window; "missing" does not, and a
     // window that is not here cannot take the slot the tree hands it.
     if (!entry || !entry.current || !moving[entry.current.address]) return group;
+    if (recorded.group && recorded.group.groupId) recordedGroupOf[entry.current.address] = recorded.group;
     wanted += 1;
   }
   if (wanted !== group.length) return group;
@@ -4123,31 +5290,93 @@ function sequenceWorkspaceMoves(group, rectByAddress, recordedApps, report, clie
     return group;
   }
 
-  // (5) the rects have to be a tree.
-  var items = [];
+  // (5) the rects have to be a tree — of TILES (epic 9i2). A tab group is one
+  // rect of the split tree, so its recorded members are one tile, keyed and
+  // placed by the lowest-index member (tilesOf). N identical member rects are
+  // no tree at all, which is why a group beside anything else used to leave the
+  // whole workspace unchoreographed.
+  var entries = [];
   for (var m = 0; m < group.length; m++) {
     var rect = rectByAddress[group[m].address];
     if (!rect || !rect.at || !rect.size) return group;
-    items.push({ key: group[m].address, at: rect.at, size: rect.size });
+    var rg = own(recordedGroupOf, group[m].address);
+    entries.push({
+      address: group[m].address, at: rect.at, size: rect.size,
+      groupId: rg ? rg.groupId : null, index: rg ? rg.index : null
+    });
   }
-  var order = placementOrderOf(items);
-  if (!order || order.length !== group.length) return group;
+  var tiles = tilesOf(entries);
+  // One tile — a lone group — splits nothing: its tabs are joined by the group
+  // op whatever order they arrived in, and the focus flicker buys nothing (1).
+  if (tiles.length < 2) return group;
+  var order = placementOrderOf(tiles);
+  if (!order || order.length !== tiles.length) return group;
+
+  // (6) a group member that is LIVE in a group is not an arrival of its own:
+  // Hyprland moves a grouped window's whole group with it, so the leader's move
+  // would drag its tabs along and the member chain below would split nothing.
+  // Standing down leaves exactly what was planned before tiles existed.
+  for (var t = 0; t < tiles.length; t++) {
+    if (tiles[t].members.length < 2) continue;
+    for (var tm = 0; tm < tiles[t].members.length; tm++) {
+      var tab = liveByAddress[tiles[t].members[tm]];
+      if (tab && isAddressList(tab.grouped) && tab.grouped.length > 1) return group;
+    }
+  }
 
   var byAddress = {};
   for (var b = 0; b < group.length; b++) byAddress[group[b].address] = group[b];
+  var tileByKey = {};
+  for (var tk = 0; tk < tiles.length; tk++) tileByKey[tiles[tk].key] = tiles[tk];
 
+  // The program: every tile's LEADER in placement order, each splitting the
+  // tile placementOrderOf names; then every group's other members in tab
+  // order, each splitting the member before it. The member chain was measured
+  // in the nested compositor (tests/nested-notes.md, 9i2 (e)): every member
+  // arrival lands beside its predecessor, every join in tab order is adjacent,
+  // and the joined group sits exactly on the leader's arrival rect — so the
+  // group op that follows the moves folds the chain back into the leader's
+  // tile and the tree is the recorded one. No scratch fallback is needed.
+  //
   // Resolved FIRST and stamped SECOND, deliberately. Stamping as we go would
   // leave half the ops carrying a splitParent if the last one failed to
   // resolve, and a partly-choreographed workspace is worse than an
   // unchoreographed one: it focuses some windows and not others, which is a
   // program nobody designed.
+  //
+  // Each LEADER arrival also carries `splitAxis` (§2.5): the axis of the
+  // recorded cut it makes — 0 beside its parent, 1 below it. Dwindle picks an
+  // arrival's axis from the shape of the tile it splits (wider: side by side,
+  // taller: stacked — §2 amendment), not from the recording, so the service
+  // reads the axis back after the arrival and flips that one node with a
+  // single togglesplit when it came out wrong. A member arrival carries none:
+  // the group op folds it into the leader's tile, and whichever way it split
+  // is gone once it has. Every move of a complete program carries
+  // `sequenced: true`, which is how the service knows the moves to check
+  // before it may declare the workspace built (context.built).
   var out = [];
+  var parents = [];
+  var axes = [];
   for (var o = 0; o < order.length; o++) {
-    if (!byAddress[order[o].key]) return group;
+    if (!byAddress[order[o].key] || !own(tileByKey, order[o].key)) return group;
     out.push(byAddress[order[o].key]);
+    parents.push(order[o].parentKey);
+    axes.push(order[o].parentKey ? order[o].axis : null);
   }
-  for (var s = 0; s < order.length; s++) {
-    if (order[s].parentKey) out[s].splitParent = order[s].parentKey;
+  for (var lo = 0; lo < order.length; lo++) {
+    var members = tileByKey[order[lo].key].members;
+    for (var mm = 1; mm < members.length; mm++) {
+      if (!byAddress[members[mm]]) return group;
+      out.push(byAddress[members[mm]]);
+      parents.push(members[mm - 1]);
+      axes.push(null);
+    }
+  }
+  if (out.length !== group.length) return group;
+  for (var s = 0; s < out.length; s++) {
+    out[s].sequenced = true;
+    if (parents[s]) out[s].splitParent = parents[s];
+    if (parents[s] && (axes[s] === 0 || axes[s] === 1)) out[s].splitAxis = axes[s];
   }
   return out;
 }
@@ -4200,10 +5429,16 @@ function opAddressesOf(op) {
     // make the op meaningless — so every consumer (the snapshot invariant, the
     // ledger, the plan's address list) has to see it, and now they all do
     // without any of them knowing what a swap is.
+    var named = [op.address];
     if (typeof op.target === "string" && op.target && op.target !== op.address) {
-      return [op.address, op.target];
+      named.push(op.target);
     }
-    return [op.address];
+    // A FOURTH, from the `tab` op (schema v9): `anchor`, the window that names
+    // the group the op acts IN. Spelled by shape for the same reason.
+    if (typeof op.anchor === "string" && op.anchor && named.indexOf(op.anchor) === -1) {
+      named.push(op.anchor);
+    }
+    return named;
   }
   if (!isAddressList(op.addresses)) return [];
   var out = [];
@@ -4215,7 +5450,7 @@ function opAddressesOf(op) {
 }
 
 // The op's subject as one string, for a ledger entry or a log line: the windows
-// it names, or the identity it launches, or the workspace it moves. Shape
+// it names, or the identity it launches, or the workspace it names. Shape
 // again, in the same order of preference, so the same synthetic op that
 // resolves its addresses also gets a subject and is never a blank row.
 function opSubjectOf(op) {
@@ -4296,18 +5531,21 @@ function unknownPlanAddresses(plan, clientsJson) {
 function opSignature(op) {
   if (!op) return "";
   if (op.kind === "launch") return "launch:" + op.identityId;
-  if (op.kind === "workspace-monitor") {
-    return "workspace-monitor:" + op.workspaceId + "@" + (op.monitorName || op.monitorDescription || "");
-  }
   // The split parent is part of the signature, because it is part of the
   // PROGRAM: two plans that move the same windows to the same workspaces but
   // split different tiles build different desktops, and a no-progress check
   // that could not tell them apart would abandon a pass that was in fact about
   // to do something new. Omitted when there is none, so the signature of an
   // unchoreographed move is byte-identical to what it always was.
+  // A move that has to create its destination also names the monitor it puts
+  // the new workspace on: that second dispatch is part of the program too.
   if (op.kind === "move") {
     return "move:" + op.address + "->" + op.workspaceId +
+      (op.viaMonitor ? "@" + (op.monitorName || "") : "") +
       (op.splitParent ? "^" + op.splitParent : "");
+    // `splitAxis` and `sequenced` are NOT signed: both are read off the same
+    // recorded tree as the split parent, so two plans with one parent order
+    // carry the same axes, and an unsequenced move has neither field at all.
   }
   if (op.kind === "floating") return "floating:" + op.address + "->" + (op.value ? "float" : "tile");
   // The TARGET rect is part of the signature, not the live one: two passes that
@@ -4326,7 +5564,15 @@ function opSignature(op) {
   if (op.kind === "divider") {
     return "divider:" + op.address + ":" + op.axis + "->" + ((op.size || [])[op.axis]);
   }
-  if (op.kind === "group") return "group:" + ((op.addresses || []).join("+"));
+  // The rebuild's final tab is part of its program — two rebuilds of one group
+  // ending on different tabs build different desktops. Omitted when there is
+  // none, so a v8 record's group op signs exactly as it always did.
+  if (op.kind === "group") {
+    return "group:" + ((op.addresses || []).join("+")) + (op.active ? "!" + op.active : "");
+  }
+  // The index is signed: it is the instruction. The anchor is not — it only
+  // names the group, and the address already does.
+  if (op.kind === "tab") return "tab:" + op.address + "#" + op.index;
   if (op.kind === "ungroup") return "ungroup:" + ((op.addresses || []).join("+"));
   // An op kind this version has never heard of still has to compare by SUBJECT
   // and not just by kind: two different future ops that signed as the bare word
@@ -4345,7 +5591,7 @@ function planSignature(plan) {
 // Would running this plan repeat the work the previous one already asked for?
 //
 // Order matters as well as content: the plan IS an ordered program (launches,
-// then workspace moves, then window moves, then groups), and two plans with the
+// then ungroups, then moves, then groups), and two plans with the
 // same ops in a different order came from different desktops.
 function samePlan(a, b) {
   if (!a || !b) return false;
@@ -4362,7 +5608,8 @@ function samePlan(a, b) {
 // along must not buy the rest of the plan extra iterations.
 //
 // An empty plan is not a refinement plan. It is a converged desktop, and the
-// caller has already stopped.
+// caller has already stopped. A `tab` op is not refinement either: a wrong tab
+// in front is drift (it counts, it colours the bar), not a shape nudge.
 function isRefinementPlan(plan) {
   var list = plan || [];
   if (!list.length) return false;
@@ -4375,17 +5622,24 @@ function isRefinementPlan(plan) {
 
 // Does this plan contain work that needs the KEYBOARD FOCUS to land?
 //
-// Exactly one op kind does: `group`. The rebuild runs through `into_group`,
-// which IGNORES its window selector and acts on the focused window (live-
-// verified, learnings § Dispatch selector traps) — so the service focuses each
-// member in turn and reads the tab order back. Every other op names its subject
-// and is focus-independent: moves, workspace moves, the whole-group `group.
-// toggle` an `ungroup` dispatches, the float toggle, resize/move, swaps.
+// Two op kinds do. `group`: the rebuild runs through `into_group`, which
+// IGNORES its window selector and acts on the focused window (live-verified,
+// learnings § Dispatch selector traps), so the service focuses each member in
+// turn and reads the tab order back. `split` (tick uk5): `togglesplit` takes no
+// window selector at all — it flips the FOCUSED window's parent node, so a
+// locked session would flip whatever the compositor was left holding, on a
+// workspace the user cannot see. Every other op names its subject and is
+// focus-independent: moves, the whole-group `group.toggle` an
+// `ungroup` dispatches, the float toggle, resize/move, swaps — and the `tab`
+// op (schema v9): `group.active` honours its window selector on shown, hidden
+// and never-shown workspaces alike and moves neither the focus nor the shown
+// workspace (nested-notes 9i2 (b)), so it runs while the session is locked.
 //
 // The service asks because of the LOCKED SESSION (state-matrix §7, tick 97e):
 // under an ext-session-lock there is no window to focus, so a rebuild attempted
-// there assembles in whatever order the compositor was left in. The joins are
-// deferred to the unlock instead, and the rest of the plan runs normally.
+// there assembles in whatever order the compositor was left in. Those ops are
+// deferred to the unlock instead, replayed by the same idempotent re-plan, and
+// the rest of the plan runs normally.
 //
 // A choreographed move (`splitParent`) also borrows the focus, and it is NOT
 // counted here on purpose: it is a fidelity refinement, not a correctness one —
@@ -4396,26 +5650,6 @@ function isRefinementPlan(plan) {
 //
 // A property of the PLAN, in engine.js rather than in the service, because the
 // plan is engine.js's vocabulary and this has to be testable in node.
-function planHasGroupJoins(plan) {
-  var list = plan || [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && list[i].kind === "group") return true;
-  }
-  return false;
-}
-
-// The same question, asked of every op kind that needs the keyboard — which is
-// what the lock gate actually cares about, and since tick uk5 there are two of
-// them. `split` joined `group` because `togglesplit` takes no window selector
-// at all: it flips the FOCUSED window's parent node, so a locked session (no
-// window to focus) would flip whatever the compositor was left holding, on a
-// workspace the user cannot see. Deferred to the unlock, exactly like a join,
-// and replayed by the same idempotent re-plan.
-//
-// `planHasGroupJoins` is kept beside it rather than replaced: "which ops need
-// focus" and "which ops are group joins" are two questions. The service now
-// asks only the first — both lock-gate call sites below use the focus-ops
-// variant — but the group-joins query survives as tested public API.
 function planHasFocusOps(plan) {
   var list = plan || [];
   for (var i = 0; i < list.length; i++) {
@@ -4439,32 +5673,18 @@ function planWithoutFocusOps(plan) {
   return out;
 }
 
-// The same plan with the group joins taken out — what a LOCKED session can
-// safely execute. Returns a new array; the input is never mutated, because the
-// full plan is still what the no-progress check compares against.
-function planWithoutGroupJoins(plan) {
-  var list = plan || [];
-  var out = [];
-  for (var i = 0; i < list.length; i++) {
-    if (list[i] && list[i].kind === "group") continue;
-    out.push(list[i]);
-  }
-  return out;
-}
-
 // One op in a sentence a human can act on. Used in the no-progress WARN, which
 // has to name the thing that is not happening — "3 ops" tells nobody which
 // dispatch is being ignored.
 function describeOp(op) {
   if (!op) return "(no op)";
   if (op.kind === "launch") return "launch " + op.identityId;
-  if (op.kind === "workspace-monitor") {
-    return "workspace-monitor ws " + op.workspaceId + " -> "
-      + (op.monitorName || op.monitorDescription || "(no monitor)");
-  }
   if (op.kind === "move") {
     return "move " + op.address + " -> ws " + op.workspaceId +
-      (op.splitParent ? " (splitting " + op.splitParent + ")" : "");
+      (op.viaMonitor ? " (new, on " + (op.monitorName || "(no monitor)") + ")" : "") +
+      (op.splitParent ? " (splitting " + op.splitParent
+        + (op.splitAxis === 0 ? ", side by side" : (op.splitAxis === 1 ? ", stacked" : ""))
+        + ")" : "");
   }
   if (op.kind === "floating") {
     return (op.value ? "float " : "tile ") + op.address;
@@ -4484,7 +5704,11 @@ function describeOp(op) {
   }
   if (op.kind === "group") {
     return "group " + ((op.addresses || []).join("+"))
-      + ((op.missing && op.missing.length) ? " (without " + op.missing.join(", ") + ")" : "");
+      + ((op.missing && op.missing.length) ? " (without " + op.missing.join(", ") + ")" : "")
+      + (op.active ? ", " + op.active + " in front" : "");
+  }
+  if (op.kind === "tab") {
+    return "tab " + op.address + " to the front (tab " + (op.index + 1) + ")";
   }
   if (op.kind === "ungroup") return "ungroup " + ((op.addresses || []).join("+"));
   var subject = opSubjectOf(op);
@@ -4585,14 +5809,20 @@ function failOutcome(record, reason, identityIds) {
 //                                                    asymmetry that proves the
 //                                                    selector key is right.
 //
-// So on Hyprland 0.56.2 the float dispatcher is a TOGGLE whatever the action
-// says (the binary carries an eTogglableAction for it, but every spelling
-// toggles; each observation above was made with a `hyprctl clients -j` read
-// between dispatches, because two back-to-back toggles read once look exactly
-// like an idempotent set). The consequence for the restore executor: a
-// floating op may NEVER be dispatched blind — the service reads the window's
-// live state first and toggles only when it differs from the recorded value,
-// then confirms with a re-read (Service.qml executeFloating).
+// So on Hyprland 0.56.2 the float dispatcher was a TOGGLE for every spelling
+// tried then ("set"/"unset"; each observation above was made with a
+// `hyprctl clients -j` read between dispatches, because two back-to-back
+// toggles read once look exactly like an idempotent set).
+//
+// SUPERSEDED for the spelling opToCommand emits (epic 9i2, tests/nested-notes.md
+// 9i2 (g), the sandbox's Hyprland under Omarchy 4.5): `action = "on"` and
+// `action = "off"` are ABSOLUTE and idempotent — "on","on","off","off" read
+// back floating true,true,false,false — and 4.5's own workspace-modes.lua
+// floats and tiles with exactly that spelling. So the floating op now names
+// the state it wants and a re-dispatch cannot invert a window that is already
+// right. The service keeps its read-first, confirm-after gate
+// (Service.qml executeFloating): a read costs nothing and says why an op that
+// did not land did not.
 //
 // So the join half of a group rebuild still has to focus first — see the group
 // branch below. Two live facts make that acceptable and make VERIFYING this
@@ -4693,8 +5923,7 @@ function failOutcome(record, reason, identityIds) {
 //   8. BUT A WORKSPACE MOVE DISPLACES A FLOAT. Moving the subject to a fresh
 //      workspace moved it from [1500,400] to [1500,198] — the compositor
 //      re-clamps a float against the new workspace's reserved area. So the
-//      geometry pair has to run AFTER the workspace-monitor ops, after the
-//      moves and after the floating toggle: it is the LAST thing in a plan, or
+//      geometry pair has to run AFTER the moves and after the floating toggle: it is the LAST thing in a plan, or
 //      it is restoring a position something later will move.
 //
 // THE TILED BLAST RADIUS (tick y29 question 3), and it is the reason
@@ -4754,9 +5983,29 @@ function opToCommand(op) {
     // cannot know what it was.
     //
     // follow = false: do not drag the focus onto the destination workspace,
-    // exactly as session-layout's ensure_on does. The window follows its
-    // workspace onto the right monitor, which is why the op's monitorDescription
-    // is context for the caller rather than a second dispatch.
+    // exactly as session-layout's ensure_on does. A window on an EXISTING
+    // workspace is on that workspace's monitor, which under Omarchy 4.5 is the
+    // monitor whose block contains the id — so the op's monitor is context.
+    //
+    // viaMonitor (the destination does not exist yet) adds ONE dispatch after
+    // the move, and it is the only `hl.dsp.workspace.move` this planner ever
+    // emits. Measured nested in tick zf6 (tests/nested-notes.md, 2026-11-14):
+    //   - a window.move to a missing id creates the workspace on the FOCUSED
+    //     monitor — not the window's, not the block owner's — and 4.5's next
+    //     reconcile ADOPTS it into that monitor's block, renumbering it;
+    //   - window.move ignores `monitor` when `workspace` is given, so there is
+    //     no single-dispatch form;
+    //   - a monitor-first window.move steals the focus (or, with follow =
+    //     false, still creates the workspace on the focused monitor);
+    //   - an hl.workspace_rule would do it, but it outlives the move until the
+    //     next config reload.
+    // So: the window moves (creating the workspace wherever the focus is), then
+    // that workspace goes to its owner. No reconcile runs between the two —
+    // only monitor events and reloads trigger one. The owner is named by its
+    // live OUTPUT NAME: a bare selector matches the connector, a description
+    // would need a `desc:` prefix. No owner means nothing safe to dispatch: the
+    // move alone would leave a workspace 4.5 renumbers into the wrong block.
+    if (op.viaMonitor && !op.monitorName) return [];
     var moveCommands = [];
     if (typeof op.splitParent === "string" && op.splitParent) {
       moveCommands.push(focusWindowCommand(op.splitParent));
@@ -4767,49 +6016,23 @@ function opToCommand(op) {
         ', workspace = "' + op.workspaceId + '", follow = false })'
       )
     );
+    if (op.viaMonitor) {
+      moveCommands.push(
+        dispatchCommand(
+          'hl.dsp.workspace.move({ workspace = "' + op.workspaceId + '", monitor = "' + op.monitorName + '" })'
+        )
+      );
+    }
     return moveCommands;
   }
 
-  if (op.kind === "workspace-monitor") {
-    // Legacy `moveworkspacetomonitor <ws> <monitor>`. The Quattro verb is
-    // hl.dsp.workspace.move, and the evidence is first-party: Omarchy's own
-    // /usr/share/omarchy/default/hypr/bindings/tiling.lua binds
-    // SUPER+SHIFT+ALT+<arrow> to `hl.dsp.workspace.move({ monitor = "l" })`,
-    // and /usr/share/hypr/stubs/hl.meta.lua lists `move` on
-    // HL.DspWorkspaceNamespace plus a "workspace.move_to_monitor" event. The
-    // `workspace` key is the selector spelling the verified session-layout port
-    // uses everywhere else (hl.dsp.focus, hl.dsp.window.move); the stubs type
-    // the dispatchers as `fun(...)`, so the key names are not spelled out
-    // there. Omitting `workspace` would move the ACTIVE one, which is exactly
-    // the bug this op exists to avoid.
-    //
-    // The monitor is named by its live OUTPUT NAME rather than the recorded
-    // label: a bare string selector is matched against the monitor name, while
-    // a description needs a `desc:` prefix — and monitorLabel() yields a
-    // description most of the time but falls back to a name (the headless
-    // output has no description), so the recorded label alone cannot be turned
-    // into a selector without guessing. planRestore resolves it against the
-    // live monitor list instead. No live monitor means nothing safe to
-    // dispatch.
-    if (!op.monitorName) return [];
-    return [
-      dispatchCommand(
-        'hl.dsp.workspace.move({ workspace = "' + op.workspaceId + '", monitor = "' + op.monitorName + '" })'
-      )
-    ];
-  }
-
   if (op.kind === "floating") {
-    // ONE dispatch, naming the window — but it is a TOGGLE (see the evidence
-    // block above: on Hyprland 0.56 every `action` spelling toggles), so this
-    // command is only correct against the desktop the plan was built from.
-    // The service therefore does NOT run this string blind: executeFloating
-    // re-reads the window first, dispatches only on a live mismatch, and
-    // confirms after. The string is produced here anyway so the spelling
-    // lives in one place and the tests can pin it.
+    // ONE dispatch, naming the window and the state it should be in:
+    // `action = "on"` / `"off"` is absolute (see the evidence block above), so
+    // the command is right against any desktop, converged or not.
     return [
       dispatchCommand(
-        "hl.dsp.window.float({ " + windowSelector(op.address) + ', action = "toggle" })'
+        "hl.dsp.window.float({ " + windowSelector(op.address) + ', action = "' + (op.value ? "on" : "off") + '" })'
       )
     ];
   }
@@ -4925,6 +6148,28 @@ function opToCommand(op) {
     ];
   }
 
+  if (op.kind === "tab") {
+    // ONE dispatch, naming the window, and it needs no focus: measured nested
+    // (tests/nested-notes.md 9i2 (b)) — `group.active` honours its `window`
+    // selector on a shown, a hidden and a never-shown workspace, the named
+    // member only picks the group, and neither `activewindow` nor the shown
+    // workspace moves (unless the focus is already inside that group, where it
+    // follows the new tab exactly as a tab click would).
+    //
+    // The dispatcher's index is 1-BASED, and the op's is 0-based, so it goes
+    // out as index + 1. Get that wrong and nothing says so: index 0 silently
+    // selects the LAST tab, any other off-by-one picks a neighbour, and every
+    // one of them answers "ok". Which is why a non-integer or negative index
+    // dispatches nothing at all.
+    var tabIndex = op.index;
+    if (!op.address || typeof tabIndex !== "number" || tabIndex < 0 || Math.floor(tabIndex) !== tabIndex) {
+      return [];
+    }
+    return [
+      dispatchCommand("hl.dsp.group.active({ index = " + (tabIndex + 1) + ", " + windowSelector(op.address) + " })")
+    ];
+  }
+
   if (op.kind === "ungroup") {
     // Deliberately empty, exactly like "group": everything about dissolving
     // depends on live state — which windows still claim group membership, and
@@ -4969,9 +6214,11 @@ function opToCommand(op) {
     // And the tiling can make ALL FOUR directions no-ops: into_group only
     // joins a group that is the directly ADJACENT layout node (live-proven,
     // see pickScratchWorkspace above), so when the candidate is not next to
-    // the anchor the service assembles the pair on an empty workspace and
-    // moves the group home (Service.qml scratchJoin). These commands are the
-    // in-place half only.
+    // the anchor the service assembles the pair on an empty workspace outside
+    // every Omarchy 4.5 block (901 and up, which no monitor owns) and moves
+    // the group home (Service.qml scratchJoin) — never across a reconcile,
+    // whose merge() would renumber the scratch workspace into a real block.
+    // These commands are the in-place half only.
     var addresses = op.addresses || [];
     if (addresses.length < 2) return [];
 
@@ -5019,6 +6266,14 @@ if (typeof module !== "undefined") {
     claimantsCover: claimantsCover,
     firstClientFor: firstClientFor,
     clientsFor: clientsFor,
+    // The four the QML files used to answer with a bare-object dedupe of their
+    // own (tick v29). Exported for the shell as much as for the tests.
+    runningIdentityIds: runningIdentityIds,
+    identityIdsForAddresses: identityIdsForAddresses,
+    addressesOf: addressesOf,
+    newClassesSince: newClassesSince,
+    newAddressSince: newAddressSince,
+    launchTimeoutDiagnosis: launchTimeoutDiagnosis,
     liveWindowCount: liveWindowCount,
     launchDeficits: launchDeficits,
     launchDeficitFor: launchDeficitFor,
@@ -5045,6 +6300,7 @@ if (typeof module !== "undefined") {
     dissolveTargets: dissolveTargets,
     pickScratchWorkspace: pickScratchWorkspace,
     splitTreeOf: splitTreeOf,
+    arrivalAxisBetween: arrivalAxisBetween,
     layoutIsAmbiguous: layoutIsAmbiguous,
     placementOrderOf: placementOrderOf,
     planWorkspaceTiling: planWorkspaceTiling,
@@ -5056,11 +6312,18 @@ if (typeof module !== "undefined") {
     TILING_REFUSAL_NOT_A_TREE: TILING_REFUSAL_NOT_A_TREE,
     TILING_REFUSAL_AMBIGUOUS: TILING_REFUSAL_AMBIGUOUS,
     TILING_REFUSAL_DIFFERENT_SHAPE: TILING_REFUSAL_DIFFERENT_SHAPE,
+    TILING_REFUSAL_LAYOUT_SCROLLING: TILING_REFUSAL_LAYOUT_SCROLLING,
+    TILING_REFUSAL_LAYOUT_FLOATING: TILING_REFUSAL_LAYOUT_FLOATING,
+    TILING_REFUSAL_LAYOUT_MODE_DIFFERS: TILING_REFUSAL_LAYOUT_MODE_DIFFERS,
+    TILING_REFUSAL_PHRASES: TILING_REFUSAL_PHRASES,
+    FLOATING_WORKSPACE_TAG: FLOATING_WORKSPACE_TAG,
+    workspaceModeOf: workspaceModeOf,
+    activeTabOf: activeTabOf,
+    tilesOf: tilesOf,
+    tileKeyOf: tileKeyOf,
     TILED_REFINEMENT_TARGET_IOU: TILED_REFINEMENT_TARGET_IOU,
     TILED_REFINEMENT_MAX_NUDGES: TILED_REFINEMENT_MAX_NUDGES,
     isRefinementPlan: isRefinementPlan,
-    planHasGroupJoins: planHasGroupJoins,
-    planWithoutGroupJoins: planWithoutGroupJoins,
     planHasFocusOps: planHasFocusOps,
     planWithoutFocusOps: planWithoutFocusOps,
     opAddressesOf: opAddressesOf,

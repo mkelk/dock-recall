@@ -701,10 +701,12 @@ function leavesOf(node, acc) {
   return out;
 }
 
-function applyDividerToTiling(items, op) {
+// `knownTree` (optional): the tree the compositor holds, when the rects alone
+// cannot say (an ambiguous layout the restore built itself, §2.5).
+function applyDividerToTiling(items, op, knownTree) {
   const byKey = {};
   for (const item of items) byKey[item.key] = { key: item.key, at: item.at.slice(), size: item.size.slice() };
-  const tree = engine.splitTreeOf(items);
+  const tree = knownTree || engine.splitTreeOf(items);
   assert.ok(tree, "the fixture stopped being a tiling");
 
   const axis = op.axis;
@@ -985,10 +987,14 @@ test("IDEMPOTENT: once the flip has landed, the same desktop plans nothing", () 
 test("planHasFocusOps names BOTH ops that need the keyboard, and no others", () => {
   assert.equal(engine.planHasFocusOps([{ kind: "group" }]), true);
   assert.equal(engine.planHasFocusOps([{ kind: "split" }]), true);
-  for (const kind of ["move", "workspace-monitor", "ungroup", "floating", "geometry",
+  for (const kind of ["move", "ungroup", "floating", "geometry",
     "swap", "divider", "launch"]) {
     assert.equal(engine.planHasFocusOps([{ kind: kind }]), false, kind + " must not defer");
   }
+  // A move that creates its destination adds a workspace move, which names its
+  // workspace and its monitor — focus-independent too, so it runs locked.
+  assert.equal(engine.planHasFocusOps(
+    [{ kind: "move", address: "0xa", workspaceId: 13, monitorName: "DP-1", viaMonitor: true }]), false);
   assert.equal(engine.planHasFocusOps([]), false);
   assert.equal(engine.planHasFocusOps(null), false);
   assert.equal(engine.planHasFocusOps([null]), false);
@@ -999,7 +1005,552 @@ test("planHasFocusOps names BOTH ops that need the keyboard, and no others", () 
   assert.strictEqual(runnable[0], plan[0], "the ops are the same objects, never rebuilt");
   assert.equal(plan.length, 4, "the full plan is untouched — the no-progress check reads it");
   assert.deepEqual(engine.planWithoutFocusOps(null), []);
-  // The narrower question is still asked by the group machinery, and is still
-  // only about group joins.
-  assert.equal(engine.planHasGroupJoins([{ kind: "split" }]), false);
+});
+
+// ------------------------------------------------ a tab group is ONE tile (9i2)
+//
+// A group holds one rect of the split tree, shared by every tab. Before epic
+// 9i2 the planner saw N identical rects — no guillotine tiling — and refused a
+// group beside anything else as `not-a-tree` for ever (finding-grouping-tiling,
+// probe G2: IoU 0.000 with a green bar). Now the group is one tile, keyed by
+// its tab-0 window, and the swap / divider ops name that key: a swap or a
+// resize at any member moves the whole tile (tests/nested-notes.md 9i2 (c),
+// (d)).
+
+const GIDS = [
+  { id: "ga", patterns: ["^app-ga$"] },
+  { id: "gb", patterns: ["^app-gb$"] },
+  { id: "gc", patterns: ["^app-gc$"] },
+  { id: "gd", patterns: ["^app-gd$"] }
+];
+// Recorded: the group (tab order ga, gc, gb) on TOP, gd below it.
+const GROUP_TOP = { at: [12, 59], size: [1416, 397] };   // tile minus the 21px groupbar
+const TILE_BOTTOM = { at: [12, 470], size: [1416, 418] };
+const GROUP_BOTTOM = { at: [12, 491], size: [1416, 397] };
+const TILE_TOP = { at: [12, 38], size: [1416, 418] };
+const GROUP_ORDER = ["0xa", "0xc", "0xb"];
+
+// The desktop with the group at `groupRect` and gd at `tileRect`. `grouped`
+// false: the group has been taken apart, its windows tiled on their own.
+function groupDesk(groupRect, tileRect, opts) {
+  const o = opts || {};
+  const ring = o.ring || GROUP_ORDER;
+  const members = [["0xa", "app-ga"], ["0xb", "app-gb"], ["0xc", "app-gc"]].map(([address, cls]) =>
+    makeClient({
+      address, class: cls, workspace: 5,
+      at: groupRect.at.slice(), size: groupRect.size.slice(),
+      grouped: o.grouped === false ? [] : ring.slice()
+    }));
+  return members.concat([makeClient({
+    address: "0xd", class: "app-gd", workspace: 5, at: tileRect.at.slice(), size: tileRect.size.slice()
+  })]).concat(o.extra || []);
+}
+const GROUP_LAYOUT = engine.buildLayout(groupDesk(GROUP_TOP, TILE_BOTTOM), MONITORS, GIDS, "2026-11-14T00:00:00Z");
+
+function refinementOps(plan) {
+  return plan.filter((op) => op.kind === "swap" || op.kind === "divider" || op.kind === "split");
+}
+
+test("9i2: the recording keeps the group's tab order and one shared rect", () => {
+  const byId = {};
+  for (const app of GROUP_LAYOUT.apps) byId[app.identityId] = app;
+  assert.deepEqual([byId.ga.group.index, byId.gc.group.index, byId.gb.group.index], [0, 1, 2]);
+  assert.equal(byId.gd.group, null);
+});
+
+test("9i2: a group recorded on top and living at the bottom is ONE swap, addressed to its leader", () => {
+  const live = groupDesk(GROUP_BOTTOM, TILE_TOP);
+  const report = engine.driftOf(live, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(report.tilingRefusals, [], "a group beside a tile is a tree, not a refusal");
+  const plan = engine.planRestore(live, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["swap"], JSON.stringify(plan));
+  assert.deepEqual(engine.opAddressesOf(plan[0]).sort(), ["0xa", "0xd"],
+    "the group is named by its tab-0 window and by nothing else");
+});
+
+test("9i2: a dragged divider beside a group is one nudge, on the NEAR side", () => {
+  // Group on top (near side of the one divider), dragged up to 300.
+  const draggedNear = groupDesk({ at: [12, 59], size: [1416, 279] }, { at: [12, 352], size: [1416, 536] });
+  const near = refinementOps(engine.planRestore(draggedNear, MONITORS, GROUP_LAYOUT, GIDS));
+  assert.deepEqual(near.map((op) => [op.kind, op.address, op.axis]), [["divider", "0xa", 1]]);
+  assert.deepEqual(near[0].size, [1416, 397], "asked for the recorded member size, like for like");
+
+  // Recorded the other way round: gd on top is now the near side, and the
+  // group below it is never asked — the sign law, with a group as the tile.
+  const flipped = engine.buildLayout(groupDesk(GROUP_BOTTOM, TILE_TOP), MONITORS, GIDS, "2026-11-14T00:00:00Z");
+  const draggedFar = groupDesk({ at: [12, 373], size: [1416, 515] }, { at: [12, 38], size: [1416, 300] });
+  const far = refinementOps(engine.planRestore(draggedFar, MONITORS, flipped, GIDS));
+  assert.deepEqual(far.map((op) => [op.kind, op.address, op.axis]), [["divider", "0xd", 1]]);
+});
+
+test("9i2: a group still to be built is PENDING — no refinement, and no refusal either", () => {
+  // Taken apart and re-tiled: the group op will change every rect here.
+  const apart = [
+    makeClient({ address: "0xa", class: "app-ga", workspace: 5, at: [12, 38], size: [701, 418] }),
+    makeClient({ address: "0xb", class: "app-gb", workspace: 5, at: [727, 38], size: [701, 418] }),
+    makeClient({ address: "0xc", class: "app-gc", workspace: 5, at: [12, 470], size: [701, 418] }),
+    makeClient({ address: "0xd", class: "app-gd", workspace: 5, at: [727, 470], size: [701, 418] })
+  ];
+  const plan = engine.planRestore(apart, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["group"], JSON.stringify(plan));
+  assert.deepEqual(engine.driftOf(apart, MONITORS, GROUP_LAYOUT, GIDS).tilingRefusals, []);
+
+  // Grouped, but in the wrong tab order: the rebuild is pending too.
+  const wrongOrder = groupDesk(GROUP_BOTTOM, TILE_TOP, { ring: ["0xa", "0xb", "0xc"] });
+  const reordered = engine.planRestore(wrongOrder, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(refinementOps(reordered), [], JSON.stringify(reordered));
+  assert.deepEqual(engine.driftOf(wrongOrder, MONITORS, GROUP_LAYOUT, GIDS).tilingRefusals, []);
+});
+
+test("9i2: an unwatched tab inside the group is not a stranger", () => {
+  const ring = GROUP_ORDER.concat(["0x99"]);
+  const tab = makeClient({ address: "0x99", class: "nobody-watches-this", workspace: 5,
+    at: GROUP_BOTTOM.at.slice(), size: GROUP_BOTTOM.size.slice(), grouped: ring.slice() });
+  const live = groupDesk(GROUP_BOTTOM, TILE_TOP, { ring, extra: [tab] });
+  const plan = engine.planRestore(live, MONITORS, GROUP_LAYOUT, GIDS);
+  assert.deepEqual(plan.map((op) => op.kind), ["swap"], JSON.stringify(plan));
+
+  // …while the same window tiled on its own still holds a tile of its own.
+  const alone = makeClient({ address: "0x99", class: "nobody-watches-this", workspace: 5 });
+  assert.deepEqual(engine.planRestore(groupDesk(GROUP_BOTTOM, TILE_TOP, { extra: [alone] }),
+    MONITORS, GROUP_LAYOUT, GIDS), []);
+});
+
+test("9i2: a settled group-and-tile workspace plans nothing", () => {
+  assert.deepEqual(engine.planRestore(groupDesk(GROUP_TOP, TILE_BOTTOM), MONITORS, GROUP_LAYOUT, GIDS), []);
+});
+
+// ------------------------------------------- layout-mode refusals (9i2, §2.4)
+//
+// Omarchy 4.5 gives every workspace a mode: dwindle, scrolling, or floating (a
+// floating workspace is a dwindle one whose windows 4.5 floated and tagged).
+// On scrolling, `swap` and `resize` answer "ok" and really do rearrange — only
+// togglesplit errors (tests/nested-notes.md 9i2 (g)) — so no error will ever
+// catch a split-tree op aimed at one. The refusal is named instead.
+
+const DWINDLE5 = { workspaces: [{ id: 5, tiledLayout: "dwindle" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+const SCROLLING5 = { workspaces: [{ id: 5, tiledLayout: "scrolling" }, { id: 9, tiledLayout: "dwindle" }], built: null };
+const SCRAMBLED_RECTS = SCRAMBLED3.map((i) => ({ at: i.at, size: i.size }));
+
+function withMode(layout, mode) {
+  return Object.assign({}, layout, { apps: layout.apps.map((a) => Object.assign({}, a, { layoutMode: mode })) });
+}
+function tagged(clients, tag) {
+  return clients.map((c) => Object.assign({}, c, { floating: true, tags: [tag] }));
+}
+
+test("9i2 modes: moves into a SCROLLING workspace keep their moves and lose every splitParent", () => {
+  const away = clients3(RECORDED_RECTS).map((c) => Object.assign({}, c, { workspace: { id: 9, name: "9" } }));
+  const layout = layout3(RECORDED_RECTS);
+  const dwindle = engine.planRestore(away, MONITORS, layout, IDS, DWINDLE5);
+  assert.equal(dwindle.filter((op) => op.splitParent).length, 2, "the dwindle control is choreographed");
+
+  const plan = engine.planRestore(away, MONITORS, layout, IDS, SCROLLING5);
+  assert.deepEqual(plan.map((op) => op.kind), ["move", "move", "move"], JSON.stringify(plan));
+  assert.deepEqual(plan.filter((op) => op.splitParent), [], "no focus, no split, on a layout with no tree");
+  // Pending (the moves are outstanding), so nothing is refused yet.
+  assert.deepEqual(engine.driftOf(away, MONITORS, layout, IDS, SCROLLING5).tilingRefusals, []);
+});
+
+test("9i2 modes: a finished SCROLLING workspace plans no swap, divider or split, and says why", () => {
+  const live = clients3(SCRAMBLED_RECTS);
+  const layout = layout3(RECORDED_RECTS);
+  assert.ok(refinementOps(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5)).length > 0,
+    "the dwindle control refines");
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, SCROLLING5), []);
+  const swapped = clients3([RECORDED3[1], RECORDED3[0], RECORDED3[2]].map((i) => ({ at: i.at, size: i.size })));
+  assert.deepEqual(engine.planRestore(swapped, MONITORS, layout, IDS, SCROLLING5), [], "no swap either");
+
+  const report = engine.driftOf(live, MONITORS, layout, IDS, SCROLLING5);
+  assert.deepEqual(report.tilingRefusals, [
+    { workspaceId: 5, monitorDescription: "Test Panel", reason: "layout-scrolling" }
+  ]);
+  for (const app of report.apps) assert.equal(app.geometry.refinement, "layout-scrolling");
+  // Recorded dwindle, live scrolling: the live word outranks layout-mode-differs.
+  const recordedDwindle = engine.driftOf(live, MONITORS, withMode(layout, "dwindle"), IDS, SCROLLING5);
+  assert.equal(recordedDwindle.tilingRefusals[0].reason, "layout-scrolling");
+  // The mode word outranks a tree word on the same workspace.
+  const columns = THREE_COLUMNS.map((i) => ({ at: i.at, size: i.size }));
+  const ambiguous = engine.driftOf(clientsN([
+    { at: [12, 38], size: [300, 850] }, { at: [318, 38], size: [628, 850] }, { at: [952, 38], size: [476, 850] }
+  ], ["app-one", "app-two", "app-three"]), MONITORS, layoutN(columns, ["one", "two", "three"]), IDS, SCROLLING5);
+  assert.equal(ambiguous.tilingRefusals[0].reason, "layout-scrolling");
+});
+
+test("9i2 modes: a FLOATING workspace is read off the tag, and gets no float toggle and no tiled op", () => {
+  const layout = layout3(RECORDED_RECTS);
+  // 4.5 floated every window and placed it itself.
+  const placed = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }, { at: [218, 131], size: [1100, 612] }];
+  for (const tag of ["omarchy-floating-workspace", "omarchy-floating-workspace*"]) {
+    const live = tagged(clients3(placed), tag);
+    assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS).map((op) => op.kind),
+      ["floating", "floating", "floating"], "without a context the floats are toggled back, as before");
+
+    const report = engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5);
+    assert.deepEqual(report.apps.map((a) => a.drift.floating), [false, false, false], tag);
+    assert.deepEqual(report.apps.map((a) => a.status), ["ok", "ok", "ok"], tag);
+    assert.deepEqual(report.tilingRefusals, [
+      { workspaceId: 5, monitorDescription: "Test Panel", reason: "layout-floating" }
+    ], tag);
+    assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [], tag);
+  }
+});
+
+test("9i2 modes: a float's GEOMETRY op on a floating workspace is unaffected", () => {
+  const layout = layout3(RECORDED_RECTS);
+  layout.apps[0] = Object.assign({}, layout.apps[0], { floating: true, at: [300, 200], size: [800, 500] });
+  const live = tagged(clients3([{ at: [310, 200], size: [800, 500] }, RECORDED_RECTS[1], RECORDED_RECTS[2]]),
+    "omarchy-floating-workspace");
+  const plan = engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5);
+  assert.deepEqual(plan.map((op) => op.kind), ["geometry"], JSON.stringify(plan));
+});
+
+test("9i2 modes: a STALE floating tag reads as floating, and the plan does less for one pass", () => {
+  // 4.5 drops the tag one timer tick after a window leaves a floating
+  // workspace. A read in between sees it on the (dwindle) destination: the
+  // safe misreading — no float toggle and no tiled op — and the next read,
+  // tag gone, plans the toggle.
+  const layout = layout3(RECORDED_RECTS);
+  const live = clients3(RECORDED_RECTS);
+  live[2] = Object.assign({}, live[2], { floating: true, tags: ["omarchy-floating-workspace"], at: [300, 200], size: [800, 500] });
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), []);
+  live[2] = Object.assign({}, live[2], { tags: [] });
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5),
+    [{ kind: "floating", address: "0x3", value: false }]);
+});
+
+test("9i2 modes: a workspace recorded in another mode gets no tiled op, and says so", () => {
+  const live = clients3(SCRAMBLED_RECTS);
+  const scrolled = withMode(layout3(RECORDED_RECTS), "scrolling");
+  assert.deepEqual(engine.planRestore(live, MONITORS, scrolled, IDS, DWINDLE5), []);
+  assert.deepEqual(engine.driftOf(live, MONITORS, scrolled, IDS, DWINDLE5).tilingRefusals, [
+    { workspaceId: 5, monitorDescription: "Test Panel", reason: "layout-mode-differs" }
+  ]);
+  // The same recording in the same mode refines; one app with no recorded mode
+  // means the workspace has none, and nothing is refused.
+  assert.ok(refinementOps(engine.planRestore(live, MONITORS, withMode(layout3(RECORDED_RECTS), "dwindle"), IDS, DWINDLE5)).length > 0);
+  scrolled.apps[1] = Object.assign({}, scrolled.apps[1], { layoutMode: null });
+  assert.ok(refinementOps(engine.planRestore(live, MONITORS, scrolled, IDS, DWINDLE5)).length > 0);
+});
+
+test("9i2 modes: recorded FLOATING, live dwindle: no float toggle, and no geometry op at a tiled window", () => {
+  const floats = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }, { at: [218, 131], size: [1100, 612] }];
+  const layout = layout3(floats);
+  layout.apps = layout.apps.map((a) => Object.assign({}, a, { floating: true, layoutMode: "floating" }));
+  const live = clients3(RECORDED_RECTS);
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS).map((op) => op.kind).sort(),
+    ["floating", "floating", "floating", "geometry", "geometry", "geometry"], "the context-free control");
+
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [],
+    "a resize at a tiled window moves the split (tick y29) — so nothing at all");
+  const report = engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5);
+  for (const app of report.apps) {
+    assert.equal(app.drift.floating, false);
+    assert.equal(app.geometry.skip, "layout-mode-differs", "the reason rides on the float's own detail");
+  }
+  assert.ok(engine.geometrySkipPhrase("layout-mode-differs").indexOf("different layout mode") >= 0);
+});
+
+test("9i2 modes: no context, or a context that reads nothing, is the plan without one, byte for byte", () => {
+  const away = clients3(RECORDED_RECTS).map((c) => Object.assign({}, c, { workspace: { id: 9, name: "9" } }));
+  const desks = [
+    [clients3(SCRAMBLED_RECTS), layout3(RECORDED_RECTS), IDS],
+    [away, layout3(RECORDED_RECTS), IDS],
+    [clients3(RECORDED_RECTS), layout3(RECORDED_RECTS), IDS],
+    [groupDesk({ at: [12, 59], size: [1416, 279] }, { at: [12, 352], size: [1416, 536] }), GROUP_LAYOUT, GIDS],
+    [clients3(SCRAMBLED_RECTS), withMode(layout3(RECORDED_RECTS), "scrolling"), IDS]
+  ];
+  // A tagged desk is left out on purpose: with ANY context the tag is read
+  // (§2.2), and the floating-workspace tests above pin what that does.
+  for (const [clients, layout, ids] of desks) {
+    const bare = JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids));
+    assert.equal(JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids, undefined)), bare);
+    assert.equal(JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids, null)), bare);
+    assert.equal(JSON.stringify(engine.planRestore(clients, MONITORS, layout, ids, { workspaces: null, built: null })), bare);
+    assert.equal(JSON.stringify(engine.driftOf(clients, MONITORS, layout, ids, { workspaces: [], built: null })),
+      JSON.stringify(engine.driftOf(clients, MONITORS, layout, ids)));
+  }
+});
+
+// ------------------------------------------- the known tree (9i2 §2.5)
+//
+// A workspace this restore BUILT, every arrival's focus and axis read back
+// (context.built), holds the tree its program was read from — whatever else
+// its rects would also fit. So its ambiguity is no reason to refuse: the
+// recorded tree is the live tree, and only the dividers are left to move.
+// Without the flag nothing changes.
+
+// Probe T (finding-grouping-tiling): three stacked rows on the nested
+// sandbox's 701x850 output, tb on top, the inner divider dragged so ta is
+// short. Recorded is the probe's REC lines; built is what the arrival program
+// leaves with every split 50/50 — the shape the probe scored 0.804.
+const T_RECORDED = [
+  { key: "ta", at: [5, 428], size: [691, 136] },
+  { key: "tb", at: [5, 5], size: [691, 417] },
+  { key: "tc", at: [5, 570], size: [691, 275] }
+];
+const T_BUILT = [
+  { key: "ta", at: [5, 428], size: [691, 205] },
+  { key: "tb", at: [5, 5], size: [691, 417] },
+  { key: "tc", at: [5, 639], size: [691, 206] }
+];
+const KNOWN = { treeKnown: true };
+
+test("9i2 known tree: probe T's three rows get one divider op on ta, the near side of the inner cut", () => {
+  assert.equal(engine.layoutIsAmbiguous(T_RECORDED), true, "the fixture must be the ambiguous case");
+  const program = engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, KNOWN);
+  assert.deepEqual(program.swaps, [], "the program put everyone in their slot: nothing to swap");
+  assert.equal(program.split, undefined, "and nothing to flip");
+  assert.deepEqual(program.dividers, [{ address: "ta", axis: 1, size: [691, 136] }]);
+  assert.equal(engine.tilingRefusalOf(T_RECORDED, T_BUILT, KNOWN), null);
+});
+
+test("9i2 known tree: probe T converges in at most two simulated plans", () => {
+  const tree = engine.splitTreeOf(T_RECORDED);
+  let current = T_BUILT.map((i) => ({ key: i.key, at: i.at.slice(), size: i.size.slice() }));
+  let plans = 0;
+  for (; plans < 5; plans++) {
+    const program = engine.planWorkspaceTiling(T_RECORDED, current, null, KNOWN);
+    if (!program) break;
+    assert.equal(program.dividers.length, 1, "one nudge per plan");
+    current = applyDividerToTiling(current, { kind: "divider", ...program.dividers[0] }, tree);
+  }
+  assert.ok(plans <= 2, "took " + plans + " plans");
+  assert.ok(engine.tilingSettled(T_RECORDED, current), "the rows are back where they were recorded");
+  assert.deepEqual(current.find((i) => i.key === "ta").size, [691, 136]);
+});
+
+test("9i2 known tree: the same rects WITHOUT the flag stay refused as ambiguous, with no op", () => {
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, refusal), null);
+  assert.equal(refusal.reason, "ambiguous-tree");
+  assert.equal(engine.tilingRefusalOf(T_RECORDED, T_BUILT), "ambiguous-tree");
+  // A false or absent flag is no flag.
+  assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, { treeKnown: false }), null);
+  assert.equal(engine.planWorkspaceTiling(T_RECORDED, T_BUILT, null, {}), null);
+});
+
+test("9i2 known tree: a 2x2 grid recorded horizontal-first nudges the recorded tree's divider", () => {
+  // The two rows were recorded with their dividers at different x — only a
+  // horizontal root fits that. Built 50/50 it is a perfect grid, which fits
+  // both trees, so the rects alone cannot say which column divider is a's.
+  const recorded = [
+    { key: "a", at: [0, 0], size: [600, 400] },
+    { key: "b", at: [600, 0], size: [800, 400] },
+    { key: "c", at: [0, 400], size: [700, 400] },
+    { key: "d", at: [700, 400], size: [700, 400] }
+  ];
+  const built = [
+    { key: "a", at: [0, 0], size: [700, 400] },
+    { key: "b", at: [700, 0], size: [700, 400] },
+    { key: "c", at: [0, 400], size: [700, 400] },
+    { key: "d", at: [700, 400], size: [700, 400] }
+  ];
+  assert.equal(engine.layoutIsAmbiguous(recorded), false);
+  assert.equal(engine.layoutIsAmbiguous(built), true);
+  assert.equal(engine.splitTreeOf(recorded).axis, 1, "the recording is horizontal-first");
+
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(recorded, built, refusal), null);
+  assert.equal(refusal.reason, "ambiguous-tree");
+
+  const program = engine.planWorkspaceTiling(recorded, built, null, KNOWN);
+  // No swap and no flip: a live reconstruction would read the grid column-first
+  // and "fix" occupancy into a tree nobody holds (b and c trading places).
+  assert.deepEqual(program.swaps, []);
+  assert.equal(program.split, undefined);
+  // a is the near side of the TOP row's own divider in the recorded tree; the
+  // bottom row's divider is already where it was recorded and must not move.
+  assert.deepEqual(program.dividers, [{ address: "a", axis: 0, size: [600, 400] }]);
+  const tree = engine.splitTreeOf(recorded);
+  const after = applyDividerToTiling(built, { kind: "divider", ...program.dividers[0] }, tree);
+  assert.deepEqual(after.find((i) => i.key === "c").size, [700, 400], "the bottom row did not move");
+  assert.equal(engine.planWorkspaceTiling(recorded, after, null, KNOWN), null, "converged in one nudge");
+});
+
+test("9i2 known tree: a recording that is not a tree is still not-a-tree", () => {
+  const pinwheel = [
+    { key: "a", at: [0, 0], size: [60, 40] },
+    { key: "b", at: [60, 0], size: [40, 60] },
+    { key: "c", at: [40, 60], size: [60, 40] },
+    { key: "d", at: [0, 40], size: [40, 60] },
+    { key: "e", at: [40, 40], size: [20, 20] }
+  ];
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(pinwheel, pinwheel.map((i) => ({ ...i })), refusal, KNOWN), null);
+  assert.equal(refusal.reason, "not-a-tree");
+  assert.equal(engine.tilingRefusalOf(pinwheel, pinwheel, KNOWN), "not-a-tree");
+});
+
+test("9i2 known tree: through the planner, context.built for the workspace lifts the refusal and nothing else", () => {
+  const ids = ["one", "two", "three"];
+  const classes = ["app-one", "app-two", "app-three"];
+  const layout = layoutN(T_RECORDED, ids);
+  const live = clientsN(T_BUILT, classes);
+  const built = { workspaces: DWINDLE5.workspaces, built: { "5": true } };
+
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, DWINDLE5), [], "not built: refused");
+  assert.deepEqual(engine.driftOf(live, MONITORS, layout, IDS, DWINDLE5).tilingRefusals.map((r) => r.reason),
+    ["ambiguous-tree"]);
+
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, built),
+    [{ kind: "divider", address: "0x1", axis: 1, size: [691, 136] }]);
+  const report = engine.driftOf(live, MONITORS, layout, IDS, built);
+  assert.deepEqual(report.tilingRefusals, []);
+  assert.deepEqual(report.shapes.map((s) => s.reason), [null], "a shape a restore will act on has no reason");
+
+  // Another workspace's flag, or an inherited key, is not this workspace's.
+  for (const other of [{ "6": true }, { "5": "yes" }, Object.create({ "5": true })]) {
+    assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS,
+      { workspaces: DWINDLE5.workspaces, built: other }), [], JSON.stringify(other));
+  }
+  // A mode refusal still outranks the known tree.
+  const scrolled = { workspaces: [{ id: 5, tiledLayout: "scrolling" }], built: { "5": true } };
+  assert.deepEqual(engine.planRestore(live, MONITORS, layout, IDS, scrolled), []);
+});
+
+// Tick 5wo — sandbox-fidelity Q and G2 went red at the wave-5 gate with no code
+// change behind it: the same two cases fail the same way on the W2 commit that
+// passed them, once the nested output is wide. The nested output is as big as
+// the parked window the live desk gave it (701x850 on the W2 day, 2126x850 on
+// the W5 day), and on a wide one the scenarios built shapes that fit two trees.
+// These pin the engine's side of that diagnosis with the measured rects: the
+// wide shapes ARE ambiguous (the refusal was right, and only a tree this restore
+// built may lift it), and the shapes the cases now build are not.
+const Q_WIDE_SPINE = [            // qa | qb | (qc / qd): three columns
+  { key: "qa", at: [5, 5], size: [1055, 840] },
+  { key: "qb", at: [1066, 5], size: [524, 840] },
+  { key: "qc", at: [1596, 5], size: [525, 417] },
+  { key: "qd", at: [1596, 428], size: [525, 417] }
+];
+const Q_TOP_ROW = [               // qa over (qb | (qc / qd)), the W2 gate's rects
+  { key: "qa", at: [5, 5], size: [691, 312] },
+  { key: "qb", at: [5, 323], size: [343, 522] },
+  { key: "qc", at: [354, 323], size: [342, 257] },
+  { key: "qd", at: [354, 586], size: [342, 259] }
+];
+const G2_WIDE_RECORDED = [        // group | gd | gc — gc never joined
+  { key: "group", at: [5, 5], size: [526, 840] },
+  { key: "gd", at: [537, 5], size: [523, 840] },
+  { key: "gc", at: [1066, 5], size: [1055, 840] }
+];
+const G2_WIDE_SWAPPED = [
+  { key: "gd", at: [5, 5], size: [526, 840] },
+  { key: "group", at: [537, 5], size: [523, 840] },
+  { key: "gc", at: [1066, 5], size: [1055, 840] }
+];
+
+test("5wo: Q's spine on a wide output is three columns — ambiguous, so its in-place half cannot run there", () => {
+  assert.equal(engine.layoutIsAmbiguous(Q_WIDE_SPINE), true);
+  assert.equal(engine.layoutIsAmbiguous(Q_TOP_ROW), false, "qa over the rest is one tree");
+  // The in-place drag of the root divider the case makes on the top-row shape
+  // is one divider nudge, not a refusal.
+  const dragged = [
+    { key: "qa", at: [5, 5], size: [691, 500] },
+    { key: "qb", at: [5, 511], size: [343, 334] },
+    { key: "qc", at: [354, 511], size: [342, 165] },
+    { key: "qd", at: [354, 682], size: [342, 163] }
+  ];
+  const refusal = {};
+  const program = engine.planWorkspaceTiling(Q_TOP_ROW, dragged, refusal);
+  assert.equal(refusal.reason, undefined);
+  assert.ok(program && program.dividers.length === 1, JSON.stringify(program));
+  assert.deepEqual(program.swaps, []);
+});
+
+test("5wo: G2's wide build (group | gd | gc) is refused in place as ambiguous-tree, and only the known tree lifts it", () => {
+  assert.equal(engine.tilingRefusalOf(G2_WIDE_RECORDED, G2_WIDE_SWAPPED), "ambiguous-tree");
+  const refusal = {};
+  assert.equal(engine.planWorkspaceTiling(G2_WIDE_RECORDED, G2_WIDE_SWAPPED, refusal), null);
+  assert.equal(refusal.reason, "ambiguous-tree");
+  assert.equal(engine.tilingRefusalOf(G2_WIDE_RECORDED, G2_WIDE_SWAPPED, KNOWN), null,
+    "the cycle that built the workspace may refine it");
+});
+
+test("5wo: G2's intended shape — a group of three as one tile beside gd — swaps back in one op on any aspect", () => {
+  const recorded = [
+    { key: "group", at: [5, 5], size: [1480, 840] },
+    { key: "gd", at: [1491, 5], size: [630, 840] }
+  ];
+  const swapped = [
+    { key: "gd", at: [5, 5], size: [630, 840] },
+    { key: "group", at: [641, 5], size: [1480, 840] }
+  ];
+  assert.equal(engine.layoutIsAmbiguous(recorded), false);
+  assert.equal(engine.tilingRefusalOf(recorded, swapped), null);
+  const program = engine.planWorkspaceTiling(recorded, swapped);
+  assert.equal(program.swaps.length, 1, JSON.stringify(program));
+});
+
+// ------------------------------------------- a split on a group tile (tick v2p)
+//
+// `togglesplit` flips the node of the FOCUSED window, and focusing a member of
+// a group that is not its visible tab makes it the visible tab (§2 amendment).
+// So a split on a group tile must not address the tab-0 key blindly: it names
+// the tab that will be in front when it runs.
+
+const V2P_CTX = { workspaces: [{ id: 5, tiledLayout: "dwindle" }], built: null };
+// The group (ring ga, gc, gb) and gd, with `visible` set on the members listed.
+function v2pDesk(groupRect, tileRect, visible) {
+  return [["0xa", "app-ga"], ["0xb", "app-gb"], ["0xc", "app-gc"]].map(([address, cls]) =>
+    makeClient({
+      address, class: cls, workspace: 5,
+      at: groupRect.at.slice(), size: groupRect.size.slice(),
+      grouped: GROUP_ORDER.slice(), visible: visible.indexOf(address) !== -1
+    })).concat([makeClient({
+      address: "0xd", class: "app-gd", workspace: 5,
+      at: tileRect.at.slice(), size: tileRect.size.slice(), visible: true
+    })]);
+}
+// Recorded stacked (group on top, gb in front); live side by side — one flip.
+const V2P_LAYOUT = engine.buildLayout(v2pDesk(GROUP_TOP, TILE_BOTTOM, ["0xb"]), MONITORS, GIDS,
+  "2026-11-14T00:00:00Z", undefined, V2P_CTX);
+const V2P_SIDE_GROUP = { at: [12, 59], size: [703, 829] };
+const V2P_SIDE_TILE = { at: [725, 38], size: [703, 850] };
+const V2P_V8 = JSON.parse(JSON.stringify(V2P_LAYOUT));
+V2P_V8.apps.forEach((a) => { if (a.group) a.group.active = null; });
+
+function v2pSplits(plan) {
+  return plan.filter((op) => op.kind === "split").map((op) => op.address);
+}
+
+test("v2p: the recording under test has gb (not tab 0) as the visible tab", () => {
+  const byId = {};
+  for (const app of V2P_LAYOUT.apps) byId[app.identityId] = app;
+  assert.equal(byId.gb.group.active, true);
+  assert.equal(byId.ga.group.active, false);
+  assert.equal(byId.ga.group.index, 0);
+});
+
+test("v2p: a split on a group tile focuses the LIVE visible tab, not the tab-0 key", () => {
+  const plan = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xb"]), MONITORS, V2P_LAYOUT, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(plan), ["0xb"], JSON.stringify(plan));
+  assert.deepEqual(plan.filter((op) => op.kind === "tab"), [], "the right tab is in front already");
+  // The dispatch focuses that member, then toggles.
+  const cmds = engine.opToCommand(plan.find((op) => op.kind === "split"));
+  assert.ok(cmds[0].indexOf("address:0xb") !== -1, cmds[0]);
+});
+
+test("v2p: with the group's tab op in the same plan, the split focuses the tab that op brings forward", () => {
+  const plan = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xc"]), MONITORS, V2P_LAYOUT, GIDS, V2P_CTX);
+  const kinds = plan.map((op) => op.kind);
+  assert.ok(kinds.indexOf("tab") !== -1 && kinds.indexOf("tab") < kinds.indexOf("split"), JSON.stringify(plan));
+  assert.equal(plan.find((op) => op.kind === "tab").address, "0xb");
+  assert.deepEqual(v2pSplits(plan), ["0xb"], "focusing 0xc would undo the tab op");
+});
+
+test("v2p: no readable live tab falls back to the recorded-active member", () => {
+  const plan = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, []), MONITORS, V2P_LAYOUT, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(plan), ["0xb"], JSON.stringify(plan));
+});
+
+test("v2p: a migrated v8 record (active: null) takes the live tab, and only with neither the tab-0 key", () => {
+  const live = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xc"]), MONITORS, V2P_V8, GIDS, V2P_CTX);
+  assert.deepEqual(live.filter((op) => op.kind === "tab"), [], "active: null never plans a tab op");
+  assert.deepEqual(v2pSplits(live), ["0xc"], JSON.stringify(live));
+  const blind = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, []), MONITORS, V2P_V8, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(blind), ["0xa"], JSON.stringify(blind));
+  // Two visible members is a read that cannot tell: the same fallback.
+  const two = engine.planRestore(v2pDesk(V2P_SIDE_GROUP, V2P_SIDE_TILE, ["0xa", "0xc"]), MONITORS, V2P_V8, GIDS, V2P_CTX);
+  assert.deepEqual(v2pSplits(two), ["0xa"], JSON.stringify(two));
 });

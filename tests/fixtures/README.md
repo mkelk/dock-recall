@@ -99,6 +99,14 @@ no monitor half, and answers one question; `panel.test.js` loads it by name.
 Adding it to the shared list would claim it is a captured desktop and would put
 a foot window with a drifted title into twelve tests that never asked for one.
 
+### F. A schema-v8 state file — `state-v8.json`
+
+What a v8 build wrote: `state-v7.json` read through the v7 -> v8 slot
+migration, plus one hand-added two-member group (slack and obsidian on slot 8
+of the laptop-only layout) so the v8 -> v9 step has a membership to give
+`active: null`. No `layoutMode` and no `active` anywhere — that IS v8. Do not
+add either: the file's whole job is to be the older schema.
+
 ## Traps these fixtures exercise
 
 | Trap | Where it lives | Why it matters |

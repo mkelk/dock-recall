@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "mkelk.dock-recall",
   "name": "Dock Recall",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": "Morten Elk",
   "license": "MIT",
-  "description": "Auto-arrange apps when you connect and disconnect a monitor. Record how you like each set up, and get auto-arranged setup on laptop and with external monitor.",
+  "description": "Auto-arrange apps when you connect and disconnect a monitor. Record how you like each set up, and get auto-arranged setup on laptop and with external monitor. (Omarchy 4.5+)",
   "kinds": [
     "service",
     "bar-widget",

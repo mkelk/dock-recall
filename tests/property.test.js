@@ -20,16 +20,20 @@
 //      membership and tab order, plus a recorded FLOAT's rect to within
 //      engine.GEOMETRY_TOLERANCE_PX per axis — for every app the plan could
 //      legitimately act on (identity still watched, recorded monitor known and
-//      present).
+//      present, and its recorded workspace not living on another monitor in
+//      the desktop the restore STARTED from — the workspace-elsewhere refusal,
+//      judged here off the simulated state, never off driftOf).
 //      The comparisons are made DIRECTLY on the simulated state, not through
 //      driftOf, so the check is independent of the machinery it is checking.
 //
 // The simulator models op semantics as live-verified on this machine:
 //   - move: Hyprland moves a grouped window's WHOLE group with it; a window
-//     moved to a workspace that does not exist yet creates that workspace on
-//     the focused monitor (modeled as the first live monitor) — which is
-//     exactly why the workspace-monitor op exists.
-//   - workspace-monitor: the workspace moves, every window on it follows.
+//     moved to a workspace that does not exist yet (no window on it) creates
+//     that workspace on the focused monitor (modeled as the first live
+//     monitor) — measured nested under Omarchy 4.5 (tests/nested-notes.md,
+//     2026-11-14). A move stamped `viaMonitor` carries the second dispatch
+//     opToCommand emits for it: the workspace goes to `monitorName`, and every
+//     window on it follows. There is no other workspace move (tick 7ph).
 //   - group: the service's rebuild choreography, mechanically: dissolve every
 //     claim-tangled window (engine.dissolveTargets), create the group around
 //     the anchor, then join member i by focusing member i-1 (nominating the
@@ -128,6 +132,9 @@ const AT = "2026-08-16T08:00:00Z";
 const CASES = 300;
 const MAX_ITERATIONS = 10;
 const DEFAULT_SEED = 0x84a41;
+// The groupbar a tab group draws above its tabs: a member's rect is its tile
+// minus this, on top (tests/nested-notes.md 9i2 (c)).
+const GROUPBAR_PX = 21;
 const SEED = process.env.PROP_SEED ? Number(process.env.PROP_SEED) : DEFAULT_SEED;
 
 // ---------------------------------------------------------------- seeded rng
@@ -228,7 +235,30 @@ function wsMonitorMapOf(clients) {
   return map;
 }
 
-function generateCase(rng) {
+// The visible tab of every tab group (schema v9): one random member of each
+// ring shows, the rest do not; a window outside any group reads `visible: true`
+// as hyprctl reports it. Drawn from `side`, a second stream, so the seeded
+// sequence every other dimension of a case is generated from is unchanged.
+function assignVisibleTabs(clients, side) {
+  const seen = {};
+  for (const c of clients) {
+    if (c.grouped.length < 2) { c.visible = true; continue; }
+    const key = c.grouped.join("+");
+    if (seen[key]) continue;
+    seen[key] = true;
+    const shown = side.pick(c.grouped);
+    for (const m of clients) {
+      if (c.grouped.indexOf(m.address) !== -1) m.visible = m.address === shown;
+    }
+  }
+}
+
+// The side stream for a case: derived from its seed, never from the main one.
+function sideRngFor(caseSeed) {
+  return makeRng((caseSeed ^ 0x5bd1e995) >>> 0);
+}
+
+function generateCase(rng, side) {
   // Monitors present at record time: 1-3 of the pool.
   const monitorCount = rng.int(1, 3);
   const recordMonitors = rng.shuffle(MONITOR_POOL).slice(0, monitorCount)
@@ -240,6 +270,12 @@ function generateCase(rng) {
   // desktop so it is consistent by construction.
   const recordWsMon = {};
   for (let ws = 1; ws <= 8; ws++) recordWsMon[ws] = rng.pick(recordMonitors).id;
+  // Launches land on ws 1, created on the first monitor when it does not exist
+  // (see the simulator). Under Omarchy 4.5 that is the first monitor's own
+  // block, so the recording says the same — otherwise every launch would
+  // manufacture a workspace-elsewhere refusal the generator never meant.
+  // Assigned AFTER the loop so the seeded sequence is unchanged.
+  recordWsMon[1] = recordMonitors[0].id;
 
   // Record-time desktop: 0-3 windows per identity, scattered. Schema v3 records
   // EVERY one of them, so an identity is no longer a row — it is a family of
@@ -274,11 +310,16 @@ function generateCase(rng) {
       m.client.monitor = recordWsMon[ws];
       m.client.floating = false;
       m.client.grouped = order.slice();
+      // A tab group holds ONE rect of the tiling (epic 9i2): every member
+      // shows the first tab's. Assigned, not drawn, so the seed is unchanged.
+      m.client.at = members[0].client.at.slice();
+      m.client.size = members[0].client.size.slice();
     }
     // Held as ADDRESSES, not identity ids: two windows of one identity can be
     // tabbed into the same group now, and an id no longer names a window.
     recordedGroupAddresses = members.map((m) => m.client.address);
   }
+  assignVisibleTabs(recordClients, side);
 
   const layout = engine.buildLayout(recordClients, recordMonitors, identities, AT);
 
@@ -310,8 +351,19 @@ function generateCase(rng) {
   // Live desktop: start from the record-time one, then drift it.
   const liveWsMon = {};
   const pickLiveMonitor = () => rng.pick(liveMonitors).id;
+  // Under Omarchy 4.5 a workspace id belongs to its monitor's block, so a
+  // recorded workspace whose monitor is still here is live on THAT monitor —
+  // windows drift between workspaces, workspaces do not drift between
+  // monitors (that would be workspace-elsewhere: a refusal, pinned by directed
+  // tests in restore.test.js, and not something a random desk should be made
+  // of). Only workspaces the recording never placed on a live monitor go
+  // anywhere. The pick is drawn either way so the seeded sequence is the same.
   const wsOf = (ws) => {
-    if (liveWsMon[ws] === undefined) liveWsMon[ws] = pickLiveMonitor();
+    if (liveWsMon[ws] === undefined) {
+      const picked = pickLiveMonitor();
+      const owner = recordWsMon[ws];
+      liveWsMon[ws] = liveMonitors.some((m) => m.id === owner) ? owner : picked;
+    }
     return liveWsMon[ws];
   };
 
@@ -406,6 +458,17 @@ function generateCase(rng) {
     liveClients.push(stranger);
   }
 
+  // Every live group, the stranger's included, is one tile with one rect: the
+  // first tab's. Before the split-brain step, which only garbles the arrays.
+  for (const c of liveClients) {
+    if (c.grouped.length < 2) continue;
+    const head = liveClients.find((x) => x.address === c.grouped[0]);
+    if (head && head !== c) { c.at = head.at.slice(); c.size = head.size.slice(); }
+  }
+
+  // Which tab each live group shows — often not the recorded one.
+  assignVisibleTabs(liveClients, side);
+
   // Split-brain: one member of a live group under-reports its own array.
   const groupedLive = liveClients.filter((c) => c.grouped.length > 1);
   if (groupedLive.length > 0 && rng.chance(0.4)) {
@@ -427,18 +490,54 @@ function makeSimulator(clients, monitors, identities) {
       at: c.at.slice(),
       size: c.size.slice()
     })),
-    monitors,
-    wsMon: wsMonitorMapOf(clients)
+    monitors
   };
 
   const byAddress = (address) => state.clients.find((c) => c.address === address) || null;
 
+  // A TILE (epic 9i2): a tab group holds one rect of the tiling, shared by all
+  // its members, so anything that moves a tile moves every tab in it. Members
+  // are found by claims from either side, one hop — a split-brain member that
+  // under-reports its own array is still found through its peers' arrays.
+  function tileOf(c) {
+    return state.clients.filter((x) => x === c
+      || (!x.floating && x.workspace.id === c.workspace.id
+        && ((c.grouped.length > 1 && c.grouped.indexOf(x.address) !== -1)
+          || (x.grouped.length > 1 && x.grouped.indexOf(c.address) !== -1))));
+  }
+  function setRect(members, at, size) {
+    for (const m of members) { m.at = at.slice(); m.size = size.slice(); }
+  }
+  // A tile's whole box: a group's tabs report it minus the groupbar on top.
+  function tileBoxOf(members) {
+    const c = members[0];
+    if (members.length < 2) return { at: c.at.slice(), size: c.size.slice() };
+    return { at: [c.at[0], c.at[1] - GROUPBAR_PX], size: [c.size[0], c.size[1] + GROUPBAR_PX] };
+  }
+  function placeInBox(members, box) {
+    if (members.length < 2) { setRect(members, box.at, box.size); return; }
+    setRect(members, [box.at[0], box.at[1] + GROUPBAR_PX], [box.size[0], box.size[1] - GROUPBAR_PX]);
+  }
+  // `address` becomes its group's visible tab. Focusing a member does this too
+  // (nested-notes 9i2 (b)/(d)), which is why a focus on a group tile — a split
+  // parent, a togglesplit — is followed here by the tab it leaves in front.
+  function showTab(address) {
+    const c = byAddress(address);
+    if (!c) return;
+    const ring = engine.groupOrderFor(c, state.clients);
+    if (ring.length < 2) return;
+    for (const m of state.clients) {
+      if (ring.indexOf(m.address) !== -1) m.visible = m.address === address;
+    }
+  }
+
   // The monitor a workspace lives on, creating it on the "focused" (first)
-  // monitor when it does not exist yet — the Hyprland behavior the
-  // workspace-monitor op exists to correct.
+  // monitor when it does not exist yet — the Hyprland behavior a viaMonitor
+  // move exists to correct. A workspace exists while a window is on it: an
+  // emptied one is destroyed, exactly as the engine's live set assumes.
   function monitorOfWs(ws) {
-    if (state.wsMon[ws] === undefined) state.wsMon[ws] = state.monitors[0].id;
-    return state.wsMon[ws];
+    const holder = state.clients.find((c) => c.workspace.id === ws);
+    return holder ? holder.monitor : state.monitors[0].id;
   }
 
   // Everybody tangled into `address`'s group, by claims from either side —
@@ -467,7 +566,7 @@ function makeSimulator(clients, monitors, identities) {
     if (!engine.isGroupClaimed(state.clients, address)) return;
     for (const a of claimSetOf(address)) {
       const c = byAddress(a);
-      if (c) c.grouped = [];
+      if (c) { c.grouped = []; c.visible = true; }
     }
   }
 
@@ -496,28 +595,13 @@ function makeSimulator(clients, monitors, identities) {
       const identity = identities.find((i) => i.id === op.identityId);
       const cls = identity ? identityClass(identity.id) : "cls-unknown";
       const ws = 1;
-      state.clients.push(makeClient(cls, ws, monitorOfWs(ws), false));
+      const launched = makeClient(cls, ws, monitorOfWs(ws), false);
+      launched.visible = true;
+      state.clients.push(launched);
       return;
     }
     if (op.kind === "ungroup") {
       for (const address of op.addresses) dissolveWhole(address);
-      return;
-    }
-    if (op.kind === "workspace-monitor") {
-      const target = state.monitors.find((m) => m.name === op.monitorName);
-      if (!target) return;
-      state.wsMon[op.workspaceId] = target.id;
-      for (const c of state.clients) {
-        if (c.workspace.id !== op.workspaceId) continue;
-        const moved = c.monitor !== target.id;
-        c.monitor = target.id;
-        // A float's rect is in GLOBAL layout coordinates, so a workspace that
-        // changes monitor relocates every float on it — the same re-clamp a
-        // per-window workspace move causes (tick y29), for the same reason.
-        // Modeled here too, so "geometry runs last" is held against BOTH ops
-        // that can displace a float and not just one of them.
-        if (moved) displace(c, 5);
-      }
       return;
     }
     if (op.kind === "move") {
@@ -553,8 +637,27 @@ function makeSimulator(clients, monitors, identities) {
             + " is on ws " + parent.workspace.id + ", not " + op.workspaceId);
         assert.ok(!parent.floating,
           "a move named a FLOATING split parent, which holds no tile: " + op.splitParent);
+        // The focus in front of the move: a grouped parent shows that tab now.
+        showTab(op.splitParent);
       }
       moveClient(op.address, op.workspaceId);
+      // The destination did not exist when the plan was made, so the move
+      // above may have created it on the focused monitor; opToCommand's second
+      // dispatch puts it on its owner, and every window on it follows.
+      if (op.viaMonitor) {
+        const target = state.monitors.find((m) => m.name === op.monitorName);
+        assert.ok(target, "a viaMonitor move named no live monitor: " + JSON.stringify(op));
+        for (const c of state.clients) {
+          if (c.workspace.id !== op.workspaceId) continue;
+          const moved = c.monitor !== target.id;
+          c.monitor = target.id;
+          // A float's rect is in GLOBAL layout coordinates, so a workspace that
+          // changes monitor relocates every float on it — the same re-clamp a
+          // per-window workspace move causes (tick y29). Modeled here too, so
+          // "geometry runs last" is held against both.
+          if (moved) displace(c, 5);
+        }
+      }
       return;
     }
     if (op.kind === "floating") {
@@ -589,6 +692,8 @@ function makeSimulator(clients, monitors, identities) {
 
       const anchor = byAddress(op.addresses[0]);
       if (!anchor) return;
+      // The group forms in the anchor's tile (nested-notes 9i2 (e)).
+      const box = tileBoxOf([anchor]);
       let ring = [anchor.address];
       let focusedTab = anchor.address;
       anchor.grouped = ring.slice();
@@ -614,6 +719,13 @@ function makeSimulator(clients, monitors, identities) {
           if (m) m.grouped = ring.slice();
         }
       }
+      // Every tab takes the group's one rect: the anchor's tile under the
+      // groupbar.
+      const tabs = ring.map(byAddress).filter(Boolean);
+      if (tabs.length > 1) placeInBox(tabs, box);
+      // The last join leaves the last joiner in front; the service then brings
+      // the recorded tab forward when the op names one (schema v9).
+      showTab(op.active && ring.indexOf(op.active) !== -1 ? op.active : focusedTab);
       return;
     }
     if (op.kind === "split") {
@@ -638,7 +750,19 @@ function makeSimulator(clients, monitors, identities) {
         "the simulator was handed a split op for a FLOATING window: " + op.address);
       const peers = state.clients.filter(
         (c) => !c.floating && c.workspace.id === subject.workspace.id);
-      const items = peers.map((c) => ({ key: c.address, at: c.at.slice(), size: c.size.slice() }));
+      // One item per TILE: a group's tabs share one rect, so they are one leaf,
+      // represented by the first of them met and re-laid out together.
+      const repOf = {};
+      const membersOf = {};
+      const items = [];
+      for (const c of peers) {
+        if (repOf[c.address]) continue;
+        const tile = tileOf(c).filter((m) => peers.indexOf(m) !== -1 && !repOf[m.address]);
+        for (const m of tile) repOf[m.address] = c.address;
+        membersOf[c.address] = tile;
+        items.push({ key: c.address, at: c.at.slice(), size: c.size.slice() });
+      }
+      const subjectKey = repOf[op.address];
       const tree = engine.splitTreeOf(items);
       assert.ok(tree, "a split op was planned for a workspace that is not a guillotine tiling");
 
@@ -654,7 +778,7 @@ function makeSimulator(clients, monitors, identities) {
       // The node `togglesplit` would flip: the subject leaf's PARENT.
       let parent = null;
       for (let node = tree; node && node.key === undefined;) {
-        const child = holds(node.near, op.address) ? node.near : node.far;
+        const child = holds(node.near, subjectKey) ? node.near : node.far;
         if (child.key !== undefined) { parent = node; break; }
         node = child;
       }
@@ -706,12 +830,13 @@ function makeSimulator(clients, monitors, identities) {
             at[a] = near;
             size[a] = Math.max(1, far - near);
           }
-          c.at = at;
-          c.size = size;
+          setRect(membersOf[key], at, size);
         }
       };
       relayout(nearKeys, nearBox, targetOf("near"));
       relayout(farKeys, farBox, targetOf("far"));
+      // togglesplit needed the subject focused, and a focused tab is in front.
+      showTab(op.address);
       return;
     }
     if (op.kind === "swap") {
@@ -725,9 +850,18 @@ function makeSimulator(clients, monitors, identities) {
       assert.equal(a.workspace.id, b.workspace.id,
         "a swap crossed workspaces: " + op.address + " on " + a.workspace.id
           + ", " + op.target + " on " + b.workspace.id);
-      const at = a.at; const size = a.size;
-      a.at = b.at; a.size = b.size;
-      b.at = at; b.size = size;
+      // A swap with any member of a group swaps the whole tile (nested-notes
+      // 9i2 (d)): every tab moves with it.
+      // The TILES exchange, and a group's tabs sit inside its tile under the
+      // groupbar: probe (d) watched gd 5,5 691x417 and a group 5,449 691x396
+      // trade to 5,428 691x417 and 5,26 691x396.
+      const tileA = tileOf(a);
+      const tileB = tileOf(b);
+      assert.ok(tileA.indexOf(b) === -1, "a swap named two tabs of one group: " + op.address + ", " + op.target);
+      const boxA = tileBoxOf(tileA);
+      const boxB = tileBoxOf(tileB);
+      placeInBox(tileA, boxB);
+      placeInBox(tileB, boxA);
       return;
     }
     if (op.kind === "divider") {
@@ -769,8 +903,9 @@ function makeSimulator(clients, monitors, identities) {
       const farEdge = subject.at[axis] + subject.size[axis];
       let neighbour = null;
       const perp = axis === 0 ? 1 : 0;
+      const subjectTile = tileOf(subject);
       for (const c of state.clients) {
-        if (c === subject || c.floating) continue;
+        if (subjectTile.indexOf(c) !== -1 || c.floating) continue;
         if (c.workspace.id !== subject.workspace.id) continue;
         if (c.at[axis] < farEdge) continue;
         // Overlapping on the OTHER axis, or the two tiles do not share a line.
@@ -784,12 +919,31 @@ function makeSimulator(clients, monitors, identities) {
       // No neighbour means the subject's far edge was the edge of the tiling,
       // which is precisely the case the sign law forbids the planner to emit.
       assert.ok(neighbour, "a divider op was aimed at the FAR side of its split: " + op.address);
-      subject.size = subject.size.slice();
-      subject.size[axis] += delta;
-      neighbour.at = neighbour.at.slice();
-      neighbour.size = neighbour.size.slice();
-      neighbour.at[axis] += delta;
-      neighbour.size[axis] = Math.max(1, neighbour.size[axis] - delta);
+      // Resizing any tab moves the group tile's divider, and the whole group
+      // keeps one rect (nested-notes 9i2 (c)) — on both sides of the line.
+      const grown = subject.size.slice();
+      grown[axis] += delta;
+      setRect(subjectTile, subject.at, grown);
+      const shiftedAt = neighbour.at.slice();
+      const shrunk = neighbour.size.slice();
+      shiftedAt[axis] += delta;
+      shrunk[axis] = Math.max(1, shrunk[axis] - delta);
+      setRect(tileOf(neighbour), shiftedAt, shrunk);
+      return;
+    }
+    if (op.kind === "tab") {
+      // group.active({ index + 1, window }): the selector picks the group, the
+      // index picks the tab — so the index must name the op's own window in
+      // the LIVE ring, or the dispatch brings a neighbour forward and answers
+      // "ok". Asserted, then modelled.
+      const c = byAddress(op.address);
+      assert.ok(c, "the simulator was handed a tab op naming a window that is not here");
+      const ring = engine.groupOrderFor(c, state.clients);
+      assert.ok(ring.length > 1, "a tab op for a window in no group: " + op.address);
+      assert.strictEqual(ring[op.index], op.address,
+        "a tab op's index names another tab: " + JSON.stringify(op) + " in " + ring.join("+"));
+      assert.ok(ring.indexOf(op.anchor) !== -1, "a tab op's anchor is not in the group: " + JSON.stringify(op));
+      showTab(op.address);
       return;
     }
     throw new Error("simulator: unknown op kind " + op.kind);
@@ -811,12 +965,59 @@ function makeSimulator(clients, monitors, identities) {
 // the first occurrence" are not op KINDS, they are the shape a
 // one-entry-per-identity planner would have had, and they are exactly what this
 // file has to be able to notice.
+// THE ARRIVAL AXIS (9i2 §2.5), checked against the RECORDING rather than the
+// simulator, which models no tree. Every choreographed move belongs to a
+// complete program (`sequenced`), and every LEADER arrival names the axis of
+// the recorded cut it makes: the arrival takes the far side, so its recorded
+// rect lies wholly beyond its parent's on that axis. A group member chaining
+// off a tab of its own group carries no axis — the group op folds it away.
+// Without the axis the service cannot tell a wrong split from a right one,
+// every dispatch still answers "ok", and the restore rebuilds whatever shape
+// dwindle's tile-shape rule picked.
+function checkArrivalAxes(plan, clients, monitors, layout, identities, tag) {
+  const choreographed = plan.filter((op) => op.kind === "move" && op.splitParent);
+  if (!choreographed.length) return;
+  const report = engine.driftOf(clients, monitors, layout, identities);
+  const recordedOf = {};
+  report.apps.forEach((entry, i) => {
+    if (entry && entry.current) recordedOf[entry.current.address] = layout.apps[i];
+  });
+  for (const op of choreographed) {
+    assert.strictEqual(op.sequenced, true, `${tag}: a choreographed move is not marked sequenced: ${JSON.stringify(op)}`);
+    const arrival = recordedOf[op.address];
+    const parent = recordedOf[op.splitParent];
+    assert.ok(arrival && parent, `${tag}: a choreographed move names a window the recording does not: ${JSON.stringify(op)}`);
+    const member = arrival.group && parent.group && arrival.group.groupId === parent.group.groupId;
+    if (member) {
+      assert.strictEqual(op.splitAxis, undefined, `${tag}: a tab's chain move carries an axis: ${JSON.stringify(op)}`);
+      continue;
+    }
+    assert.ok(op.splitAxis === 0 || op.splitAxis === 1,
+      `${tag}: a leader arrival carries no split axis: ${JSON.stringify(op)}`);
+    const axis = op.splitAxis;
+    assert.ok(arrival.at[axis] >= parent.at[axis] + parent.size[axis],
+      `${tag}: ${op.address} is not recorded beyond ${op.splitParent} on axis ${axis}`);
+  }
+}
+
 function runCase(caseIndex, caseSeed, suppress) {
   const rng = makeRng(caseSeed);
-  const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng);
+  const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng, sideRngFor(caseSeed));
   const tag = `case ${caseIndex} (seed 0x${caseSeed.toString(16)})`;
 
   const sim = makeSimulator(liveClients, liveMonitors, planIdentities);
+
+  // The workspace-elsewhere refusal, judged ONCE, on the desktop the restore
+  // starts from: a recorded workspace that already lives on another monitor
+  // is 4.5's arrangement and is not the planner's to move. Judged before any
+  // op runs on purpose — a workspace the PLAN put on the wrong monitor is a
+  // planner bug, and excusing it afterwards would hide exactly that.
+  const startWsMon = wsMonitorMapOf(liveClients);
+  const elsewhereAtStart = (app) => {
+    const holder = startWsMon[app.workspaceId];
+    if (holder === undefined) return false;
+    return engine.monitorLabel(engine.monitorByIndex(liveMonitors, holder)) !== app.monitorDescription;
+  };
 
   let plan = [];
   let previous = null;
@@ -836,6 +1037,7 @@ function runCase(caseIndex, caseSeed, suppress) {
       assert.ok(!engine.samePlan(plan, previous),
         `${tag}: no progress — the identical plan came back: ${engine.planSignature(plan)}`);
     }
+    checkArrivalAxes(plan, sim.state.clients, liveMonitors, layout, planIdentities, tag);
     for (const op of plan) sim.apply(op);
     previous = plan;
   }
@@ -871,6 +1073,7 @@ function runCase(caseIndex, caseSeed, suppress) {
     if (!planIdentities.some((i) => i.id === app.identityId)) return false;   // identity-unknown
     if (!(app.monitorDescription || "").trim()) return false;                 // monitor-unknown
     if (!engine.monitorByDescription(liveMonitors, app.monitorDescription)) return false; // monitor-absent
+    if (elsewhereAtStart(app)) return false;                                  // workspace-elsewhere
     return true;
   };
 
@@ -918,6 +1121,19 @@ function runCase(caseIndex, caseSeed, suppress) {
         windowFor(app), sim.state.clients, planIdentities, chosen.idByAddress);
       assert.strictEqual(live.join("+"), wanted,
         `${tag}: group ${groupId} reads ${live.join("+")} at ${app.identityId}, recorded ${wanted}`);
+    }
+    // The visible tab (schema v9): the one present member recorded in front is
+    // the ONLY tab in front of its live ring. Read straight off `visible`.
+    const front = present.filter((a) => a.group.active === true);
+    if (front.length === 1) {
+      const shown = windowFor(front[0]);
+      const ring = engine.groupOrderFor(shown, sim.state.clients);
+      const visible = ring.filter((a) => {
+        const m = sim.state.clients.find((c) => c.address === a);
+        return m && m.visible === true;
+      });
+      assert.deepStrictEqual(visible, [shown.address],
+        `${tag}: group ${groupId} shows ${visible.join("+") || "no tab"}, recorded ${front[0].identityId} in front`);
     }
   }
   for (const app of layout.apps) {
@@ -967,13 +1183,11 @@ test(`restore converges onto the recording across ${CASES} generated desktops (s
 test("suppressing an op kind makes the property fail — for every kind that plans", () => {
   const seeds = caseSeeds(CASES);
 
-  // Every kind planRestore can emit. Measured failure rates over the 300 cases
-  // at the committed seed, as a record of how much of the generator each op
-  // actually reaches: move 281, launch 187, floating 161, workspace-monitor
-  // 150, geometry 136, group 130, ungroup 99. None of them is rare, and none
-  // of the 1143 failures is a harness error.
+  // Every kind planRestore can emit. (The workspace-monitor op is gone since
+  // tick 7ph; the one workspace move left rides on a viaMonitor move and has
+  // its own mutation below.)
   for (const kind of [
-    "geometry", "floating", "ungroup", "move", "group", "workspace-monitor", "launch"
+    "geometry", "floating", "ungroup", "move", "group", "launch", "tab"
   ]) {
     let failed = false;
     let firstError = "";
@@ -1042,6 +1256,65 @@ test("suppressing a per-occurrence op makes the property fail — launch and mov
   }
 });
 
+// ------------------------------------------------ mutation: the viaMonitor dispatch
+//
+// The one workspace move left (tick 7ph) rides on a move whose destination does
+// not exist when it runs: the window move creates the workspace on the FOCUSED
+// monitor, and the workspace move sends it to its owner. Strip the flag — the
+// planner that forgot the second dispatch — and new workspaces must land on
+// the wrong monitor somewhere in the 300 cases.
+
+test("dropping the viaMonitor workspace move makes the property fail", () => {
+  const seeds = caseSeeds(CASES);
+  const strip = (plan) => plan.map((op) => (op.kind === "move" ? { ...op, viaMonitor: false } : op));
+  let failed = false;
+  let firstError = "";
+  for (let i = 0; i < CASES && !failed; i++) {
+    try {
+      runCase(i, seeds[i], strip);
+    } catch (error) {
+      failed = true;
+      firstError = String(error && error.message);
+    }
+  }
+  assert.ok(failed, "dropping every viaMonitor left the property GREEN — the new-workspace path is not being tested");
+  assert.ok(!/is not a function|undefined is not|Cannot read/.test(firstError),
+    "dropping viaMonitor failed with a harness error rather than a property violation: " + firstError);
+});
+
+// ------------------------------------------------ mutation: the arrival axis
+//
+// A planner that forgot `splitAxis` (or emitted the wrong one) still converges
+// in the simulator, which models no tree — so the axis is checked against the
+// recording in checkArrivalAxes, and dropping it must turn the property red.
+
+test("dropping splitAxis from the arrival program makes the property fail", () => {
+  const seeds = caseSeeds(CASES);
+  const strip = (plan) => plan.map((op) => {
+    if (op.kind !== "move" || op.splitAxis === undefined) return op;
+    const copy = { ...op };
+    delete copy.splitAxis;
+    return copy;
+  });
+  const flip = (plan) => plan.map((op) =>
+    (op.kind === "move" && op.splitAxis !== undefined ? { ...op, splitAxis: 1 - op.splitAxis } : op));
+  for (const [label, mutation] of [["dropping", strip], ["flipping", flip]]) {
+    let failed = false;
+    let firstError = "";
+    for (let i = 0; i < CASES && !failed; i++) {
+      try {
+        runCase(i, seeds[i], mutation);
+      } catch (error) {
+        failed = true;
+        firstError = String(error && error.message);
+      }
+    }
+    assert.ok(failed, label + " every splitAxis left the property GREEN — the arrival axis is not being tested");
+    assert.ok(/split axis|beyond/.test(firstError),
+      label + " splitAxis failed for another reason than the axis: " + firstError);
+  }
+});
+
 // ------------------------------------------------ the flip, through the simulator
 //
 // The generator makes arbitrary rects, not tilings, so a `split` op is not
@@ -1105,4 +1378,91 @@ test("a flipped workspace converges through the simulator, in one dispatch", () 
   assert.deepStrictEqual(
     engine.planRestore(makeSimulator(recorded, monitors, identities).state.clients,
       monitors, layout, identities), []);
+});
+
+// ------------------------------------------------ a group is one tile, through the simulator
+//
+// Directed, for the same reason as the flip: the generated cases put a group
+// beside a tile only now and then. A group (one rect shared by its tabs) living
+// below the tile it was recorded above is one swap addressed to its leader, and
+// the simulator's swap moves EVERY tab with it (nested-notes 9i2 (d)) — so the
+// loop converges with all three tabs back on the recorded rect.
+
+test("a group swapped with its neighbour converges through the simulator, every tab with it", () => {
+  const monitors = [{ ...MONITOR_POOL[0], x: 0, y: 0, width: 701, height: 850, scale: 1,
+    make: "T", model: "P", serial: "", activeWorkspace: { id: 1, name: "1" }, focused: true }];
+  const identities = makeIdentities(["alpha", "bravo", "charlie", "delta"]);
+  const desk = (groupAt, tileAt) => {
+    const members = ["alpha", "charlie", "bravo"].map((id) =>
+      makeClient(identityClass(id), 5, 0, false, groupAt.slice(), [691, 396]));
+    const ring = members.map((c) => c.address);
+    for (const c of members) c.grouped = ring.slice();
+    return members.concat([makeClient(identityClass("delta"), 5, 0, false, tileAt.slice(), [691, 417])]);
+  };
+  const recorded = desk([5, 26], [5, 428]);
+  const layout = engine.buildLayout(recorded, monitors, identities, AT);
+  const live = recorded.map((c) => ({
+    ...c, workspace: { ...c.workspace }, grouped: c.grouped.slice(),
+    at: c.grouped.length ? [5, 449] : [5, 5], size: c.size.slice()
+  }));
+
+  const sim = makeSimulator(live, monitors, identities);
+  let plan = engine.planRestore(sim.state.clients, monitors, layout, identities);
+  assert.deepStrictEqual(plan.map((op) => op.kind), ["swap"]);
+  assert.ok(engine.opAddressesOf(plan[0]).indexOf(recorded[0].address) !== -1,
+    "the swap names the group by its tab-0 window");
+
+  let previous = null;
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    plan = engine.planRestore(sim.state.clients, monitors, layout, identities);
+    if (plan.length === 0) break;
+    if (previous) assert.ok(!engine.samePlan(plan, previous), "no progress: " + engine.planSignature(plan));
+    for (const op of plan) sim.apply(op);
+    previous = plan;
+  }
+  assert.strictEqual(plan.length, 0, "did not converge: " + engine.planSignature(plan));
+  for (const c of sim.state.clients) {
+    const want = recorded.find((r) => r.address === c.address);
+    assert.deepStrictEqual([c.at, c.size], [want.at, want.size], c.class + " is back on its recorded rect");
+  }
+});
+
+// ------------------------------------------------ the planning context (9i2)
+//
+// §2.2: without a context, or with one that reads every workspace as dwindle
+// and every recording as dwindle (or unrecorded), every plan is the plan this
+// file has always proven. Asked at every step of every generated restore, not
+// only of the first plan, so a context-only branch cannot hide mid-restore.
+test(`plans without a context are unchanged by a dwindle context, at every step of ${CASES} restores`, () => {
+  const seeds = caseSeeds(CASES);
+  let compared = 0;
+  for (let i = 0; i < CASES; i++) {
+    const rng = makeRng(seeds[i]);
+    const { layout, planIdentities, liveMonitors, liveClients } = generateCase(rng, sideRngFor(seeds[i]));
+    const dwindleLayout = Object.assign({}, layout, {
+      apps: layout.apps.map((a) => Object.assign({}, a, { layoutMode: "dwindle" }))
+    });
+    const sim = makeSimulator(liveClients, liveMonitors, planIdentities);
+    for (let step = 0; step < MAX_ITERATIONS; step++) {
+      const ids = {};
+      for (const c of sim.state.clients) if (c.workspace) ids[c.workspace.id] = true;
+      for (const app of layout.apps) ids[app.workspaceId] = true;
+      const context = {
+        workspaces: Object.keys(ids).map((id) => ({ id: Number(id), tiledLayout: "dwindle" })),
+        built: null
+      };
+      const bare = engine.planRestore(sim.state.clients, liveMonitors, layout, planIdentities);
+      const signature = JSON.stringify(bare);
+      assert.strictEqual(JSON.stringify(engine.planRestore(sim.state.clients, liveMonitors, layout, planIdentities, context)),
+        signature, `case ${i} step ${step}: a dwindle context changed the plan`);
+      assert.strictEqual(JSON.stringify(engine.planRestore(sim.state.clients, liveMonitors, dwindleLayout, planIdentities, context)),
+        signature, `case ${i} step ${step}: a dwindle recording in a dwindle context changed the plan`);
+      assert.strictEqual(JSON.stringify(engine.planRestore(sim.state.clients, liveMonitors, dwindleLayout, planIdentities)),
+        signature, `case ${i} step ${step}: a recorded mode without a context changed the plan`);
+      compared += 1;
+      if (bare.length === 0) break;
+      for (const op of bare) sim.apply(op);
+    }
+  }
+  assert.ok(compared > CASES, `only ${compared} plans compared`);
 });

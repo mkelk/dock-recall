@@ -31,6 +31,10 @@ BarWidget {
   id: root
   moduleName: "mkelk.dock-recall"
 
+  // Every duration and curve in this file, from the plugin's one statement of
+  // them. See Motion.qml for why they are not spelled here.
+  readonly property Motion motion: Motion {}
+
   readonly property string logPrefix: "[dock-recall]"
   readonly property string statusPath: Quickshell.env("HOME") + "/.local/state/omarchy/dock-recall.status.json"
 
@@ -134,20 +138,54 @@ BarWidget {
   // first is an infinite loop the moment the panel entry point is missing or
   // the manifest has not been rescanned. Asking the shell which way it will
   // route means a click is simply inert until the panel is really there.
-  readonly property bool panelRouted: root.hostShell
-    && typeof root.hostShell.isBarWidgetPanelPlugin === "function"
-    && root.hostShell.isBarWidgetPanelPlugin(root.moduleName) === false
+  //
+  // TWO HOST CONTRACTS (tick erk). Before the 2026-09-08 shell, `bar.shell` was
+  // the shell root: it carries `isBarWidgetPanelPlugin`, and asking it is the
+  // recursion guard above. Since that upgrade a third-party widget is handed a
+  // SCOPED plugin-shell API (shell.pluginShellForId → PluginShellApi): it
+  // carries summon/hide/toggle/isPluginOpen/serviceFor, routes by ownership
+  // and cannot route a summon back into this widget — so the guard question
+  // cannot be asked of it and does not need to be. Feature-detect: routed when
+  // the handle can toggle and summon, and, ONLY where the old question exists,
+  // when it answers "not the bar". The acceptance VM still runs the old
+  // contract; the human's desk runs the new one; this must be true on both.
+  readonly property bool hostCanRoute: root.hostShell
+    && typeof root.hostShell.toggle === "function"
+    && typeof root.hostShell.summon === "function"
+  readonly property bool panelRouted: root.hostCanRoute
+    && (typeof root.hostShell.isBarWidgetPanelPlugin !== "function"
+      || root.hostShell.isBarWidgetPanelPlugin(root.moduleName) === false)
+
+  // Which half of the guard failed, for the log — "not registered" on its own
+  // hid the 2026-09-08 break for a morning.
+  function routeRefusal() {
+    if (!root.hostShell) return "no host shell handle from the bar"
+    if (!root.hostCanRoute) return "the host handle has no toggle/summon"
+    return "the shell routes this plugin to the bar, not to the panel loader"
+  }
+
+  // This plugin's own service, through whichever handle the bar gave us: the
+  // shell root and the scoped API both answer `serviceFor` (the scoped one
+  // only for the plugin's own id, which is the one asked for).
+  readonly property var pluginService: root.hostShell
+    && typeof root.hostShell.serviceFor === "function"
+    ? root.hostShell.serviceFor(root.moduleName) : null
 
   // The bar-widget contract: Bar.findPanelWidget needs open/close and a
   // readonly `opened` on the widget root, and the popout coordinator prefers
   // closeForPopoutSwitch over close.
-  readonly property bool opened: root.hostShell && root.hostShell.openPanelIds
-    ? root.hostShell.openPanelIds[root.moduleName] === true
-    : false
+  // Openness is read off the SERVICE (Service.panelOpen, set by the panel on
+  // open and close), which notifies on both host contracts; the shell root's
+  // `openPanelIds` map is the fallback where a service is not loaded.
+  readonly property bool opened: root.pluginService && root.pluginService.panelOpen === true
+    ? true
+    : (root.hostShell && root.hostShell.openPanelIds
+      ? root.hostShell.openPanelIds[root.moduleName] === true
+      : false)
 
   function summonPanel(payloadJson) {
     if (!root.panelRouted) {
-      root.log("panel is not registered with the shell yet — bar click ignored")
+      root.log("bar click ignored — " + root.routeRefusal())
       return
     }
     root.hostShell.summon(root.moduleName, payloadJson || "{}")
@@ -162,7 +200,7 @@ BarWidget {
 
   function togglePanel() {
     if (!root.panelRouted) {
-      root.log("panel is not registered with the shell yet — bar click ignored")
+      root.log("bar click ignored — " + root.routeRefusal())
       return
     }
     root.hostShell.toggle(root.moduleName, "{}")
@@ -202,6 +240,41 @@ BarWidget {
     onLoaded: root.applyStatus(text())
     onLoadFailed: root.applyStatus("")
     onFileChanged: reload()
+  }
+
+  // A SECOND IPC TARGET, AND WHY IT IS JUSTIFIED (tick fyi).
+  //
+  // The panel's `dock-recall` handler is the plugin's one reporting surface, and
+  // adding another is not free — epic f22's review flagged a single extra verb
+  // as "beyond the authorised list" and made it argue for itself. This one has
+  // an argument the panel cannot make: the bar widget is a SEPARATE top-level
+  // entry point, loaded by the bar and not by the panel loader, so nothing in
+  // Panel.qml can see into it. The epic's DoD requires the bar's `sweeping`
+  // animation to be reportable, and there is no route from here to the panel's
+  // payload — the widget deliberately owns no state of its own and writes
+  // nothing, which is the property that makes an enabled bar cost nothing.
+  //
+  // So: read-only, one verb, no mutation of anything. It reports what the two
+  // animation objects say about THEMSELVES, for the reason the chip report
+  // gives at length — a number restated from Motion.qml would pass on a widget
+  // whose animation had been deleted.
+  IpcHandler {
+    target: "dock-recall-bar"
+
+    function motion(): string {
+      return JSON.stringify({
+        // The glyph's opacity fade: a state change, so it carries the curve.
+        glyphFadeMs: glyphFade.duration,
+        glyphFadeEasing: glyphFade.easing.type,
+        // The restore sweep: running only while the service says it is working,
+        // which is a fact worth reporting beside the duration — an animation
+        // that is bound but never runs is not motion.
+        sweepMs: sweepRun.duration,
+        sweepRunning: sweepRun.running,
+        sweeping: root.sweeping,
+        glyph: root.glyph
+      })
+    }
   }
 
   implicitWidth: button.implicitWidth
@@ -259,7 +332,11 @@ BarWidget {
         clip: true
 
         Behavior on opacity {
-          NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+          NumberAnimation {
+            id: glyphFade
+            duration: root.motion.duration
+            easing.type: root.motion.easingType
+          }
         }
 
         // The restore sweep: a band of the bar's own background travelling
@@ -273,10 +350,11 @@ BarWidget {
           color: Qt.rgba(root.ringColor.r, root.ringColor.g, root.ringColor.b, 0.55)
 
           NumberAnimation on x {
+            id: sweepRun
             running: root.sweeping
             from: -sweepBand.width
             to: screen.width
-            duration: 1400
+            duration: root.motion.sweepDuration
             loops: Animation.Infinite
           }
         }

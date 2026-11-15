@@ -22,6 +22,8 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import "engine.js" as Engine
 import "StateModel.js" as StateModel
+import "Slots.js" as Slots
+import "ReconcileGate.js" as ReconcileGate
 // Only for humanizeTopology: the completion toast names the topology, and the
 // user reads "Laptop + AOC U34G2G", not "Samsung Display Corp. ATNA60HR07-0 |
 // AOC Inc. U34G2G". Nothing else here goes through the panel's model.
@@ -65,6 +67,14 @@ Item {
 
   // The parsed state file. Always a valid State (StateModel.parseState never
   // throws and never yields a half-object), so consumers need no guards.
+  // Is the panel on screen? Set by Panel.qml when the shell's loader hands it
+  // this service (open) and cleared when the loader destroys it (close). The
+  // bar widget reads it for its `opened` contract, because the 2026-09-08 shell
+  // hands third-party widgets a SCOPED shell API with no notifying open-state
+  // (`isPluginOpen` is a plain function) — this service is the one object both
+  // halves of the plugin can see on every shell contract (tick erk).
+  property bool panelOpen: false
+
   property var state: StateModel.defaultState()
   property bool stateLoaded: false
   property string lastWrittenText: ""
@@ -142,7 +152,7 @@ Item {
   // counter only moves the first time an effect is seen.
   //
   // The two halves of "honest" here differ on purpose:
-  //   move / workspace-monitor / group — counted when DISPATCHED. There is no
+  //   move / group — counted when DISPATCHED. There is no
   //     cheap confirmation for them, and a rejected verb is already shouted
   //     about as a VERB-ERROR.
   //   launch — counted when CONFIRMED, in waitForIdentity, because that one has
@@ -159,8 +169,8 @@ Item {
   property int cycleFailures: 0
   property int opsMoved: 0
   property int opsLaunched: 0
-  property int opsWorkspace: 0
   property int opsGrouped: 0
+  property int opsTabbed: 0
   property int opsUngrouped: 0
   property int opsFloated: 0
   property int opsPlaced: 0
@@ -204,17 +214,14 @@ Item {
     return Engine.matchClient(client, StateModel.identities(root.state)) || ""
   }
 
+  // The apps behind an op's window addresses — what turns an op ("move these
+  // two addresses") into the verdict a user reads ("Slack could not join its
+  // group"). Pure since tick v29, for the reason the panel's chip list is: the
+  // dedupe here was a bare `{}` keyed by identity id, so an app whose id is an
+  // Object.prototype key was dropped and its own restore verdict named nothing.
   function identitiesForAddresses(addresses) {
-    var list = addresses || []
-    var ids = []
-    var seen = ({})
-    for (var i = 0; i < list.length; i++) {
-      var id = root.identityForAddress(list[i])
-      if (!id || seen[id]) continue
-      seen[id] = true
-      ids.push(id)
-    }
-    return ids
+    return Engine.identityIdsForAddresses(root.liveClients, addresses,
+      StateModel.identities(root.state))
   }
 
   // Open the ledger entry for one op. The record is handed to whoever executes
@@ -303,8 +310,8 @@ Item {
     root.cycleEffects[key] = true
     if (kind === "move") root.opsMoved += 1
     else if (kind === "launch") root.opsLaunched += 1
-    else if (kind === "workspace-monitor") root.opsWorkspace += 1
     else if (kind === "group") root.opsGrouped += 1
+    else if (kind === "tab") root.opsTabbed += 1
     else if (kind === "ungroup") root.opsUngrouped += 1
     else if (kind === "floating") root.opsFloated += 1
     else if (kind === "geometry") root.opsPlaced += 1
@@ -333,7 +340,11 @@ Item {
     "monitoraddedv2": true,
     "monitoradded": true,
     "monitorremovedv2": true,
-    "monitorremoved": true
+    "monitorremoved": true,
+    // 4.5 re-sorts its blocks on a config reload too (merge() renumbers), so a
+    // reload is restore-relevant: same debounce, and the reconcile gate holds
+    // the plan until the re-sort has settled.
+    "configreloaded": true
   })
 
   // The events that can change DRIFT without changing the topology — a window
@@ -397,6 +408,9 @@ Item {
     var name = String(event && event.name ? event.name : "")
     var data = String(event && event.data ? event.data : "")
 
+    // Every raw event reaches the gate; it ignores the ones it has no use for.
+    root.reconcileGate = ReconcileGate.onEvent(root.reconcileGate, name, Date.now())
+
     if (name === "focusedmon" || name === "focusedmonv2") {
       root.lastFocusedMonitor = data.split(",")[0]
       return
@@ -427,8 +441,127 @@ Item {
     // the restore cycle, and only that.
     if (name === "monitorremoved" || name === "monitorremovedv2") root.checkFocusFailover(data)
 
+    if (name === "configreloaded") {
+      // The reading BEFORE the reload is the last one this service took — the
+      // reload has already happened by the time its event arrives. Taken once
+      // per check: the later reloads of one burst must not overwrite it with a
+      // reading from mid-reload. No reading yet (nothing read since start) is
+      // null, and the decision restores on that, as every reload used to.
+      if (!root.reloadPending) {
+        root.reloadPending = true
+        root.reloadBefore = root.liveMonitors.length
+          ? ReconcileGate.reloadReading(root.liveMonitors, Engine.topologyKey(root.liveMonitors), root.blocksText)
+          : null
+        root.reloadGate = ReconcileGate.create()
+        reloadCheckTimer.stop()
+        root.reloadCheckAfterCycle = false
+      }
+      root.reloadGate = ReconcileGate.onEvent(root.reloadGate, name, Date.now())
+    } else {
+      root.burstHasMonitorEvent = true
+    }
+
     root.cycleReason = name
     eventDebounceTimer.restart()
+  }
+
+  // ------------------------------------------- config reload: restore or not
+  //
+  // Human decision 2026-11-14, "restore only if monitors changed" (epic 9i2).
+  // A burst of topology events made only of configreloaded starts NO restore
+  // cycle by itself: the check below waits out the reload on a gate of its own
+  // (same rules as the cycle's — hold, settle, 4.5 re-sort), reads once, and
+  // starts a cycle only when ReconcileGate.reloadDecision says the monitor set,
+  // the topology key or the block table changed. Otherwise it refreshes the
+  // status and nothing else: no plan, no dispatch, no launch. A burst that also
+  // carries a monitor add or remove is the monitor path, unchanged; so is a
+  // manual restore. The cycle's own gate still hears every reload
+  // (handleHyprlandEvent feeds it first), so a cycle that is running holds too.
+  property bool burstHasMonitorEvent: false
+  property bool reloadPending: false
+  property var reloadBefore: null
+  property var reloadGate: ReconcileGate.create()
+  // A check that found a cycle running waits for its end: the cycle owns the
+  // read machinery, and its last pass may have planned before the reload.
+  property bool reloadCheckAfterCycle: false
+  // Which snapshot the check is waiting on (tick v2p). The check shares the read
+  // machinery's one callback slot per Process, and a cycle or a status refresh
+  // that starts a read in between takes that slot: the check's callback is then
+  // never called, and reloadPending would stay set with no timer for ever. So
+  // every snapshot the check starts arms reloadCheckTimer as a watchdog, and a
+  // callback that is not the latest one is ignored.
+  property int reloadCheckSeq: 0
+  readonly property int reloadWatchdogMs: 5000
+
+  function endReloadCheck() {
+    root.reloadPending = false
+    root.reloadBefore = null
+    root.reloadCheckAfterCycle = false
+    reloadCheckTimer.stop()
+  }
+
+  function runReloadCheck() {
+    reloadCheckTimer.stop()
+    if (!root.reloadPending) return
+    if (root.cycleActive) {
+      root.reloadCheckAfterCycle = true
+      return
+    }
+    if (clientsProc.running || monitorsProc.running || workspacesProc.running || blocksProc.running) {
+      reloadCheckTimer.interval = 200
+      reloadCheckTimer.restart()
+      return
+    }
+    root.reloadCheckSeq += 1
+    var seq = root.reloadCheckSeq
+    reloadCheckTimer.interval = root.reloadWatchdogMs
+    reloadCheckTimer.restart()
+    root.snapshot(function (ok) {
+      if (seq !== root.reloadCheckSeq) return
+      reloadCheckTimer.stop()
+      if (!root.reloadPending) return
+      if (root.cycleActive) {
+        root.reloadCheckAfterCycle = true
+        return
+      }
+      if (!ok) {
+        root.warn("config reload: the live read failed — not restoring")
+        root.endReloadCheck()
+        return
+      }
+      var merged = Slots.parseMerged(root.mergedText)
+      var pend = ReconcileGate.pending(root.blockTable, merged, root.liveClients, root.liveMonitors)
+      var sig = ReconcileGate.signature(root.liveClients, root.liveMonitors, root.blocksText, root.mergedText)
+      var answer = ReconcileGate.check(root.reloadGate, { nowMs: Date.now(), signature: sig, pendingReason: pend })
+      root.reloadGate = answer.gate
+      if (answer.timedOut) {
+        root.log("config reload: unsettled (" + (pend || "unstable") + ") — not restoring")
+        root.endReloadCheck()
+        root.refreshStatus("config reload unsettled")
+        return
+      }
+      if (!answer.ready) {
+        reloadCheckTimer.interval = Math.max(50, answer.waitMs)
+        reloadCheckTimer.restart()
+        return
+      }
+      var after = ReconcileGate.reloadReading(root.liveMonitors, Engine.topologyKey(root.liveMonitors), root.blocksText)
+      var decision = ReconcileGate.reloadDecision(root.reloadBefore, after)
+      root.endReloadCheck()
+      if (decision.restore) {
+        root.log("config reload: " + decision.reason + " — restoring")
+        root.requestRestore("configreloaded")
+        return
+      }
+      root.log("config reload: monitors and blocks unchanged — no restore")
+      root.refreshStatus("config reload settled")
+    })
+  }
+
+  Timer {
+    id: reloadCheckTimer
+    repeat: false
+    onTriggered: root.runReloadCheck()
   }
 
   Connections {
@@ -443,6 +576,18 @@ Item {
     interval: 400
     repeat: false
     onTriggered: {
+      var monitorBurst = root.burstHasMonitorEvent
+      root.burstHasMonitorEvent = false
+      // Only reloads in this burst, and something was read before them: the
+      // reload check decides (see runReloadCheck). Nothing read before them
+      // (reloadBefore null) cannot be shown unchanged, so it takes the old path.
+      if (!monitorBurst && root.reloadPending && root.reloadBefore !== null) {
+        root.runReloadCheck()
+        return
+      }
+      // A monitor event in the burst (or no reading to compare): the restore it
+      // starts covers the reload too.
+      if (root.reloadPending) root.endReloadCheck()
       root.requestRestore(root.cycleReason || "monitor event")
       // Covers the cases requestRestore does NOT start a cycle for (state file
       // not loaded yet, a cycle already running): the topology still changed
@@ -527,27 +672,43 @@ Item {
       return
     }
 
-    var choice = StateModel.pickFailoverTarget(read.value, root.lastFocusedMonitor)
+    var monitors = read.value
+    var choice = StateModel.pickFailoverTarget(monitors, root.lastFocusedMonitor)
 
     if (choice.kind === "none") {
       root.warn("monitor \"" + root.removedMonitorName + "\" removed and no monitor is left — nothing to focus")
       return
     }
 
-    if (choice.kind === "intact") {
-      root.lastFocusedMonitor = choice.name
-      root.log("monitor \"" + root.removedMonitorName + "\" removed; focus intact on \"" + choice.name + "\"")
-      return
-    }
+    // Locked or not decides what "intact" is worth (tick s58): under the session
+    // lock hyprctl keeps reporting focus on the survivor while keyboard input
+    // reaches no lock surface, so the plan re-asserts focus and moves the cursor.
+    root.queryLocked(function (locked) {
+      var plan = StateModel.planFailover(monitors, root.lastFocusedMonitor, locked)
+      root.lastFocusedMonitor = plan.name
 
-    // No surviving monitor claims focus: it went with the monitor that left.
-    root.warn("monitor \"" + root.removedMonitorName + "\" removed and took focus with it — failing over to \""
-      + choice.name + "\"")
-    root.lastFocusedMonitor = choice.name
-    failoverProc.command = ["bash", "-c", "hyprctl dispatch \"$1\" 2>&1", "--",
-      'hl.dsp.focus({ monitor = "' + choice.name + '" })']
-    failoverProc.running = true
+      if (plan.kind === "intact" && !plan.reassert) {
+        root.log("monitor \"" + root.removedMonitorName + "\" removed; focus intact on \"" + plan.name + "\"")
+        return
+      }
+
+      if (plan.reassert) {
+        root.warn("monitor \"" + root.removedMonitorName + "\" removed; focus intact on \"" + plan.name
+          + "\" — session LOCKED, re-asserting keyboard focus anyway (Hyprland cannot see the lock surface lose it)")
+        root.failoverOkLabel = "focus re-assert ok"
+      } else {
+        // No surviving monitor claims focus: it went with the monitor that left.
+        root.warn("monitor \"" + root.removedMonitorName + "\" removed and took focus with it — failing over to \""
+          + plan.name + "\"")
+        root.failoverOkLabel = "focus failover ok"
+      }
+      failoverProc.command = ["bash", "-c",
+        'for d in "$@"; do hyprctl dispatch "$d" 2>&1; done', "--"].concat(plan.dispatches)
+      failoverProc.running = true
+    })
   }
+
+  property string failoverOkLabel: "focus failover ok"
 
   Process {
     id: activeMonitorsProc
@@ -566,9 +727,13 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        // One answer per dispatch, one per line; every one must be "ok".
         var output = String(text || "").replace(/^\s+|\s+$/g, "")
-        if (output !== "ok") root.warn("VERB-ERROR focus failover -> " + (output || "(no output)"))
-        else root.log("focus failover ok")
+        var answers = output === "" ? [] : output.split(/\s*\n\s*/)
+        var allOk = answers.length > 0
+        for (var i = 0; i < answers.length; i++) if (answers[i] !== "ok") allOk = false
+        if (!allOk) root.warn("VERB-ERROR focus failover -> " + (output || "(no output)"))
+        else root.log(root.failoverOkLabel)
       }
     }
   }
@@ -617,6 +782,12 @@ Item {
 
     root.stateReadRetries = 0
 
+    // ONE question about this state, asked once (tick zkb). It used to be asked
+    // twice — here for the notice, and again at the bottom to rearm the toast —
+    // about the same object, which is one place too many for a rule this file
+    // does not own.
+    var refusal = StateModel.writeRefusal(result.state)
+
     if (result.recovered) {
       // The file is not there at all: first run. Say so, then write the
       // default — FileView cannot watch a file that does not exist.
@@ -624,17 +795,19 @@ Item {
     } else if (result.error) {
       root.warn("state: " + result.error)
       // The only `error` that is not a recovery is a version from the future,
-      // and it has a consequence worth spelling out: the file still drives
-      // restores, but nothing may write it (tick 291). Said in the same words
-      // the refusals themselves use, so the log reads as one story.
-      var refusal = StateModel.writeRefusal(result.state)
+      // and it has two consequences worth spelling out: nothing may write the
+      // file (tick 291), and — since tick t03 — nothing may restore from it
+      // either. Both said in the same words the refusals themselves use, so the
+      // log reads as one story.
       if (refusal) {
         root.warn("running READ-ONLY from this file — " + refusal)
+        root.warn("and INERT — " + StateModel.restoreRefusal(result.state))
         if (!root.futureVersionAnnounced) {
           root.futureVersionAnnounced = true
           root.notify("Dock Recall is read-only",
             "The state file is schema v" + result.state.version + "; this build understands v"
-              + StateModel.STATE_VERSION + ". Restores still run, but recording and edits are refused.")
+              + StateModel.STATE_VERSION + ". Recording, edits and restores are all refused"
+              + " until you upgrade the plugin or move the file aside.")
         }
       }
     } else if (result.migrated) {
@@ -651,7 +824,7 @@ Item {
     // Writable again — the user upgraded the plugin, or moved the newer file
     // aside. Rearm the toast so a second downgrade is announced as loudly as
     // the first.
-    if (!StateModel.writeRefusal(result.state)) root.futureVersionAnnounced = false
+    if (!refusal) root.futureVersionAnnounced = false
 
     // Captured before the assignment, for the same reason `previous` is: the
     // toast below is about the DIFFERENCE, and only a reload that CHANGES the
@@ -739,6 +912,15 @@ Item {
     var manual = root.pendingRestoreManual
     root.pendingRestoreReason = ""
     root.pendingRestoreManual = false
+    // The file that finally loaded may be the one this build must not act on
+    // (tick t03). Dropped here rather than replayed into requestRestore's gate,
+    // so the log says "held request dropped" once instead of announcing a replay
+    // and refusing it on the next line.
+    var inert = StateModel.restoreRefusal(root.state)
+    if (inert) {
+      root.warn("dropping the held restore request (" + reason + ") — " + inert)
+      return
+    }
     root.log("state file is loaded — replaying the held restore request (" + reason + ")")
     // requestRestore now knows whether the tool is paused, which it could not
     // when the request arrived. An event-born request replayed into a paused
@@ -911,6 +1093,7 @@ Item {
       if (Object.prototype.hasOwnProperty.call(source, key)) stamped[key] = source[key]
     }
     stamped.paused = StateModel.isPaused(root.state)
+    stamped.unsupportedReason = root.unsupportedReason
 
     var next = StateModel.mergeStatus(root.statusModel, stamped)
 
@@ -943,7 +1126,7 @@ Item {
     root.lastStatusText = text
     statusFile.setText(text)
     root.log("status published (" + reason + "): topology \"" + next.topologyKey + "\" recorded="
-      + next.recorded + " drift=" + next.driftCount + " restoring=" + next.restoring
+      + next.recorded + " drift=" + next.driftCount + " shapes=" + (next.shapeCount || 0) + " restoring=" + next.restoring
       + (next.paused ? " paused=true" : ""))
   }
 
@@ -974,7 +1157,7 @@ Item {
     // The restore cycle owns the read machinery while it runs (one Process,
     // one callback slot), and it ends with a refresh of its own — so there is
     // nothing to queue here, only a collision to stay out of.
-    if (root.cycleActive || clientsProc.running || monitorsProc.running) return
+    if (root.cycleActive || clientsProc.running || monitorsProc.running || workspacesProc.running) return
 
     root.snapshot(function (ok) {
       if (!ok) {
@@ -983,9 +1166,9 @@ Item {
         return
       }
       var key = Engine.topologyKey(root.liveMonitors)
-      var layout = key ? StateModel.layoutFor(root.state, key) : null
+      var layout = key ? Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors) : null
       var drift = layout
-        ? Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state))
+        ? Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state), root.planContext())
         : null
       // Published on EVERY refresh, not only at the end of a cycle: the table
       // is a statement about the desktop as it is now, and a user who drags a
@@ -1016,6 +1199,31 @@ Item {
 
   property var clientsCallback: null
   property var monitorsCallback: null
+  property var workspacesCallback: null
+
+  // `hyprctl workspaces -j`, verbatim — the planner reads each workspace's
+  // tiledLayout mode from it. null = unknown (never read, or the last read
+  // failed): modes unknown is the pre-9i2 behaviour, not an abandoned pass.
+  property var liveWorkspaces: null
+  // Workspaces whose live tree is the recorded tree, because this cycle built
+  // it (epic 9i2 §2.5). Keyed by String(workspaceId). Set by settleBuilt only
+  // when, in ONE plan, every `sequenced` move to the workspace executed, every
+  // focus read-back landed and every axis read-back ended right. Cleared at
+  // cycle start — never per pass: the known tree lives for one restore, and a
+  // later settle pass refining the tree this cycle built is exactly what it is
+  // for. Deleted when shapeAbandoned is set for the workspace, and when a later
+  // plan moves any window into it (that move changes the tree it vouches for).
+  property var builtWorkspaces: ({})
+
+  // The per-workspace bookkeeping of the plan being executed, from which
+  // settleBuilt decides `builtWorkspaces`. Replaced by every executePlan.
+  //   { "<ws>": { workspaceId, expected, landed, partial, broken } }
+  property var planBuild: ({})
+
+  // The trailing argument of every Engine.driftOf / Engine.planRestore call.
+  function planContext() {
+    return { workspaces: root.liveWorkspaces, built: root.builtWorkspaces }
+  }
 
   // done(ok) — ok === false means "do not plan against this".
   function readClients(done) {
@@ -1028,6 +1236,11 @@ Item {
     monitorsProc.running = true
   }
 
+  function readWorkspaces(done) {
+    root.workspacesCallback = done || null
+    workspacesProc.running = true
+  }
+
   // Both reads, in order, then done(ok). Monitors are read with `all` so a
   // disabled-but-present output still counts towards the topology key, exactly
   // as engine.topologyKey documents. A failed clients read short-circuits: the
@@ -1038,8 +1251,75 @@ Item {
         if (done) done(false)
         return
       }
-      root.readMonitors(done)
+      root.readMonitors(function (okMon) {
+        if (!okMon) {
+          if (done) done(false)
+          return
+        }
+        // Workspace modes are advisory: a failed read leaves them unknown
+        // (null) and the snapshot still stands.
+        root.readWorkspaces(function () {
+          // The block files are read last, straight after the hyprctl reads,
+          // so table and snapshot describe the same instant.
+          root.readBlocks(done)
+        })
+      })
     })
+  }
+
+  // Omarchy 4.5's block files (see Slots.js). A missing file is an empty table,
+  // which resolves every live monitor to monitor-unassigned — never a guess.
+  property string blocksText: ""
+  property string mergedText: ""
+  property var blockTable: Slots.parseBlocks("")
+  property var blocksCallback: null
+  // "" on Omarchy 4.5 and newer; "needs-omarchy-4.5" when neither the block file
+  // nor the lua that writes it exists (Slots.unsupportedReason). Read with the
+  // block files, stamped on every status publish, and the whole cycle stands
+  // down on it: no restore, no plan.
+  property string unsupportedReason: ""
+
+  function unsupportedLine() {
+    return PanelModel.needsOmarchyText({ unsupportedReason: root.unsupportedReason })
+      + " (no monitor-workspaces block file, no monitor-workspaces.lua) — restoring and recording are off"
+  }
+
+  // The cycle ends here instead of planning. Not a failure: nothing was tried.
+  function endUnsupportedCycle() {
+    gateTimer.stop()
+    passTimer.stop()
+    root.warn("not restoring (" + root.cycleReason + ") — " + root.unsupportedLine())
+    root.cycleActive = false
+    root.rerunQueued = false
+    root.publishStatus({ restoring: false }, "unsupported system")
+  }
+
+  function readBlocks(done) {
+    root.blocksCallback = done || null
+    blocksProc.running = true
+  }
+
+  Process {
+    id: blocksProc
+    command: ["bash", "-c",
+      "d=\"${XDG_STATE_HOME:-$HOME/.local/state}/omarchy\"; cat \"$d/monitor-workspaces\" 2>/dev/null; "
+      + "printf '\\n@@MERGED@@\\n'; cat \"$d/monitor-workspaces-merged\" 2>/dev/null; "
+      + "printf '\\n@@PROBE@@\\n'; [ -e \"$d/monitor-workspaces\" ] && printf 'block '; "
+      + "[ -e /usr/share/omarchy/default/hypr/monitor-workspaces.lua ] && printf 'lua'; true"]
+    stdout: StdioCollector { id: blocksOut; waitForEnd: true }
+    onExited: function (exitCode) {
+      var probed = String(blocksOut.text).split("\n@@PROBE@@\n")
+      var probe = probed.length > 1 ? probed[1] : "block lua"
+      var unsupported = Slots.unsupportedReason(probe.indexOf("block") >= 0, probe.indexOf("lua") >= 0)
+      var parts = probed[0].split("\n@@MERGED@@\n")
+      root.blocksText = parts[0] || ""
+      root.mergedText = parts.length > 1 ? parts[1] : ""
+      root.blockTable = Slots.parseBlocks(root.blocksText)
+      root.unsupportedReason = unsupported
+      var done = root.blocksCallback
+      root.blocksCallback = null
+      if (done) done(true)
+    }
   }
 
   Process {
@@ -1074,6 +1354,25 @@ Item {
       }
       var done = root.monitorsCallback
       root.monitorsCallback = null
+      if (done) done(read.ok)
+    }
+  }
+
+  Process {
+    id: workspacesProc
+    command: ["hyprctl", "workspaces", "-j"]
+    stdout: StdioCollector { id: workspacesOut; waitForEnd: true }
+    stderr: StdioCollector { id: workspacesErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var read = StateModel.parseHyprctlArray(workspacesOut.text, exitCode, workspacesErr.text)
+      if (read.ok) {
+        root.liveWorkspaces = read.value
+      } else {
+        root.liveWorkspaces = null
+        root.warn("READ-FAILED hyprctl workspaces: " + read.error + " — workspace layout modes are unknown for this pass")
+      }
+      var done = root.workspacesCallback
+      root.workspacesCallback = null
       if (done) done(read.ok)
     }
   }
@@ -1124,6 +1423,25 @@ Item {
   // choreographed plan, and standing the shape down when the focus misses — are
   // both allowed to have worked by the time the next settle pass runs.
   property var shapeAbandoned: ({})
+
+  // Give the shape of one workspace up for this pass. The one writer of
+  // shapeAbandoned, so the known tree (builtWorkspaces) can never outlive it.
+  function abandonShape(workspaceId) {
+    var ws = String(workspaceId)
+    root.shapeAbandoned[ws] = true
+    if (root.builtWorkspaces[ws] === true) {
+      delete root.builtWorkspaces[ws]
+      root.log("built: workspace " + ws + " is no longer a known tree — its shape was abandoned")
+    }
+    root.noteBuildBroken(workspaceId)
+  }
+
+  // Something this plan did to the workspace could not be confirmed, so this
+  // plan may not declare it built.
+  function noteBuildBroken(workspaceId) {
+    var track = root.planBuild ? root.planBuild[String(workspaceId)] : null
+    if (track) track.broken = true
+  }
 
   // Did the focus land where the choreography aimed it?
   //
@@ -1203,9 +1521,11 @@ Item {
   function verifyFocusStep(op, outcome) {
     return { kind: "fn", fn: function (done) {
       root.readActiveWindow(function (ok, address) {
-        if (!ok) { done(); return }
+        // An unreadable focus is not a missed one — but it is not a confirmed
+        // one either, and only confirmed arrivals make a known tree.
+        if (!ok) { root.noteBuildBroken(op.workspaceId); done(); return }
         if (address && address === op.splitParent) { done(); return }
-        root.shapeAbandoned[String(op.workspaceId)] = true
+        root.abandonShape(op.workspaceId)
         root.warn("placement choreography: focus at the split parent " + op.splitParent
           + " did not land (activewindow reads " + (address || "no window — a layer surface has the keyboard")
           + ") — standing the shape down for workspace " + op.workspaceId
@@ -1405,6 +1725,14 @@ Item {
       // a workspace they did not ask to see.
       return root.stepsForSplit(op, outcome)
     }
+    if (op.kind === "tab") {
+      // `group.active` names its window and needs no focus (nested-notes 9i2
+      // (b)), so this is NOT a focus op: it is not deferred while locked and
+      // borrows no keyboard, and there is nothing to hand back. It is decided at
+      // execution time all the same, because the tab ring it indexes into is
+      // whatever the joins of this very plan have just made it.
+      return [{ kind: "fn", fn: function (done) { root.executeTab(op, outcome, done) } }]
+    }
 
     var commands = Engine.opToCommand(op)
     if (!commands.length) {
@@ -1414,9 +1742,6 @@ Item {
     }
 
     if (op.kind === "move") root.noteEffect("move", op.address)
-    if (op.kind === "workspace-monitor") {
-      root.noteEffect("workspace-monitor", op.workspaceId + "@" + op.monitorName)
-    }
 
     // A CHOREOGRAPHED move is a move the planner stamped with the window whose
     // tile the arrival has to split; engine.opToCommand puts exactly one focus
@@ -1430,6 +1755,7 @@ Item {
     }
 
     var steps = []
+    var moveQueued = false
     for (var i = 0; i < commands.length; i++) {
       var isFocus = choreographed && i === 0
       // The shape is already gone for this workspace: sending the focus anyway
@@ -1439,6 +1765,14 @@ Item {
       if (!step) continue
       steps.push(step)
       if (isFocus) steps.push(root.verifyFocusStep(op, outcome))
+      else moveQueued = true
+    }
+
+    // A move of a complete arrival program: confirm it, and set its axis.
+    // Before the refocus below, so a correction's own focus is handed back by
+    // the same step that hands back the choreography's.
+    if (op.kind === "move" && op.sequenced === true) {
+      steps.push(root.arrivalCheckStep(op, outcome, moveQueued))
     }
 
     // A move that names a split parent borrowed the keyboard to do it. Give it
@@ -1462,6 +1796,221 @@ Item {
     if (choreographed && !abandoned) steps = steps.concat(root.refocusHomeSteps())
 
     return steps
+  }
+
+  // ARRIVAL ORIENTATION (epic 9i2 §2.5) and the bookkeeping of a built tree.
+  //
+  // Dwindle does not take an arrival's axis from anything this plugin says: it
+  // splits the focused tile along its LONGER side (wider: side by side,
+  // taller: stacked) and puts the arrival on the far side — tests/nested-notes.md
+  // 9i2 (f). The recording's cut may be the other one. So after every leader
+  // arrival that carries `splitAxis` the clients are read, and an arrival that
+  // sits on the other axis from its split parent gets exactly ONE togglesplit,
+  // aimed by focusing the arrival right after it arrived — which flips only the
+  // node the arrival created (same probe). The focus is read back before the
+  // toggle goes out, as stepsForSplit does, because `togglesplit` names no
+  // window and a focus that missed would flip a node nobody named.
+  //
+  // A second toggle is never sent. A read-back still wrong after the one toggle
+  // abandons the workspace's shape for the pass and fails the op by name.
+  //
+  // While the session is locked the correction is skipped (it is a focus op;
+  // the lock gate's deferral covers it): the workspace is then simply not
+  // built, and the next pass asks again.
+  //
+  // Every sequenced move ends here, axis or not, because this is also where a
+  // move counts towards `builtWorkspaces`: an arrival is "landed" only when its
+  // move dispatched, its focus read-back (if any) landed and its axis (if any)
+  // reads right.
+  function arrivalCheckStep(op, outcome, moveQueued) {
+    var ws = String(op.workspaceId)
+    var track = root.planBuild ? root.planBuild[ws] : null
+    function landed() { if (track) track.landed += 1 }
+    function broken() { if (track) track.broken = true }
+    return { kind: "fn", fn: function (done) {
+      if (!moveQueued || !outcome.ok || root.shapeAbandoned[ws] === true) { broken(); done(); return }
+      if (!op.splitParent || (op.splitAxis !== 0 && op.splitAxis !== 1)) { landed(); done(); return }
+      root.readClients(function (ok) {
+        if (!ok) {
+          root.warn("axis: clients read failed after " + op.address + " arrived — its axis is"
+            + " unconfirmed, so workspace " + ws + " is not a known tree this plan")
+          broken()
+          done()
+          return
+        }
+        var observed = root.arrivalAxisOf(op)
+        if (observed === op.splitAxis) { landed(); done(); return }
+        // The mode is read AGAIN before anything is said or toggled (tick v2p):
+        // a destination that did not exist at plan time had no readable mode,
+        // and on one that came up scrolling or floating an arrival has no axis
+        // to correct — togglesplit errors there and swap/resize rearrange. Not
+        // a failure of this op: the workspace is simply not a known tree.
+        root.readWorkspaces(function (okWs) {
+          var mode = okWs ? Engine.workspaceModeOf(root.planContext(), root.liveClients, op.workspaceId) : null
+          if (mode !== "dwindle") {
+            root.log("axis: workspace " + ws + " reads " + (mode || "an unknown mode")
+              + " after " + op.address + " arrived — no togglesplit; not a known tree this plan")
+            broken()
+            done()
+            return
+          }
+          if (observed === null) {
+            root.warn("axis: " + op.address + " does not read as split beside or below its parent "
+              + op.splitParent + " on workspace " + ws + " — no togglesplit; not a known tree")
+            root.failOp(outcome, "the arrival did not land beside its split parent")
+            broken()
+            done()
+            return
+          }
+          root.queryLocked(function (locked) {
+            if (locked) {
+              root.log("axis: " + op.address + " arrived " + root.axisWord(observed)
+                + " (recorded " + root.axisWord(op.splitAxis) + ") — the session is locked,"
+                + " so the togglesplit that fixes it waits; workspace " + ws + " is not built this pass")
+              broken()
+              done()
+              return
+            }
+            var correction = root.axisCorrectionSteps(op, outcome, observed, landed, broken)
+            if (!correction.length) { broken(); done(); return }
+            root.prependSteps(correction)
+            done()
+          })
+        })
+      })
+    } }
+  }
+
+  // [focus the arrival, read the focus back -> togglesplit + read the axis
+  // back]. The dispatch spelling is engine.opToCommand's `split` op, which is
+  // the same focus-then-toggle pair; only the bracketing differs.
+  function axisCorrectionSteps(op, outcome, observed, landed, broken) {
+    var ws = String(op.workspaceId)
+    var commands = Engine.opToCommand({ kind: "split", address: op.address })
+    var focusFirst = commands.length === 2
+      ? root.stepFromEngineCommand(commands[0], "axis focus " + op.address, outcome) : null
+    var toggle = commands.length === 2
+      ? root.stepFromEngineCommand(commands[1], "axis togglesplit " + op.address, outcome) : null
+    if (!focusFirst || !toggle) {
+      root.warn("axis: the engine produced no togglesplit for " + op.address)
+      root.failOp(outcome, "the axis correction could not be turned into dispatches")
+      return []
+    }
+
+    var readBack = { kind: "fn", fn: function (done) {
+      root.readClients(function (ok) {
+        var after = ok ? root.arrivalAxisOf(op) : null
+        if (ok && after === op.splitAxis) {
+          root.log("axis: corrected " + op.address + " on workspace " + ws + " — arrived "
+            + root.axisWord(observed) + ", one togglesplit made it " + root.axisWord(after)
+            + " as recorded")
+          landed()
+          done()
+          return
+        }
+        if (!ok) {
+          root.warn("axis: clients read failed after the togglesplit on " + op.address
+            + " — unconfirmed; workspace " + ws + " is not a known tree this plan")
+          broken()
+          done()
+          return
+        }
+        root.abandonShape(ws)
+        root.warn("axis: " + op.address + " still reads " + root.axisWord(after)
+          + " after one togglesplit (recorded " + root.axisWord(op.splitAxis) + ") — NOT toggling"
+          + " again; standing the shape down for workspace " + ws + " this pass")
+        root.failOp(outcome, "arrival still split " + root.axisWord(after)
+          + " after one togglesplit (recorded " + root.axisWord(op.splitAxis) + ")")
+        done()
+      })
+    } }
+
+    var verify = { kind: "fn", fn: function (done) {
+      root.readActiveWindow(function (ok, address) {
+        if (ok && address && address === op.address) {
+          root.prependSteps([toggle, readBack])
+          done()
+          return
+        }
+        if (!ok) {
+          // Unreadable: not a miss, but a toggle aimed blind is the one thing
+          // this step must never send.
+          root.warn("axis: activewindow unreadable before the togglesplit on " + op.address
+            + " — not toggling; workspace " + ws + " is not a known tree this plan")
+          broken()
+          done()
+          return
+        }
+        root.abandonShape(ws)
+        root.warn("axis: the focus at " + op.address + " did not land (activewindow reads "
+          + (address || "no window — a layer surface has the keyboard")
+          + ") — NOT dispatching togglesplit; standing the shape down for workspace " + ws)
+        root.failOp(outcome, "the focus the axis correction needs did not land")
+        done()
+      })
+    } }
+
+    return [focusFirst, verify]
+  }
+
+  // 0 (side by side) or 1 (stacked): how the arrival and its split parent are
+  // separated in the current read, by tile box — or null when they cannot be
+  // compared (gone, floating, apart, not one cut, or the arrival on the NEAR
+  // side, which no togglesplit turns into the recorded tree). The cut itself is
+  // the engine's: Engine.arrivalAxisBetween.
+  function arrivalAxisOf(op) {
+    var arrival = root.clientByAddress(op.address)
+    var parent = root.clientByAddress(op.splitParent)
+    if (!arrival || !parent || arrival.floating || parent.floating) return null
+    if (!arrival.workspace || !parent.workspace) return null
+    if (String(arrival.workspace.id) !== String(op.workspaceId)
+      || String(parent.workspace.id) !== String(op.workspaceId)) return null
+    return Engine.arrivalAxisBetween(root.tileRect(parent), root.tileRect(arrival))
+  }
+
+  function axisWord(axis) {
+    return axis === 0 ? "side by side" : (axis === 1 ? "stacked" : "unknown")
+  }
+
+  // Before a plan runs: what it moves where. A workspace receiving a move that
+  // is not part of a complete program can never be built by this plan, and one
+  // that was built loses that the moment anything is moved into it.
+  function beginBuildTracking(plan) {
+    var track = {}
+    for (var i = 0; i < plan.length; i++) {
+      var op = plan[i]
+      if (!op || op.kind !== "move" || op.workspaceId === undefined || op.workspaceId === null) continue
+      var ws = String(op.workspaceId)
+      if (root.builtWorkspaces[ws] === true) {
+        delete root.builtWorkspaces[ws]
+        root.log("built: workspace " + ws + " is no longer a known tree — this plan moves "
+          + op.address + " into it")
+      }
+      if (!track[ws]) track[ws] = { workspaceId: ws, expected: 0, landed: 0, partial: false, broken: false }
+      if (op.sequenced === true) track[ws].expected += 1
+      else track[ws].partial = true
+    }
+    root.planBuild = track
+  }
+
+  // After a plan ran: the workspaces whose every sequenced arrival landed.
+  function settleBuilt() {
+    var track = root.planBuild || {}
+    for (var ws in track) {
+      if (!Object.prototype.hasOwnProperty.call(track, ws)) continue
+      var t = track[ws]
+      if (t.expected === 0) continue
+      if (!t.partial && !t.broken && t.landed === t.expected && root.shapeAbandoned[ws] !== true) {
+        root.builtWorkspaces[ws] = true
+        root.log("built: workspace " + ws + " — all " + t.expected + " sequenced arrival(s) landed on"
+          + " their split parents and axes; later plans this cycle refine it as the known tree")
+      } else {
+        root.log("built: workspace " + ws + " NOT marked — " + t.landed + "/" + t.expected
+          + " sequenced arrival(s) confirmed" + (t.partial ? ", the plan moved only part of it" : "")
+          + (root.shapeAbandoned[ws] === true ? ", its shape was abandoned" : ""))
+      }
+    }
+    root.planBuild = ({})
   }
 
   // ONE FLIP of one dwindle node (tick uk5).
@@ -1511,6 +2060,86 @@ Item {
     return [focusFirst, verify].concat(root.refocusHomeSteps())
   }
 
+  // Bring ONE window to the front of its tab group, and confirm it did.
+  //
+  // The dispatcher answers "ok" for any index (0 silently picks the LAST tab,
+  // a wrong one picks a neighbour), so the answer is never taken: the clients
+  // are read back and Engine.activeTabOf has to name op.address. A miss is
+  // failAndCount and nothing more — no retry here. The next plan re-sends the
+  // op while the drift stands, and the no-progress check names it if it stays.
+  //
+  // The index is recomputed from this read and not taken from the plan: ops
+  // ahead of this one (a group rebuilt in the same plan) have changed the ring
+  // since the plan was made. A window already in front dispatches nothing.
+  function executeTab(op, outcome, done) {
+    root.readClients(function (ok) {
+      if (!ok) {
+        root.warn("clients read failed before bringing " + op.address + " to the front — leaving it")
+        root.failOp(outcome, "the clients read failed before the tab switch")
+        done()
+        return
+      }
+      var client = root.clientByAddress(op.address)
+      if (!client) {
+        root.warn("tab: " + op.address + " is not in the read any more — leaving it")
+        root.failOp(outcome, "the window was gone before the tab switch")
+        done()
+        return
+      }
+      var ring = Engine.groupOrderFor(client, root.liveClients)
+      var index = ring.indexOf(op.address)
+      if (index < 0) {
+        root.warn("tab: " + op.address + " is not in its own tab ring — leaving it")
+        root.failAndCount(outcome, "the window was not in a tab group when the tab switch came up")
+        done()
+        return
+      }
+      if (root.activeTabIs(op.address)) { done(); return }
+
+      var commands = Engine.opToCommand({ kind: "tab", address: op.address, index: index })
+      if (!commands.length) {
+        root.warn("tab: the engine produced no dispatch for " + JSON.stringify(op))
+        root.failOp(outcome, "the engine produced no dispatch for this tab switch")
+        done()
+        return
+      }
+      root.noteEffect("tab", op.address)
+      var steps = []
+      for (var i = 0; i < commands.length; i++) {
+        var step = root.stepFromEngineCommand(commands[i], "tab " + op.address, outcome)
+        if (step) steps.push(step)
+      }
+      steps.push({
+        kind: "fn",
+        fn: function (next) {
+          root.readClients(function (okAfter) {
+            if (okAfter && !root.activeTabIs(op.address)) {
+              root.failAndCount(outcome, "the tab did not come to the front")
+              root.warn("tab: " + op.address + " is not the visible tab after the dispatch"
+                + " — not retrying here, the next re-plan asks again")
+            }
+            next()
+          })
+        }
+      })
+      root.prependSteps(steps)
+      done()
+    })
+  }
+
+  // Is `address` the one visible tab of its group, on the last read?
+  function activeTabIs(address) {
+    var client = root.clientByAddress(address)
+    if (!client) return false
+    var members = []
+    var ring = Engine.groupOrderFor(client, root.liveClients)
+    for (var i = 0; i < ring.length; i++) {
+      var member = root.clientByAddress(ring[i])
+      if (member) members.push(member)
+    }
+    return Engine.activeTabOf(members) === address
+  }
+
   function stepsForLaunch(op, outcome) {
     var command = StateModel.launchCommandFor(root.state, op.identityId)
     if (!command) {
@@ -1540,7 +2169,7 @@ Item {
     // would see the FIRST window and stop waiting the moment it was dispatched.
     // The `fn` step runs immediately before its own dispatch, when
     // root.liveClients is the read the previous wait just refreshed.
-    var ctx = ({ before: ({}), expected: 1, serial: 0 })
+    var ctx = ({ before: [], expected: 1, serial: 0 })
 
     // NOT counted here: a dispatched `exec_cmd` is a hope, not a launch. The
     // count lands in waitForIdentity, once a window has actually shown up.
@@ -1549,7 +2178,7 @@ Item {
         // What was already on screen when we dispatched. Free: no new read. It
         // exists so a failed launch can name the windows that DID turn up (see
         // waitForIdentity), and so the wait knows what "one more" means.
-        ctx.before = root.addressSet(root.liveClients)
+        ctx.before = Engine.addressesOf(root.liveClients)
         ctx.expected = root.liveWindowCountFor(op.identityId) + 1
         // This op's own effect key. Taken here, once per launch op, so the
         // count in the toast is a count of launches and not of app names.
@@ -1572,50 +2201,6 @@ Item {
     return Engine.liveWindowCount(root.liveClients, identity, StateModel.identities(root.state))
   }
 
-  // { "<address>": true } for a client list.
-  function addressSet(clients) {
-    var set = ({})
-    var list = clients || []
-    for (var i = 0; i < list.length; i++) {
-      var address = list[i] ? String(list[i].address || "") : ""
-      if (address) set[address] = true
-    }
-    return set
-  }
-
-  // The classes of the windows present now that were not in `before`, deduped
-  // and comma-joined. Reads nothing: root.liveClients was refreshed by the poll
-  // that is about to give up.
-  //
-  // This is the line that turns "launch produced no window" from a dead end
-  // into a diagnosis: the launch command worked and opened SOMETHING, it just
-  // was not a window the identity claims (the shared-Chromium bug wrote
-  // `--app=…gmail` as chromium's launch, so the window that appeared was
-  // chrome-mail.google.com…, and the WARN now says so).
-  //
-  // CLASSES are what it can list, and since schema v4 an identity can also
-  // constrain `initialTitle` — so a window of the right class whose title is
-  // wrong shows up here looking correct. That is exactly the terminal case: a
-  // launch that lost its `--title` opens a `foot` window the `{^foot$ +
-  // ^herdr$}` identity does not claim, and this line will report "foot".
-  function launchedClassesSince(before) {
-    var seen = ({})
-    var out = []
-    var known = before || ({})
-    var list = root.liveClients || []
-    for (var i = 0; i < list.length; i++) {
-      var client = list[i]
-      if (!client) continue
-      var address = String(client.address || "")
-      if (!address || known[address]) continue
-      var name = String(client.class || client.initialClass || "?")
-      if (seen[name]) continue
-      seen[name] = true
-      out.push(name)
-    }
-    return out.join(", ")
-  }
-
   // Poll until the identity has `expected` windows open ANYWHERE (10s cap).
   // Anywhere, not on the target workspace: a cold Electron start can take
   // longer than the wait, and the next re-plan moves whatever it finds. The
@@ -1633,25 +2218,7 @@ Item {
   readonly property int launchPollMs: 500
   readonly property int launchTimeoutMs: 10000
 
-  // The address of the window this launch actually opened: the one matching
-  // client that was NOT already on screen when the command was dispatched.
-  // "" when every match predates the dispatch, which is the honest answer when
-  // the wait was satisfied by a window somebody else opened.
-  //
-  // Naming clients[length - 1] instead — hyprctl's own listing order, which is
-  // neither creation order nor stable — could put a window the user has had
-  // open for an hour into a line that reads "launched foo -> 0x…".
-  function newAddressSince(clients, before) {
-    var known = before || ({})
-    var list = clients || []
-    for (var i = list.length - 1; i >= 0; i--) {
-      var address = list[i] ? String(list[i].address || "") : ""
-      if (address && !known[address]) return address
-    }
-    return ""
-  }
-
-  // `before` is the address set from dispatch time (stepsForLaunch): it names
+  // `before` is the address list from dispatch time (stepsForLaunch): it names
   // the window this launch opened on success, and the windows that turned up
   // instead on failure.
   //
@@ -1667,7 +2234,7 @@ Item {
         : []
       if (clients.length >= want) {
         root.noteEffect("launch", identityId + "#" + (typeof serial === "number" ? serial : 0))
-        var opened = root.newAddressSince(clients, before)
+        var opened = Engine.newAddressSince(clients, before)
         root.log("launched " + identityId + " -> "
           + (opened || (clients[clients.length - 1].address + " (unconfirmed)"))
           + (want > 1 ? " (window " + want + " of " + want + " so far)" : ""))
@@ -1675,15 +2242,21 @@ Item {
         return
       }
       if (waitedMs >= root.launchTimeoutMs) {
-        var appeared = root.launchedClassesSince(before)
+        // WHAT DID APPEAR, and what that means for THIS identity (tick ql5).
+        // The wording used to be assembled here out of class names alone, which
+        // reported "saw foot instead" about a `{^foot$ + ^herdr$}` identity
+        // whose launch had merely lost its `--title` — the right program, in
+        // front of the user, described as the wrong one. The whole question is
+        // decidable from the identity, the client list and the dispatch-time
+        // baseline, so it is answered in engine.launchTimeoutDiagnosis and this
+        // renders the answer. Note it is asked about `root.liveClients`, not the
+        // filtered `clients`: the windows that DID appear are by definition the
+        // ones this identity did not claim.
+        var said = Engine.launchTimeoutDiagnosis(identity, root.liveClients, before,
+          root.launchTimeoutMs / 1000, want)
         root.warn("launch of \"" + identityId + "\" produced no window within "
-          + (root.launchTimeoutMs / 1000) + "s — continuing without it"
-          + (want > 1 ? " (waiting for window " + want + " of this app)" : "")
-          + (appeared
-            ? " (windows that did appear since the dispatch: " + appeared + ")"
-            : " (no new window appeared at all)"))
-        root.failAndCount(outcome, "launch produced no window within " + (root.launchTimeoutMs / 1000) + "s"
-          + (appeared ? " (saw " + appeared + " instead)" : ""))
+          + (root.launchTimeoutMs / 1000) + "s — continuing without it" + said.detail)
+        root.failAndCount(outcome, said.reason)
         done()
         return
       }
@@ -1804,7 +2377,18 @@ Item {
       // anyway — possibly through a scratch workspace, whose emptied husk a
       // monitor could otherwise be left showing — so the group is the one
       // honest place to leave it.
-      root.prependSteps([root.focusStep(addresses[0])])
+      //
+      // A recorded front tab comes forward by the same steps a `tab` op uses,
+      // and the view lands on IT: focusing a non-active member makes that
+      // member the shown tab, so landing on addresses[0] would undo it.
+      if (op.active) {
+        root.prependSteps([
+          { kind: "fn", fn: function (next) { root.executeTab({ kind: "tab", address: op.active }, outcome, next) } },
+          root.focusStep(op.active)
+        ])
+      } else {
+        root.prependSteps([root.focusStep(addresses[0])])
+      }
       done()
       return
     }
@@ -2008,13 +2592,13 @@ Item {
     done()
   }
 
-  // The targeted float-toggle, spelled once. See the evidence block in
-  // engine.js: `action` is ignored by Hyprland 0.56's float dispatcher — every
-  // spelling toggles — so the TOGGLE spelling is used deliberately, and the
-  // caller owns the read that makes toggling correct.
-  function floatToggleStep(address, label, outcome) {
-    return root.dispatchStep('hl.dsp.window.float({ window = "address:' + address + '", action = "toggle" })',
-      label, outcome)
+  // The targeted absolute float, spelled once: action = "on" floats, "off"
+  // tiles, whatever the window is now (see the evidence block in engine.js).
+  // The caller still reads first, so a window that already matches is left
+  // alone, and reads back after.
+  function floatSetStep(address, label, wantFloating, outcome) {
+    return root.dispatchStep('hl.dsp.window.float({ window = "address:' + address + '", action = "'
+      + (wantFloating ? "on" : "off") + '" })', label, outcome)
   }
 
   // Restore one window's floating state, against a FRESH read.
@@ -2023,10 +2607,9 @@ Item {
   //   - the window already matches the recording: nothing to do. The plan was
   //     built from an older read; toggling here would flip a correct window
   //     wrong, which is the exact hazard of a toggle-only verb.
-  //   - it differs: one targeted toggle, then a confirming re-read. A toggle
-  //     that did not land is warned about and counted as a cycle failure — no
-  //     retry, because re-dispatching a toggle on a state that did not change
-  //     risks oscillation, and the next settle pass re-plans anyway.
+  //   - it differs: one absolute float on/off, then a confirming re-read. A
+  //     dispatch that did not land is warned about and counted as a cycle
+  //     failure — no retry here, the next settle pass re-plans anyway.
   //   - the window is gone from the read: nothing safe to dispatch.
   function executeFloating(op, outcome, done) {
     root.readClients(function (ok) {
@@ -2051,7 +2634,7 @@ Item {
 
       root.noteEffect("floating", op.address)
       root.prependSteps([
-        root.floatToggleStep(op.address, (op.value ? "float " : "tile ") + op.address, outcome),
+        root.floatSetStep(op.address, (op.value ? "float " : "tile ") + op.address, !!op.value, outcome),
         {
           kind: "fn",
           fn: function (next) {
@@ -2062,11 +2645,11 @@ Item {
               }
               var after = root.clientByAddress(op.address)
               if (after && !!after.floating !== !!op.value) {
-                root.failAndCount(outcome, "the float toggle did not land (still reads floating="
+                root.failAndCount(outcome, "the float dispatch did not land (still reads floating="
                   + !!after.floating + ", wanted " + !!op.value + ")")
                 root.warn("floating restore: " + op.address + " still reads floating=" + !!after.floating
-                  + " after a targeted toggle (wanted " + !!op.value + ") — not toggling again,"
-                  + " a second toggle on an unchanged state can only oscillate")
+                  + " after an absolute float " + (op.value ? "on" : "off") + " (wanted " + !!op.value
+                  + ") — not dispatching again, the next settle pass re-plans")
               }
               next()
             })
@@ -2087,6 +2670,26 @@ Item {
       { at: op.at, size: op.size },
       { at: client.at, size: client.size })
     return Engine.withinTolerance(delta, Engine.GEOMETRY_TOLERANCE_PX)
+  }
+
+  // The tile a client occupies, as geometryText. A grouped window's rect is its
+  // tile minus the groupbar on top (groupbarPx), so the box adds it back;
+  // a plain window's rect is its tile.
+  readonly property int groupbarPx: 21
+  function tileBox(client) {
+    var rect = root.tileRect(client)
+    return root.geometryText(rect.at, rect.size)
+  }
+
+  // The tile a window occupies: its rect, plus the groupbar for a group member.
+  function tileRect(client) {
+    var at = (client.at || []).slice()
+    var size = (client.size || []).slice()
+    if ((client.grouped || []).length > 0 && at.length === 2 && size.length === 2) {
+      at[1] -= root.groupbarPx
+      size[1] += root.groupbarPx
+    }
+    return { at: at, size: size }
   }
 
   function geometryText(at, size) {
@@ -2255,7 +2858,7 @@ Item {
         return
       }
 
-      var wantedA = root.geometryText(b.at, b.size)
+      var wantedA = root.tileBox(b)
       root.noteEffect("swap", op.address + "+" + op.target)
       var commands = Engine.opToCommand(op)
       if (!commands.length) {
@@ -2277,10 +2880,14 @@ Item {
           root.readClients(function (okAfter) {
             if (!okAfter) { next(); return }
             var after = root.clientByAddress(op.address)
-            if (after && root.geometryText(after.at, after.size) !== wantedA) {
+            // Tile boxes, not raw rects: a group member's rect is its tile
+            // minus the groupbar, so a swap into or out of a group lands on the
+            // right tile and still reads 21px different.
+            var afterBox = after ? root.tileBox(after) : ""
+            if (after && afterBox !== wantedA) {
               root.failAndCount(outcome, "the swap did not land (" + op.address + " reads "
-                + root.geometryText(after.at, after.size) + ", wanted " + wantedA + ")")
-              root.warn("swap: " + op.address + " reads " + root.geometryText(after.at, after.size)
+                + afterBox + ", wanted " + wantedA + ")")
+              root.warn("swap: " + op.address + " reads " + afterBox
                 + " after the swap (wanted " + wantedA + ") — not retrying here,"
                 + " the next re-plan asks again and the no-progress check names it")
             }
@@ -2504,6 +3111,29 @@ Item {
   // churn the user watches. `home` is the anchor's CURRENT workspace, read
   // now — the moves phase has already put the anchor on its recorded one.
   function scratchJoin(address, predecessor, anchor, outcome, done) {
+    // A join must never straddle a 4.5 reconcile (a scratch workspace is
+    // renumbered by merge() on a reload): gate it on a full snapshot first.
+    // The detour itself never needs viaMonitor: the scratch workspace is empty
+    // and not visible (pickScratchWorkspace) and both moves name a workspace by
+    // id with follow = false, so no monitor focus or monitor-relative selector
+    // is involved; the move home targets the anchor's current workspace, which
+    // is already on its owner, so it cannot cross monitors either.
+    root.gateThen("scratch join",
+      function () { root.scratchJoinReady(address, predecessor, anchor, outcome, done) },
+      function () {
+        root.warn("scratch join: the snapshot failed — leaving " + address + " unjoined")
+        root.failOp(outcome, "the live read failed before the scratch-workspace join",
+          root.identitiesForAddresses([address]))
+        done()
+      },
+      function (reason) {
+        root.failOp(outcome, "reconcile-unsettled: " + reason + " — the scratch-workspace join was not attempted",
+          root.identitiesForAddresses([address]))
+        done()
+      })
+  }
+
+  function scratchJoinReady(address, predecessor, anchor, outcome, done) {
     root.readClients(function (ok) {
       var anchorClient = ok ? root.clientByAddress(anchor) : null
       var candidate = ok ? root.clientByAddress(address) : null
@@ -2517,8 +3147,17 @@ Item {
         return
       }
       var home = anchorClient.workspace.id
+      // The detour takes the group out of home's tree and puts it back as a
+      // new arrival, wherever dwindle drops it: whatever tree home was built as
+      // is gone (tick v2p), this plan's and any earlier plan's this cycle.
+      if (root.builtWorkspaces[String(home)] === true) {
+        delete root.builtWorkspaces[String(home)]
+        root.log("built: workspace " + home + " is no longer a known tree — a group is being"
+          + " assembled on a scratch workspace and brought back into it")
+      }
+      root.noteBuildBroken(home)
       root.readMonitors(function (okMon) {
-        var scratch = Engine.pickScratchWorkspace(root.liveClients, okMon ? root.liveMonitors : [])
+        var scratch = Engine.pickScratchWorkspace(root.liveClients, okMon ? root.liveMonitors : [], root.blockTable)
         root.log("scratch join: " + anchor + "+" + address + " via empty ws " + scratch
           + ", home ws " + home)
         root.prependSteps([
@@ -2694,6 +3333,40 @@ Item {
   function requestRestore(reason, manual) {
     var byHand = manual === true
 
+    // THE INERT CONTRACT, and it sits ABOVE the pause contract because it is the
+    // stronger of the two (tick t03, finding A6). A state file from a schema
+    // generation this build does not understand is read, shown and never
+    // written — and, from here on, never acted on either. The read is lossy by
+    // construction: normalizeIdentity is a whitelist, so every field the newer
+    // schema added to an identity is gone by the time this function sees it, and
+    // a rule the user narrowed arrives as the broad one it used to be. Restoring
+    // from that claims, moves and RELAUNCHES windows against rules nobody wrote.
+    //
+    // `byHand` is deliberately not consulted: pausing is the user saying "not
+    // now", and their button rightly overrides it; this is the build saying "I
+    // cannot read this file properly", and no button changes that.
+    //
+    // Asked at CYCLE START only, the same shape as `paused` below: a file that
+    // turns inert mid-cycle is two builds writing the same state file at once,
+    // and the queued rerun that a mid-cycle change schedules is refused here
+    // anyway, one settle delay later.
+    if (root.stateLoaded) {
+      var inert = StateModel.restoreRefusal(root.state)
+      if (inert) {
+        root.warn("not restoring (" + reason + ") — " + inert)
+        return
+      }
+    }
+
+    // A system without Omarchy 4.5's per-monitor workspaces: nothing to restore
+    // against, so nothing is attempted, not even by hand. Known once any block
+    // read has landed; a request that beats the first read starts a cycle that
+    // stands down at its first snapshot (runPass).
+    if (root.unsupportedReason !== "") {
+      root.warn("not restoring (" + reason + ") — " + root.unsupportedLine())
+      return
+    }
+
     if (root.stateLoaded && !byHand && StateModel.isPaused(root.state)) {
       root.log("paused — ignoring " + reason)
       return
@@ -2723,6 +3396,7 @@ Item {
     root.cycleReason = reason
     root.passIndex = 0
     root.cycleEffects = ({})
+    root.builtWorkspaces = ({})
     root.launchSerial = 0
     // The previous cycle's ledger is retired HERE and not at its own end: the
     // verdicts published by every drift refresh in between keep explaining why
@@ -2734,13 +3408,22 @@ Item {
     root.cycleFailures = 0
     root.opsMoved = 0
     root.opsLaunched = 0
-    root.opsWorkspace = 0
     root.opsGrouped = 0
+    root.opsTabbed = 0
     root.opsUngrouped = 0
     root.opsFloated = 0
     root.opsPlaced = 0
     root.opsTiled = 0
     root.cycleTopologyKey = ""
+    root.cycleUnsettled = ""
+    gateTimer.stop()
+    root.gateArgs = null
+    // A new cycle is a new wait: keep the hold an event set, drop the clock of
+    // an episode no check ever closed.
+    var carried = ReconcileGate.create()
+    carried.holdUntil = root.reconcileGate.holdUntil
+    carried.holdSeen = root.reconcileGate.holdSeen === true
+    root.reconcileGate = carried
     // Whose keyboard this is. Cleared at cycle start and filled in from the
     // first successful read of the cycle, so the placement choreography has
     // somewhere to put the focus back. See noteFocusHome.
@@ -2779,7 +3462,87 @@ Item {
     // A fresh pass may try the shape again — see shapeAbandoned.
     root.shapeAbandoned = ({})
     root.lastPlan = null
-    root.planAndExecute()
+    // No plan, and so no dispatch, until 4.5's re-sort has settled. A wait here
+    // does not consume a settle pass: the pass simply starts later.
+    root.gateThen("pass " + (root.passIndex + 1),
+      function () {
+        if (root.unsupportedReason !== "") { root.endUnsupportedCycle(); return }
+        root.planAndExecute()
+      },
+      function () {
+        root.warn("pass " + (root.passIndex + 1) + " abandoned: the live read failed"
+          + " — the next settle pass will retry")
+        root.finishPass()
+      },
+      function (reason) {
+        root.cycleUnsettled = reason
+        root.cycleFailures += 1
+        root.finishCycle()
+      })
+  }
+
+  // ------------------------------------------------------- the reconcile gate
+  //
+  // Omarchy 4.5 re-sorts workspaces asynchronously after a hotplug or a config
+  // reload (see ReconcileGate.js). Planning against the desktop mid-sort moves
+  // windows into blocks that are about to be renumbered. gateThen takes a FULL
+  // snapshot (clients, monitors, block files: one instant), asks the gate, and
+  // calls proceed() only when it says ready; otherwise it re-snapshots after
+  // the gate's waitMs. `abandon` runs when the read failed, `timedOut(reason)`
+  // when the gate gave up. The gate object returned by every check is kept: it
+  // resets itself on ready and on timeout.
+  property var reconcileGate: ReconcileGate.create()
+  property string cycleUnsettled: ""
+  property var gateArgs: null
+
+  function gateThen(label, proceed, abandon, timedOut) {
+    root.gateArgs = null
+    root.snapshot(function (ok) {
+      if (!ok) {
+        abandon()
+        return
+      }
+      var merged = Slots.parseMerged(root.mergedText)
+      var pend = ReconcileGate.pending(root.blockTable, merged, root.liveClients, root.liveMonitors)
+      var sig = ReconcileGate.signature(root.liveClients, root.liveMonitors, root.blocksText, root.mergedText)
+      var answer = ReconcileGate.check(root.reconcileGate,
+        { nowMs: Date.now(), signature: sig, pendingReason: pend })
+      root.reconcileGate = answer.gate
+      if (answer.timedOut && answer.planAnyway) {
+        // Off-owner persisted, but no monitor event hit this episode: the
+        // planner's per-app workspace-elsewhere refusal skips the affected
+        // apps and the rest restore (human decision 2026-11-14).
+        var offWs = ReconcileGate.offOwnerWorkspaces(root.blockTable, root.liveClients, root.liveMonitors)
+        root.log("reconcile gate: off-owner persisted, planning anyway (" + offWs.length + " workspace(s))")
+        proceed()
+        return
+      }
+      if (answer.timedOut) {
+        var why = pend || "unstable"
+        root.log("reconcile-unsettled: " + why + " (" + label + ")")
+        timedOut(why)
+        return
+      }
+      if (answer.ready) {
+        root.log("reconcile gate: ready (" + label + ")")
+        proceed()
+        return
+      }
+      root.log("reconcile gate: waiting " + answer.waitMs + " (" + answer.reason + ")")
+      root.gateArgs = { label: label, proceed: proceed, abandon: abandon, timedOut: timedOut }
+      gateTimer.interval = Math.max(50, answer.waitMs)
+      gateTimer.restart()
+    })
+  }
+
+  Timer {
+    id: gateTimer
+    repeat: false
+    onTriggered: {
+      var args = root.gateArgs
+      if (!args) return
+      root.gateThen(args.label, args.proceed, args.abandon, args.timedOut)
+    }
   }
 
   function planAndExecute() {
@@ -2810,7 +3573,7 @@ Item {
       }
       root.cycleTopologyKey = key
 
-      var layout = StateModel.layoutFor(root.state, key)
+      var layout = Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors)
       if (!layout) {
         // A real topology with nothing recorded for it is a final answer, not a
         // transient one: retrying cannot invent a layout. End the whole cycle.
@@ -2820,7 +3583,7 @@ Item {
       }
 
       var identities = StateModel.identities(root.state)
-      var plan = Engine.planRestore(root.liveClients, root.liveMonitors, layout, identities)
+      var plan = Engine.planRestore(root.liveClients, root.liveMonitors, layout, identities, root.planContext())
 
       // Before the empty-plan check, because a REFUSAL is most often exactly
       // that: a workspace whose tiling this tool will not touch plans no ops at
@@ -3040,7 +3803,19 @@ Item {
   property var loggedRefusals: ({})
 
   function logTilingRefusals(layout, identities) {
-    var report = Engine.driftOf(root.liveClients, root.liveMonitors, layout, identities)
+    var report = Engine.driftOf(root.liveClients, root.liveMonitors, layout, identities, root.planContext())
+    // Apps the planner will not place because their destination is not
+    // resolvable (yet): once per cycle per app and reason, like the refusals.
+    var apps = report.apps || []
+    for (var a = 0; a < apps.length; a++) {
+      var reason = apps[a].reason
+      if (reason !== "monitor-unassigned" && reason !== "monitor-unknown"
+          && reason !== "slot-unknown" && reason !== "workspace-elsewhere") continue
+      var skipKey = "skip\u0000" + apps[a].identityId + "\u0000" + apps[a].occurrence + "\u0000" + reason
+      if (root.loggedRefusals[skipKey]) continue
+      root.loggedRefusals[skipKey] = true
+      root.log("restore SKIPPED " + apps[a].identityId + " #" + apps[a].occurrence + " (" + reason + ")")
+    }
     var refusals = report.tilingRefusals || []
     for (var i = 0; i < refusals.length; i++) {
       var refusal = refusals[i]
@@ -3081,15 +3856,18 @@ Item {
         + " more windows of \"" + deficits[d].identityId + "\" — launching them one at a time")
     }
 
+    root.beginBuildTracking(plan)
     var steps = []
     for (var i = 0; i < plan.length; i++) steps = steps.concat(root.stepsForOp(plan[i]))
     if (steps.length === 0) {
+      root.planBuild = ({})
       // Every op in the plan was unexecutable (launch-less identities, say).
       // Re-planning would produce the same plan forever, so stop the pass here.
       root.log("nothing executable in this plan — ending the pass")
       root.finishPass()
       return
     }
+    steps.push({ kind: "fn", fn: function (next) { root.settleBuilt(); next() } })
     root.runSteps(steps, done)
   }
 
@@ -3108,15 +3886,22 @@ Item {
   }
 
   function finishCycle() {
-    var total = root.opsMoved + root.opsLaunched + root.opsWorkspace + root.opsGrouped
-      + root.opsUngrouped + root.opsFloated + root.opsPlaced + root.opsTiled
+    gateTimer.stop()
+    root.gateArgs = null
+    var total = root.opsMoved + root.opsLaunched + root.opsGrouped
+      + root.opsUngrouped + root.opsFloated + root.opsPlaced + root.opsTiled + root.opsTabbed
     root.log("restore cycle done (" + root.cycleReason + "): " + total + " ops — "
       + root.opsMoved + " moved, " + root.opsLaunched + " launched, "
-      + root.opsWorkspace + " workspace, " + root.opsGrouped + " grouped, "
+      + root.opsGrouped + " grouped, "
+      + root.opsTabbed + " tabbed, "
       + root.opsUngrouped + " ungrouped, " + root.opsFloated + " floated, "
       + root.opsPlaced + " placed, " + root.opsTiled + " retiled")
 
     root.cycleActive = false
+    // A known tree is for the cycle that built it and no longer (human
+    // decision, epic 9i2): a drift refresh between cycles must plan from what
+    // is live, never from a tree somebody may have dragged apart since.
+    root.builtWorkspaces = ({})
 
     // Stale-latch clear (tick co9 nit): pendingJoins/deferredLocked can only be
     // set by noteJoinsDeferred, which also flips lockDeferralLogged — reset to
@@ -3143,6 +3928,7 @@ Item {
     // (no layout, or the last read failed) — the tally is what this said
     // before verdicts existed, and it is still better than an empty string.
     var sentence = verdicts.length ? summary.text : root.cycleSummary(total)
+    if (root.cycleUnsettled) sentence = "reconcile-unsettled: " + root.cycleUnsettled
 
     // Only speak up when something actually happened, OR when something went
     // wrong. A dock that needed no work must not produce a toast; a dock that
@@ -3193,6 +3979,22 @@ Item {
       var wasManual = root.rerunManual
       root.rerunManual = false
       root.requestRestore("queued rerun", wasManual)
+      // A rerun that started owns the reload check: its own end runs it. One
+      // that was refused (paused, inert) ends nothing, so the check runs now
+      // rather than being left pending with no timer (tick v2p).
+      if (root.cycleActive || !root.reloadCheckAfterCycle) return
+    }
+    if (root.reloadCheckAfterCycle) {
+      // A config reload landed while this cycle ran: decide it now, on a fresh
+      // gate that keeps only the reload's hold (the 15 s clock of an episode the
+      // cycle spent must not time the check out). Its end refreshes the status,
+      // so the cycle-end refresh below would only stand down behind its read.
+      root.reloadCheckAfterCycle = false
+      var fresh = ReconcileGate.create()
+      fresh.holdUntil = root.reloadGate.holdUntil
+      fresh.holdSeen = root.reloadGate.holdSeen === true
+      root.reloadGate = fresh
+      root.runReloadCheck()
       return
     }
     root.refreshStatus("restore cycle end")
@@ -3208,9 +4010,9 @@ Item {
   function cycleVerdicts() {
     var key = Engine.topologyKey(root.liveMonitors)
     if (!key) return []
-    var layout = StateModel.layoutFor(root.state, key)
+    var layout = Slots.toLive(StateModel.layoutFor(root.state, key), root.blockTable, root.liveMonitors)
     if (!layout) return []
-    var drift = Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state))
+    var drift = Engine.driftOf(root.liveClients, root.liveMonitors, layout, StateModel.identities(root.state), root.planContext())
     return Engine.verdictsFor(drift, root.cycleOutcomes)
   }
 
@@ -3250,7 +4052,7 @@ Item {
         ok: false,
         failures: root.cycleFailures,
         summary: (summary && summary.text) || "",
-        recording: StateModel.layoutFor(root.state, root.cycleTopologyKey),
+        recording: Slots.toLive(StateModel.layoutFor(root.state, root.cycleTopologyKey), root.blockTable, root.liveMonitors),
         identities: StateModel.identities(root.state),
         // The raw reads, verbatim: a dump that had been through a normalizer
         // could not reproduce a bug in the normalizer.
@@ -3317,8 +4119,8 @@ Item {
     var parts = []
     if (root.opsMoved > 0) parts.push(root.opsMoved + " moved")
     if (root.opsLaunched > 0) parts.push(root.opsLaunched + " launched")
-    if (root.opsWorkspace > 0) parts.push(root.opsWorkspace + " workspace")
     if (root.opsGrouped > 0) parts.push(root.opsGrouped + " grouped")
+    if (root.opsTabbed > 0) parts.push(root.opsTabbed + " tabbed")
     if (root.opsUngrouped > 0) parts.push(root.opsUngrouped + " ungrouped")
     if (root.opsFloated > 0) parts.push(root.opsFloated + " floated")
     if (root.opsPlaced > 0) parts.push(root.opsPlaced + " placed")

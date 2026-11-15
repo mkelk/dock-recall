@@ -104,17 +104,89 @@ test("a window on the wrong workspace says workspace, and nothing else", () => {
   assert.strictEqual(editor.text, "on the wrong workspace");
 });
 
-test("a window on the wrong monitor says monitor", () => {
-  // Docked: the recording is a laptop-only one, so an app read on the headless
-  // output is on the wrong monitor for it.
+test("monitor-unknown has two causes, and the sentence follows the record", () => {
+  // From Slots.toLive: a monitor that is not connected and has no block.
+  const unblocked = Object.assign({}, recorded, {
+    apps: recorded.apps.map((a) =>
+      a.identityId === "editor" ? Object.assign({}, a, { workspaceId: null, unplaceable: "monitor-unknown" }) : a
+    )
+  });
+  const resolved = verdictFor(verdictsOf(clientsLaptop, monitorsLaptop, unblocked), "editor");
+  assert.strictEqual(resolved.monitor, "monitor-unknown");
+  assert.strictEqual(resolved.text, "its monitor is not connected and has no workspace block yet");
+  assert.strictEqual(panel.verdictLine(resolved), "its monitor is not connected and has no workspace block yet");
+
+  // The legacy cause: the record never had a monitor. Same word, and the old
+  // sentence — nothing was unplugged, so no cable is blamed.
+  const orphan = [makeClient({ address: "0xfff", class: "code", workspace: 3, monitor: 7 })];
+  const neverKnown = engine.buildLayout(orphan, monitorsLaptop, IDENTITIES, AT);
+  assert.strictEqual(neverKnown.apps[0].monitorDescription, "");
+  const legacy = verdictFor(verdictsOf(clientsLaptop, monitorsLaptop, neverKnown), "editor");
+  assert.strictEqual(legacy.monitor, "monitor-unknown");
+  assert.strictEqual(legacy.text, "no monitor was ever recorded for it");
+});
+
+test("a window on the wrong monitor AND workspace says both", () => {
+  // Docked: the recording is a laptop-only one. The editor now sits on ws 4 of
+  // the headless output; its recorded ws 3 exists nowhere, so the move is a
+  // plain restore and both dimensions name what is wrong.
+  const dockedLayout = Object.assign({}, recorded, {
+    topologyKey: engine.topologyKey(monitorsDocked)
+  });
+  const moved = clientsLaptop.map((c) =>
+    c.class === "code" ? Object.assign({}, c, { monitor: 1, workspace: { id: 4, name: "4" } }) : c
+  );
+  const editor = verdictFor(verdictsOf(moved, monitorsDocked, dockedLayout), "editor");
+
+  assert.strictEqual(editor.status, "drifted");
+  assert.strictEqual(editor.monitor, "wrong-monitor");
+  assert.strictEqual(editor.workspace, "wrong-workspace");
+  assert.strictEqual(editor.text, "on the wrong monitor, on the wrong workspace");
+});
+
+test("a recorded workspace that 4.5 put on another monitor is a WORKSPACE refusal, said in words", () => {
+  // Under Omarchy 4.5 which monitor shows a workspace is the compositor
+  // config's decision. The editor is on its recorded ws 3, but ws 3 sits on
+  // the headless output: the planner refuses (tick 7ph) and the row says why,
+  // without sending the user to check a cable.
   const dockedLayout = Object.assign({}, recorded, {
     topologyKey: engine.topologyKey(monitorsDocked)
   });
   const moved = clientsLaptop.map((c) => (c.class === "code" ? Object.assign({}, c, { monitor: 1 }) : c));
   const editor = verdictFor(verdictsOf(moved, monitorsDocked, dockedLayout), "editor");
 
-  assert.strictEqual(editor.monitor, "wrong-monitor");
-  assert.strictEqual(editor.text, "on the wrong monitor");
+  assert.strictEqual(editor.status, "skipped");
+  assert.strictEqual(editor.workspace, "workspace-elsewhere");
+  assert.strictEqual(editor.monitor, "not-judged");
+  assert.strictEqual(editor.floating, "not-judged");
+  assert.strictEqual(editor.group, "not-judged");
+  assert.strictEqual(editor.ok, false);
+  assert.strictEqual(editor.text, "its workspace is on another monitor — not moved");
+  assert.strictEqual(panel.verdictLine(editor), "its workspace is on another monitor — not moved");
+});
+
+test("an unplaceable app is refused with its reason, in words", () => {
+  // Slots.toLive marks what it cannot resolve; driftOf skips it with that
+  // reason, and the verdict carries it on the dimension that is at fault.
+  const cases = [
+    ["monitor-unassigned", "monitor", "its monitor has no workspace block yet"],
+    // Slots.toLive's monitor-unknown: recorded on a monitor that is not
+    // plugged in (or is disabled/mirrored) and has no workspace block.
+    ["monitor-unknown", "monitor", "its monitor is not connected and has no workspace block yet"],
+    ["slot-unknown", "workspace", "no workspace slot was recorded for it"]
+  ];
+  for (const [reason, dimension, text] of cases) {
+    const layout = Object.assign({}, recorded, {
+      apps: recorded.apps.map((a) =>
+        a.identityId === "editor" ? Object.assign({}, a, { workspaceId: null, unplaceable: reason }) : a
+      )
+    });
+    const editor = verdictFor(verdictsOf(clientsLaptop, monitorsLaptop, layout), "editor");
+    assert.strictEqual(editor.status, "skipped", reason);
+    assert.strictEqual(editor[dimension], reason, reason);
+    assert.strictEqual(editor.ok, false, reason);
+    assert.strictEqual(editor.text, text, reason);
+  }
 });
 
 test("floating says which way round it is wrong", () => {
@@ -171,6 +243,36 @@ test("the same members in the wrong tab order read wrong-order, not not-joined",
     verdictFor(verdicts, "slack").text,
     "in its group in the wrong tab order"
   );
+});
+
+// Schema v9: the group stands, but another tab is in front. The fixture's group
+// was recorded with obsidian showing.
+function showing(clients, address) {
+  const ring = clients.find((c) => c.address === address).grouped;
+  return clients.map((c) => (ring.indexOf(c.address) === -1 ? c
+    : Object.assign({}, c, { visible: c.address === address })));
+}
+
+test("the recorded tab behind another reads wrong-tab on that member only", () => {
+  const verdicts = verdictsOf(showing(clientsLaptop, addressOf(clientsLaptop, "slack")));
+  const obsidian = verdictFor(verdicts, "obsidian");
+  assert.strictEqual(obsidian.group, "wrong-tab");
+  assert.strictEqual(obsidian.ok, false);
+  assert.strictEqual(obsidian.text, "wrong tab in front");
+  for (const id of ["telegram", "slack", "whatsapp"]) {
+    assert.strictEqual(verdictFor(verdicts, id).group, "ok", id);
+    assert.strictEqual(verdictFor(verdicts, id).ok, true, id);
+  }
+  // Back on the recorded tab, clean again.
+  const back = verdictsOf(showing(clientsLaptop, addressOf(clientsLaptop, "obsidian")));
+  assert.ok(back.every((v) => v.ok), "the recorded tab in front is clean");
+});
+
+test("a group in the wrong order says so, not wrong-tab, whatever tab is in front", () => {
+  const addresses = GROUP.map((id) => addressOf(clientsLaptop, id));
+  const reversed = showing(withGroup(clientsLaptop, addresses.slice().reverse()), addresses[1]);
+  const verdicts = verdictsOf(reversed);
+  for (const id of GROUP) assert.strictEqual(verdictFor(verdicts, id).group, "wrong-order", id);
 });
 
 test("a window recorded alone but live tabbed in reads unexpected-group", () => {
@@ -694,4 +796,62 @@ test("the panel's instance label is the engine's, word for word", () => {
       JSON.stringify(verdict)
     );
   }
+});
+
+// ------------------------------------------ layout-mode words (9i2, §2.4)
+
+const MODE_MONITORS = [{
+  id: 0, name: "eDP-1", description: "Test Panel", make: "T", model: "P", serial: "",
+  x: 0, y: 0, width: 1440, height: 900, scale: 1,
+  activeWorkspace: { id: 1, name: "1" }, focused: true
+}];
+const MODE_IDS = [{ id: "one", patterns: ["^app-one$"] }, { id: "two", patterns: ["^app-two$"] }];
+function modeLayout(floating, layoutMode, rects) {
+  return {
+    topologyKey: "Test Panel", recordedAt: AT,
+    apps: ["one", "two"].map((id, i) => ({
+      identityId: id, workspaceId: 5, monitorDescription: "Test Panel", monitorIndex: 0,
+      floating, group: null, layoutMode, at: rects[i].at.slice(), size: rects[i].size.slice()
+    }))
+  };
+}
+const MODE_TILES = [{ at: [12, 38], size: [701, 850] }, { at: [727, 38], size: [701, 850] }];
+const MODE_FLOATS = [{ at: [170, 83], size: [1100, 612] }, { at: [194, 107], size: [1100, 612] }];
+function modeClients(rects, extra) {
+  return ["app-one", "app-two"].map((cls, i) => makeClient(Object.assign({
+    address: "0x" + (i + 1), class: cls, workspace: 5, at: rects[i].at.slice(), size: rects[i].size.slice()
+  }, extra || {})));
+}
+const DWINDLE = { workspaces: [{ id: 5, tiledLayout: "dwindle" }], built: null };
+
+test("each layout-mode refusal is a sentence, and says which layout", () => {
+  assert.ok(engine.tilingRefusalPhrase("layout-scrolling").indexOf("scrolling layout") >= 0);
+  assert.ok(engine.tilingRefusalPhrase("layout-floating").indexOf("floating layout") >= 0);
+  assert.ok(engine.tilingRefusalPhrase("layout-mode-differs").indexOf("different layout mode") >= 0);
+  for (const word of ["layout-scrolling", "layout-floating", "layout-mode-differs"]) {
+    assert.notStrictEqual(engine.tilingRefusalPhrase(word), word, word);
+  }
+});
+
+test("a window the FLOATING layout floated reads ok on the floating dimension, not should-tile", () => {
+  const live = modeClients(MODE_FLOATS, { floating: true, tags: ["omarchy-floating-workspace"] });
+  const layout = modeLayout(false, "dwindle", MODE_TILES);
+  const bare = engine.verdictsFor(engine.driftOf(live, MODE_MONITORS, layout, MODE_IDS), []);
+  assert.strictEqual(verdictFor(bare, "one").floating, "should-tile", "the context-free control");
+
+  const verdicts = engine.verdictsFor(engine.driftOf(live, MODE_MONITORS, layout, MODE_IDS, DWINDLE), []);
+  for (const v of verdicts) {
+    assert.strictEqual(v.floating, "ok", v.identityId);
+    assert.strictEqual(v.geometryDetail.refinement, "layout-floating", v.identityId);
+  }
+});
+
+test("a float the mode change left tiled says why nothing moves it, in the geometry phrase", () => {
+  const live = modeClients(MODE_TILES);
+  const layout = modeLayout(true, "floating", MODE_FLOATS);
+  const verdicts = engine.verdictsFor(engine.driftOf(live, MODE_MONITORS, layout, MODE_IDS, DWINDLE), []);
+  const one = verdictFor(verdicts, "one");
+  assert.strictEqual(one.floating, "ok");
+  assert.strictEqual(one.geometry, "geometry-off");
+  assert.ok(one.text.indexOf("different layout mode") >= 0, one.text);
 });

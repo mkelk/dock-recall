@@ -14,7 +14,7 @@
 // the panel epic (writes it). Add fields; never repurpose one.
 //
 //   State {
-//     version:    4                 // the schema generation. A file at an
+//     version:    7                 // the schema generation. A file at an
 //                                   // OLDER version is UPGRADED in place on the
 //                                   // read (see "Migration" below); a file from
 //                                   // the FUTURE keeps its own number, is still
@@ -34,6 +34,31 @@
 //                                   // file rather than the status file because
 //                                   // it is a user decision that must survive a
 //                                   // shell restart.
+//     pictures:   true              // v7. THE ONE SWITCH. May this tool
+//                                   // PHOTOGRAPH the windows it watches? It
+//                                   // gates every capture there is — the
+//                                   // recorded pictures under ~/.cache and the
+//                                   // live ones that never reach disk — and
+//                                   // there is nothing in front of it or
+//                                   // beneath it: a watched app is pictured.
+//                                   // Lives here for the same reason `paused`
+//                                   // does: a user decision that must survive
+//                                   // a shell restart.
+//                                   // DEFAULT TRUE, which is the exact
+//                                   // opposite of the generation it replaces
+//                                   // (v5's per-app `pictured`, default off,
+//                                   // plus v6's dialogue on the first Record).
+//                                   // The pictures ARE the feature: a panel
+//                                   // that draws icons until you find a
+//                                   // control is a panel that never shows you
+//                                   // anything, and the dialogue talked its
+//                                   // own author out of the thing he had
+//                                   // asked for. Off is one click in the
+//                                   // overflow menu, it deletes every stored
+//                                   // picture, and it says so before it does
+//                                   // it — see Panel.qml, setPictures.
+//                                   // Only the literal `false` is off; see
+//                                   // picturesOn for why that direction.
 //     identities: Identity[]        // ORDER IS PRIORITY ORDER — engine.js
 //                                   // matchClient() returns the FIRST match, so
 //                                   // specific webapp identities must sit
@@ -81,14 +106,33 @@
 //                         // permanent miss instead of retrying.
 //   }
 //
+//   An identity has NO picture field. v5 gave it one (`pictured`, a per-app
+//   consent) and v7 took it away again: whether a window is photographed is a
+//   fact about the tool, not about the app, and it is the top-level `pictures`
+//   switch above. See the v6 -> v7 note under Migration for what happens to the
+//   old per-app values (they are dropped, and the reason is there).
+//
 //   Layout — exactly what engine.buildLayout() returns:
 //     { topologyKey, recordedAt, apps: [ { identityId, occurrence,
-//       monitorDescription, workspaceId, floating, group, at, size } ] }.  See
-//     the schema block in engine.js; this file stores it verbatim, with these
-//     exceptions:
-//       - apps[].workspaceId is coerced to a number, because it is the only
-//         recorded field that ends up inside a Lua dispatch string. See
-//         normalizeWorkspaceId.
+//       monitorDescription, slot, floating, group, at, size, layoutMode } ] }.
+//     See
+//     Slots.js for the placement contract; this file stores it verbatim, with
+//     these exceptions:
+//       - apps[].slot (v8) is an integer 1..10 or null. It replaces v7's
+//         workspaceId, which is NOT written any more: a live workspace id
+//         depends on which block of ten Omarchy 4.5 handed the monitor, so the
+//         file stores the monitor and the slot and Slots.toLive resolves them.
+//         A v7-or-older entry with a workspaceId and no slot is migrated by
+//         normalizeSlot (slot = ((W - 1) % 10) + 1; W <= 0 or junk -> null).
+//       - apps[].layoutMode (v9) is "dwindle" | "scrolling" | "floating" |
+//         null: the recorded workspace's layout mode, null when it was not
+//         recorded (a migrated v8 entry, or a record taken without a planning
+//         context). Anything else reads as null. See normalizeLayoutMode.
+//       - apps[].group (v9) is null or { groupId, index, active }, every
+//         other field of it kept. `active` is true on the one watched member
+//         that was the group's visible tab, false on the others (on all of
+//         them when the visible tab was an unwatched window), null when not
+//         recorded — and null never drifts. See normalizeGroupMembership.
 //       - apps[].occurrence (v3) is coerced to a non-negative integer, default
 //         0. See normalizeOccurrence.
 //       - apps[].at and apps[].size (v2) are coerced to a pair of finite
@@ -145,6 +189,12 @@
 //   `version` becomes 4. No layout entry moves at all — this generation touches
 //   identities only.
 //
+//   v4 -> v5 added `pictured: false` to every identity — a per-app photograph
+//   consent, withheld by default — and v7 has since removed the field
+//   altogether. The step is kept here as history, not as behaviour: a v4 file
+//   read today gains nothing per identity, because there is nothing at that
+//   level to gain. See v6 -> v7 below.
+//
 //   THE DELIBERATE CHOICE, v4: the empty list IS MATERIALIZED. normalizeIdentity
 //   writes `titlePatterns` on every identity it returns, so a v3 file read and
 //   written back gains a `"titlePatterns": []` line per identity rather than
@@ -155,22 +205,89 @@
 //   distinguish "absent" from "empty", exactly as they never have to for
 //   `patterns: []` or
 //   `launch: ""`, both of which have always been written whether the file said
-//   so or not. Everything an identity DID say is carried through untouched: the
-//   upgrade is purely additive, and pinned as such by tests/state.test.js.
+//   so or not.
 //
-//   A v1 file therefore CHAINS — v1 -> v2 -> v3 -> v4 in one read — because
-//   normalizeLayout writes the v2 and v3 fields and normalizeIdentity writes the
-//   v4 field unconditionally, so there are no intermediate states to sequence.
-//   A v4 file read and written back is byte-identical to itself.
+//   v5 made the same choice for `pictured` and v7 unmade it by deleting the
+//   field. The precedent survives its first casualty: it is about fields that
+//   EXIST, and the cheapest way to keep a shape honest is still to write it.
+//
+//   THE ONE THING v4 TAKES AWAY (tick j8o): a migrated `launch` that forces a
+//   window class NO pattern of its own identity claims — the signature of v3's
+//   retired `--app-id` backfill — is EMPTIED. It is the first non-additive step
+//   in the chain, and the reason is that the alternative is worse: the command
+//   cannot be repaired downstream and restoring it spawns stray windows for
+//   ever. See migratedLaunch, which owns the rule and the discriminator.
+//   Everything else an identity said is carried through untouched, and all of
+//   it is pinned by tests/state.test.js.
+//
+//   v5 -> v6 added `pictureConsent` at the TOP level — the answer to a dialogue
+//   the first Record put up — and v7 has removed that too. Kept as history for
+//   the same reason v5 is: the value it holds is the only input v6 -> v7 has.
+//
+//   v6 -> v7 is the first step that REPLACES rather than adds. One top-level
+//   `pictures` boolean, default TRUE, takes the place of both consent fields:
+//   the per-identity `pictured` and the file-level `pictureConsent`. `version`
+//   becomes 7. No layout entry moves.
+//
+//   The derivation is the one thing the user actually said. `pictureConsent`
+//   held four values and exactly one of them is a refusal: "none" — "delete
+//   them all, take no more". That becomes `pictures: false`. "keep",
+//   "not-these", "unasked" and an absent field all become `pictures: true`,
+//   because none of them is a person saying no to pictures as such: two are
+//   consents, and the other two are silence from before the question existed.
+//   THE ONE REFUSAL IS HONOURED AND NOTHING ELSE IS INVENTED — a user who
+//   answered "No pictures" opens this build to a tool that is still not taking
+//   any.
+//
+//   Per-identity `pictured` values are DROPPED, not folded in. They cannot be:
+//   the new field is one boolean for the whole tool, and there is no honest way
+//   to turn "three of your eleven apps were pictured" into it. Any-of would
+//   photograph the eight the user never granted, all-of would silence the three
+//   they did. The switch starts on, which is what this generation means, and it
+//   is one click to turn off — a click the old model made nearly unfindable,
+//   which is why it is gone.
+//
+//   MATERIALIZED, like the generations before it: normalizeState writes
+//   `pictures` on every state it returns, so a v6 file read and written back
+//   gains one `"pictures": true` line and loses `pictureConsent` and every
+//   `"pictured"` line in the same write.
+//
+//   v7 -> v8 replaced each entry's live `workspaceId` with its `slot` (1..10)
+//   — see normalizeSlot.
+//
+//   v8 -> v9 is ADDITIVE again, per layout entry: `layoutMode` absent -> null,
+//   and a group membership without `active` gains `active: null`. Nothing else
+//   moves. null is the honest value — a v8 build never read either fact — and
+//   it is the one value no consumer acts on. The bump itself is what matters:
+//   normalizeLayout copies unknown fields, so a v8 build would not strip the
+//   new ones, but it would re-record without them and call the file its own;
+//   at v9 a v8 build refuses the file instead (the future-version refusal).
+//
+//   A v1 file therefore CHAINS — v1 -> ... -> v9 in one read — because
+//   normalizeLayout writes the v2, v3, v8 (slot) and v9 fields,
+//   normalizeIdentity writes the v4 one and normalizeState writes the v7 one,
+//   all unconditionally, so there are no intermediate states to sequence. A v9
+//   file read and written back is byte-identical to itself.
+//
+//   And every step of it happens IN MEMORY. Nothing here writes a file: the
+//   service reads an older file, runs from the upgraded state, and the file on
+//   disk keeps its own version until the next write has a reason of its own.
+//   That is deliberate — opening the panel must not rewrite the user's file —
+//   and it is pinned in tests/state.test.js and end to end in
+//   tests/acceptance/dock-recall-appid-migration-test.sh.
 //
 // Reading the future (the other direction, and it has no migration):
-//   A file whose version EXCEEDS this build's is read and run from, and is never
-//   written. There is no forward migration to run — this build cannot know what
-//   a later generation added — and the two halves above make the round trip
-//   destructive: normalizeIdentity drops the unknown fields, migrateVersion
-//   keeps the newer number, so any write would persist stripped content under a
-//   version that says nothing was stripped. `writeRefusal` is the single rule,
-//   and every writer of this file asks it before touching the disk.
+//   A file whose version EXCEEDS this build's is READ, and that is all: it is
+//   never written and it never drives a restore. There is no forward migration
+//   to run — this build cannot know what a later generation added — and the two
+//   halves above make BOTH the round trip and the restore unsound:
+//   normalizeIdentity drops the unknown fields, migrateVersion keeps the newer
+//   number, so any write would persist stripped content under a version that
+//   says nothing was stripped, and any restore would act on identity rules
+//   stripped back to whatever they meant before the newer schema narrowed them.
+//   `isFutureVersion` is the single question; `writeRefusal` and
+//   `restoreRefusal` are its two consequences, and every writer of this file and
+//   the one funnel that dispatches restores ask them (tick t03).
 //
 // Quirks the UI must know:
 //   - layouts is a MAP keyed by topologyKey, and Layout.topologyKey repeats that
@@ -216,6 +333,20 @@
 //     driftCount:  int           // how many recorded apps a restore would act
 //                                // on RIGHT NOW — see driftCountOf. 0 with
 //                                // recorded=true is the "in sync" badge.
+//     shapes:      Shape[]       // v9 (epic 9i2). Finished tiled workspaces whose
+//                                // tile shape a restore did not or could not
+//                                // reproduce: { workspaceId, monitorDescription,
+//                                // meanIou, reason } — reason is a refusal word
+//                                // or null. Junk rows are dropped on read.
+//     shapeCount:  int           // always shapes.length. glyphState answers
+//                                // "drifted" when this is > 0 even if driftCount
+//                                // is 0: the same glyph as window drift, the
+//                                // reason goes to the tooltip and panel.
+//     unsupportedReason: string  // v9. "" = the system has Omarchy 4.5's per-monitor
+//                                // workspaces. Otherwise a reason code (today only
+//                                // "needs-omarchy-4.5"): the service restores and
+//                                // plans nothing, the panel refuses to record, and
+//                                // PanelModel.needsOmarchyText says so in words.
 //     restoring:   boolean       // a restore cycle is in flight (glyph sweeps)
 //     lastResult:  null | { ok: boolean, summary: string, at: string }
 //                                // the outcome of the last cycle that ran in
@@ -281,7 +412,14 @@
 // Unknown keys are dropped on the parse -> serialize round trip, exactly as in
 // the state file: this is a schema, not a scratchpad.
 
-var STATE_VERSION = 4;
+var STATE_VERSION = 9;
+
+// The one v6 word this build still recognises, and the only place it appears.
+// `pictureConsent` held four values and three of them said "yes" or "nothing";
+// only this one is a refusal, and only a refusal carries into v7. Everything
+// else about the consent generation — the other three words, the setter, the
+// per-identity flag and the prompt that wrote them — is gone.
+var PICTURE_CONSENT_NONE = "none";
 
 // ES5, no Array.isArray assumptions about the QML JS engine's vintage: this is
 // the one array test that behaves the same in node and in Qt's V4.
@@ -331,7 +469,29 @@ function own(map, key) {
 }
 
 function defaultState() {
-  return { version: STATE_VERSION, paused: false, identities: [], layouts: {} };
+  return {
+    version: STATE_VERSION,
+    paused: false,
+    // v7. On, because that is what this tool does — see the schema block.
+    pictures: true,
+    identities: [],
+    layouts: {}
+  };
+}
+
+// The v7 field, derived from whatever a file actually carries.
+//
+// The field wins whenever it is there at all (by picturesOn's rule). Only a file
+// that has never heard of it falls back to the v6 answer, and only one of those
+// four answers was a refusal — see the v6 -> v7 note in the schema block. The
+// comparison is on the raw word rather than through a normalizer, because
+// "none" is now the only one of the four this build has any use for: a typo, a
+// hand edit and a word from a generation that never existed all mean "not a
+// refusal", which is the same answer "unasked" always gave.
+function normalizePictures(value) {
+  if (!value || typeof value !== "object") return true;
+  if (Object.prototype.hasOwnProperty.call(value, "pictures")) return value.pictures !== false;
+  return value.pictureConsent !== PICTURE_CONSENT_NONE;
 }
 
 // Coerce whatever a pattern list contains into an array of non-empty strings.
@@ -348,30 +508,179 @@ function normalizePatterns(value) {
   return patterns;
 }
 
+// The terminal binaries the retired backfill could have written a launch for,
+// and the words after which a terminal's own argv has ENDED — everything past
+// one of them belongs to the program the terminal hosts.
+//
+// DUPLICATED FROM PanelModel (TERMINAL_FAMILY, TERMINAL_EXEC_BOUNDARIES) ON
+// PURPOSE: this file may not require it — QML `.js` imports cannot see each
+// other, the same constraint that has `isArray` and `own` in all three modules
+// (see the note at line 94). Only the two facts forcedAppIdClass needs are
+// copied, and tests/state.test.js pins both copies to the originals.
+//
+// Binaries, not classes: PanelModel matches window class names, and this reads
+// the first word of a COMMAND. They coincide for this family — `com.mitchellh.
+// ghostty` is a class only, and its binary is `ghostty`.
+var TERMINAL_BINARIES = ["foot", "footclient", "kitty", "alacritty", "ghostty"];
+var TERMINAL_ARGV_END = ["-e", "--", "--hold"];
+
+function isTerminalBinary(word) {
+  var text = typeof word === "string" ? word : "";
+  var cut = text.lastIndexOf("/");
+  var name = (cut === -1 ? text : text.substring(cut + 1)).toLowerCase();
+  if (!name) return false;
+  for (var i = 0; i < TERMINAL_BINARIES.length; i++) {
+    if (TERMINAL_BINARIES[i] === name) return true;
+  }
+  return false;
+}
+
+function isTerminalArgvEnd(word) {
+  for (var i = 0; i < TERMINAL_ARGV_END.length; i++) {
+    if (TERMINAL_ARGV_END[i] === word) return true;
+  }
+  return false;
+}
+
+// The window class an `--app-id` flag FORCES in a launch command OF THE SHAPE
+// THE RETIRED BACKFILL WROTE, or null when this command is not that shape or
+// names no such flag. `""` — the flag with nothing after it — is a found flag
+// with no class, which is not the same answer as "absent".
+//
+// The shape is the whole point (tick bcc). This asked only "does the command
+// spell `--app-id` anywhere?", and the backfill is far from the only thing that
+// does; two ordinary launches were emptied on migration because of it:
+//
+//   `chromium --app-id=<extension-id>` — Chromium's OWN flag, a hand-written PWA
+//   launch. The window class it produces is `chrome-<extension-id>-Default` and
+//   never the flag's value, so patternsClaimClass could only ever answer
+//   "unclaimed" about a perfectly correct identity, and the migration destroyed
+//   the command that starts it. normalizeIdentity's comment promises that a hand
+//   edit of this field "is a decision this module does not overrule".
+//
+//   `foot -e grep --app-id log.txt` — the flag belongs to the program the
+//   terminal HOSTS. It forces no window class at all.
+//
+// The backfill only ever wrote `<terminal-binary> --app-id=<id> <command>`. So
+// the detector fires only when the FIRST word is a terminal-family binary (by
+// basename: it wrote `/usr/bin/foot` as readily as `foot`) and the `--app-id`
+// token sits in the TERMINAL's own argv — before an exec boundary, and before
+// the first bare word, which is where foot's and kitty's hosted command begins.
+//
+// Whitespace splitting is enough and quoting is deliberately not parsed: the
+// retired path never quoted the flag or its value. A command that hides
+// `--app-id` inside a quoted argument reads as absent — and so does every shape
+// the scoping now excludes. All of them leave the launch ALONE, which is the
+// safe direction for a field the user may have typed.
+function forcedAppIdClass(launch) {
+  if (typeof launch !== "string") return null;
+  var words = launch.replace(/^\s+|\s+$/g, "").split(/\s+/);
+  if (!isTerminalBinary(words[0])) return null;
+  var prefix = "--app-id=";
+  // From 1: words[0] is the terminal binary, and the bare-word stop below would
+  // otherwise end the scan on it.
+  for (var i = 1; i < words.length; i++) {
+    if (isTerminalArgvEnd(words[i])) return null;
+    if (words[i] === "--app-id") return i + 1 < words.length ? words[i + 1] : "";
+    if (words[i].slice(0, prefix.length) === prefix) return words[i].slice(prefix.length);
+    if (words[i].charAt(0) !== "-") return null;
+  }
+  return null;
+}
+
+// Does any of this identity's own patterns claim that class? Case-insensitive
+// and never throwing, because that is what the MATCHER does (engine.js
+// compilePattern): a pattern that cannot compile simply never matches, and
+// asking a different question here than the matcher asks would neutralize a
+// launch the running plugin is perfectly happy with. The two-line duplication
+// of compilePattern is the same dual node/QML loading constraint that has
+// `isArray` and `own` in all three modules.
+function patternsClaimClass(patterns, className) {
+  if (typeof className !== "string" || !className) return false;
+  for (var i = 0; i < patterns.length; i++) {
+    var re = null;
+    try {
+      re = new RegExp(patterns[i], "i");
+    } catch (e) {
+      re = null;
+    }
+    if (re && re.test(className)) return true;
+  }
+  return false;
+}
+
+// v3 -> v4, and the one part of the upgrade that is not purely additive.
+//
+// v3's launch backfill auto-derived terminal launches as
+// `<terminal> --app-id=<identity-id> <command>`: it forced a window class per
+// identity so a class pattern could claim the window. That mechanism is retired
+// — the terminals disagree about `--app-id` versus `--class` and alacritty has
+// neither, so the derivation spells `--title` now (see TERMINAL_FAMILY in
+// PanelModel.js) — but a 0.2.0 file still carries what it wrote, against an
+// identity whose patterns say `^foot$`. Restoring it spawns a class-`herdr`
+// window `^foot$` can never claim: strays per dock event plus a launch timeout,
+// forever, and nothing downstream repairs it (launchLooksBroken passes a
+// multi-word command; launchRepairIndex never overwrites a runnable non-empty
+// launch). Migration is the only place this data can be dealt with.
+//
+// The discriminator is the IDENTITY, not the flag. `/usr/bin/foot
+// --app-id=scratchpad` against `^scratchpad$` — the v1 fixture's scratchpad — is
+// a correct hand-written launch, and forcing a class the identity's own patterns
+// claim is exactly how a scratchpad terminal is pinned. Only a forced class NO
+// pattern of the identity claims is the retired mechanism's signature.
+//
+// Neutralize means EMPTIED, not "strip the flag down to something runnable".
+// Stripping is a guess this module cannot make: `alacritty --app-id=top top`
+// minus the flag is `alacritty top`, which alacritty rejects (it needs `-e`),
+// and the terminal shapes live in PanelModel, which this file must not depend
+// on. Empty is the one repair the EXISTING machinery genuinely supports —
+// launchRepairIndex's first case ("the field is EMPTY and something was
+// derived") offers the relearn, and identitiesNeedingLaunch puts the row in
+// front of the user. A stripped-but-wrong command would be non-empty and
+// runnable, which is precisely the shape neither of them will ever touch.
+function migratedLaunch(launch, patterns) {
+  var forced = forcedAppIdClass(launch);
+  if (forced === null) return launch;
+  return patternsClaimClass(patterns, forced) ? launch : "";
+}
+
 // An identity without an id cannot be referred to by a layout, so it is
 // dropped; everything else is repaired to its default.
-function normalizeIdentity(value) {
+//
+// `migrating` is true only when the file is older than v4 — the generation that
+// STOPPED deriving `--app-id` (see needsLaunchRepair, which owns that boundary
+// and is the only thing that sets this). A file at v4 or later was written by a
+// build that no longer derives the flag, so anything spelling it there was typed
+// by hand, and a hand edit of the launch field is a decision this module does
+// not overrule.
+function normalizeIdentity(value, migrating) {
   if (!value || typeof value !== "object") return null;
   var id = typeof value.id === "string" ? value.id : "";
   if (!id) return null;
+  var patterns = normalizePatterns(value.patterns);
+  var launch = typeof value.launch === "string" ? value.launch : "";
   return {
     id: id,
-    patterns: normalizePatterns(value.patterns),
+    patterns: patterns,
     // v4. Same coercion as `patterns` — same repair semantics, same "a typo
     // costs you the pattern, never the identity" — and always written, even
     // when empty, so nothing downstream has to tell absent from empty. An
     // identity from a v3 file gains it here; that IS the v3 -> v4 migration.
     titlePatterns: normalizePatterns(value.titlePatterns),
-    launch: typeof value.launch === "string" ? value.launch : ""
+    launch: migrating ? migratedLaunch(launch, patterns) : launch
+    // No `pictured`. v5 put a per-app photograph consent here and v7 replaced
+    // it with the top-level `pictures` switch, so this whitelist DROPS the old
+    // field the way it drops any other key it does not know — which is what
+    // makes the v6 -> v7 migration happen on the read, with no separate pass.
   };
 }
 
-function normalizeIdentities(value) {
+function normalizeIdentities(value, migrating) {
   var out = [];
   var seen = {};
   if (!isArray(value)) return out;
   for (var i = 0; i < value.length; i++) {
-    var identity = normalizeIdentity(value[i]);
+    var identity = normalizeIdentity(value[i], migrating);
     if (!identity) continue;
     // A duplicate id would make identityById ambiguous and record the same
     // window twice. First wins, consistent with the rest of the engine.
@@ -412,8 +721,11 @@ function normalizeOccurrence(value) {
   return n;
 }
 
-// A recorded workspace id is INTERPOLATED INTO A LUA DISPATCH by the restore
-// executor (`hl.dsp.window.move({ workspace = "<id>" })`), which makes it the
+// v7 and older: a recorded workspace id. Since v8 this is only the MIGRATION
+// INPUT for the slot (see normalizeSlot); it is never written back.
+//
+// It used to be INTERPOLATED INTO A LUA DISPATCH by the restore
+// executor (`hl.dsp.window.move({ workspace = "<id>" })`), which made it the
 // one field of a hand-edited or corrupted state file that could smuggle code
 // into the compositor — `"1\", follow = false }); os.execute(\"…"` and the
 // quoting is gone. Coerced to a finite number at the single choke point every
@@ -429,6 +741,25 @@ function normalizeWorkspaceId(value) {
   if (!trimmed) return null;
   var parsed = Number(trimmed);
   return isFinite(parsed) ? parsed : null;
+}
+
+// v8: a recorded slot — an integer 1..10, or null. A hand-edited numeric
+// string is coerced like normalizeWorkspaceId does; 0, 11 and fractions are null.
+function normalizeSlotValue(value) {
+  var n = normalizeWorkspaceId(value);
+  return n !== null && Math.floor(n) === n && n >= 1 && n <= 10 ? n : null;
+}
+
+// The v7 -> v8 step for one app. A recorded `slot` wins, valid or not (a v8
+// entry that says null means null). Without one, the legacy workspaceId decides:
+// W >= 1 -> ((W - 1) % 10) + 1, anything else (0, specials, junk) -> null.
+// Inline arithmetic on purpose, Slots.js may not be required here; a test pins
+// it equal to Slots.slotOf.
+function normalizeSlot(app) {
+  if (app.slot !== undefined) return normalizeSlotValue(app.slot);
+  var w = normalizeWorkspaceId(app.workspaceId);
+  if (w === null || Math.floor(w) !== w || w < 1) return null;
+  return ((w - 1) % 10) + 1;
 }
 
 // A recorded `at` or `size`: a pair of finite numbers, or null.
@@ -462,6 +793,28 @@ function normalizeGeometry(value) {
   return out;
 }
 
+// v9: the workspace's layout mode when the entry was recorded. Exactly the
+// three words engine.workspaceModeOf answers; anything else, absent included,
+// is null — "not recorded", which never refuses and never drifts.
+var LAYOUT_MODES = ["dwindle", "scrolling", "floating"];
+
+function normalizeLayoutMode(value) {
+  return (typeof value === "string" && LAYOUT_MODES.indexOf(value) !== -1) ? value : null;
+}
+
+// v9: a recorded group membership, every field kept, `active` coerced to
+// true | false | null. true is the member that was the group's visible tab,
+// false the others; null (a migrated v8 entry, junk, or a read that could not
+// tell) never drifts and never plans a tab switch.
+function normalizeGroupMembership(group) {
+  var out = {};
+  for (var key in group) {
+    if (Object.prototype.hasOwnProperty.call(group, key)) out[key] = group[key];
+  }
+  out.active = group.active === true ? true : (group.active === false ? false : null);
+  return out;
+}
+
 // A layout is stored verbatim, but its shell has to be sane: apps must be an
 // array, or every consumer (driftOf, planRestore, the panel list) has to guard.
 function normalizeLayout(value, keyFallback) {
@@ -478,7 +831,10 @@ function normalizeLayout(value, keyFallback) {
       for (var key in app) {
         if (Object.prototype.hasOwnProperty.call(app, key)) placement[key] = app[key];
       }
-      placement.workspaceId = normalizeWorkspaceId(app.workspaceId);
+      // v8. The slot is derived (from a v7 workspaceId) BEFORE the legacy field
+      // is dropped, and the drop is unconditional: v8 stores no workspace id.
+      placement.slot = normalizeSlot(app);
+      delete placement.workspaceId;
       // v3. Written unconditionally too, and for the same reason: a v2 entry
       // that never carried the field described the identity's one window, which
       // IS occurrence 0. Writing it here is the whole of the v2 -> v3
@@ -490,6 +846,14 @@ function normalizeLayout(value, keyFallback) {
       // guessing whether it is reading an old file or a new one.
       placement.at = normalizeGeometry(app.at);
       placement.size = normalizeGeometry(app.size);
+      // v9. Both written unconditionally, the v2 way: an absent key in a v8
+      // entry means "not recorded", and null says so explicitly. The group is
+      // copied field by field too (it is the one nested object of a
+      // placement), and only its `active` is coerced.
+      if (app.group && typeof app.group === "object" && !isArray(app.group)) {
+        placement.group = normalizeGroupMembership(app.group);
+      }
+      placement.layoutMode = normalizeLayoutMode(app.layoutMode);
       apps.push(placement);
     }
   }
@@ -514,8 +878,9 @@ function normalizeLayouts(value) {
 
 // The version this state should be WRITTEN back as.
 //
-// Anything at or below the current generation is UPGRADED: every migration is
-// additive and lossless (see the Migration note in the schema block), so a v1
+// Anything at or below the current generation is UPGRADED: the whole chain runs
+// in one pass (see the Migration note in the schema block — additive throughout
+// bar v4's one deliberate subtraction, migratedLaunch), so a v1
 // file that has been read is already a current-generation object in memory —
 // the whole chain runs in one pass — and claiming otherwise on the way back out
 // would be a lie about its own shape.
@@ -530,6 +895,39 @@ function migrateVersion(value) {
   return value > STATE_VERSION ? value : STATE_VERSION;
 }
 
+// Is this an OLDER generation than the one this build writes — the thing an
+// upgrade is performed ON? The same predicate parseState reports as `migrated`,
+// said once so the two can never disagree about which reads are migrations. A
+// version-less object counts: nothing has written one since v1.
+function isOlderVersion(value) {
+  return typeof value !== "number" || value < STATE_VERSION;
+}
+
+// Is this file old enough for v4's LAUNCH SUBTRACTION to apply to it?
+//
+// A SEPARATE QUESTION FROM isOlderVersion, and conflating the two was a bug
+// that shipped with the v5 -> v6 bump and survived to v7 (review z4b). The
+// subtraction is v3 -> v4's and only v3 -> v4's: it empties a `launch` that
+// forces an `--app-id` class no pattern of its own identity claims, because
+// that string is the signature of a mechanism v3 retired and cannot be repaired
+// downstream (see migratedLaunch). `normalizeState` passed `isOlderVersion`, so
+// the moment STATE_VERSION moved past 4 the subtraction started re-running on
+// every file below the CURRENT generation — a v6 identity carrying
+// `foot --app-id=herdr herdr` came back with `launch: ""` while the identical
+// identity in a v7 file was left alone.
+//
+// That is the module's own promise broken (normalizeIdentity, above): a file at
+// a generation that no longer DERIVES the flag can only have got it by hand, and
+// a hand edit of the launch field is a decision this module does not overrule.
+// v4 is where the deriving stopped, so v4 is the boundary — not wherever this
+// build's number happens to be today.
+//
+// A version-less object counts, for the reason isOlderVersion says: nothing has
+// written one since v1.
+function needsLaunchRepair(value) {
+  return typeof value !== "number" || value < 4;
+}
+
 // Turn anything at all into a state object this codebase can work with.
 function normalizeState(value) {
   if (!value || typeof value !== "object" || isArray(value)) return defaultState();
@@ -539,7 +937,18 @@ function normalizeState(value) {
     // pausing is a file from before the switch existed, and the tool has always
     // been active. Only an explicit `true` pauses.
     paused: value.paused === true,
-    identities: normalizeIdentities(value.identities),
+    // v7, and the default runs the other way: this one is a feature switch, not
+    // a consent, so a file that does not mention it gets the pictures. A v6
+    // file's answer is consulted first, and only "none" turns them off — see
+    // normalizePictures and the v6 -> v7 note in the schema block.
+    pictures: normalizePictures(value),
+    // The v3 -> v4 step is the one migration that is not purely additive — see
+    // migratedLaunch — so the identities need to know whether this read is
+    // crossing it. `needsLaunchRepair`, NOT `isOlderVersion`: the subtraction
+    // belongs to that one step and not to "any file older than today". Every
+    // other caller of normalizeIdentities is a WRITE path and passes nothing,
+    // which is the same as "no".
+    identities: normalizeIdentities(value.identities, needsLaunchRepair(value.version)),
     layouts: normalizeLayouts(value.layouts)
   };
 }
@@ -554,10 +963,14 @@ function normalizeState(value) {
 //   recovered — true when `state` is a fresh default rather than the file's
 //               content. The service logs it and rewrites the file.
 //   migrated  — true when the file was an OLDER schema version that this read
-//               upgraded (v1 -> v2 -> v3 -> v4, as far as it has to go, in the
-//               one pass). Not an error and not a recovery: nothing was lost
-//               and nothing was invented. The service logs it once and the next
-//               write persists the upgraded shape.
+//               upgraded (v1 -> ... -> v9, as far as it has to go, in the one
+//               pass). Not an error and not a recovery: nothing was invented,
+//               and the only things dropped are the workspaceId v7 -> v8
+//               replaces with a slot, the one v3 -> v4 subtracts on
+//               purpose (migratedLaunch, and only for a file below v4 — see
+//               needsLaunchRepair) and the two consent fields v6 -> v7 replaced.
+//               The service logs it once and the next write persists the
+//               upgraded shape.
 function parseState(raw) {
   var text = typeof raw === "string" ? raw : "";
   if (!text.replace(/^\s+|\s+$/g, "")) {
@@ -596,6 +1009,19 @@ function parseState(raw) {
   return { state: state, error: error, recovered: false, migrated: migrated };
 }
 
+// THE question, asked once. Both refusals below hang off it, so "is this file
+// from a generation we do not understand" can never get two different answers in
+// the same process. A version that is not a finite number is not from the future
+// — it is junk, and normalizeState has already replaced it with this build's.
+function isFutureVersion(state) {
+  return stateVersionOf(state) > STATE_VERSION;
+}
+
+function stateVersionOf(state) {
+  return state && typeof state.version === "number" && isFinite(state.version)
+    ? state.version : STATE_VERSION;
+}
+
 // MAY this state be written back to the file it came from? Returns null when it
 // may, and the REASON it may not when it may not. Every writer of the state file
 // — Service.qml's writeState, Panel.qml's writeState, scripts/record-current —
@@ -622,13 +1048,47 @@ function parseState(raw) {
 // Pure and here rather than duplicated in two QML files, so the rule has one
 // definition and a test.
 function writeRefusal(state) {
-  var version = state && typeof state.version === "number" && isFinite(state.version)
-    ? state.version : STATE_VERSION;
-  if (version > STATE_VERSION) {
+  var version = stateVersionOf(state);
+  if (isFutureVersion(state)) {
     return "the state file is schema v" + version + ", newer than this build understands (v"
       + STATE_VERSION + ") — it is READ-ONLY, because writing it back would drop every field v"
       + version + " added while still stamping the file v" + version
       + ". Upgrade Dock Recall, or move the file aside, to make changes.";
+  }
+  return null;
+}
+
+// MAY this state DRIVE a restore? Returns null when it may, and the REASON it
+// may not when it may not. `requestRestore` — the single funnel every event,
+// settle pass, replayed request and manual trigger arrives at — asks this first.
+//
+// Same question as writeRefusal, opposite half of the same damage (tick t03,
+// finding A6). Protecting only the file was protecting the wrong thing:
+//
+//   - normalizeIdentity is a WHITELIST, so a v6 identity reaches memory with
+//     every field v6 added STRIPPED. A rule that v6 narrowed — to a profile, a
+//     title, a workspace — arrives here as the class-only rule it was BEFORE
+//     that narrowing existed;
+//   - a restore then acts on that broader rule: it CLAIMS windows the user
+//     scoped away from this identity, MOVES them, and LAUNCHES more of them.
+//
+// Reading the file is safe. Writing it is refused. Acting on it is neither: it
+// is the read's stripped-down conclusion applied to the user's live desktop, and
+// it is worse than the write, because a refused write costs one edit while a
+// wrong restore rearranges everything on screen.
+//
+// So a future-version file is INERT. The panel still shows what it can read, the
+// bar still reports drift, nothing is dispatched. Unlike `paused`, the manual
+// trigger does NOT override this: the user's button cannot make a stripped
+// identity list mean what the newer schema meant.
+function restoreRefusal(state) {
+  var version = stateVersionOf(state);
+  if (isFutureVersion(state)) {
+    return "the state file is schema v" + version + ", newer than this build understands (v"
+      + STATE_VERSION + ") — it is INERT: this build reads it, but every narrowing field v"
+      + version + " added is stripped on the way in, so restoring from it would claim, move and"
+      + " relaunch windows against rules broader than the ones in the file."
+      + " Upgrade Dock Recall, or move the file aside, to restore from it again.";
   }
   return null;
 }
@@ -644,6 +1104,40 @@ function serializeState(state) {
 // ---------------------------------------------------------------------------
 // Queries and updates
 // ---------------------------------------------------------------------------
+
+// A NEW state, normalized, with one or two top-level fields replaced — and the
+// only shape in which the setters below are allowed to build one.
+//
+// It exists because every setter here used to end with the same literal:
+//   `return { version: …, paused: …, identities: …, layouts: … }`
+// written out four times. That is precisely the enumerated-field-list shape
+// .tick/learnings.md calls "a data-loss bug waiting for the next field", and it
+// has had two of them since: v6's `pictureConsent` and now v7's `pictures`,
+// either of which would have survived a pause toggle and been silently dropped
+// by the first Record, because upsertLayout's literal never mentioned it.
+// Turning the switch off and then recording would have turned it back on.
+//
+// The copy is of the NORMALIZED base, so a caller handing in half a state still
+// gets a whole one — and the merged RESULT is normalized too, so a key this
+// schema has never heard of cannot ride in on `patch` either. Both passes are
+// needed and neither is redundant: the first repairs what the caller brought,
+// the second is the whitelist standing between `patch` and the object every
+// setter here returns. Normalizing only the base would let
+// `stateWith(state, { strayKey: 1 })` hand back a state carrying `strayKey` in
+// memory — harmless on the way to serializeState, which normalizes again, and
+// not harmless at all for the callers that read a setter's return directly.
+function stateWith(state, patch) {
+  var base = normalizeState(state);
+  var out = {};
+  var key;
+  for (key in base) {
+    if (Object.prototype.hasOwnProperty.call(base, key)) out[key] = base[key];
+  }
+  for (key in patch) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) out[key] = patch[key];
+  }
+  return normalizeState(out);
+}
 
 function layoutFor(state, topologyKey) {
   var layouts = (state && state.layouts) || {};
@@ -719,7 +1213,7 @@ function upsertLayout(state, layout) {
   }
   layouts[normalized.topologyKey] = normalized;
 
-  return { version: base.version, paused: base.paused, identities: base.identities, layouts: layouts };
+  return stateWith(base, { layouts: layouts });
 }
 
 function removeLayout(state, topologyKey) {
@@ -730,15 +1224,14 @@ function removeLayout(state, topologyKey) {
     if (key === topologyKey) continue;
     layouts[key] = base.layouts[key];
   }
-  return { version: base.version, paused: base.paused, identities: base.identities, layouts: layouts };
+  return stateWith(base, { layouts: layouts });
 }
 
 // Replace the whole identity list (the panel edits it as a list). Returns a new
 // state, normalized, so a UI that hands over half-built rows cannot corrupt the
 // file.
 function setIdentities(state, list) {
-  var base = normalizeState(state);
-  return { version: base.version, paused: base.paused, identities: normalizeIdentities(list), layouts: base.layouts };
+  return stateWith(state, { identities: normalizeIdentities(list) });
 }
 
 // Flip the tool's on/off switch. Same new-object discipline as the rest: the
@@ -760,6 +1253,41 @@ function isPaused(state) {
   return !!(state && state.paused === true);
 }
 
+// -------------------------------------------------- the one switch (v7)
+
+// Does this state allow photographs? THE gate, asked by the panel before every
+// capture round, every live source and every cache lookup.
+//
+// TRUE UNLESS THE STATE SAYS `false`, and the asymmetry is the whole point: this
+// is the opposite discipline from the consent it replaces. `paused` reads
+// `=== true`, and so did v5's `pictured` before v7 deleted it, because a file
+// that has not said yes has not consented and a missing key must never grant
+// something. `pictures` is not a
+// consent — it is the feature, and it ships on — so a missing key must never
+// SILENCE it either. A hand edit that mistypes the value, a key lost to a
+// botched round trip, a caller holding half a state: every one of them lands on
+// "take the pictures", which is what the user chose by installing this.
+//
+// Only the literal `false` is off, for the same reason only the literal `true`
+// used to be on: `"false"`, `0` and `null` are things a hand edit produces while
+// meaning something else, and the value that stops the photographs had better be
+// the one the writer of this file emits.
+function picturesOn(state) {
+  return !(state && state.pictures === false);
+}
+
+// Throw the switch. One field, one write — and the same caller contract as
+// setPaused, for the same reason: read the file FRESH, apply this, write
+// atomically. The service rewrites this file underneath the panel.
+//
+// `on !== false` rather than `on === true`, so the reading rule is picturesOn's
+// at both ends of the field's life. It matters more here than it reads: OFF is
+// the destructive direction — the panel deletes every stored picture on the
+// transition — and a garbled argument must not be the thing that does that.
+function setPictures(state, on) {
+  return stateWith(state, { pictures: on !== false });
+}
+
 // ---------------------------------------------------------------------------
 // The status file: pure shaping
 // ---------------------------------------------------------------------------
@@ -770,7 +1298,7 @@ function isPaused(state) {
 // same rule engine.buildLayout follows.
 
 function defaultStatus() {
-  return { topologyKey: "", topologyName: "", recorded: false, driftCount: 0, restoring: false, paused: false, deferredLocked: false, lastResult: null, verdicts: [] };
+  return { topologyKey: "", topologyName: "", recorded: false, driftCount: 0, shapes: [], shapeCount: 0, unsupportedReason: "", restoring: false, paused: false, deferredLocked: false, lastResult: null, verdicts: [] };
 }
 
 // One dimension word. Kept as free text rather than checked against a
@@ -913,9 +1441,29 @@ function normalizeLastResult(value) {
   };
 }
 
+// One unmet-shape row. Rows without a numeric workspaceId are junk and are
+// dropped; the other fields are repaired rather than trusted.
+function normalizeShapes(value) {
+  var out = [];
+  if (!isArray(value)) return out;
+  for (var i = 0; i < value.length; i++) {
+    var row = value[i];
+    if (!row || typeof row !== "object" || isArray(row)) continue;
+    if (typeof row.workspaceId !== "number" || !isFinite(row.workspaceId)) continue;
+    out.push({
+      workspaceId: row.workspaceId,
+      monitorDescription: typeof row.monitorDescription === "string" ? row.monitorDescription : "",
+      meanIou: typeof row.meanIou === "number" && isFinite(row.meanIou) ? row.meanIou : 0,
+      reason: typeof row.reason === "string" ? row.reason : null
+    });
+  }
+  return out;
+}
+
 function normalizeStatus(value) {
   var src = value && typeof value === "object" && !isArray(value) ? value : {};
   var count = typeof src.driftCount === "number" && isFinite(src.driftCount) ? Math.floor(src.driftCount) : 0;
+  var shapes = normalizeShapes(src.shapes);
   return {
     topologyKey: typeof src.topologyKey === "string" ? src.topologyKey : "",
     // Coerced like every other string in here, and defaulted to "" rather than
@@ -925,6 +1473,9 @@ function normalizeStatus(value) {
     topologyName: typeof src.topologyName === "string" ? src.topologyName : "",
     recorded: src.recorded === true,
     driftCount: count < 0 ? 0 : count,
+    shapes: shapes,
+    shapeCount: shapes.length,
+    unsupportedReason: typeof src.unsupportedReason === "string" ? src.unsupportedReason : "",
     restoring: src.restoring === true,
     // Same default direction as State.paused: only an explicit `true` pauses,
     // so a status file written by an older service reads as active.
@@ -976,10 +1527,13 @@ function driftCountOf(driftReport) {
 function statusPatchFor(topologyKey, layout, driftReport, verdicts) {
   var key = typeof topologyKey === "string" ? topologyKey : "";
   if (!key) return null;
+  var shapes = layout ? normalizeShapes(driftReport && driftReport.shapes) : [];
   var patch = {
     topologyKey: key,
     recorded: !!layout,
-    driftCount: layout ? driftCountOf(driftReport) : 0
+    driftCount: layout ? driftCountOf(driftReport) : 0,
+    shapes: shapes,
+    shapeCount: shapes.length
   };
   if (!layout) patch.verdicts = [];
   else if (verdicts !== undefined) patch.verdicts = normalizeVerdicts(verdicts);
@@ -1005,6 +1559,11 @@ function mergeStatus(previous, patch) {
     var count = typeof next.driftCount === "number" && isFinite(next.driftCount) ? Math.floor(next.driftCount) : 0;
     base.driftCount = count < 0 ? 0 : count;
   }
+  if (next.shapes !== undefined) {
+    base.shapes = normalizeShapes(next.shapes);
+    base.shapeCount = base.shapes.length;
+  }
+  if (next.unsupportedReason !== undefined) base.unsupportedReason = typeof next.unsupportedReason === "string" ? next.unsupportedReason : base.unsupportedReason;
   if (next.restoring !== undefined) base.restoring = next.restoring === true;
   if (next.paused !== undefined) base.paused = next.paused === true;
   if (next.deferredLocked !== undefined) base.deferredLocked = next.deferredLocked === true;
@@ -1102,7 +1661,7 @@ function glyphState(status) {
   if (current.paused) return "paused";
   if (!current.recorded) return "hollow";
   if (current.lastResult && current.lastResult.ok === false) return "failed";
-  if (current.driftCount > 0) return "drifted";
+  if (current.driftCount > 0 || current.shapeCount > 0) return "drifted";
   return "filled";
 }
 
@@ -1273,6 +1832,55 @@ function pickFailoverTarget(monitors, lastFocusedName) {
   return { kind: "failover", name: (list[0] && list[0].name) || "" };
 }
 
+// What to dispatch after a monitor was removed, given whether the session is
+// locked. Builds on pickFailoverTarget and adds the one case it cannot see:
+//
+//   Under the session lock, "focus intact" is not the same as "keyboard input
+//   has somewhere to go". VM run 2 (tick s58): removing the FOCUSED output
+//   while locked left input on no lock surface until the pointer touched the
+//   survivor, while hyprctl went on reporting focus on the survivor. So when
+//   locked, even an intact focus is re-asserted: a monitor focus dispatch
+//   first, then (when the survivor's geometry is known) the cursor moved to its
+//   centre, which is what actually fixed it. Only focus and cursor dispatches —
+//   never a window move while locked (state-matrix §7).
+//
+//   { kind, name, reassert, dispatches }
+//     kind        pickFailoverTarget's: "intact" | "failover" | "none"
+//     reassert    true when an intact focus is being re-asserted because locked
+//     dispatches  Lua strings for `hyprctl dispatch`, in order; [] = do nothing
+function planFailover(monitors, lastFocusedName, locked) {
+  var choice = pickFailoverTarget(monitors, lastFocusedName);
+  var plan = { kind: choice.kind, name: choice.name, reassert: false, dispatches: [] };
+  if (choice.kind === "none") return plan;
+  if (choice.kind === "intact" && locked !== true) return plan;
+
+  plan.reassert = choice.kind === "intact";
+  plan.dispatches.push('hl.dsp.focus({ monitor = "' + choice.name + '" })');
+
+  if (locked === true) {
+    var target = null;
+    for (var i = 0; i < monitors.length; i++) {
+      if (monitors[i] && monitors[i].name === choice.name) target = monitors[i];
+    }
+    // Logical size: hyprctl reports physical pixels, the cursor lives in layout
+    // coordinates.
+    var scale = target && typeof target.scale === "number" && target.scale > 0 ? target.scale : 1;
+    if (target && typeof target.x === "number" && typeof target.y === "number"
+        && typeof target.width === "number" && typeof target.height === "number"
+        && target.width > 0 && target.height > 0) {
+      // hyprctl reports width/height before the transform: a rotated monitor
+      // (transform 1/3, or 5/7 flipped) occupies the layout with them swapped.
+      var odd = typeof target.transform === "number" && target.transform % 2 === 1;
+      var lw = odd ? target.height : target.width;
+      var lh = odd ? target.width : target.height;
+      var cx = Math.round(target.x + lw / scale / 2);
+      var cy = Math.round(target.y + lh / scale / 2);
+      plan.dispatches.push("hl.dsp.cursor.move({ x = " + cx + ", y = " + cy + " })");
+    }
+  }
+  return plan;
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     STATE_VERSION: STATE_VERSION,
@@ -1284,7 +1892,9 @@ if (typeof module !== "undefined") {
     normalizeGeometry: normalizeGeometry,
     migrateVersion: migrateVersion,
     parseState: parseState,
+    isFutureVersion: isFutureVersion,
     writeRefusal: writeRefusal,
+    restoreRefusal: restoreRefusal,
     serializeState: serializeState,
     layoutFor: layoutFor,
     hasLayoutFor: hasLayoutFor,
@@ -1298,10 +1908,17 @@ if (typeof module !== "undefined") {
     setIdentities: setIdentities,
     setPaused: setPaused,
     isPaused: isPaused,
+    picturesOn: picturesOn,
+    setPictures: setPictures,
+    stateWith: stateWith,
     defaultStatus: defaultStatus,
     normalizeStatus: normalizeStatus,
     normalizeVerdict: normalizeVerdict,
     normalizeVerdicts: normalizeVerdicts,
+    // Exported for the cross-pin in tests/state.test.js and nothing else: they
+    // are copies of PanelModel's, and the test is what keeps them honest.
+    TERMINAL_BINARIES: TERMINAL_BINARIES,
+    TERMINAL_ARGV_END: TERMINAL_ARGV_END,
     FORENSICS_KEEP: FORENSICS_KEEP,
     forensicsFileName: forensicsFileName,
     forensicsPrune: forensicsPrune,
@@ -1315,6 +1932,7 @@ if (typeof module !== "undefined") {
     parseHyprctlArray: parseHyprctlArray,
     isGrouped: isGrouped,
     inGroupWith: inGroupWith,
-    pickFailoverTarget: pickFailoverTarget
+    pickFailoverTarget: pickFailoverTarget,
+    planFailover: planFailover
   };
 }

@@ -214,21 +214,28 @@ test("twin monitors: both apps land on the FIRST twin — the documented v2 refu
     "the record cannot name WHICH twin, and does not pretend to"
   );
 
-  // Live: both windows have ended up on the laptop panel, which IS a label the
-  // comparison can see — so both drift, and both plan a destination.
-  const liveClients = recordedClients.map((c) => Object.assign({}, c, { monitor: 2 }));
+  // Live: both windows have ended up on the laptop panel, on workspaces of its
+  // own, which IS a label the comparison can see — so both drift, and both
+  // plan a destination. (Had they stayed on ws 3 and 4 with those workspaces
+  // carried onto the laptop, it would be workspace-elsewhere: a refusal, since
+  // tick 7ph moves no existing workspace between monitors.)
+  const liveClients = recordedClients.map((c, i) =>
+    Object.assign({}, c, { monitor: 2, workspace: { id: 7 + i, name: String(7 + i) } }));
   const report = engine.driftOf(liveClients, monitors, layout, IDENTITIES);
   for (const id of ["editor", "terminal"]) {
     assert.strictEqual(report.apps.find((a) => a.identityId === id).drift.monitor, true);
   }
 
   const ops = engine.planRestore(liveClients, monitors, layout, IDENTITIES)
-    .filter((op) => op.kind === "workspace-monitor");
-  assert.strictEqual(ops.length, 2, "one per recorded workspace");
-  // THE REFUSAL, said in a dispatch: every op names DP-1, because
-  // monitorByDescription answers with the first match and there is no recorded
-  // field that could pick DP-2. The workspace that lived on the second twin is
-  // restored onto the first one, and the tool cannot know it got that wrong.
+    .filter((op) => op.kind === "move");
+  assert.strictEqual(ops.length, 2, "one per recorded window");
+  // THE REFUSAL, said in a dispatch: ws 3 and 4 do not exist now, so each move
+  // names the monitor that is to own its new workspace — and every op names
+  // DP-1, because monitorByDescription answers with the first match and there
+  // is no recorded field that could pick DP-2. The workspace that lived on the
+  // second twin is restored onto the first one, and the tool cannot know it
+  // got that wrong.
+  assert.deepStrictEqual(ops.map((op) => op.viaMonitor), [true, true]);
   assert.deepStrictEqual(ops.map((op) => op.monitorName), ["DP-1", "DP-1"]);
   assert.deepStrictEqual(ops.map((op) => op.workspaceId), [3, 4]);
 });

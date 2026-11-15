@@ -335,6 +335,33 @@ test("a list that is not a list is no constraint, never a string of characters",
   assert.ok(engine.clientMatchesIdentity(clientWithTitle("foot", "anything"), halfJunk));
 });
 
+test("a compiled pattern is reused, and reuse changes no answer", () => {
+  // Tick bvs. compilePattern memoizes on the pattern's source string, because
+  // shadowedIdentities is O(clients x identities^2) on a binding that fires for
+  // every Hyprland event. The invariant that makes it safe: fixed "i" flags and
+  // no /g anywhere, so a shared regex carries no lastIndex cursor between
+  // callers — asking one pattern about many windows in a row has to keep
+  // answering about the window it was asked about.
+  const wide = { id: "term", patterns: ["^foot$"], titlePatterns: [] };
+  for (let i = 0; i < 4; i++) {
+    assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), wide), true, "call " + i);
+    assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("kitty", "herdr"), wide), false, "call " + i);
+  }
+
+  // A pattern that does not compile caches its failure and keeps never
+  // matching — it must not throw the second time either.
+  const broken = { id: "broken", patterns: ["^[unclosed"], titlePatterns: [] };
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), broken), false);
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "herdr"), broken), false);
+
+  // And a pattern spelled like an Object.prototype member is a pattern, not a
+  // cache hit on something the prototype answered — see the reserved-id note.
+  const reserved = { id: "reserved", patterns: ["^constructor$", "^__proto__$"], titlePatterns: [] };
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("constructor", "x"), reserved), true);
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("__proto__", "x"), reserved), true);
+  assert.strictEqual(engine.clientMatchesIdentity(clientWithTitle("foot", "x"), reserved), false);
+});
+
 test("identity order decides between a class identity and a title identity", () => {
   // A `foot --title=herdr` window satisfies BOTH: class ^foot$ and title ^herdr$.
   const herdrWindow = clientWithTitle("foot", "herdr");

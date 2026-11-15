@@ -318,8 +318,9 @@ test("the split-brain recording round-trips into a plan that rebuilds the group"
 test("planAddresses names every window a plan touches, and nothing else", () => {
   const plan = [
     { kind: "launch", identityId: "slack" },
-    { kind: "workspace-monitor", workspaceId: 10, monitorName: "DP-2" },
-    { kind: "move", address: "0xa", workspaceId: 10 },
+    // A move that creates its destination also names a MONITOR (the
+    // workspace's owner); that is not a window, and must not be listed.
+    { kind: "move", address: "0xa", workspaceId: 10, monitorName: "DP-2", viaMonitor: true },
     { kind: "group", addresses: ["0xa", "0xb"], missing: [] }
   ];
   assert.deepStrictEqual(engine.planAddresses(plan), ["0xa", "0xb"]);
@@ -382,4 +383,26 @@ test("the invariant holds when windows are missing from the live desktop", () =>
   assert.ok(plan.length > 0, "an empty desktop should plan launches");
   assert.deepStrictEqual(engine.planAddresses(plan), []);
   assert.deepStrictEqual(engine.unknownPlanAddresses(plan, []), []);
+});
+
+// --- schema v9: the visible tab through a split-brain read --------------------
+//
+// The tab ring, and so the `tab` op's index, is read the same way the
+// membership is: a member that under-reports its own array is placed by its
+// peers' arrays. Otherwise the victim's index would be -1 (no op), or 0 in a
+// ring of one — and a wrong index still answers "ok".
+test("a split-brain member is still the tab it was recorded as, at its true index", () => {
+  const show = (clients, address) => clients.map((c) => Object.assign({}, c, { visible: c.address === address }));
+  for (const [recordedTab, liveTab] of [[OBSIDIAN, SLACK], [TELEGRAM, OBSIDIAN]]) {
+    const layout = engine.buildLayout(show(healthyGroupClients(), recordedTab), monitorsLaptop, IDENTITIES, AT);
+    const live = show(splitBrainClients(), liveTab);
+    const report = engine.driftOf(live, monitorsLaptop, layout, IDENTITIES);
+    assert.strictEqual(report.groups[0].needed, false, "the split-brain read is still the recorded group");
+    assert.strictEqual(report.groups[0].activeDrift, true);
+    const plan = engine.planRestore(live, monitorsLaptop, layout, IDENTITIES);
+    assert.deepStrictEqual(plan, [{
+      kind: "tab", address: recordedTab, anchor: OBSIDIAN, index: WHOLE_GROUP.indexOf(recordedTab)
+    }]);
+    assert.deepStrictEqual(engine.unknownPlanAddresses(plan, live), []);
+  }
 });

@@ -1,0 +1,291 @@
+{
+  "version": 8,
+  "paused": false,
+  "pictures": true,
+  "identities": [
+    {
+      "id": "terminal",
+      "patterns": [
+        "^foot$"
+      ],
+      "titlePatterns": [],
+      "launch": "foot"
+    },
+    {
+      "id": "browser",
+      "patterns": [
+        "^chromium$"
+      ],
+      "titlePatterns": [],
+      "launch": "omarchy-launch-browser"
+    },
+    {
+      "id": "editor",
+      "patterns": [
+        "^code$"
+      ],
+      "titlePatterns": [],
+      "launch": "code"
+    },
+    {
+      "id": "obsidian",
+      "patterns": [
+        "^md\\.obsidian\\.Obsidian$"
+      ],
+      "titlePatterns": [],
+      "launch": "obsidian"
+    },
+    {
+      "id": "slack",
+      "patterns": [
+        "^chrome-app\\.slack\\.com"
+      ],
+      "titlePatterns": [],
+      "launch": "omarchy-launch-webapp \"https://app.slack.com/client/EXAMPLE\""
+    }
+  ],
+  "layouts": {
+    "Samsung Display Corp. ATNA60HR07-0 | AOC CU34V5C XXXXXXXXXXXXX": {
+      "topologyKey": "Samsung Display Corp. ATNA60HR07-0 | AOC CU34V5C XXXXXXXXXXXXX",
+      "recordedAt": "2026-11-10T09:00:00Z",
+      "apps": [
+        {
+          "identityId": "terminal",
+          "occurrence": 0,
+          "monitorDescription": "AOC CU34V5C XXXXXXXXXXXXX",
+          "floating": false,
+          "group": null,
+          "at": [
+            1920,
+            0
+          ],
+          "size": [
+            1720,
+            1400
+          ],
+          "slot": 1
+        },
+        {
+          "identityId": "browser",
+          "occurrence": 0,
+          "monitorDescription": "AOC CU34V5C XXXXXXXXXXXXX",
+          "floating": false,
+          "group": null,
+          "at": [
+            1920,
+            0
+          ],
+          "size": [
+            1720,
+            1400
+          ],
+          "slot": 2
+        },
+        {
+          "identityId": "editor",
+          "occurrence": 0,
+          "monitorDescription": "AOC CU34V5C XXXXXXXXXXXXX",
+          "floating": false,
+          "group": null,
+          "at": [
+            1920,
+            0
+          ],
+          "size": [
+            1720,
+            1400
+          ],
+          "slot": 3
+        },
+        {
+          "identityId": "slack",
+          "occurrence": 0,
+          "monitorDescription": "AOC CU34V5C XXXXXXXXXXXXX",
+          "floating": false,
+          "group": null,
+          "at": [
+            1920,
+            0
+          ],
+          "size": [
+            1720,
+            1400
+          ],
+          "slot": 8
+        },
+        {
+          "identityId": "obsidian",
+          "occurrence": 0,
+          "monitorDescription": "AOC CU34V5C XXXXXXXXXXXXX",
+          "floating": false,
+          "group": null,
+          "at": [
+            1920,
+            0
+          ],
+          "size": [
+            1720,
+            1400
+          ],
+          "slot": 9
+        },
+        {
+          "identityId": "terminal",
+          "occurrence": 1,
+          "monitorDescription": "AOC CU34V5C XXXXXXXXXXXXX",
+          "floating": false,
+          "group": null,
+          "at": [
+            1920,
+            0
+          ],
+          "size": [
+            1720,
+            1400
+          ],
+          "slot": 10
+        },
+        {
+          "identityId": "terminal",
+          "occurrence": 2,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": null,
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 4
+        },
+        {
+          "identityId": "browser",
+          "occurrence": 1,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": null,
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 5
+        }
+      ]
+    },
+    "Samsung Display Corp. ATNA60HR07-0": {
+      "topologyKey": "Samsung Display Corp. ATNA60HR07-0",
+      "recordedAt": "2026-11-09T18:00:00Z",
+      "apps": [
+        {
+          "identityId": "terminal",
+          "occurrence": 0,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": null,
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 1
+        },
+        {
+          "identityId": "browser",
+          "occurrence": 0,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": null,
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 2
+        },
+        {
+          "identityId": "editor",
+          "occurrence": 0,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": null,
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 3
+        },
+        {
+          "identityId": "slack",
+          "occurrence": 0,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": {
+            "groupId": "group:slack+obsidian",
+            "index": 0
+          },
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 8
+        },
+        {
+          "identityId": "obsidian",
+          "occurrence": 0,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": false,
+          "group": {
+            "groupId": "group:slack+obsidian",
+            "index": 1
+          },
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 8
+        },
+        {
+          "identityId": "terminal",
+          "occurrence": 1,
+          "monitorDescription": "Samsung Display Corp. ATNA60HR07-0",
+          "floating": true,
+          "group": null,
+          "at": [
+            0,
+            0
+          ],
+          "size": [
+            1920,
+            1200
+          ],
+          "slot": 10
+        }
+      ]
+    }
+  }
+}

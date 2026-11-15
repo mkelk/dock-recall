@@ -11,6 +11,10 @@ you spend the first minute of the session dragging them back and arranging it
 Dock Recall records how you like each situation set up, and your windows
 auto-arrange to your preferred setup the moment the cable changes.
 
+**Requires Omarchy 4.5 or newer.** On an older Omarchy the plugin detects it,
+restores and records nothing, and the bar tooltip and panel say "Needs Omarchy 4.5
+or newer".
+
 ![The Dock Recall panel: the topology name and its in-sync state, the workspace map with each app drawn at its true proportions, the watched app list, and Record / Restore now](preview.png)
 
 ## Why you will want it
@@ -38,7 +42,16 @@ auto-arrange to your preferred setup the moment the cable changes.
 
 ## Requirements
 
-- Omarchy Quattro with third-party shell plugins (Hyprland 0.56)
+- Omarchy 4.5 or newer (Quattro, with third-party shell plugins; Hyprland 0.56).
+  Omarchy 4.5 numbers each monitor's workspaces in its own block of ten, so Dock
+  Recall records a window's monitor and its position within that block (its
+  slot) rather than a global workspace number, and leaves moving workspaces
+  between monitors to Omarchy. A recording made on an earlier Omarchy is
+  upgraded on first read.
+
+  **Upgrading from an earlier Dock Recall:** recordings made before 0.4.0
+  (state schema v7 and v8, workspace ids) migrate to the current schema (v9,
+  monitor plus slot) when they are first read. Nothing needs to be re-recorded.
 - No AUR package, no runtime network dependency, no privileged helper
 
 ## Install
@@ -116,6 +129,20 @@ thinks is happening:
 - **App list** — every window Hyprland is showing, ordered monitor → workspace →
   position, with a tick per app. Unticked apps are ignored by every restore.
   Apps with several windows get one row per window.
+- **Pictures** — every watched window is photographed, so the map shows you your
+  windows rather than a row of icons. At **Record** the picture is stored under
+  `~/.cache/omarchy/dock-recall/` and drawn on the Recorded tab underneath the
+  app's icon and name, so a closed app is still recognisable; re-recording
+  replaces it, forgetting a layout or undoing a record deletes it, and unticking
+  an app takes its pictures with it on every desk. The pictures are a cache and
+  not part of your recordings: delete that directory and the map goes back to
+  icons with nothing lost. On every **panel open** each watched window is
+  photographed again for the Live tab — those live pictures are held in memory,
+  are never written to disk, and go when the panel closes.
+- **One switch** — the overflow menu's **Pictures** entry. Turn them off and
+  every stored picture is deleted, on every desk, and nothing is photographed
+  again; turn them on and it resumes at the next panel open and the next Record.
+  That is the whole of it: no per-app setting, and nothing asks you anything.
 - **Record layout / Restore now** — record the current arrangement for the current
   topology, or replay the recording immediately without waiting for a cable.
 - **Undo record** — immediately after recording, put the previous recording back.
@@ -123,10 +150,24 @@ thinks is happening:
   Forgetting a topology is undoable the same way.
 - **Failed list** — when a restore could not place something, the app is listed
   with a Retry button, reachable by pointer and by keyboard.
-- **Overflow menu (`⋯`)** — every recorded topology, its glyph state, re-record
-  and forget.
+- **Overflow menu (`⋯`)** — every recorded topology, its glyph state, re-record,
+  forget, and the **Pictures** switch.
 - **Pause / Activate** — stop reacting to monitor events without losing anything.
 - Full keyboard navigation; Escape closes the panel.
+
+While it is open the panel answers on the IPC target `dock-recall`, so a script
+can ask what it is showing and switch which map it shows:
+
+```bash
+omarchy-shell shell summon mkelk.dock-recall '{}'
+omarchy-shell dock-recall state              # JSON: the topology, and every chip and workspace
+omarchy-shell dock-recall setView recorded   # or live
+omarchy-shell dock-recall setPictures off    # or on
+```
+
+That target exists only while the panel is up — the shell loads the panel on
+summon and drops it on hide — and opening and closing stay the shell's own verbs
+(`omarchy-shell shell summon|hide|toggle mkelk.dock-recall '{}'`).
 
 Every restore runs three settle passes, at 1 s, 3 s and 7 s after the trigger, so
 a monitor that takes two seconds to wake up is not a race. "Nothing happened" is
@@ -221,8 +262,9 @@ with, and the line disappears the moment a window matches.
 
 It only does this when the answer is **unambiguous — exactly one child**. A
 terminal running two things, a shell with two jobs, a shell inside a shell, a
-terminal sitting at an empty prompt, or one whose child's command line cannot be
-read is refused out loud: the tick writes nothing, the panel says which of those
+terminal sitting at an empty prompt, one whose child's command line cannot be
+read, or one whose own command line cannot be turned back into a command that
+runs is refused out loud: the tick writes nothing, the panel says which of those
 it was and what to relaunch with, and nothing is guessed. It will **not** fall
 back to a bare `^foot$` — an identity that claims every terminal and can only
 ever start one of them is a worse answer than none. If you do want every terminal
@@ -262,7 +304,7 @@ Everything Dock Recall does is local, unprivileged and inspectable:
 
 | Path | What it holds |
 |---|---|
-| `~/.local/state/omarchy/dock-recall.json` | your recordings, one per topology |
+| `~/.local/state/omarchy/dock-recall.json` | your recordings, one per topology (schema v9) |
 | `~/.local/state/omarchy/dock-recall.status.json` | what the bar glyph reads |
 | `~/.local/state/omarchy/dock-recall.trigger` | a one-shot restore request |
 | `~/.local/state/omarchy/dock-recall-forensics/` | snapshots of restores that failed |
@@ -282,8 +324,10 @@ inside a ±2 px tolerance and tiled windows scored by intersection-over-union.
 Underneath that, every state the desktop can be in has a defined behaviour and a
 test that pins it — including the ones the plugin deliberately refuses, which are
 written down as refusals rather than left as gaps. `tests/` is where that
-contract lives: 756 tests over real `hyprctl` fixtures, plus `tests/sim-dock.sh`,
-which drives the installed plugin end to end against a headless output.
+contract lives: a node suite over real `hyprctl` fixtures — the count is quoted
+once, under [Development](#development), where the pre-release gate can check it
+— plus `tests/sandbox-dock.sh`, which drives the plugin end to end — launch,
+restore, no-op — inside a nested Hyprland the desktop it runs on never sees.
 
 The behaviour has also been through a physical checklist on a real ultrawide over
 a dock — cold dock, dock with the desktop deliberately scattered, undock,
@@ -297,16 +341,97 @@ QML, no clock, no I/O — so it is testable under node against real `hyprctl`
 fixtures (see [`tests/fixtures/README.md`](tests/fixtures/README.md)):
 
 ```bash
-node --test 'tests/**/*.test.js'   # 756 tests, no dependencies
+node --test 'tests/**/*.test.js'   # 1218 tests, no dependencies
 omarchy plugin validate .          # manifest + entry points
-qmllint -I "$OMARCHY_PATH/shell" Service.qml Panel.qml BarWidget.qml
+qmllint -I "$OMARCHY_PATH/shell" *.qml   # every QML file, from a glob — never a list
+./tests/sandbox-dock.sh            # end-to-end, in a nested compositor you never see
+./tests/sandbox-fidelity.sh        # within-workspace fidelity: tiling tree, tab groups, refusals
+./tests/sandbox-reload.sh          # a config reload restores only when monitors or blocks changed
 ./scripts/dev-install --restart    # install this working tree and restart the shell
-./tests/sim-dock.sh                # end-to-end: fake topology, record, restore, verify
 ```
 
-`sim-dock.sh` drives the installed plugin with a headless output and its own
-scratch windows, backs your real state file up and restores it byte-for-byte
-afterwards. `scripts/bench` measures restore quality — shape and ratio
+### `./tests/run-all.sh` — the pre-release gate
+
+One command for the whole stack, cheapest tier first, and **every step runs even
+after one fails**: the point of a pre-release pass is to learn everything that is
+wrong in one sitting, not one thing per run. It prints a table and exits nonzero
+if anything did.
+
+**A HISTORICAL TRANSCRIPT follows** — a real run of 2026-09-02, kept verbatim as
+evidence that the summary reads the suite's own footer. Its numbers are that
+day's and are deliberately NOT refreshed: a transcript edited to match today is
+no longer evidence of anything. The count to trust is the one in the command
+block above, which is quoted in exactly one place for that reason.
+
+```
+#  STEP                                             RESULT   SECONDS
+-----------------------------------------------------------------
+1  node --test 'tests/**/*.test.js'                 PASS           0
+2  omarchy plugin validate .                        PASS           0
+3  qmllint (syntax) on the seven QML files          PASS           0
+4  tests/sandbox-dock.sh                            PASS          31
+5  tests/sandbox-future-version.sh --both           PASS          65
+6  tests/sandbox-reserved-id.sh                     PASS          35
+7  tests/acceptance/run.sh                          PASS         329
+-----------------------------------------------------------------
+   TOTAL                                            PASS         460
+
+node suite: 835 tests passed, 0 failed
+dock-recall full stack: PASS
+```
+
+That last line is why the count above is quotable at all: the summary reads the
+suite's own footer, so the number in this file and the number the tests report
+can be compared rather than trusted. It is quoted in exactly ONE place —
+the command block above — because it has now drifted three times in one
+increment, every time because two paragraphs said it. (The transcript is from
+2026-09-02: it says 835, and its step 3 still names a hand-written file list,
+which is now a glob.) About eight minutes, all of it headless. Per-step logs land in a directory the summary names —
+`DR_RUN_ALL_LOG_DIR` picks it, `DR_RUN_ALL_SKIP="4 5"` skips tiers that are
+known-unavailable on a machine (a skipped step reports SKIP and never a pass).
+
+What it deliberately does **not** run is `tests/sim-dock.sh`, or anything else
+that drives the live session. The sandbox steps (everything named `tests/sandbox-*`) park a second Hyprland
+on a special workspace and assert your desk is untouched, and the last step is a VM with
+`-display none`; the live session is a venue to ask a human for, never a step in
+an unattended gate.
+
+**`tests/sandbox-dock.sh` is the end-to-end gate you run while you work** — the
+one `run-all.sh` calls as step 4, and the one worth running on its own after any
+engine or service change. It starts a second Hyprland
+as a window parked on a special workspace nothing ever opens, hosts this working
+tree's `Service.qml` and `Panel.qml` in a second Quickshell pointed at it, and
+runs the three cases there: LAUNCH a missing app onto the recorded
+workspace/monitor, put a SCATTERED window back, then do nothing at all. Every
+path the plugin writes is redirected into a `mktemp` HOME, and the script ends by
+asserting the live session is untouched — same active window, same monitors,
+same visible workspaces, and a byte-identical
+`~/.local/state/omarchy/dock-recall.json`. The second Hyprland loads Omarchy
+4.5's own `monitor-workspaces.lua` (against a redirected state directory), so
+workspace blocks, the merged-workspace file and the re-sort after a hotplug
+behave as on a real desk; `tests/sandbox-slots.sh` runs dock, undock and dock
+again on top of that, and `tests/sandbox-fidelity.sh` is the within-workspace
+gate on top of it (the tiling tree, tab groups and the visible tab, in seven
+cases). It needs no permission and no quiet
+moment: run it from any working tree while you work. Exit 0 is the gate; a
+failure keeps the sandbox directory and prints its path. Two caveats come with
+running it alongside your work. **One run at a time** — a second concurrent run
+stops with a busy message, because both would share one
+`$XDG_RUNTIME_DIR/hypr`. And **two of the isolation checks can go falsely red**:
+the active window and the visible workspaces are things *you* change by clicking
+around, so the footer marks those two `[ambiguous]`, prints the before/after
+delta, and tells you to rerun on an idle desk to confirm. The other three —
+a stray sandbox window, the live state file, the monitor set — are
+`[authoritative]`: nothing you do at your desk can produce them.
+
+`tests/sim-dock.sh` is the same three cases against **your live session**, and it
+is on-request only — it creates a headless output on your real desktop and moves
+real windows, so **ask the human first**, run it alone, and never from two
+working trees at once. Reach for it only when the sandbox cannot answer the
+question: anything about your actual monitors, your actual `omarchy-shell`, or
+the installed plugin rather than this tree.
+
+`scripts/bench` measures restore quality — shape and ratio
 intersection-over-union across recorded rounds — for when a change to the
 placement planner needs a number rather than an opinion.
 

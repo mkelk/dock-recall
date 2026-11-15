@@ -61,6 +61,8 @@
 //                                          # against captured reads (a
 //                                          # forensics dump's clients/monitors
 //                                          # pasted into files replays it)
+//   scripts/verify --workspaces w.json     # `hyprctl workspaces -j` from a file
+//                                          # (layout mode); optional
 //
 // Exit codes: 0 every verdict ok · 1 something is not · 2 it could not tell
 // (no reads, no recording for this topology, a broken state file). "Every
@@ -76,6 +78,18 @@ const path = require("node:path");
 const engine = require(path.join(__dirname, "..", "engine.js"));
 const StateModel = require(path.join(__dirname, "..", "StateModel.js"));
 const PanelModel = require(path.join(__dirname, "..", "PanelModel.js"));
+const Slots = require(path.join(__dirname, "..", "Slots.js"));
+
+// The state file stores slots (v8); drift and labels work on live ids, so the
+// recorded layout is resolved against the 4.5 block table first.
+function readBlockTable() {
+  const base = process.env.XDG_STATE_HOME || path.join(process.env.HOME || "", ".local", "state");
+  try {
+    return Slots.parseBlocks(fs.readFileSync(path.join(base, "omarchy", "monitor-workspaces"), "utf8"));
+  } catch (e) {
+    return Slots.parseBlocks("");
+  }
+}
 
 const DEFAULT_STATE = path.join(
   process.env.HOME || "",
@@ -101,13 +115,23 @@ function parseArgs(argv) {
     status: DEFAULT_STATUS,
     clients: null,
     monitors: null,
+    workspaces: null,
     json: false
   };
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === "--help" || argv[i] === "-h") {
+      process.stdout.write(
+        "usage: verify [--json] [--state FILE] [--status FILE]\n" +
+        "              [--clients FILE] [--monitors FILE] [--workspaces FILE]\n" +
+        "Judges the live desktop (or captured hyprctl reads) against the recorded layout.\n" +
+        "Exit: 0 all ok, 1 a mismatch, 2 cannot tell.\n");
+      process.exit(EXIT_OK);
+    }
     if (argv[i] === "--state") args.state = argv[++i];
     else if (argv[i] === "--status") args.status = argv[++i];
     else if (argv[i] === "--clients") args.clients = argv[++i];
     else if (argv[i] === "--monitors") args.monitors = argv[++i];
+    else if (argv[i] === "--workspaces") args.workspaces = argv[++i];
     else if (argv[i] === "--json") args.json = true;
     else die("unknown argument " + argv[i]);
   }
@@ -267,10 +291,22 @@ function main() {
     ? readJsonFile(args.monitors, "monitors")
     : hyprctlJson(["monitors", "all", "-j"], "monitors");
 
+  // Context only: a failed workspaces read nulls it and judges without it.
+  let workspaces = null;
+  if (args.workspaces) workspaces = readJsonFile(args.workspaces, "workspaces");
+  else {
+    try {
+      const wsRead = StateModel.parseHyprctlArray(
+        execFileSync("hyprctl", ["workspaces", "-j"], { encoding: "utf8" }), 0, "");
+      workspaces = wsRead.ok ? wsRead.value : null;
+    } catch (e) { workspaces = null; }
+  }
+
   const topologyKey = engine.topologyKey(monitors);
   if (!topologyKey) die("this monitor list resolves to no topology at all (" + monitors.length + " monitors)");
 
-  const layout = StateModel.layoutFor(state, topologyKey);
+  const stored = StateModel.layoutFor(state, topologyKey);
+  const layout = stored ? Slots.toLive(stored, readBlockTable(), monitors) : stored;
   if (!layout) {
     process.stdout.write("topology  " + topologyKey + "\n");
     process.stdout.write("recorded  nothing for this topology — press Record, or verify elsewhere\n");
@@ -278,7 +314,8 @@ function main() {
   }
 
   const identities = StateModel.identities(state);
-  const report = engine.driftOf(clients, monitors, layout, identities);
+  const report = engine.driftOf(clients, monitors, layout, identities,
+    { workspaces: workspaces, built: null });
   const verdicts = engine.verdictsFor(report, outcomesFromStatus(args.status, topologyKey));
   const summary = engine.verdictSummary(verdicts);
 
